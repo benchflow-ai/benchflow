@@ -4,7 +4,7 @@ import asyncio
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -13,6 +13,7 @@ from benchflow.acp.container_transport import ContainerTransport
 from benchflow.acp.session import ACPSession
 from benchflow.acp.transport import StdioTransport
 from benchflow.acp.types import StopReason, ToolCallStatus
+from tests.reachable_fixture import reachable
 
 MOCK_AGENT = str(Path(__file__).parent / "fixtures" / "mock_acp_agent.py")
 MOCK_AGENT_INTERLEAVED = str(
@@ -471,7 +472,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -498,7 +499,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -538,7 +539,7 @@ class TestTransportProtocolFiltering:
 
         agent_log = tmp_path / "agent.log"
         transport = ContainerTransport(
-            _LocalProcess(), "agent acp", agent_log_path=agent_log
+            _LocalProcess(), "agent acp", agent_log_path=reachable(agent_log)
         )
         await transport.start()
         assert await transport.receive() == {
@@ -571,7 +572,7 @@ class TestTransportProtocolFiltering:
 
         process = _LocalProcess()
         transport = ContainerTransport(
-            process, "agent acp", agent_log_path=tmp_path / "agent.log"
+            process, "agent acp", agent_log_path=reachable(tmp_path / "agent.log")
         )
         await transport.start()
         await transport.receive()
@@ -602,7 +603,7 @@ class TestTransportProtocolFiltering:
         first = ContainerTransport(
             container_process=first_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
         await first.start()
         await asyncio.wait_for(first.receive(), timeout=5)
@@ -618,7 +619,7 @@ class TestTransportProtocolFiltering:
         second = ContainerTransport(
             container_process=second_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
         await second.start()
         assert not agent_log.exists()
@@ -664,7 +665,7 @@ class TestTransportProtocolFiltering:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -695,8 +696,8 @@ class TestContainerTransportPtyNoise:
     # then the agent's initialize response glued on the same line.
     PROMPT_GLUED_INIT = (
         b"\x1b[?2004h"
-        b"\x1b]0;root@9ec4903f-9479-4754-9039-d1b5a544cb28: /home/github/build\x07"
-        b"root@9ec4903f-9479-4754-9039-d1b5a544cb28:/home/github/build# "
+        b"\x1b]0;root@9ec4903f-9479-4754-9039-d1b5a544cb28: /home/user/build\x07"
+        b"root@9ec4903f-9479-4754-9039-d1b5a544cb28:/home/user/build# "
         b"\x1b[?2004l"
         b'{"jsonrpc": "2.0", "id": 100001, "result": {"protocolVersion": 1}}\n'
     )
@@ -709,7 +710,7 @@ class TestContainerTransportPtyNoise:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -790,7 +791,7 @@ class TestContainerTransportPtyNoise:
         transport = ContainerTransport(
             container_process=fake_process,
             command="agent acp",
-            agent_log_path=agent_log,
+            agent_log_path=reachable(agent_log),
         )
 
         await transport.start()
@@ -1057,11 +1058,11 @@ class TestPendingToolCallGrace:
 
 
 class TestIdleTimeoutDiagnostics:
-    """Guards ENG-149: idle timeouts must carry structured diagnostics."""
+    """Idle timeouts must carry structured diagnostics."""
 
     @pytest.mark.asyncio
     async def test_idle_timeout_raises_with_structured_info(self) -> None:
-        """Guards ENG-149: IdleTimeoutError carries idle_timeout diagnostic."""
+        """IdleTimeoutError carries idle_timeout diagnostic."""
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
         class HangingClient:
@@ -1089,7 +1090,7 @@ class TestIdleTimeoutDiagnostics:
 
     @pytest.mark.asyncio
     async def test_idle_timeout_info_reflects_activity_counts(self) -> None:
-        """Guards ENG-149: diagnostics include the session's activity counts."""
+        """Diagnostics include the session's activity counts."""
         from benchflow.acp.runtime import IdleTimeoutError, execute_prompts
 
         class OneToolThenHang:
@@ -1355,6 +1356,9 @@ class TestConnectAcpModelSelection:
             ("gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
             ("acpx:gemini", "google/gemma-3-27b-it", "gemma-3-27b-it"),
             ("gemini", "google/text-bison", "google/text-bison"),
+            # The Antigravity CLI takes the same bare Google ids as Gemini CLI.
+            ("antigravity", "google/gemini-3.8-flash", "gemini-3.8-flash"),
+            ("antigravity", "gemini-3.8-flash", "gemini-3.8-flash"),
         ],
         ids=[
             "vllm-hf",
@@ -1366,6 +1370,8 @@ class TestConnectAcpModelSelection:
             "gemma-google",
             "acpx-gemma-google",
             "unrelated-google",
+            "antigravity-google",
+            "antigravity-bare",
         ],
     )
     async def test_model_id_selection(self, agent, model_in, expected_model, tmp_path):
@@ -1500,7 +1506,9 @@ class TestConnectAcpModelSelection:
         assert "openhands_cli.utils" in patch_call.args[0]
         assert patch_call.kwargs == {"user": "root", "timeout_sec": 30}
         transport_env = mock_transport.call_args.kwargs["env"]
-        assert transport_env["BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        # The agent's process sees the neutral name (the host keeps its own).
+        assert transport_env["RUNTIME_OPENHANDS_DISABLE_SUBAGENTS"] == "0"
+        assert "BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS" not in transport_env
         transport_command = mock_transport.call_args.kwargs["command"]
         assert "--reuid=agent" in transport_command
 
@@ -1572,6 +1580,48 @@ class TestConnectAcpModelSelection:
         ]
 
     @pytest.mark.asyncio
+    async def test_opencode_sets_the_effort_its_model_choice_reveals(self, tmp_path):
+        """OpenCode offers "effort" only after a reasoning model is selected, so
+        the effort goes in after the model, against the refreshed options."""
+        from benchflow.acp.runtime import connect_acp
+
+        mock_acp = self._make_mocks()
+        session = mock_acp.session_new.return_value
+        session.config_options = [{"id": "model"}, {"id": "mode"}]
+
+        async def set_option(config_id, value):
+            if config_id == "model":
+                session.config_options = [
+                    {"id": "model"},
+                    {"id": "effort"},
+                    {"id": "mode"},
+                ]
+            return {}
+
+        mock_acp.set_config_option.side_effect = set_option
+        with (
+            patch("benchflow.acp.runtime.ContainerTransport", return_value=MagicMock()),
+            patch("benchflow.acp.runtime.ACPClient", return_value=mock_acp),
+        ):
+            await connect_acp(
+                env=AsyncMock(),
+                agent="opencode",
+                agent_launch="opencode acp",
+                agent_env={},
+                sandbox_user=None,
+                model="gemini/gemini-4-argon",
+                rollout_dir=tmp_path,
+                environment="docker",
+                agent_cwd="/app",
+                reasoning_effort="high",
+            )
+
+        assert mock_acp.set_config_option.await_args_list == [
+            call("model", "google/gemini-4-argon"),
+            call("effort", "high"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_claude_litellm_env_owns_model_selection(self, tmp_path):
         from benchflow.acp.runtime import connect_acp
 
@@ -1636,15 +1686,15 @@ class TestConnectAcpModelSelection:
                 agent_cwd="/root",
             )
 
-        mock_env.live_process.assert_awaited_once_with(agent="codex-acp")
+        mock_env.live_process.assert_awaited_once_with(agent="codex-acp", admission=ANY)
         assert transport.call_args.kwargs["container_process"] is live_process
 
 
 class TestSandboxStartupDiagnostics:
-    """Guards ENG-147: sandbox startup failures must carry structured diagnostics."""
+    """Sandbox startup failures must carry structured diagnostics."""
 
     def test_sandbox_startup_error_has_info_dict(self) -> None:
-        """Guards ENG-147: SandboxStartupError carries a SandboxStartupDiagnostic
+        """SandboxStartupError carries a SandboxStartupDiagnostic
         with all required fields for result.json."""
         from benchflow.sandbox.daytona import SandboxStartupError
 
@@ -1664,7 +1714,7 @@ class TestSandboxStartupDiagnostics:
         assert "timeout of 1200000ms" in info["raw_message"]
 
     def test_sandbox_startup_error_is_runtime_error(self) -> None:
-        """Guards ENG-147: SandboxStartupError is a RuntimeError subclass
+        """SandboxStartupError is a RuntimeError subclass
         so existing except-RuntimeError paths still catch it."""
         from benchflow.sandbox.daytona import SandboxStartupError
 
@@ -1672,7 +1722,7 @@ class TestSandboxStartupDiagnostics:
         assert isinstance(err, RuntimeError)
 
     def test_classify_error_sandbox_startup(self) -> None:
-        """Guards ENG-147: classify_error recognises sandbox startup failures."""
+        """classify_error recognises sandbox startup failures."""
         from benchflow._utils.scoring import SANDBOX_SETUP, classify_error
 
         assert classify_error("Sandbox startup failed: timeout") == SANDBOX_SETUP
@@ -1680,7 +1730,7 @@ class TestSandboxStartupDiagnostics:
         assert classify_error("normal error") != SANDBOX_SETUP
 
     def test_sandbox_startup_info_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-147: _build_rollout_result writes sandbox_startup_info to result.json."""
+        """_build_rollout_result writes sandbox_startup_info to result.json."""
         from benchflow.diagnostics import RolloutDiagnostics, SandboxStartupDiagnostic
         from benchflow.rollout import _build_rollout_result
 
@@ -1719,7 +1769,7 @@ class TestSandboxStartupDiagnostics:
     def test_sandbox_startup_info_null_when_no_startup_error(
         self, tmp_path: Path
     ) -> None:
-        """Guards ENG-147: sandbox_startup_info is null for non-startup errors."""
+        """sandbox_startup_info is null for non-startup errors."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -1744,22 +1794,34 @@ class TestSandboxStartupDiagnostics:
         assert result.rewards == {"reward": 1.0}
 
     def test_create_sandbox_retry_count_is_three(self) -> None:
-        """Guards ENG-147: _create_sandbox retries 3 times, not 2.
+        """A create that timed out is tried 3 times, not 2.
 
         The retry contract is declared with the standard ``@retry(...)``
         decorator from tenacity. tenacity attaches the live ``stop`` /
         ``wait`` config to the wrapped function as ``fn.retry``; assert via
         that introspection hook rather than re-implementing scaffolding.
+        Other kinds have their own budgets (DAYTONA-START,
+        tests/test_daytona_start_path.py).
         """
         pytest.importorskip("tenacity")  # ``sandbox-daytona`` extra
+        from types import SimpleNamespace
+
         from benchflow.sandbox.daytona import DaytonaSandbox
 
         stop = DaytonaSandbox._create_sandbox.retry.stop  # type: ignore[attr-defined]
-        assert stop.max_attempt_number == 3
+
+        def state(attempt: int) -> SimpleNamespace:
+            outcome = SimpleNamespace(exception=lambda: TimeoutError("create"))
+            return SimpleNamespace(
+                outcome=outcome, attempt_number=attempt, seconds_since_start=1.0
+            )
+
+        assert not stop(state(2))
+        assert stop(state(3))
 
 
 class TestTransportErrorDiagnostics:
-    """Guards ENG-148 / #504: ACP transport must carry structured diagnostics.
+    """Guards #504: ACP transport must carry structured diagnostics.
 
     The diagnostic is now raised at the *source* (``sandbox/process.py``) as
     a :class:`~benchflow.diagnostics.TransportClosedError` carrying a typed
@@ -1891,7 +1953,7 @@ class TestTransportErrorDiagnostics:
         assert rebuilt.process_exit_code == 255
 
     def test_transport_error_info_in_result_json(self, tmp_path) -> None:
-        """Guards ENG-148: transport_error_info is written to result.json."""
+        """transport_error_info is written to result.json."""
         from benchflow.diagnostics import RolloutDiagnostics, TransportClosedDiagnostic
         from benchflow.rollout import _build_rollout_result
 
@@ -1965,7 +2027,7 @@ class TestTransportErrorDiagnostics:
         assert result.error_category == "pipe_closed"
 
     def test_transport_error_info_none_when_no_transport_error(self, tmp_path) -> None:
-        """Guards ENG-148: transport_error_info is null for non-transport errors."""
+        """transport_error_info is null for non-transport errors."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -2068,6 +2130,92 @@ class TestDiagnosticRegistry:
         empty = RolloutDiagnostics().to_result_fields()
         for diag_cls in DIAGNOSTIC_REGISTRY:
             assert empty[diag_cls.field] is None
+
+    def test_results_jsonl_export_policy_omits_untrusted_fields(self) -> None:
+        """Guards PR #1038 (issue #1037): use a strict safe export policy."""
+        from benchflow.diagnostics import (
+            AgentPromptTimeoutDiagnostic,
+            IdleTimeoutDiagnostic,
+            ProviderApiErrorDiagnostic,
+            RolloutDiagnostics,
+            SandboxStartupDiagnostic,
+            TransportClosedDiagnostic,
+        )
+
+        pending = AgentPromptTimeoutDiagnostic(
+            pending_tool_call_ids=["call-secret-1", "call-secret-2"]
+        ).to_results_jsonl_details()
+        assert pending["pending_tool_call_count"] == 2
+        assert "pending_tool_call_ids" not in pending
+
+        sandbox = SandboxStartupDiagnostic(
+            sandbox_id="private-sandbox-id",
+            sandbox_state="provider-specific-state",
+            raw_message="api_key=secret",
+            attempts=2,
+        ).to_results_jsonl_details()
+        assert sandbox == {"attempts": 2}
+
+        transport = TransportClosedDiagnostic(
+            raw_message="api_key=secret",
+            process_pid=1234,
+            transport_diagnosis="provider-secret-state",
+            stderr_snippet="password=secret",
+            sandbox_probe_stdout="token=secret",
+        ).to_results_jsonl_details()
+        assert transport == {"transport_diagnosis": "unknown"}
+
+        provider = ProviderApiErrorDiagnostic(
+            subcategory="provider-secret-state",
+            status_counts={"429": 2, "bad": 1, "700": 3, "503": -1},
+            fingerprint="secret-fingerprint",
+        ).to_results_jsonl_details()
+        assert provider["subcategory"] == "provider_error"
+        assert provider["status_counts"] == {"429": 2}
+        assert "fingerprint" not in provider
+
+        invalid_numbers = IdleTimeoutDiagnostic(
+            idle_timeout_sec=True,
+            idle_duration_sec=-1,
+            wall_clock_elapsed_sec=float("nan"),
+            n_tool_calls=-2,
+        ).to_results_jsonl_details()
+        assert "idle_timeout_sec" not in invalid_numbers
+        assert "idle_duration_sec" not in invalid_numbers
+        assert "wall_clock_elapsed_sec" not in invalid_numbers
+        assert "n_tool_calls" not in invalid_numbers
+
+        class CollidingIdleDiagnostic(IdleTimeoutDiagnostic):
+            def to_results_jsonl_details(self) -> dict:
+                return {"raw_pii": "private@example.com"}
+
+        diagnostics = RolloutDiagnostics()
+        diagnostics.set(CollidingIdleDiagnostic())
+        assert (
+            diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            is None
+        )
+
+    def test_results_jsonl_export_policy_covers_the_registry(self) -> None:
+        """Guards PR #1038 (issue #1037): registry export stays fail-closed."""
+        from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, RolloutDiagnostics
+
+        for diagnostic_cls in DIAGNOSTIC_REGISTRY:
+            assert diagnostic_cls.results_jsonl_fields is not None
+            diagnostics = RolloutDiagnostics()
+            diagnostics.set(diagnostic_cls())
+            block = diagnostics.to_results_jsonl_block(
+                error_category=None,
+                verifier_error_category=None,
+            )
+            assert block is not None
+            event = block["events"][diagnostic_cls.field]
+            assert event["channel"] == diagnostic_cls.channel
+            if diagnostic_cls.category is not None:
+                assert event["category"] == diagnostic_cls.category
 
     def test_diagnostic_reason_constants_share_scoring_source(self) -> None:
         """Guards the fix from PR #858 against diagnostic reasons drifting off the shared scoring source."""
@@ -2179,10 +2327,10 @@ class TestDiagnosticRegistry:
 
 
 class TestVerifierDepInstallDiagnostics:
-    """Guards ENG-151: verifier dep install failures must be classified distinctly."""
+    """Verifier dep install failures must be classified distinctly."""
 
     def test_classify_verifier_dep_install_error(self) -> None:
-        """Guards ENG-151: classify_verifier_error detects dependency install
+        """classify_verifier_error detects dependency install
         patterns and returns VERIFIER_DEP_INSTALL."""
         from benchflow._utils.scoring import (
             VERIFIER_DEP_INSTALL,
@@ -2210,7 +2358,7 @@ class TestVerifierDepInstallDiagnostics:
         )
 
     def test_classify_verifier_dep_install_not_false_positive(self) -> None:
-        """Guards ENG-151: normal verifier crashes are NOT classified as
+        """Normal verifier crashes are NOT classified as
         dep install failures."""
         from benchflow._utils.scoring import (
             VERIFIER_DEP_INSTALL,
@@ -2228,7 +2376,7 @@ class TestVerifierDepInstallDiagnostics:
         assert classify_verifier_error(None) is None
 
     def test_verifier_error_category_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-151: result.json includes verifier_error_category field."""
+        """result.json includes verifier_error_category field."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -2257,7 +2405,7 @@ class TestVerifierDepInstallDiagnostics:
     def test_verifier_error_category_null_when_no_verifier_error(
         self, tmp_path: Path
     ) -> None:
-        """Guards ENG-151: verifier_error_category is null for successful runs."""
+        """verifier_error_category is null for successful runs."""
         from benchflow.rollout import _build_rollout_result
 
         result = _build_rollout_result(
@@ -2283,10 +2431,10 @@ class TestVerifierDepInstallDiagnostics:
 
 
 class TestVerifierTimeoutDiagnostics:
-    """Guards ENG-152: verifier timeouts must produce structured diagnostics."""
+    """Verifier timeouts must produce structured diagnostics."""
 
     def test_classify_verifier_timeout(self) -> None:
-        """Guards ENG-152: classify_verifier_error returns VERIFIER_TIMEOUT
+        """classify_verifier_error returns VERIFIER_TIMEOUT
         for timeout messages."""
         from benchflow._utils.scoring import (
             VERIFIER_TIMEOUT,
@@ -2302,7 +2450,7 @@ class TestVerifierTimeoutDiagnostics:
         )
 
     def test_classify_verifier_timeout_not_false_positive(self) -> None:
-        """Guards ENG-152: non-timeout verifier errors are NOT classified as
+        """Non-timeout verifier errors are NOT classified as
         timeout."""
         from benchflow._utils.scoring import (
             VERIFIER_TIMEOUT,
@@ -2319,7 +2467,7 @@ class TestVerifierTimeoutDiagnostics:
         )
 
     def test_verifier_timeout_info_in_result_json(self, tmp_path: Path) -> None:
-        """Guards ENG-152: result.json includes verifier_timeout_info when
+        """result.json includes verifier_timeout_info when
         verifier times out."""
         from benchflow.diagnostics import RolloutDiagnostics, VerifierTimeoutDiagnostic
         from benchflow.rollout import _build_rollout_result
@@ -2359,7 +2507,7 @@ class TestVerifierTimeoutDiagnostics:
         assert vti["task_name"] == "quantum-numerical-simulation"
 
     def test_verifier_timeout_info_null_when_no_timeout(self, tmp_path: Path) -> None:
-        """Guards ENG-152: verifier_timeout_info is null for non-timeout runs."""
+        """verifier_timeout_info is null for non-timeout runs."""
         from benchflow.rollout import _build_rollout_result
 
         _build_rollout_result(
@@ -2383,7 +2531,7 @@ class TestVerifierTimeoutDiagnostics:
         assert rj["verifier_timeout_info"] is None
 
     def test_verifier_timeout_info_null_for_crash(self, tmp_path: Path) -> None:
-        """Guards ENG-152: verifier_timeout_info is null when verifier crashes
+        """verifier_timeout_info is null when verifier crashes
         (not a timeout)."""
         from benchflow.rollout import _build_rollout_result
 

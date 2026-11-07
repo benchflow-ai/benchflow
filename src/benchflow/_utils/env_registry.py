@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchflow._utils.content_address import sha256_prefixed
+from benchflow.errors import UserError
 
 if TYPE_CHECKING:
     from benchflow.environment.manifest import EnvironmentManifest
@@ -62,7 +63,7 @@ _SPEC_RE = re.compile(
 _MANIFEST_EXTS = (".toml", ".yaml", ".yml")
 
 
-class EnvironmentRegistryError(ValueError):
+class EnvironmentRegistryError(ValueError, UserError):
     """Raised when an environment spec cannot be resolved."""
 
 

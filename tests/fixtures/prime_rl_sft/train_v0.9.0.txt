@@ -1,0 +1,126 @@
+# PrimeIntellect-ai/prime-rl src/prime_rl/trainer/sft/train.py
+# at release v0.9.0 (2026-08-25),
+# commit ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1:
+# https://github.com/PrimeIntellect-ai/prime-rl/blob/ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1/src/prime_rl/trainer/sft/train.py
+#
+# Copyright the prime-rl authors. Licensed under the Apache License,
+# Version 2.0; a copy of the license is in LICENSE next to this file.
+#
+# Modified by BenchFlow as a test fixture: only upstream lines 66-67, 264-340,
+# 439, 488, 494-506 and 526-532 are kept, verbatim and at their original
+# indentation, because BenchFlow's sample-mean loss shim anchors on them;
+# "# [...]" marks cut upstream code. The future import and the clean_exit
+# stand-in are BenchFlow's, so the excerpt imports without prime-rl or torch.
+from __future__ import annotations
+
+
+def clean_exit(train):
+    return train
+
+
+@clean_exit
+def train(config: SFTConfig):
+    # [...]
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+        input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
+        position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
+        target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
+        loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
+        seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
+        mm_kwargs = micro_batch.get("mm_kwargs")
+        if mm_kwargs is not None:
+            mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in mm_kwargs.items()}
+        mm_type_ids = micro_batch.get("mm_token_type_ids")
+        if mm_type_ids is not None:
+            mm_type_ids = mm_type_ids.to("cuda", non_blocking=True)
+
+        seq_lens_are_pre_shard = False
+
+        if cp_enabled:
+            # CP requires the sequence length to be divisible by cp_size. CatDataset
+            # pads every pack to seq_len; shard_for_cp raises on violations.
+            defer_vlm_cp_to_model = (
+                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
+            )
+            if not defer_vlm_cp_to_model:
+                input_ids, position_ids = setup_cp_params(
+                    input_ids,
+                    position_ids,
+                    cp_rank,
+                    cp_size,
+                    cp_group,
+                    seq_lens=seq_lens,
+                    cp_style=config.model.cp_style,
+                )
+            seq_lens_are_pre_shard = True
+            target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
+            loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+        if config.model.lora is not None:
+            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
+
+        token_count = loss_mask.sum(dtype=torch.int64)
+
+        with maybe_activation_offloading(config.model.ac_offloading):
+            if isinstance(config.model.fused_lm_head_token_chunk_size, int):
+                # Same path as the RL trainer: the chunked LM head computes per-token
+                # logprobs without materializing the [N, V] logits, and per-token
+                # cross-entropy is the negative target logprob.
+                temperature = torch.ones_like(target_ids, dtype=torch.float32)
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    seq_lens=seq_lens,
+                    labels=target_ids,
+                    temperature=temperature,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
+                loss_sum = -out["logprobs"][loss_mask].sum()
+            else:
+                out = forward(
+                    model,
+                    input_ids,
+                    position_ids,
+                    mm_kwargs=mm_kwargs,
+                    mm_token_type_ids=mm_type_ids,
+                    seq_lens=seq_lens,
+                    seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+                )
+                logits = out["logits"]
+                B, L, V = logits.shape
+                token_loss = CrossEntropyLoss(reduction="none")(logits.view(-1, V), target_ids.view(-1)).view(B, L)
+                loss_sum = token_loss[loss_mask].sum()
+                del logits
+
+        del out
+        return loss_sum, token_count
+    # [...]
+    while True:
+        # [...]
+        for micro_step, micro_batch in enumerate(micro_batches):
+            # [...]
+            with maybe_record_function("forward"):
+                local_loss_sum, batch_token_count = compute_loss(micro_batch)
+
+            if gradient_manager is None:
+                step_local_token_count += batch_token_count
+
+            if torch.isnan(local_loss_sum.detach()):
+                nan_loss_count += 1
+                logger.warning("Local loss is nan, excluding this micro step from backward")
+                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
+            else:
+                step_loss_sum += local_loss_sum.detach()
+                scaled_loss = local_loss_sum / grad_accum_steps
+        # [...]
+        if gradient_manager is None:
+            global_step_token_count = step_local_token_count.clone()
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            global_token_count_val = global_step_token_count.item()
+            if global_token_count_val > 0:
+                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                scale_gradients_(None, model, grad_scale)

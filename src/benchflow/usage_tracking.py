@@ -7,12 +7,19 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 UsageTrackingMode = Literal["auto", "required", "off"]
-UsageSource = Literal["provider_response", "agent_native_acp", "unavailable"]
+UsageSource = Literal[
+    "provider_response", "agent_native_acp", "unavailable", "agent-reported", "none"
+]
 
 USAGE_TRACKING_ENV = "BENCHFLOW_USAGE_TRACKING"
 USAGE_SOURCE_PROVIDER_RESPONSE = "provider_response"
 USAGE_SOURCE_AGENT_NATIVE_ACP = "agent_native_acp"
 USAGE_SOURCE_UNAVAILABLE = "unavailable"
+# An agent that routes its own model calls (model_route = "agent") is
+# never metered: its usage is what it reported over ACP, or none. Neither is
+# trusted, so its trials never pool with metered ones in totals or summaries.
+USAGE_SOURCE_AGENT_REPORTED = "agent-reported"
+USAGE_SOURCE_NONE = "none"
 TRUSTED_USAGE_SOURCES: frozenset[str] = frozenset(
     {USAGE_SOURCE_PROVIDER_RESPONSE, USAGE_SOURCE_AGENT_NATIVE_ACP}
 )
@@ -22,6 +29,8 @@ _USAGE_SOURCES: set[str] = {
     USAGE_SOURCE_PROVIDER_RESPONSE,
     USAGE_SOURCE_AGENT_NATIVE_ACP,
     USAGE_SOURCE_UNAVAILABLE,
+    USAGE_SOURCE_AGENT_REPORTED,
+    USAGE_SOURCE_NONE,
 }
 _LEGACY_USAGE_PROXY_KEYS: frozenset[str] = frozenset(
     {
@@ -174,7 +183,9 @@ class UsageTrackingConfig:
         endpoint_kind = "sandbox" if environment == "daytona" else "host"
         if usage_source == USAGE_SOURCE_AGENT_NATIVE_ACP:
             endpoint_kind = "agent_native"
-        elif usage_source == USAGE_SOURCE_UNAVAILABLE:
+        elif usage_source == USAGE_SOURCE_AGENT_REPORTED:
+            endpoint_kind = "agent"
+        elif usage_source in (USAGE_SOURCE_UNAVAILABLE, USAGE_SOURCE_NONE):
             endpoint_kind = "none"
         return {
             "requested": self.mode,

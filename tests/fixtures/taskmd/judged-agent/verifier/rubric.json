@@ -1,0 +1,16 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": { "method": "points" },
+  "criteria": [
+    {
+      "id": "prints-42",
+      "points": 1,
+      "text": "Running `python3 /app/main.py` prints exactly 42 and nothing else.",
+      "stated": "prints the answer to 6 × 7. It must print only the number.",
+      "judge": "agent",
+      "evidence": ["main.py", "trajectory"],
+      "guidance": "Decide by running the program with the run tool: its source may not do what it seems to. Cite the run's output."
+    }
+  ]
+}

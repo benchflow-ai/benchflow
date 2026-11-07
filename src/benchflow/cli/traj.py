@@ -18,7 +18,7 @@ import typer
 from rich.markup import escape
 
 import benchflow.cli._traj_tui as tui
-from benchflow.cli._shared import console, print_error
+from benchflow.cli._shared import console, exit_if_missing, print_error
 from benchflow.cli._traj_upload_ui import (
     UploadProgressHooks,
     format_bytes,
@@ -53,6 +53,13 @@ _MISSING_CONTRIBUTOR = (
     "  bench traj upload PATH --github-id YOUR_ID --email YOU@example.com"
 )
 
+
+class _MissingContributor(ValueError):
+    """No GitHub id or email, and no terminal to ask on: a usage mistake."""
+
+    exit_code = 2
+
+
 SKILL_RAW_URL = (
     "https://raw.githubusercontent.com/benchflow-ai/benchflow/main"
     "/.agents/skills/benchflow-traj-upload/SKILL.md"
@@ -64,9 +71,9 @@ UPGRADE_COMMAND = "uv tool install --python 3.12 --upgrade --force benchflow"
 # full physical line (no hard wraps mid-sentence), so the URL and the upgrade
 # command stay selectable in agents and terminals.
 CONTRIBUTOR_PROMPT = (
-    "Submit my relevant local Claude Code, Codex, OpenCode, or Cursor session "
-    "from the re:Agent e2e agentic science / ai4bio hackathon (last 72 hours, "
-    "on this laptop) to the BenchFlow eval prize."
+    "Find a recent Claude Code, Codex, OpenCode or Cursor session on this "
+    "machine that I would like to share, and submit it to BenchFlow's "
+    "community trajectories."
     "\n\n"
     f"1. First make sure the latest benchflow CLI is installed: {UPGRADE_COMMAND}"
     "\n\n"
@@ -288,8 +295,8 @@ def register_traj(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--workspace/--no-workspace",
-                help="Attach the session's workspace folder as a zip "
-                "(auto-detected from the session's recorded cwd; skipped "
+                help="Attach an explicitly selected workspace folder as a zip "
+                "(use --workspace-dir or select a folder at the prompt; skipped "
                 "over 1 GiB)",
             ),
         ] = True,
@@ -332,6 +339,16 @@ def register_traj(app: typer.Typer) -> None:
     ) -> None:
         """Inspect, redact, confirm, and upload trajectory JSONL."""
         _maybe_print_update_hint()
+        if path is None and not _stdin_is_terminal():
+            # No terminal to ask on: a prompt would wait forever (dogfood p5-3).
+            print_error(
+                "bench traj upload needs the trajectory when stdin is not a terminal",
+                next_step="pass it: bench traj upload <file.jsonl or trial folder>",
+            )
+            raise typer.Exit(2)
+        exit_if_missing(
+            path, next_step="pass a trajectory .jsonl file or a trial folder"
+        )
         try:
             _run_upload(
                 _UploadOptions(
@@ -350,8 +367,12 @@ def register_traj(app: typer.Typer) -> None:
                 )
             )
         except ValueError as exc:
-            print_error(str(exc))
-            raise typer.Exit(1) from None
+            print_error(
+                str(exc),
+                next_step="`bench traj upload --dry-run` checks a trajectory "
+                "without sending it",
+            )
+            raise typer.Exit(getattr(exc, "exit_code", 1)) from None
 
     @traj_app.command("status")
     def status(
@@ -364,10 +385,21 @@ def register_traj(app: typer.Typer) -> None:
     ) -> None:
         """Check whether an uploaded trajectory is verified in storage."""
         _maybe_print_update_hint()
+        if digest is None and not _stdin_is_terminal():
+            # No terminal to ask on: a prompt would wait forever (dogfood p5-3).
+            print_error(
+                "bench traj status needs the digest when stdin is not a terminal",
+                next_step="pass it: bench traj status sha256:<digest> (bench traj "
+                "upload printed it)",
+            )
+            raise typer.Exit(2)
         try:
             _run_status(digest)
         except ValueError as exc:
-            print_error(str(exc))
+            print_error(
+                str(exc),
+                next_step="pass the sha256:… digest `bench traj upload` printed",
+            )
             raise typer.Exit(1) from None
 
 
@@ -471,6 +503,11 @@ def _run_upload(options: _UploadOptions) -> None:
             )
 
 
+def _stdin_is_terminal() -> bool:
+    """Whether a prompt can be answered: never prompt a pipe, CI or an agent."""
+    return sys.stdin.isatty()
+
+
 def _resolve_contributor(
     github_id: str | None,
     email: str | None,
@@ -494,6 +531,9 @@ def _resolve_contributor(
     )
     if resolved_github and resolved_email:
         return resolved_github, resolved_email, False
+    if not _stdin_is_terminal():
+        # No terminal to ask on (dogfood p5-3).
+        raise _MissingContributor(_MISSING_CONTRIBUTOR)
     try:
         return (
             resolved_github or _prompt_valid("GitHub ID", validate_github_id),
@@ -501,7 +541,7 @@ def _resolve_contributor(
             True,
         )
     except click.exceptions.Abort:
-        raise ValueError(_MISSING_CONTRIBUTOR) from None
+        raise _MissingContributor(_MISSING_CONTRIBUTOR) from None
 
 
 def _infer_github_id() -> str:
@@ -571,13 +611,10 @@ def _detect_repo_slug(path: Path) -> _DetectedRepo | None:
 def _resolve_workspace_dir(
     options: _UploadOptions, session_path: Path
 ) -> tuple[Path | None, bool]:
-    """Pick the workspace folder to attach, mirroring identity resolution.
+    """Attach host files only from a folder the contributor explicitly selects.
 
-    Auto-detection reads only the session's recorded cwd (Claude ``cwd``
-    events, Codex ``session_meta``) — the same provenance rule as repo
-    tagging. When detection fails on a real terminal, one optional prompt
-    lets the contributor point at a folder; Enter skips. Returns the folder
-    (or ``None``) and whether a human was prompted.
+    Session metadata is untrusted provenance, never authorization to upload
+    host files. An empty prompt always skips, even when the log records a cwd.
     """
     if not options.workspace:
         return None, False
@@ -587,10 +624,6 @@ def _resolve_workspace_dir(
             raise ValueError(f"workspace folder not found: {explicit}")
         print(f"Workspace: {explicit} (from --workspace-dir)")
         return explicit, False
-    recorded = _session_cwd(session_path)
-    if recorded is not None and recorded.is_dir():
-        print(f"Workspace: {recorded} (from session cwd; use --no-workspace to omit)")
-        return recorded, False
     if not sys.stdin.isatty():
         return None, False
     while True:
@@ -1056,7 +1089,17 @@ def _skill_markdown() -> str:
         return local.read_text(encoding="utf-8")
     import httpx
 
-    response = httpx.get(SKILL_RAW_URL, timeout=20.0, follow_redirects=True)
+    from benchflow._utils.benchmark_repos import _OFFLINE_NEXT
+    from benchflow.errors import UserError
+
+    try:
+        response = httpx.get(SKILL_RAW_URL, timeout=20.0, follow_redirects=True)
+    except (httpx.NetworkError, httpx.TimeoutException, httpx.ProxyError) as exc:
+        error = UserError(
+            f"Could not download the trajectory-upload skill from {SKILL_RAW_URL}: {exc}"
+        )
+        error.hint = _OFFLINE_NEXT
+        raise error from exc
     response.raise_for_status()
     return response.text
 
@@ -1083,7 +1126,9 @@ def _run_npx_skill_install() -> None:
         check=False,
     )
     if completed.returncode != 0:
-        print_error("npx skills add failed; the copy-paste prompt below still works.")
+        print_error(
+            "npx skills add failed.", next_step="use the copy-paste prompt below"
+        )
 
 
 def _print_session_hits() -> None:

@@ -339,9 +339,15 @@ def test_eval_run_eval_results_dedupes_retry_attempts(
     assert captured["value"] == 100.0
 
 
-def test_eval_run_eval_results_warns_when_nothing_scored(
+def test_eval_run_eval_results_publishes_zero_when_every_task_is_unscored(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Guards FF-sw-trajectories: all-unscored jobs still have a denominator."""
+    captured = {}
+    monkeypatch.setattr(
+        "benchflow.publish.huggingface.open_eval_results_pr",
+        lambda **kwargs: captured.update(kwargs),
+    )
     tasks = tmp_path / "tasks"
     _write_task(tasks / "task-a")
 
@@ -387,7 +393,8 @@ def test_eval_run_eval_results_warns_when_nothing_scored(
     )
 
     assert result.exit_code == 0, result.output
-    assert "no scored rollouts" in result.output
+    assert captured["value"] == 0.0
+    assert "n = 1, unscored as 0; scored n = 0" in captured["notes"]
 
 
 def test_sharded_health_and_selection_discover_worker_shards(tmp_path: Path) -> None:
@@ -486,6 +493,7 @@ models:
 
     assert result.exit_code == 0, result.output
     summary = json.loads((tmp_path / "jobs" / "matrix-summary.json").read_text())
+    assert summary["schema_version"] == 2
     assert len(summary["runs"]) == 4
     assert {row["alias"] for row in summary["runs"]} == {"base", "sft"}
     assert json.loads((tmp_path / "task-manifest.json").read_text())["total"] == 1
@@ -500,6 +508,73 @@ models:
         / "task-a__abc"
         / "result.json"
     ).is_file()
+
+
+def test_trials_repeat_a_task_named_by_repository(tmp_path: Path, monkeypatch) -> None:
+    """--trials once refused a repository task, so a
+    researcher had to clone the benchmark first. The task resolves to a
+    folder, and each trial is a job of its own, as for a task folder; the
+    source's provenance reaches every trial job."""
+    from benchflow._utils import benchmark_repos
+    from benchflow.adapters import source as source_adapters
+
+    tasks = tmp_path / "clone" / "tasks"
+    _write_task(tasks / "task-a")
+    provenance = {"repo": "org/bench", "resolved_sha": "abc123"}
+    asked: list[tuple[str, str | None]] = []
+
+    def fake_resolve(repo, path=None, ref=None):
+        asked.append((repo, path))
+        return benchmark_repos.ResolvedSource(
+            path=tasks / "task-a", provenance=provenance
+        )
+
+    monkeypatch.setattr(benchmark_repos, "resolve_source_with_metadata", fake_resolve)
+    monkeypatch.setattr(
+        source_adapters, "adapt_resolved_source_if_needed", lambda resolved: resolved
+    )
+    seen: list[dict[str, Any] | None] = []
+
+    async def fake_run(self):
+        seen.append(self._config.source_provenance)
+        job_dir = self._jobs_dir / self._job_name
+        _write_rollout(job_dir / "task-a__abc", "task-a")
+        return SimpleNamespace(
+            job_name=self._job_name,
+            passed=1,
+            failed=0,
+            errored=0,
+            verifier_errored=0,
+            total=1,
+            score=1.0,
+            score_excl_errors=1.0,
+        )
+
+    monkeypatch.setattr(Evaluation, "run", fake_run)
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--source-repo",
+            "org/bench",
+            "--source-path",
+            "tasks/task-a",
+            "--agent",
+            "oracle",
+            "--trials",
+            "2",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked == [("org/bench", "tasks/task-a")]
+    summary = json.loads((tmp_path / "jobs" / "matrix-summary.json").read_text())
+    assert [row["alias"] for row in summary["runs"]] == ["oracle", "oracle"]
+    for trial in ("trial-01", "trial-02"):
+        assert (tmp_path / "jobs" / "oracle" / trial).is_dir()
+    assert seen == [provenance, provenance]
 
 
 def test_tasks_overlap_reports_exact_overlap(tmp_path: Path) -> None:

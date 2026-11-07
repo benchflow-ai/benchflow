@@ -37,7 +37,11 @@ Common optional fields
 - ``url_params``       ``{placeholder: ENV_VAR}`` — every placeholder in
                        ``base_url`` (or any ``endpoints`` URL) must have an
                        entry, and every entry must be referenced somewhere.
-- ``endpoints``        ``{api_protocol: url}`` for providers that expose
+- ``url_param_strip_suffix`` ``{placeholder: (url_param, suffix)}``: a
+                       placeholder computed from a url_params value with a
+                       trailing suffix removed (xiaomi's Anthropic endpoint
+                       is its OpenAI base without ``/v1``, plus ``/anthropic``).
+- ``endpoints``      ``{api_protocol: url}`` for providers that expose
                        multiple protocol surfaces (e.g. zai serves
                        openai-responses, openai-completions, and
                        anthropic-messages). Picked at runtime based on the
@@ -62,6 +66,12 @@ credential_files, url_params), ``vllm`` (user-supplied base_url).
 from dataclasses import dataclass, field
 
 ZAI_CODING_REGISTRY_BASE_ENV = "_BENCHFLOW_ZAI_CODING_REGISTRY_BASE"
+# Providers whose registry URL for an agent's protocol is not the URL the
+# LiteLLM gateway calls: the gateway speaks OpenAI chat completions to them
+# whatever the agent speaks, so a base URL resolved from this registry (marked
+# with ZAI_CODING_REGISTRY_BASE_ENV) does not override the gateway's own.
+# zai-coding: PR #1074. xiaomi: the claude agent's Anthropic endpoint (B11).
+REGISTRY_BASE_PROVIDERS = frozenset({"zai-coding", "xiaomi"})
 
 
 @dataclass
@@ -81,6 +91,10 @@ class ProviderConfig:
     # explicit override (the env var wins). Empty => the env var is required
     # (historical behavior).
     url_param_defaults: dict[str, str] = field(default_factory=dict)
+    # Placeholders computed from another one: {derived: (source, suffix)} is
+    # the source's value with a trailing ``suffix`` (and slash) removed, the
+    # shell's ``${SOURCE%suffix}``. A derived name is not in url_params.
+    url_param_strip_suffix: dict[str, tuple[str, str]] = field(default_factory=dict)
     models: list[dict] = field(default_factory=list)  # model metadata for agents
     # Bare-model-name family tokens this provider owns (e.g. ["deepseek"],
     # ["qwen"]). Used by find_provider_for_bare_model() to route a *prefix-less*
@@ -227,6 +241,15 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="OPENAI_API_KEY",  # vLLM uses OpenAI-compatible auth
     ),
+    # SGLang's OpenAI-compatible server. Same contract as vllm; the gateway
+    # asks it for token ids through SGLang's own ``sglext`` extension.
+    "sglang": ProviderConfig(
+        name="sglang",
+        base_url="",  # user-supplied via --agent-env BENCHFLOW_PROVIDER_BASE_URL=...
+        api_protocol="openai-completions",
+        auth_type="api_key",
+        auth_env="OPENAI_API_KEY",
+    ),
     "litellm": ProviderConfig(
         name="litellm",
         base_url="{base_url}",
@@ -368,6 +391,11 @@ PROVIDERS: dict[str, ProviderConfig] = {
         auth_type="api_key",
         auth_env="XIAOMI_API_KEY",
         url_params={"base_url": "XIAOMI_BASE_URL"},
+        # MiMo's token plan also serves Anthropic Messages, at
+        # ${XIAOMI_BASE_URL%/v1}/anthropic, so the claude agent runs MiMo
+        # (REPORT B11; robouse's runs use that endpoint).
+        url_param_strip_suffix={"base_url_root": ("base_url", "/v1")},
+        endpoints={"anthropic-messages": "{base_url_root}/anthropic"},
         model_prefixes=["xiaomi", "mimo"],
     ),
     "doubao-seed-2-lite": ProviderConfig(
@@ -442,7 +470,7 @@ def find_provider_for_bare_model(model: str) -> tuple[str, ProviderConfig] | Non
 
     ``find_provider`` only matches an explicit ``provider/`` prefix, so once
     ``strip_provider_prefix`` has run (ACP set_model, BENCHFLOW_PROVIDER_MODEL,
-    Harbor YAML) a bare id like ``deepseek-v4-flash`` no longer resolves and
+    job YAML) a bare id like ``deepseek-v4-flash`` no longer resolves and
     callers wrongly default it to anthropic. This consults each provider's
     declared ``model_prefixes`` (the registry owns that knowledge) so any
     registered provider routes correctly without the prefix.
@@ -507,6 +535,9 @@ def resolve_base_url(
                 f"{{{placeholder}}} in base_url, but it is not set."
             )
         replacements[placeholder] = value
+    for derived, (source, suffix) in provider.url_param_strip_suffix.items():
+        value = replacements[source].rstrip("/")
+        replacements[derived] = value.removesuffix(suffix)
     return url.format_map(replacements)
 
 
@@ -520,7 +551,7 @@ def strip_provider_prefix(model: str) -> str:
     "claude-sonnet-4-6" → "claude-sonnet-4-6"
 
     Single normalization point for downstream callers (ACP set_model,
-    BENCHFLOW_PROVIDER_MODEL env var, Harbor YAML parse). If a model ID
+    BENCHFLOW_PROVIDER_MODEL env var, job YAML parse). If a model ID
     reaches an agent launcher still prefixed, fix the routing into this
     function — do NOT strip again at the call site. See PRs #154 and #155
     for the symptomatic-patch anti-pattern that caused the original bug.

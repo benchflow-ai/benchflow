@@ -1,0 +1,49 @@
+# Mutant (e): the three verifier clean-up sites skipped (e-keep-verifier-logs
+# .patch). Predicted on DT2's forge-reward fixture, whose script agent writes
+# reward 1 into /logs/verifier/ and does not solve the task: with every clear
+# skipped the forged file is graded, so the script goes from failed 0.0 to
+# passed 1.0 in every round, while the nop beside it stays 0 (a nop above 0
+# would be an unmatched nop_above_zero and fail the proof). DT1's comparer
+# names this probe_above_nop only for probe: agents (DT2b); DT2's script:
+# agent shows it as fix and reward_change, plus the exact scoring-summary
+# transitions below. Use the matched script-capable base-e/mut-e arms and
+# DT2's writable-log fixture (DT2-F1, CONF-DT1-5).
+
+[[change]]
+id = "e-forged-reward-scores"
+target = "DT1"
+item = "mutant:e"
+cells = ["forge-reward/script:forge-reward.sh"]
+class = "fix"
+exact_fields = true
+fields = ["failed -> passed"]
+
+[[change]]
+id = "e-forged-reward-reward"
+target = "DT1"
+item = "mutant:e"
+cells = ["forge-reward/script:forge-reward.sh"]
+class = "reward_change"
+exact_fields = true
+fields = ["0.0 -> 1.0"]
+
+# Predicted from the valid nop=0 and oracle=1 controls, before accepting the
+# script-agent comparison: an identical one-trial 0 -> 1 scoring export.
+[[change]]
+id = "e-forged-reward-summary"
+target = "DT1"
+item = "mutant:e"
+cells = ["forge-reward/script:forge-reward.sh"]
+class = "summary_change"
+exact_fields = true
+fields = [
+  "mean_reward 0.0 -> 1.0",
+  'score "0.0%" -> "100.0%"',
+  'score_excl_errors "0.0%" -> "100.0%"',
+  "score_excl_errors_ratio 0.0 -> 1.0",
+  "score_ratio 0.0 -> 1.0",
+  "solve_rates.pass_at_k.1 0.0 -> 1.0",
+  "solve_rates.pass_hat_k.1 0.0 -> 1.0",
+  "solve_rates.solve_rate 0.0 -> 1.0",
+  "solve_rates.solve_rate_interval [0.0, 0.7934567085261071] -> [0.20654329147389294, 1.0]",
+]

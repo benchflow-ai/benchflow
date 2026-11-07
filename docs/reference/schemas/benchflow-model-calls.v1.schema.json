@@ -1,0 +1,304 @@
+{
+  "$id": "https://benchflow.ai/schemas/benchflow-model-calls.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "agent_effort": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "agent_retries": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "calls": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cost_usd": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "effort": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "finish_reasons": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "first_agent_tools": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "names",
+        "sha256"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "first_call_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "http_errors": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "http_status_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "input_files": {
+      "properties": {
+        "files": {
+          "items": {
+            "properties": {
+              "call": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "text",
+                  "document",
+                  "image"
+                ]
+              },
+              "path": {
+                "type": "string"
+              },
+              "reads": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "recovered": {
+                "type": "boolean"
+              },
+              "route": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stub": {
+                "type": "boolean"
+              },
+              "text_chars": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text_sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "reads",
+              "kind",
+              "text_chars",
+              "text_sha256",
+              "stub",
+              "recovered"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "reads": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stubs": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reads",
+        "stubs",
+        "files"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "last_agent_call": {
+      "additionalProperties": false,
+      "properties": {
+        "finish_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refused": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "http_status",
+        "refused",
+        "finish_reason"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "max_output_tokens": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "model_time_ms": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "models_requested": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "models_served": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "purposes": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "refused_calls": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "schema": {
+      "const": "benchflow.model-calls.v1"
+    },
+    "source": {
+      "type": [
+        "string",
+        "array",
+        "null"
+      ]
+    },
+    "sources": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "thinking": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "tokens": {
+      "additionalProperties": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "type": "object"
+    },
+    "truncated_calls": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "truncation_rate": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "upstream_attempts": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "upstream_errors": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "upstream_retries": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "calls",
+    "source",
+    "sources",
+    "tokens"
+  ],
+  "title": "A trial's model calls, totalled (model-calls.json)",
+  "type": "object"
+}

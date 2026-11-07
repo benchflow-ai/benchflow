@@ -1,0 +1,191 @@
+{
+ "note": "SPEED-FIX: Compose 2.40.3 on a build VM, docker compose -p speedfixrp -f a.yaml -f b.yaml (b.yaml = the no-restart file), config --format json / config --hash main / create through tests/_docker_api_recorder.py",
+ "printed": {
+  "name": "speedfixrp",
+  "networks": {
+   "default": {
+    "name": "speedfixrp_default",
+    "ipam": {}
+   }
+  },
+  "services": {
+   "main": {
+    "command": [
+     "sleep",
+     "1"
+    ],
+    "deploy": {
+     "resources": {},
+     "restart_policy": {
+      "condition": "none",
+      "max_attempts": 0
+     },
+     "placement": {}
+    },
+    "entrypoint": null,
+    "image": "alexgshaw/fix-git:20251031",
+    "networks": {
+     "default": null
+    },
+    "restart": "no"
+   }
+  }
+ },
+ "hash": "546b9cc758ec975b5574eca503e0a716db2d38ab621891b55540b78f3a8f5f2f",
+ "files": [
+  "/tmp/speedfix-rp/a.yaml",
+  "/tmp/speedfix-rp/b.yaml"
+ ],
+ "working_dir": "/tmp/speedfix-rp",
+ "image_id": "sha256:61e431c00c58df652287aadce5457634d9f9330cfdd153ebdf2802df0d540119",
+ "requests": {
+  "network": {
+   "Attachable": false,
+   "ConfigFrom": null,
+   "ConfigOnly": false,
+   "Driver": "",
+   "IPAM": null,
+   "Ingress": false,
+   "Internal": false,
+   "Labels": {
+    "com.docker.compose.config-hash": "3e72f161ca9a6decf3373b0086c79124eb93df27defea0801d8816b34cc8c30d",
+    "com.docker.compose.network": "default",
+    "com.docker.compose.project": "speedfixrp",
+    "com.docker.compose.version": "2.40.3"
+   },
+   "Name": "speedfixrp_default",
+   "Options": null,
+   "Scope": ""
+  },
+  "container": {
+   "AttachStderr": true,
+   "AttachStdin": false,
+   "AttachStdout": true,
+   "Cmd": [
+    "sleep",
+    "1"
+   ],
+   "Domainname": "",
+   "Entrypoint": null,
+   "Env": null,
+   "HostConfig": {
+    "AutoRemove": false,
+    "Binds": null,
+    "BlkioDeviceReadBps": null,
+    "BlkioDeviceReadIOps": null,
+    "BlkioDeviceWriteBps": null,
+    "BlkioDeviceWriteIOps": null,
+    "BlkioWeight": 0,
+    "BlkioWeightDevice": null,
+    "CapAdd": null,
+    "CapDrop": null,
+    "Cgroup": "",
+    "CgroupParent": "",
+    "CgroupnsMode": "",
+    "ConsoleSize": [
+     0,
+     0
+    ],
+    "ContainerIDFile": "",
+    "CpuCount": 0,
+    "CpuPercent": 0,
+    "CpuPeriod": 0,
+    "CpuQuota": 0,
+    "CpuRealtimePeriod": 0,
+    "CpuRealtimeRuntime": 0,
+    "CpuShares": 0,
+    "CpusetCpus": "",
+    "CpusetMems": "",
+    "DeviceCgroupRules": null,
+    "DeviceRequests": null,
+    "Devices": null,
+    "Dns": null,
+    "DnsOptions": null,
+    "DnsSearch": null,
+    "ExtraHosts": [],
+    "GroupAdd": null,
+    "IOMaximumBandwidth": 0,
+    "IOMaximumIOps": 0,
+    "IpcMode": "",
+    "Isolation": "",
+    "Links": null,
+    "LogConfig": {
+     "Config": null,
+     "Type": ""
+    },
+    "MaskedPaths": null,
+    "Memory": 0,
+    "MemoryReservation": 0,
+    "MemorySwap": 0,
+    "MemorySwappiness": null,
+    "NanoCpus": 0,
+    "NetworkMode": "speedfixrp_default",
+    "OomKillDisable": false,
+    "OomScoreAdj": 0,
+    "PidMode": "",
+    "PidsLimit": null,
+    "PortBindings": {},
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "ReadonlyPaths": null,
+    "ReadonlyRootfs": false,
+    "RestartPolicy": {
+     "MaximumRetryCount": 0,
+     "Name": "no"
+    },
+    "SecurityOpt": null,
+    "ShmSize": 0,
+    "UTSMode": "",
+    "Ulimits": null,
+    "UsernsMode": "",
+    "VolumeDriver": "",
+    "VolumesFrom": null
+   },
+   "Hostname": "",
+   "Image": "alexgshaw/fix-git:20251031",
+   "Labels": {
+    "com.docker.compose.config-hash": "546b9cc758ec975b5574eca503e0a716db2d38ab621891b55540b78f3a8f5f2f",
+    "com.docker.compose.container-number": "1",
+    "com.docker.compose.depends_on": "",
+    "com.docker.compose.image": "sha256:61e431c00c58df652287aadce5457634d9f9330cfdd153ebdf2802df0d540119",
+    "com.docker.compose.oneoff": "False",
+    "com.docker.compose.project": "speedfixrp",
+    "com.docker.compose.project.config_files": "/tmp/speedfix-rp/a.yaml,/tmp/speedfix-rp/b.yaml",
+    "com.docker.compose.project.working_dir": "/tmp/speedfix-rp",
+    "com.docker.compose.service": "main",
+    "com.docker.compose.version": "2.40.3"
+   },
+   "NetworkingConfig": {
+    "EndpointsConfig": {
+     "speedfixrp_default": {
+      "Aliases": [
+       "speedfixrp-main-1",
+       "main"
+      ],
+      "DNSNames": null,
+      "DriverOpts": null,
+      "EndpointID": "",
+      "Gateway": "",
+      "GlobalIPv6Address": "",
+      "GlobalIPv6PrefixLen": 0,
+      "GwPriority": 0,
+      "IPAMConfig": null,
+      "IPAddress": "",
+      "IPPrefixLen": 0,
+      "IPv6Gateway": "",
+      "Links": null,
+      "MacAddress": "",
+      "NetworkID": ""
+     }
+    }
+   },
+   "OnBuild": null,
+   "OpenStdin": false,
+   "StdinOnce": false,
+   "Tty": false,
+   "User": "",
+   "Volumes": null,
+   "WorkingDir": ""
+  }
+ }
+}

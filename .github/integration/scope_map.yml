@@ -106,8 +106,6 @@ roster:
 affected_agent_map:
   - glob: "src/benchflow/agents/codex_config.py"
     agent: codex-acp
-  - glob: "src/benchflow/agents/openclaw_acp_shim.py"
-    agent: openclaw
   - glob: "src/benchflow/agents/pi_acp_launcher.py"
     agent: pi-acp
   # Generic per-agent source files: src/benchflow/agents/<name>*.py where <name>

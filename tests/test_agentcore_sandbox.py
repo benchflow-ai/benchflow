@@ -32,6 +32,7 @@ import pytest
 from benchflow.sandbox.agentcore import AgentCoreSandbox
 from benchflow.sandbox.protocol import SandboxStartupError
 from benchflow.task.config import SandboxConfig
+from tests._trust_admission import admitted
 
 
 def _stream(*, stdout="", stderr="", exit_code=0, status="COMPLETED"):
@@ -107,14 +108,37 @@ class TestExecSemantics:
 
     @pytest.mark.asyncio
     async def test_command_is_wrapped_for_bash(self, sandbox):
-        """AgentCore does not run a shell for you; commands need bash -c."""
+        """AgentCore does not run a shell for you; commands need bash -c.
+
+        Both bashes start without the image's BASH_ENV, named
+        by absolute path, and the command gets the image's value back.
+        """
+        from benchflow.sandbox._base import (
+            HIDE_BASH_ENV,
+            RESTORE_BASH_ENV,
+            restore_image_env,
+        )
+        from benchflow.sandbox._task_route import as_task_command
+
         client = MagicMock()
         client.invoke_agent_runtime_command.return_value = _stream()
-        with patch.object(sandbox, "_client", return_value=client):
+        # The task's own command (C8's task route): it also gets the loader
+        # values the image keeps aside (agentcore_image) back.
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            as_task_command(sandbox),
+        ):
             await sandbox.exec("echo hi")
 
         body = client.invoke_agent_runtime_command.call_args.kwargs["body"]
-        assert body["command"].startswith("/bin/bash -c ")
+        assert shlex.split(body["command"]) == [
+            "/bin/bash",
+            "--posix",
+            "-c",
+            f'exec {HIDE_BASH_ENV} /bin/bash -c "$1"',
+            "/bin/bash",
+            RESTORE_BASH_ENV + restore_image_env() + "echo hi",
+        ]
 
     @pytest.mark.asyncio
     async def test_timeout_is_clamped_to_service_range(self, sandbox):
@@ -269,6 +293,217 @@ def _seeded_seal_keypair(sandbox):
 
 class TestFileTransfer:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent", ["deepagents", "harvey-lab-harness"])
+    @pytest.mark.parametrize("install_exit", [0, 42])
+    async def test_python_agent_install_fits_the_wrapped_command_limit(
+        self, sandbox, tmp_path, agent, install_exit
+    ):
+        """Guards fix 60fd1b17 (U4-CONF-1) on the registry's install: since PT
+        round 12 the hashed lock travels as a file (sealed upload chunks), its
+        recipe in the installer replaced by a check that the file is there.
+        FF-install's recipe is still over the inline limit, so the installer
+        is staged in root's folder (FF-install-C12). Every API body stays
+        under the limit and the installer's exit status is the install's."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENTS
+        from benchflow.models import AgentInstallError
+
+        (lock,) = AGENTS[agent].requirements_files
+        _seeded_seal_keypair(sandbox)
+        client = MagicMock()
+        payloads = []
+        uploads = []
+        upload = sandbox.upload_file
+
+        async def record_upload(source, target, **kwargs):
+            uploads.append((target, source.read_text()))
+            await upload(source, target, **kwargs)
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            payloads.append(payload)
+            # Check the final API body, after the real backend's quoting.
+            assert len(payload) <= 65_536
+            if "mktemp -d " in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
+                return _stream(
+                    stdout="installer stdout",
+                    stderr="installer stderr",
+                    exit_code=install_exit,
+                )
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(sandbox, "upload_file", side_effect=record_upload),
+        ):
+            if install_exit:
+                with pytest.raises(AgentInstallError) as exc:
+                    await install_agent(sandbox, agent, tmp_path / "rollout")
+                assert exc.value.return_code == install_exit
+            else:
+                assert (
+                    await install_agent(sandbox, agent, tmp_path / "rollout")
+                    is AGENTS[agent]
+                )
+
+        # The lock's exact bytes, to its path, then the staged installer.
+        assert [target for target, _ in uploads] == [
+            lock.path,
+            "/opt/runtime/agent-install/install.ABC123xyz0/install.sh",
+        ]
+        assert uploads[0][1] == lock.content
+        installer = uploads[1][1]
+        assert "--require-hashes" in installer
+        assert f"test -f {lock.path}" in installer
+        assert lock.lines[0] not in installer
+        # The upload made root's (links not followed) and the agents folder
+        # checked again, before the installer runs.
+        owned = [
+            i for i, p in enumerate(payloads) if f"chown -h 0:0 -- {lock.path}" in p
+        ]
+        launch = next(
+            i for i, p in enumerate(payloads) if "bash /opt/runtime/agent-install/" in p
+        )
+        assert owned and owned[0] < launch
+        assert "/opt/runtime/agents" in payloads[owned[0]]
+        assert len(payloads) > 3  # Real sealed transfer, rather than one giant exec.
+        log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
+        assert "installer stdout" in log and "installer stderr" in log
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("install_exit", [0, 42])
+    async def test_an_installer_too_large_for_one_command_is_staged(
+        self, sandbox, tmp_path, install_exit
+    ):
+        """Guards fix 60fd1b17 (U4-CONF-1): an installer over the inline limit
+        (an install override) is uploaded and run from a fresh staging
+        folder, which is removed; its exit status is the install's."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENT_INSTALLERS
+        from benchflow.models import AgentInstallError
+
+        script = "echo staged-installer\n" + ": " + "x" * 60_000 + "\n"
+        _seeded_seal_keypair(sandbox)
+        client = MagicMock()
+        payloads = []
+        scripts = []
+        upload = sandbox.upload_file
+
+        async def record_upload(source, target, **kwargs):
+            scripts.append(source.read_text())
+            await upload(source, target, **kwargs)
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            payloads.append(payload)
+            assert len(payload) <= 65_536
+            if "mktemp -d " in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
+                return _stream(
+                    stdout="installer stdout",
+                    stderr="installer stderr",
+                    exit_code=install_exit,
+                )
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.dict(AGENT_INSTALLERS, {"deepagents": script}),
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(sandbox, "upload_file", side_effect=record_upload),
+        ):
+            if install_exit:
+                with pytest.raises(AgentInstallError) as exc:
+                    await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+                assert exc.value.return_code == install_exit
+            else:
+                await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+
+        # An override is the operator's own: run as written, no lock swapped in.
+        assert scripts == [script]
+        assert len(payloads) > 3
+        assert any(
+            "rmdir -- /opt/runtime/agent-install/install." in p for p in payloads
+        )
+        log = (tmp_path / "rollout/agent/install-stdout.txt").read_text()
+        assert "installer stdout" in log and "installer stderr" in log
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["upload", "exec"])
+    async def test_failed_staged_installer_cleans_up_without_hiding_the_error(
+        self, sandbox, tmp_path, failure
+    ):
+        """Guards fix 60fd1b17: failed staging cannot launch an old installer.
+        Run on an installer that is staged (over the inline limit)."""
+        from benchflow.agents.install import install_agent
+        from benchflow.agents.registry import AGENT_INSTALLERS
+
+        script = "echo staged-installer\n" + ": " + "x" * 60_000 + "\n"
+        client = MagicMock()
+        commands = []
+
+        def invoke(**kwargs):
+            payload = kwargs["body"]["command"]
+            commands.append(payload)
+            if "mktemp -d " in payload:
+                return _stream(stdout="/opt/runtime/agent-install/install.ABC123xyz0\n")
+            if "bash /opt/runtime/agent-install/install." in payload:
+                raise TimeoutError("installer timed out")
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.dict(AGENT_INSTALLERS, {"deepagents": script}),
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(
+                sandbox,
+                "upload_file",
+                side_effect=RuntimeError("upload failed")
+                if failure == "upload"
+                else None,
+            ),
+            pytest.raises(
+                (RuntimeError, TimeoutError), match=r"upload failed|installer timed out"
+            ),
+        ):
+            await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+        assert any(
+            "rmdir -- /opt/runtime/agent-install/install." in c for c in commands
+        )
+        launches = [
+            c for c in commands if "bash /opt/runtime/agent-install/install." in c
+        ]
+        assert len(launches) == (0 if failure == "upload" else 1)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lock_upload_launches_no_installer(self, sandbox, tmp_path):
+        """The registry's lock goes first: if it cannot be uploaded, the
+        error is the install's and no installer runs without its lock."""
+        from benchflow.agents.install import install_agent
+
+        client = MagicMock()
+        commands = []
+
+        def invoke(**kwargs):
+            commands.append(kwargs["body"]["command"])
+            return _stream()
+
+        client.invoke_agent_runtime_command.side_effect = invoke
+        with (
+            patch.object(sandbox, "_client", return_value=client),
+            patch.object(
+                sandbox, "upload_file", side_effect=RuntimeError("upload failed")
+            ),
+            pytest.raises(RuntimeError, match="upload failed"),
+        ):
+            await install_agent(sandbox, "deepagents", tmp_path / "rollout")
+        assert not any("--require-hashes" in c for c in commands)
+
+    @pytest.mark.asyncio
     async def test_upload_dir_ships_one_archive_not_one_command_per_file(
         self, sandbox, tmp_path
     ):
@@ -290,7 +525,7 @@ class TestFileTransfer:
             patch.object(sandbox, "exec", side_effect=_record),
             patch.object(sandbox._sealed, "_exec_raw", side_effect=_record),
         ):
-            await sandbox.upload_dir(source, "/workspace")
+            await sandbox.upload_dir(source, "/workspace", admission=admitted(sandbox))
 
         # mkdir + sealed chunk(s) + one decrypt-and-extract, not 13 uploads
         # (PR #942 moved transfers to the sealed transport).
@@ -343,7 +578,7 @@ class TestFileTransfer:
             patch.object(sandbox, "exec", side_effect=_exec),
             patch.object(sandbox._sealed, "upload", side_effect=_capture),
         ):
-            await sandbox.upload_dir(source, "/workspace")
+            await sandbox.upload_dir(source, "/workspace", admission=admitted(sandbox))
 
         # The archive is inspected pre-seal: link exclusion happens while the
         # tar is built; sealed-command confidentiality is covered separately
@@ -530,6 +765,107 @@ class TestCapabilityGating:
         )
 
 
+class TestNetworkConfiguration:
+    """Opting a runtime out of the public internet.
+
+    ``networkMode`` accepts ``PUBLIC`` or ``VPC``. Every runtime was
+    registered ``PUBLIC``, so an agent under test was reachable from the
+    internet with no way to opt out. These pin the opt-in and, more
+    importantly, the ways it can fail open.
+    """
+
+    _MODE = "BENCHFLOW_AGENTCORE_NETWORK_MODE"
+    _SUBNETS = "BENCHFLOW_AGENTCORE_SUBNETS"
+    _SECURITY_GROUPS = "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"
+
+    def _vpc_env(self, monkeypatch):
+        monkeypatch.setenv(self._MODE, "VPC")
+        monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890")
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+    def test_the_default_is_public(self, sandbox, monkeypatch):
+        """Unset must stay unchanged, or every existing deployment moves."""
+        for name in (self._MODE, self._SUBNETS, self._SECURITY_GROUPS):
+            monkeypatch.delenv(name, raising=False)
+
+        assert sandbox._network_configuration() == {"networkMode": "PUBLIC"}
+
+    def test_vpc_mode_carries_the_subnets_and_security_groups(
+        self, sandbox, monkeypatch
+    ):
+        """The runtime shape nests these under ``networkModeConfig``.
+
+        Browsers and code interpreters take the same ``VpcConfig`` under
+        ``vpcConfig`` instead; sending that key here is a ValidationException.
+        The ids come back sorted and deduplicated because this list feeds the
+        runtime contract digest: "a,b" and "b,a" must not register two runtimes
+        for the same infrastructure.
+        """
+        monkeypatch.setenv(self._MODE, "VPC")
+        monkeypatch.setenv(
+            self._SUBNETS,
+            "subnet-0a1b2c3d4e5f67890, subnet-01234567, subnet-01234567",
+        )
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+        assert sandbox._network_configuration() == {
+            "networkMode": "VPC",
+            "networkModeConfig": {
+                "subnets": ["subnet-01234567", "subnet-0a1b2c3d4e5f67890"],
+                "securityGroups": ["sg-0a1b2c3d4e5f67890"],
+            },
+        }
+
+    @pytest.mark.parametrize(
+        "missing",
+        ["BENCHFLOW_AGENTCORE_SUBNETS", "BENCHFLOW_AGENTCORE_SECURITY_GROUPS"],
+    )
+    def test_vpc_mode_requires_both_lists(self, sandbox, monkeypatch, missing):
+        """VPC with only half the config is rejected by the service."""
+        self._vpc_env(monkeypatch)
+        monkeypatch.delenv(missing)
+
+        with pytest.raises(ValueError, match=missing):
+            sandbox._network_configuration()
+
+    def test_vpc_resources_without_vpc_mode_are_refused(self, sandbox, monkeypatch):
+        """Ignoring them would leave the runtime on the public internet.
+
+        The operator who sets subnets but forgets the mode believes the agent
+        is isolated. Failing open there is the whole bug this guards.
+
+        Guards PR #1082.
+        """
+        monkeypatch.delenv(self._MODE, raising=False)
+        monkeypatch.setenv(self._SUBNETS, "subnet-0a1b2c3d4e5f67890")
+        monkeypatch.setenv(self._SECURITY_GROUPS, "sg-0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match=self._MODE):
+            sandbox._network_configuration()
+
+    def test_an_unknown_mode_is_refused(self, sandbox, monkeypatch):
+        """``no-network`` reads as isolation but is not a mode the service has."""
+        monkeypatch.setenv(self._MODE, "ISOLATED")
+
+        with pytest.raises(ValueError, match="PUBLIC"):
+            sandbox._network_configuration()
+
+    def test_a_malformed_subnet_id_is_refused(self, sandbox, monkeypatch):
+        """Otherwise a pasted VPC id surfaces as an opaque ValidationException."""
+        self._vpc_env(monkeypatch)
+        monkeypatch.setenv(self._SUBNETS, "vpc-0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match="subnet-"):
+            sandbox._network_configuration()
+
+    def test_a_malformed_security_group_id_is_refused(self, sandbox, monkeypatch):
+        self._vpc_env(monkeypatch)
+        monkeypatch.setenv(self._SECURITY_GROUPS, "0a1b2c3d4e5f67890")
+
+        with pytest.raises(ValueError, match="sg-"):
+            sandbox._network_configuration()
+
+
 @pytest.mark.skipif(
     os.environ.get("BENCHFLOW_AGENTCORE_LIVE_TEST") != "1",
     reason="live AWS test; set BENCHFLOW_AGENTCORE_LIVE_TEST=1 to run",
@@ -567,7 +903,7 @@ async def test_real_agentcore_lifecycle(tmp_path):
         payload = tmp_path / "payload"
         payload.mkdir()
         (payload / "hello.txt").write_text("from-host")
-        await env.upload_dir(payload, "/workspace/payload")
+        await env.upload_dir(payload, "/workspace/payload", admission=admitted(env))
         echoed = await env.exec("cat /workspace/payload/hello.txt")
         assert (echoed.stdout or "").strip() == "from-host"
 

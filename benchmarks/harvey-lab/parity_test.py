@@ -56,7 +56,9 @@ SUBSET_TASK_IDS = [
     "employment-labor/draft-workplace-policy-memorandum",
 ]
 
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+# The recorded parity ran on gemini-3.1-flash-lite-preview, which Google shut
+# down on 2026-05-25; a rerun uses the current Flash-Lite.
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
 def _run_converter(

@@ -8,7 +8,13 @@ import pytest
 
 from benchflow.agents.install import effective_install_timeout, install_agent
 from benchflow.agents.registry import AGENT_INSTALLERS, AGENTS
-from benchflow.rollout import Rollout, RolloutConfig, _write_config
+from benchflow.rollout import (
+    Role,
+    Rollout,
+    RolloutConfig,
+    Scene,
+    _write_config,
+)
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_WITH_SKILL,
@@ -38,6 +44,9 @@ def _make_trial(
     trial._rollout_dir.mkdir()
     trial._rollout_paths = MagicMock()
     trial._task = MagicMock()
+    # FIX-49 r4: this unnamed-runner fake has a readable tests folder.
+    trial._task.task_dir = tmp_path / "task"
+    (trial._task.task_dir / "tests").mkdir(parents=True)
     trial._effective_locked = []
     return trial
 
@@ -88,6 +97,9 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     assert args[1] == "agent"
     assert kwargs["timeout_sec"] == 41
     assert kwargs["workspace"] == "/workspace"
+    # The oracle runs nothing as the sandbox user, so it needs no
+    # sandbox-daemon guard; a model agent keeps it.
+    assert kwargs.get("guard_daemon", True) is (agent != "oracle")
 
     if agent == "oracle":
         install_agent_mock.assert_not_awaited()
@@ -97,7 +109,8 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     else:
         install_agent_mock.assert_awaited_once()
         assert install_agent_mock.await_args.kwargs["sandbox_setup_timeout"] == 41
-        write_credential_files_mock.assert_awaited_once()
+        # Credentials are staged per connection, not at install (C23).
+        write_credential_files_mock.assert_not_awaited()
         deploy_skills_mock.assert_awaited_once()
         assert trial._agent_cwd == "/home/agent"
 
@@ -108,7 +121,10 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
 
 @pytest.mark.asyncio
 async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
-    """Guards #588: skip_install skips installer but keeps setup/credentials."""
+    """Guards #588: skip_install skips the installer but keeps setup.
+
+    Credentials are staged per connection (connect/connect_as), not here.
+    """
     trial = _make_trial(
         tmp_path,
         agent="claude-agent-acp",
@@ -137,8 +153,7 @@ async def test_install_agent_honors_skip_agent_install(tmp_path, monkeypatch):
 
     install_agent_mock.assert_not_awaited()
     setup_sandbox_user_mock.assert_awaited_once()
-    write_credential_files_mock.assert_awaited_once()
-    assert write_credential_files_mock.await_args.args[3] is None
+    write_credential_files_mock.assert_not_awaited()
     deploy_skills_mock.assert_awaited_once()
     assert trial._agent_cfg is None
     assert trial._agent_cwd == "/home/agent"
@@ -197,9 +212,9 @@ async def test_install_agent_passes_effective_task_path_to_deploy_skills(
 
 
 @pytest.mark.asyncio
-async def test_install_agent_applies_web_policy_after_sandbox_setup(
-    tmp_path, monkeypatch
-):
+async def test_install_agent_leaves_web_policy_to_the_connection(tmp_path, monkeypatch):
+    """The web-tool setup may edit a credential-backed config, so it runs per
+    connection after the credentials are written (C30), never at install."""
     trial = _make_trial(tmp_path, agent="openhands", sandbox_setup_timeout=41)
     trial._disallow_web_tools = True
 
@@ -233,7 +248,78 @@ async def test_install_agent_applies_web_policy_after_sandbox_setup(
 
     await trial.install_agent()
 
-    assert order == ["sandbox", "credentials", "web-policy"]
+    # Neither credentials (C23) nor the web-tool setup (C30) run at install.
+    assert order == ["sandbox"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scene_roles", "skip_agent_install", "expected_agents"),
+    [
+        ([[("solver", "codex-acp")]], False, ["codex-acp"]),
+        ([[("solver", "claude-agent-acp")]], True, ["claude-agent-acp"]),
+        (
+            [[("coder", "codex-acp")], [("reviewer", "claude-agent-acp")]],
+            False,
+            ["codex-acp", "claude-agent-acp"],
+        ),
+        (
+            [[("reference", "oracle"), ("solver", "codex-acp")]],
+            False,
+            ["oracle", "codex-acp"],
+        ),
+    ],
+    ids=["one-agent", "skip-install", "two-scenes", "scripted-primary"],
+)
+async def test_install_agent_scopes_sandbox_home_to_rollout_agents(
+    tmp_path, monkeypatch, scene_roles, skip_agent_install, expected_agents
+):
+    """Guards the fix from PR #1163 against copying every agent's home dirs
+    into one sandbox. The sandbox user's home is prepared once, before later
+    roles connect, so the scope covers the agent of every role in every scene,
+    on the agent and the scripted-primary paths, and does not depend on the
+    installer having run."""
+    trial = _make_trial(tmp_path, agent="openhands", sandbox_setup_timeout=41)
+    trial._config = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[
+            Scene(roles=[Role(name=name, agent=agent) for name, agent in roles])
+            for roles in scene_roles
+        ],
+        sandbox_user="agent",
+        skip_agent_install=skip_agent_install,
+        codex_apps_policy="inherit",
+    )
+    setup = AsyncMock(return_value="/home/agent")
+    for plane in (
+        "install_agent",
+        "write_credential_files",
+        "upload_subscription_auth",
+        "apply_web_tool_policy",
+        "snapshot_build_config",
+        "seed_verifier_workspace",
+        "deploy_skills",
+        "lockdown_paths",
+    ):
+        monkeypatch.setattr(trial._planes, plane, AsyncMock())
+    monkeypatch.setattr(trial._planes, "setup_sandbox_user", setup)
+
+    await trial.install_agent()
+
+    setup.assert_awaited_once()
+    assert setup.await_args.kwargs["agents"] == expected_agents
+
+
+def test_role_agents_name_an_agent_given_with_arguments_by_its_first_word(tmp_path):
+    """Guards the port of PR #1163: an agent spec with arguments installs as
+    the registered agent its first word names, so its home dirs must follow."""
+    from benchflow.rollout import _role_agents
+
+    cfg = RolloutConfig(
+        task_path=tmp_path / "task",
+        scenes=[Scene(roles=[Role(name="solver", agent="codex-acp --profile x")])],
+    )
+    assert _role_agents(cfg) == ["codex-acp"]
 
 
 def _write_config_for(tmp_path, *, agent: str, sandbox_setup_timeout: int) -> dict:

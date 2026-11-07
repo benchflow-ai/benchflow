@@ -22,22 +22,14 @@ from benchflow.skill_policy import SKILL_MODE_SELF_GEN
 
 def _bare_rollout(tmp_path: Path, export_target: Path | None) -> Rollout:
     """Construct a Rollout skeleton with just enough state to drive cleanup()."""
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        export_generated_skills_to=export_target,
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            export_generated_skills_to=export_target,
+        )
     )
-    rollout._trajectory = []
-    rollout._acp_client = None
-    rollout._agent_launch = ""
     rollout._env = SimpleNamespace()
-    rollout._environment = None
-    rollout._usage_runtime = None
-    rollout._provider_runtime = None
     rollout._rollout_dir = tmp_path
-    rollout._evolved_skills = None
-    rollout._error = None
-    rollout._export_error = None
     # Stub the bits cleanup() touches but we don't care about for this test.
     rollout.disconnect = AsyncMock()
     rollout._capture_partial_acp_trajectory = lambda: None

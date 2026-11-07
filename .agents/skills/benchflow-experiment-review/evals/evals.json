@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "Use the benchflow-experiment-review skill to audit evals/files/clean-pass as a completed Benchflow trial. Return a concise verdict plus the evidence that makes the trial healthy or unhealthy.",
-      "expected_output": "The review classifies the fixture as publishable/healthy pass and cites complete trajectory, timing, token usage, verifier result, and with-skill catalog evidence.",
+      "expected_output": "The review supports the fixture's evaluation pass and cites trajectory, timing, token usage, verifier and skill evidence. It does not certify training readiness: this legacy fixture supplies no results.jsonl export or exact installed-source binding.",
       "files": [
         "evals/files/clean-pass/run_config.json",
         "evals/files/clean-pass/result.json",
@@ -12,7 +12,7 @@
         "evals/files/clean-pass/trajectory/acp_trajectory.jsonl"
       ],
       "expectations": [
-        "Verdict is publishable or healthy pass.",
+        "Verdict supports the evaluation pass with explicit limits; it does not certify training readiness or the whole release.",
         "Output mentions complete timing and token usage metadata.",
         "Output mentions the OpenHands startup skill catalog or invoke_skill availability.",
         "Output reports task_skills_loading=1 or otherwise states the expected task skill was loaded.",
@@ -76,17 +76,32 @@
     {
       "id": 5,
       "prompt": "Use the benchflow-experiment-review skill to audit evals/files/missing-llm-trajectory as a completed Benchflow trial. Return a concise verdict plus the evidence that makes the trial healthy or unhealthy.",
-      "expected_output": "The review rejects the fixture as unhealthy, even though result.json has reward and token_usage, because trajectory/llm_trajectory.jsonl is missing. It cites the hard trajectory contract requiring both ACP and LLM trajectories.",
+      "expected_output": "The review identifies the missing provider trajectory as an observability and structured-training blocker. It does not infer complete model evidence from ACP or aggregate tokens, and does not invent a version-specific evaluation contract to certify the score.",
       "files": [
         "evals/files/missing-llm-trajectory/run_config.json",
         "evals/files/missing-llm-trajectory/result.json",
         "evals/files/missing-llm-trajectory/trajectory/acp_trajectory.jsonl"
       ],
       "expectations": [
-        "Verdict is not publishable, unhealthy, or quarantined.",
-        "Output says missing trajectory/llm_trajectory.jsonl is a hard blocker.",
+        "Verdict rejects publication as a complete structured trajectory or training-ready example; evaluation validity is separately qualified.",
+        "Output says missing trajectory/llm_trajectory.jsonl blocks required provider evidence and training readiness.",
         "Output does not treat ACP trajectory alone as sufficient.",
-        "Output cites the hard requirement for both ACP and LLM trajectories."
+        "Output preserves both trajectory requirements for the structured training contract and states the missing tested-version binding."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Use the skill to answer each request in evals/files/evidence-claims/scenarios.json. Treat these as synthetic read-only evidence reviews; do not execute project code or start new runs.",
+      "expected_output": "The reviewer separates evaluation validity from export failure; computes paired overhead 5 seconds from two pairs and teardown 3 seconds from one pair; reports separate partial native and dated-rate cost subtotals without claiming billed spend; and distinguishes epoch clocks, schedule length, workers, processes and sandboxes.",
+      "files": ["evals/files/evidence-claims/scenarios.json"],
+      "expectations": [
+        "Evaluation pass remains supported while unsupported_custom_tool keeps training readiness false and validator exit 1 is preserved.",
+        "Timing uses two matched overhead pairs, with median difference 5 seconds; it rejects the unmatched marginal-median claim of 30 seconds.",
+        "Teardown uses one pair and a 3-second difference; missing phases and excluded tasks remain explicit.",
+        "Accounting excludes the old run, deduplicates the proven retransmission, reports 120 input and 15 output tokens, and qualifies missing final-flush evidence.",
+        "Native known subtotal 0.20 USD and dated-rate subtotal 0.02 USD remain separate partial estimates; complete cost and billed spend remain unknown.",
+        "time.time_ns is identified as epoch time, and 60 scheduled jobs are distinguished from 40 workers, 39 processes and 37 live sandboxes.",
+        "Different load and placement without a matched comparison do not establish a speedup."
       ]
     }
   ]

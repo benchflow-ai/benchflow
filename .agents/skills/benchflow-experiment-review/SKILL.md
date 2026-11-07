@@ -1,302 +1,201 @@
 ---
 name: benchflow-experiment-review
-description: Review Benchflow or SkillsBench task-run trajectories and integration-test Benchflow code changes. Use this skill whenever the user asks to audit traj health, failed or timed-out runs, healthy pass/fail/timeout status, no-skill leakage, skill loading, reward hacking, verifier isolation, metadata completeness, token usage, timing, Daytona-vs-Docker parity, path/root handling, coverage gaps, Docker/Daytona failures, or release-readiness of benchmark data.
+description: Audit completed BenchFlow or SkillsBench trials, benchmark measurements, usage/cost evidence, and training exports against their tested versions and declared contracts. Use for run reliability, reward integrity, timing comparisons (speed or A/B comparisons between builds or frameworks), changes to sandbox setup, hardening, grading or teardown code, or targeted integration validation.
 ---
 
-# Benchflow Experiment Review
+# BenchFlow Experiment Review
 
-Use this skill to decide whether a Benchflow run trial is clean enough to
-publish or whether a Benchflow code change is safe to use for new experiments.
-The standard is: a clean sandbox with only task-needed resources, every agent
-behavior logged, no verifier leakage, and a final score or healthy failure.
+Determine which claims the evidence supports. Separate valid evaluation results,
+complete observability, comparable measurements, and training readiness. A
+passing reward alone establishes none of the other three.
 
-## Portability
+## Establish the contract
 
-This skill is intentionally harness-portable. Install or copy the entire
-`benchflow-experiment-review/` directory into the active harness's skill root,
-keeping `SKILL.md`, `scripts/`, `references/`, `evals/`, and optional
-`agents/` metadata together. Use the same review procedure regardless of
-whether the harness loads skills from `.claude/skills`, `.codex/skills`,
-OpenHands/Gemini/pi-agent skill roots, or another compatible `SKILL.md`
-directory.
+Record the review purpose, intended task matrix, source commit, installed package
+or binary hash, agent/version, requested and observed model, model route, backend,
+task/image identities, configuration, and authoritative output roots. Use the
+tested version's schema and behavior. A current README, historical skill, or
+successful test on another build is not proof of the measured build's behavior.
 
-## Operating Rule
+| Claim | Required evidence |
+| --- | --- |
+| Evaluation validity | Authentic task attempt, trustworthy verifier outcome or documented scored timeout, task/result identity, and integrity of grading inputs. |
+| Observability | Native agent/tool events, supported provider request/response and usage capture, terminal metadata, and explicit missing or unsupported fields. |
+| Timing or cost comparison | Comparable boundaries/routes, complete evidence for that metric, intended/admitted denominators, and retained exclusions. |
+| Training readiness | Complete structured trajectories and a valid export under the exact exporter/trainer contract. |
 
-Do not accept aggregate counts alone. Enumerate the intended matrix by
-`task_id`, harness, model, skill mode, trial id, sandbox type, run root, and
-source/ref. Mark each slot as healthy, missing, duplicate, stale, or unhealthy.
+An evaluation-only result may be usable with observability limitations; do not
+label it a fully healthy trajectory or training-ready. Missing training export
+does not itself prove a verifier result false. Missing evidence required by the
+declared evaluation contract still blocks that evaluation claim.
 
-Healthy run outcomes are:
+For timing or usage/cost investigations, read
+[measurement-evidence.md](references/measurement-evidence.md). Do not silently
+turn a timing question into training-data certification or a new paid campaign.
 
-- `pass`: agent completed and verifier produced a valid score.
-- `fail`: agent completed incorrectly and verifier produced a valid score.
-- `normal_timeout`: agent genuinely ran, timed out, and still produced a
-  complete ACP trajectory, complete LLM trajectory, and reward/scoring metadata.
+## Preserve the intended matrix
 
-Infrastructure failures are not healthy failures. A stalled Docker daemon,
-Daytona transport failure, missing `trajectory/acp_trajectory.jsonl`, missing
-`trajectory/llm_trajectory.jsonl`, malformed or empty trajectory files, missing
-reward, missing timing, missing token usage for new data, or verifier crash is
-unhealthy until rerun or explicitly quarantined.
+Enumerate slots by task, harness, observed model, skill mode, attempt identity,
+backend, run root, and source/configuration. Distinguish planned, launched,
+completed, scored, failed, missing, duplicated, and excluded slots.
 
-## Hard Trajectory Gate
+- Preserve initial failures and administrative interventions. A rerun gets a
+  new identity and a relationship to its predecessor.
+- A parser correction is a new derived artifact: retain the original, bind the
+  corrected rows to raw evidence, and explain changes. It is not a new trial.
+- Reused trial labels require independent run identity, time window and source
+  binding. Do not merge events across runs by label alone.
+- Separate oracle/nop controls, fixed-response replay and real-model trials.
+  Replay does not establish live solve rates. A harness comparison needs
+  comparable agent, model route, task semantics, resources and policies.
+- Improvements on another build/configuration do not replace older release
+  evidence. Report them as a separate comparison.
 
-For every current BenchFlow model trial, both trajectory files plus the
-trainer-facing rollout row are mandatory:
+## Inspect the attempt
 
-- `trajectory/acp_trajectory.jsonl`: ACP/tool trace with agent-side events.
-- `trajectory/llm_trajectory.jsonl`: provider LLM request/response trace with
-  token usage evidence.
-- `results.jsonl`: Verifiers / Prime-RL-shaped rollout row derived from the
-  healthy LLM trajectory.
+Locate native configuration, agent/provider traces, tool events, terminal status,
+verifier output, reward, timing, usage and lifecycle records. Read their contents
+and join identities; file existence and aggregate counts are insufficient.
 
-Do not treat ACP alone as sufficient. Do not treat `llm_trajectory.jsonl` alone
-as sufficient. Do not treat aggregate `result.json` fields as a substitute for
-either trajectory or `results.jsonl`. A trial with a scored reward, token
-counts, or a plausible final answer is still unhealthy if either required
-trajectory file or `results.jsonl` is missing, empty, truncated, unparsable, or
-usage-only without recoverable request/response evidence.
+Classify outcomes separately from evidence quality:
 
-One explicit evidence-only exception exists for native ACP subscription auth,
-where provider HTTP capture is unavailable by construction. With
-`--allow-native-subscription-without-llm`, the validator may accept a missing
-LLM trajectory only when `agent_result.usage_source == "agent_native_acp"`, ACP
-events and native token usage are healthy, timing and reward are complete, and
-`results.jsonl` marks the rollout completed but not training-ready with reason
-`missing_healthy_structured_llm_trajectory`. This exception never creates
-training data, never accepts an empty/malformed present LLM trajectory, and is
-off by default.
+- **pass / fail:** a valid verifier graded the completed task state.
+- **scored timeout:** the agent hit its declared limit and a valid verifier
+  graded that state; retain the timeout and inspect terminal capture.
+- **unscored / infrastructure failure:** no trustworthy grade, including failed
+  startup, unavailable inputs, auth/provider/transport errors, disk exhaustion
+  or verifier failure. Never substitute reward zero.
 
-`results.jsonl` must be reviewed as a training artifact, not just a sidecar. For
-a healthy model rollout it should contain a parseable row with
-`info.training_ready == true`, non-empty `prompt`, `completion`, and
-`trajectory`, positive token usage, reward/score metadata, task identity, and
-valid OpenAI-compatible message roles. Token usage may be split into
-input/output fields or represented by a provider `total_tokens` value when the
-provider does not expose a split. If assistant `tool_calls` appear, the row must
-carry non-empty `tool_defs` or `tools`. Errored, verifier-failed, partial,
-malformed, or missing-LLM rollouts must fail closed with
-`training_ready == false` and an error/training-ready reason instead of being
-accepted as SFT-ready.
+Before attributing a failure to capability, verify inputs, credentials, skills,
+paths, network policy, image resources and actual execution. Security defaults
+can conflict with tasks requiring privileges or persistent services. Record the
+incompatibility; do not weaken isolation just to recover a score. Validate an
+explicitly chosen compatibility mode separately.
 
-Run the bundled validator before deeper manual review:
+For a changed subsystem, choose representative real-model canaries for relevant
+supported routes/backends after focused checks. A fake model, oracle or API
+probe does not exercise the complete agent lifecycle. Do not require paid runs
+for every documentation or read-only review. Use existing authorized accounts,
+budgets and builders; this skill grants no new permissions. Record effective
+effort/model settings rather than trusting requested labels.
+
+## Training-export gate
+
+For versions using BenchFlow's structured export contract, inspect:
+
+- `trajectory/acp_trajectory.jsonl`: meaningful agent/tool events;
+- `trajectory/llm_trajectory.jsonl`: complete recoverable provider request and
+  response evidence with usage;
+- rollout `results.jsonl`: task/score/export identity, valid roles, non-empty
+  prompt/completion/trajectory, tokens, and tool definitions when used.
+
+Require the exact exporter/trainer schema. Errored, incomplete, unsupported-tool,
+malformed or missing-provider-trace rollouts remain `training_ready=false` with
+their reason. A valid evaluation can correctly be non-training-ready. Never
+remove a reason to make a gate green. Export success does not prove trainer
+consumption or a learning improvement.
+
+The bundled `scripts/validate_run_artifacts.py` implements a **strict structured
+training-artifact contract**, not every historical layout or evaluation purpose.
+Use it for compatible artifacts on an approved executor:
 
 ```bash
-python .agents/skills/benchflow-experiment-review/scripts/validate_run_artifacts.py /path/to/rollout-or-jobs-root --json
+python .agents/skills/benchflow-experiment-review/scripts/validate_run_artifacts.py /path/to/run --json
 ```
 
-The validator exits non-zero when any rollout is unhealthy. It is a deterministic
-fast path, not the whole audit: after it passes, continue with skill-loading,
-no-skill leakage, verifier-isolation, reward-hacking, and capability-attribution
-checks below. Oracle/reward-only lanes do not produce model LLM trajectories and
-must not be mixed into model-run publishability counts; if reviewed, report them
-as separate non-model evidence.
+Record its revision, command, exit and per-artifact findings. A missing or
+deliberately non-training-ready export can fail this validator while leaving
+evaluation validity undecided. Keep that finding under the training claim;
+never report a nonzero validator as a pass or dismiss missing evidence required
+by the evaluation contract. For unsupported layouts, use the version's validator
+or equivalent explicit checks and state coverage. Read-only reviews must state
+when execution was not performed.
 
-## Completed Trial Review
+The explicit `--allow-native-subscription-without-llm` mode is evidence only. It
+requires `usage_source=agent_native_acp`, healthy ACP/native usage, and a completed
+non-training-ready export with `missing_healthy_structured_llm_trajectory`. It
+never creates training data or accepts a malformed present provider trace.
+Native usage and OTel cost events do not supply missing request/response content.
 
-For each trial, first locate the authoritative run artifacts. Prefer repo
-validators or existing scripts when available, then inspect raw files. Required
-evidence includes:
+## Integrity and skills
 
-- Run config: task id, harness, model, skill mode, trial id, source commit/ref,
-  sandbox backend, timeout, provider settings, and output paths.
-- Trajectories: both `trajectory/acp_trajectory.jsonl` and
-  `trajectory/llm_trajectory.jsonl`, parseable from first event/model request
-  through final answer, failure, or timeout.
-- Metadata: start/end timestamps, elapsed duration, token usage, tool usage,
-  provider/model response metadata, sandbox metadata, and error fields.
-- Results: verifier output, reward/score, result status, rollout-level
-  `results.jsonl`, and enough provenance to connect the score and training row
-  to the exact trajectory.
+Check that the agent received the intended task without verifier-only content;
+grading follows the relevant agent phase and binds the correct workspace and
+attempt. For suspected grader gaming, read
+[reward-hacking-patterns.md](references/reward-hacking-patterns.md) and
+[verifier-hardening-checklist.md](references/verifier-hardening-checklist.md).
+Check their controls against the task's declared contract; the reference does
+not prove a version implements them. A root-owned path, separate container or
+signature alone does not establish grader trust.
 
-Review the trajectory for meaning, not just existence:
+For skill comparisons, read
+[harness-skill-catalog-sop.md](references/harness-skill-catalog-sop.md) or use
+`scripts/extract_harness_skills.py` on a compatible trace. Unknown or zero
+extraction needs manual inspection before concluding no skills were available.
+Distinguish catalog presence, injection/loading and invocation; separate total
+catalog size from task-specific skill loading. A no-skill claim needs checks of
+task-specific files, prompts and events. No serialized catalog is not proof of
+absence; an incidental `SKILL.md` string is not automatic leakage.
 
-- The agent received the intended task prompt and no verifier-only information.
-- Tool calls and observations form a plausible task attempt.
-- Skill-enabled trials show native skill loading or injection evidence for that
-  harness; no-skill trials do not expose those skill resources.
-- For harness-specific skill catalog recovery, load
-  `references/harness-skill-catalog-sop.md` or run
-  `scripts/extract_harness_skills.py` against `trajectory/llm_trajectory.jsonl`.
-  Treat the script as a fast path: if it returns `unknown`, `skill_count: 0`,
-  or `manual_review_required: true`, fall back to the SOP's manual procedure
-  before concluding that no skills were available.
-- Check `task_skills_loading`: with-skill trials should report `1`, meaning
-  every expected task-specific skill was recovered in the startup skill catalog;
-  without-skill trials should report `0`, meaning task-specific skills were not
-  injected into the agent's startup catalog.
-- Timeout trials show real progress or attempts before timeout and still have
-  complete timing, token, ACP trajectory, LLM trajectory, and verifier result
-  metadata.
-- The final answer/result and verifier score refer to the same task workspace
-  and trial.
-- Failures and timeouts are attributable to agent capability, not missing
-  critical inputs. Audit the task spec, environment variables, API keys,
-  mounted assets, package/runtime availability, network access, compute/memory,
-  and sandbox rendering before labeling a failed or timed-out run as healthy.
+Audit owned-resource cleanup separately from scoring. A CLI exit, DELETE request
+or desired destruction state does not confirm release. Record observed
+404/destroyed states or equivalent native absence evidence for owned IDs; retain
+ambiguous creates and incomplete audits. Do not duplicate retained campaigns,
+mutate frozen evidence or clean up unrelated resources.
 
-Reject or quarantine the trial if any of these appear:
+## Report the bounded conclusion
 
-- Missing `trajectory/acp_trajectory.jsonl`.
-- Missing `trajectory/llm_trajectory.jsonl`.
-- Missing rollout-level `results.jsonl`.
-- Empty, truncated, or unparsable trajectory files.
-- `llm_trajectory.jsonl` has no real provider request bodies, no provider
-  response bodies, or no provider token usage in response metadata.
-- `results.jsonl` lacks a Prime-RL-compatible row, marks an unhealthy rollout as
-  training-ready, misses prompt/completion/trajectory/provider token usage, or
-  exposes assistant tool calls without tool definitions.
-- Empty transcript, agent never launched, or only setup logs.
-- Missing token usage/timing/tool usage metadata for newly generated data.
-- The agent lacked required task information, required skills, API keys,
-  credentials, assets, runtime dependencies, or enough compute/resources to
-  make a fair attempt.
-- Verifier ran before the agent finished, leaked solution hints, or wrote into
-  agent-visible resources.
-- Reward appears hacked, copied from hidden files, or inconsistent with the
-  visible task state.
-- Path/root mismatch between task config, sandbox cwd, trajectory paths, and
-  result paths.
-- Provider, Daytona, Docker, or filesystem errors that prevented a normal
-  agent attempt.
+Lead with findings affecting the requested claim, intended/admitted counts,
+exact versions/configuration, evidence pointers and limits. Separate measured
+facts, source-supported mechanisms, hypotheses and untested optimizations.
 
-## Integration Tests After Code Changes
+Give separate verdicts where relevant: evaluation valid/invalid/unknown;
+observability complete/incomplete/unsupported; metric admitted/excluded;
+training ready/not ready/not assessed; cleanup confirmed/unknown. Conclude
+publishable, publishable with quarantines, or not publishable **for the stated
+purpose**. A scoped audit cannot certify a release, establish human approval or
+prove the absence of bugs.
 
-Before using a changed Benchflow version for production experiments, run an
-end-to-end integration check that proves the changed code preserves artifact
-shape and sandbox behavior.
+Install the complete skill directory in the active harness's skill root when
+needed, including scripts, references, evals and metadata. Record its source
+revision so installed copies cannot silently drift from the reviewed one.
 
-1. Run focused unit/static checks for changed modules first. Use the repo's
-   normal commands when appropriate, such as targeted `pytest`, `ty`, and
-   `ruff`.
-2. Pick representative canary tasks covering with-skill and no-skill modes,
-   success/failure/timeout if feasible, and any changed subsystem.
-3. Run the same canaries through Daytona and VM Docker with the same task,
-   harness, model, skill mode, trial id pattern, timeout, and provider settings.
-4. Compare artifact schema and semantics, not exact model wording: trajectory
-   files (`acp_trajectory.jsonl` and `llm_trajectory.jsonl`), rollout/job
-   `results.jsonl`, token usage, timing, tool usage, result status, verifier
-   output, and source provenance must be equivalent.
-5. Exercise path/root behavior explicitly. Check task root, sandbox cwd,
-   mounted resources, result paths, locked paths, and any previous root-path
-   regression case.
-6. Verify skill loading. With-skill runs must show the harness-specific native
-   skill metadata or prompt injection pattern; no-skill runs must not expose
-   skill files or descriptions.
-7. Verify verifier isolation and environment hardening. The verifier starts
-   only after agent exit or timeout, cannot leak solution data into the agent
-   phase, and records score provenance against the completed trajectory. Confirm
-   the anti-reward-hacking invariants in
-   `references/verifier-hardening-checklist.md`: network off by default (proxied
-   and allowlisted when needed), git history scrubbed past the base commit, no
-   answer/hidden-test/scorer files in agent-readable paths, empty patch fails
-   while golden patch passes, and agent test edits are reset before grading.
-8. Scale only after the canary passes. Increase concurrency gradually and keep
-   each VM below the Docker/container pressure that makes the daemon unstable.
+On shared build VMs, the full test suite fails on the base for environment
+reasons, such as group-writable ancestor folders or missing tools and browsers.
+Two ways to handle this:
 
-The pass condition is schema and lifecycle parity between Daytona and Docker:
-both sandboxes should render the same task-needed resources, log the same
-classes of agent behavior, and emit complete metadata for the same logical
-trial outcome.
+- Run the suite in an isolated container with root-owned ancestors.
+- Replay every failure on the base with the same command on the same VM.
 
-## Capability Attribution
+A gate counts as passing only when every failure reproduces on the base or is
+explained. Don't run a test suite on a VM that is measuring timing. Remove your
+own finished-run pytest scratch, never evidence, before it fills the disk.
 
-When a run fails or times out, classify the cause before accepting it as a
-healthy model failure.
+## Speed and A/B Comparisons
 
-- Model-capability failure: required task resources were present, credentials
-  and skills were available when needed, the sandbox had sufficient compute and
-  runtime dependencies, the agent made a real attempt, and the verifier scored
-  the completed or timed-out state.
-- Experiment-fidelity failure: the agent was blocked by missing API keys,
-  absent skill resources, hidden or mis-mounted task assets, dependency
-  installation failures, network/permission errors, insufficient compute or
-  memory, broken rendering, path mismatches, provider outages, or sandbox
-  instability.
+When a run compares the time of two BenchFlow builds, or of BenchFlow and
+another framework, also load `references/speed-ab-experiments.md`. In short:
 
-Only the model-capability case can be counted as healthy `fail` or
-`normal_timeout`. Experiment-fidelity failures must be rerun after fixing the
-environment or documented as quarantined infra/context failures.
+- Register a manifest before the first trial, with its timestamp taken from
+  `date -u`.
+- Warm the image cache, or run a warm-up round, for any arm whose recipe
+  changed.
+- Isolate the arms: no `cp` into uv venvs, a fresh trial id per round, nothing
+  else running on the orchestrator.
+- Pair by task, with a seeded bootstrap CI, and report outer-clock phase
+  segments at a loaded and a light load.
+- Check that outcomes and task digests are identical between BenchFlow arms.
+- Pass the other framework's telemetry opt-out explicitly at every launch, and
+  keep the comparison outside git.
 
-## Failure Playbook
+## Changes to Sandbox and Security Code
 
-Docker stuck or daemon unstable:
+When a change touches setup, hardening, grading, exec transport, lifecycle or
+image recipes, also load `references/sandbox-change-review.md`. In short:
 
-- Treat this as infrastructure failure, not model fail.
-- Count active/exited containers and inspect daemon health before launching
-  more work.
-- Avoid putting more than about 60 containers on one VM. Drain, restart, or
-  replace the VM when the daemon is unreliable.
-- Rerun affected trials only after confirming new trajectories are complete.
-
-Daytona vs VM Docker mismatch:
-
-- Reproduce the same canary in both backends with identical logical settings.
-- Diff artifact schema and metadata fields. Missing token usage or timing in
-  one backend is a blocker for new production data.
-- Do not publish data from the backend until the discrepancy is explained or
-  fixed.
-
-Path mismatch:
-
-- Compare task config paths, sandbox cwd, mounted root, trajectory-reported
-  paths, verifier input paths, and result output paths.
-- Confirm the agent only sees task-needed resources and cannot read hidden
-  verifier or answer files.
-- Add or run a regression canary that covers the previous root-path failure.
-
-Verifier leakage or reward hacking:
-
-- Confirm verifier invocation begins after agent completion or timeout.
-- Search the agent prompt, observations, mounted files, and tool outputs for
-  answer keys, verifier hints, hidden tests, or reward files.
-- Audit suspicious perfect scores, direct hidden-file reads, or trajectory
-  actions that bypass the intended task.
-- When the trajectory looks suspicious, load
-  `references/reward-hacking-patterns.md` and classify the evidence against the
-  solution-contamination, grader-gaming, and alignment-risk patterns there.
-- To remediate and prevent recurrence, apply
-  `references/verifier-hardening-checklist.md`, which maps each pattern to the
-  environment/grader fix that closes it at the source.
-
-Skill loading mismatch:
-
-- For each harness, use the harness-specific expected system prompt or metadata
-  pattern from `references/harness-skill-catalog-sop.md`.
-- Recover and record the startup catalog source field, line index, skill names,
-  skill count, and SHA-256 of the exact recovered prompt/catalog text when
-  possible.
-- Use `scripts/extract_harness_skills.py` for a first pass; it scans the LLM
-  trajectory and falls back to sibling ACP system-prompt traces, but manual SOP
-  review remains authoritative when the output requests review.
-- Interpret `task_skills_loading` separately from `skill_count`.
-  `skill_count` is the full recovered startup catalog size, while
-  `task_skills_loading` is only whether the task's own expected skills were
-  fully loaded. For with-skills runs expect `task_skills_loading: 1`; for
-  without-skills runs expect `task_skills_loading: 0`.
-- Do not infer a catalog when the harness does not serialize one. For example,
-  current `pi-acp` trajectories may expose no startup skill catalog; mark this
-  as `catalog_not_serialized` and rely on tool/file trace evidence.
-- For no-skill trials, scan the full trajectory for skill leakage markers such
-  as `SKILL.md`, `.codex/skills`, `.agents/skills`, `invoke_skill`,
-  `activate_skill`, Claude Code `Skill` calls, and `ToolSearch` selection.
-
-## Publishing And Reporting
-
-Only export, commit, or push healthy latest trials. Exclude partial runs,
-infra-failed trials, stale duplicates, local caches, and secrets.
-
-Before reporting a trial as healthy or publishable, include the deterministic
-trajectory-gate outcome from `scripts/validate_run_artifacts.py` or equivalent
-manual evidence proving both required trajectory files are present and healthy.
-
-Report findings in this order:
-
-- Blockers: unhealthy trials or integration failures that invalidate data.
-- Coverage: expected slots, healthy slots, missing slots, duplicates, and stale
-  artifacts, grouped by task/skill mode/trial.
-- Evidence: exact run roots, files, commit refs, and validation commands.
-- Residual risk: anything not covered by canaries or validators.
-
-When reviewing an already completed run, end with a clear verdict: publishable,
-publishable with quarantines, or not publishable.
+- Require differential reproductions that fail on the head and pass on the
+  base.
+- Assume a transport error or timeout does not mean the command stopped.
+- Check the eight defect classes listed there, for example a security answer
+  discarded and re-run, or reuse across a kill or freeze.
+- Run the measurement alongside the review, not after it.

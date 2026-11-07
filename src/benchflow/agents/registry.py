@@ -15,8 +15,12 @@ Required fields
 
 Common optional fields
 ----------------------
-- ``protocol``           "acp" (default), "cli", or "session-factory".
-                         Almost always "acp".
+- ``protocol``           "acp" (default) or "session-factory" (an ``acpx/``
+                         spec wraps an entry to launch through acpx). Almost
+                         always "acp". Running an agent's own CLI in headless
+                         JSON mode is not a protocol value: it is the run
+                         option ``harness="native"``, available for the entries
+                         ``benchflow.native_harness.harnesses`` lists.
 - ``session_factory``    Non-ACP "module:callable" entrypoint used only when
                          ``protocol="session-factory"``.
 - ``requires_env``       List of env var names the SDK must propagate into the
@@ -37,48 +41,146 @@ Common optional fields
                          container before launch (e.g. ``~/.codex/auth.json``).
 - ``home_dirs``          Extra dot-dirs under ``$HOME`` to copy to the sandbox
                          user (for dirs not derivable from ``skill_paths`` /
-                         ``credential_files``, e.g. ``.openclaw``).
+                         ``credential_files``).
+- ``temp_dirs``          Names of the agent tool's folders under the sandbox's
+                         temp folder (``/tmp/opencode``: ``["opencode"]``),
+                         made the sandbox user's before launch.
 - ``subscription_auth``  ``SubscriptionAuth`` describing host CLI login files
                          (e.g. ``claude login`` credentials) that can stand in
                          for an API key. API keys still take precedence.
 
 Look at the existing entries below for worked examples:
 ``claude-agent-acp`` (subscription auth + env_mapping), ``codex-acp``
-(credential_files), ``openclaw`` (home_dirs + custom shim), ``gemini``
-(multi-file subscription auth).
+(credential_files), and
+``antigravity`` (pinned native binary + Python ACP shim, hook-based web
+policy, native MCP config).
 """
 
 import base64
+import json
 import shlex
+import threading
+import zlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from benchflow._root_only import root_only_tree_check
+from benchflow._root_python import root_python_sh
 from benchflow._utils.text import describe_exception
+from benchflow._uv_pin import (
+    BENCHFLOW_ROOT,
+    PYTHON_INSTALL_DIR,
+    PYTHON_VERSION,
+    UV_BIN,
+    UV_DIR,
+    managed_python_exports,
+    managed_python_install_command,
+    private_tmpdir_exports,
+    uv_install_command,
+    uv_lock_file_command,
+    uv_lock_seal_command,
+)
+from benchflow.agents._python_agent_pins import (
+    DEEPAGENTS_REQUIREMENTS,
+    HARVEY_LAB_COMMIT,
+    HARVEY_LAB_REPO,
+    HARVEY_LAB_REQUIREMENTS,
+    HARVEY_LAB_SPARSE_PATHS,
+)
+from benchflow.agents.antigravity_config import (
+    AGY_VERSION,
+    ANTIGRAVITY_GLOBAL_SKILLS_PATH,
+    ANTIGRAVITY_HOME_DIR,
+    ANTIGRAVITY_HOOKS_RELPATH,
+    ANTIGRAVITY_HOSTED_WEB_TOOL_MATCHERS,
+    ANTIGRAVITY_MCP_CONFIG_RELPATH,
+    ANTIGRAVITY_WEB_TOOL_MATCHERS,
+    ANTIGRAVITY_WORKSPACE_SKILLS_PATH,
+    agy_install_cmd,
+    hooks_deny_mutator,
+)
+from benchflow.agents.muse_config import (
+    MUSE_AUTH_JSON_ENV,
+    MUSE_AUTH_RELPATH,
+    MUSE_SKILLS_PATH,
+    muse_install_cmd,
+)
+from benchflow.agents.visible_runtime import visible_script
 
 
-def _install_python_script(container_path: str, source: str) -> str:
-    """Shell snippet that ensures python3 and writes `source` to container_path.
+def _install_python_script(
+    container_path: str, source: str, *, python: str | None = None
+) -> str:
+    """Write a shim using its existing private or fixed image interpreter.
 
     Base64 transport — makes the install shell line content-agnostic so a line
     like `SHIMEOF` or `LAUNCHEREOF` inside the Python source can't collide with
     a heredoc terminator.
 
-    Used by pi-acp, openclaw, and harvey-lab-harness — all three ship a Python
-    launcher/shim baked into install_cmd. Semantics differ intentionally:
-    pi and openclaw bridge BENCHFLOW_PROVIDER_* env vars to agent-native
-    config; harvey-lab delegates to Harvey LAB's own model adapters which
-    read provider env vars directly. A shared base is not yet justified —
+    Used by pi-acp, harvey-lab-harness, deepagents, antigravity and muse-code —
+    each ships a Python launcher/shim baked into install_cmd. Semantics differ
+    intentionally: pi bridges BENCHFLOW_PROVIDER_* env vars to agent-native
+    config; harvey-lab delegates to Harvey LAB's own model adapters which read
+    provider env vars directly; antigravity bridges ACP to agy's headless
+    stream-json protocol; muse-code runs one `muse exec --json` per prompt.
+    A shared base is not yet justified —
     divergence is cheap, premature abstraction isn't.
     """
-    encoded = base64.b64encode(source.encode()).decode()
+    encoded = base64.b64encode(visible_script(source).encode()).decode()
     parent = shlex.quote(str(Path(container_path).parent))
     q_path = shlex.quote(container_path)
+    ensure_python = (
+        f"[ -x {shlex.quote(python)} ]"
+        if python is not None
+        else "( [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ] || "
+        "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) )"
+    )
     return (
-        "( command -v python3 >/dev/null 2>&1 || "
-        "(apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1) ) && "
+        # Never consult an earlier role's PATH. Venv-backed shims already
+        # installed their exact interpreter and need no system Python or apt.
+        f"{ensure_python} && "
         f"mkdir -p {parent} && "
         f"echo {encoded} | base64 -d > {q_path} && "
         f"chmod +x {q_path}"
+    )
+
+
+def _python_shim_launch(path: str) -> str:
+    """Use the same fixed image locations admitted by the shim installer."""
+    return (
+        "bf_shim_python=/usr/bin/python3; "
+        '[ -x "$bf_shim_python" ] || bf_shim_python=/usr/local/bin/python3; '
+        f'exec "$bf_shim_python" -I -S {shlex.quote(path)}'
+    )
+
+
+def _write_requirements(
+    container_path: str, requirements: tuple[str, ...], *, python: str = "python3"
+) -> str:
+    """Shell snippet that writes pinned requirement lines to container_path.
+
+    Compress hash locks to stay below the shell's per-argument size limit.
+    The already-created agent venv supplies the decoder, not the image Python.
+    Isolate root helpers from the workspace, user site and PYTHON* settings;
+    an earlier role can write those before a later role installs its agent.
+    """
+    encoded = base64.b64encode(
+        zlib.compress(("\n".join(requirements) + "\n").encode())
+    ).decode()
+    q_path = shlex.quote(container_path)
+    return (
+        f"mkdir -p {shlex.quote(str(Path(container_path).parent))} && "
+        f"printf '%s' {shlex.quote(encoded)} | "
+        # Root's decoder on the protected Python (C8, PT-C8-R8-2): the kit's
+        # once the sandbox has one, else this venv's, isolated, from /.
+        + root_python_sh(
+            "import base64, sys, zlib; "
+            "sys.stdout.buffer.write(zlib.decompress(base64.b64decode("
+            "sys.stdin.buffer.read())))",
+            fallback=shlex.quote(python),
+        )
+        + f" > {q_path}"
     )
 
 
@@ -102,15 +204,110 @@ def _apt_install(*packages: str) -> str:
     )
 
 
+@dataclass(frozen=True)
+class RequirementsFile:
+    """One host-authored lock, with a self-contained image-build recipe.
+
+    Live installs upload its bytes and replace exactly this recipe. A later
+    role can therefore install even when the sealed kit has no Python.
+    """
+
+    path: str
+    lines: tuple[str, ...]
+    python: str
+
+    @property
+    def command(self) -> str:
+        return _write_requirements(self.path, self.lines, python=self.python)
+
+    @property
+    def content(self) -> str:
+        return "\n".join(self.lines) + "\n"
+
+
 # Isolated Node.js bootstrap for JavaScript-based ACP agents.
 #
 # Keep this out of system prefixes. Task images may need their own Node/npm
-# versions, so BenchFlow installs agent runtime bits under /opt/benchflow.
+# versions, so BenchFlow installs agent runtime bits under /opt/runtime.
 # Install commands can put that prefix on PATH, but launch wrappers call the
 # private Node binary explicitly so task subprocesses keep the task's PATH.
-_BENCHFLOW_NODE_PREFIX = "/opt/benchflow/node"
-_BENCHFLOW_JS_AGENT_PREFIX = "/opt/benchflow/js-agents"
-_BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
+_BENCHFLOW_NODE_PREFIX = "/opt/runtime/node"
+_BENCHFLOW_JS_AGENT_PREFIX = "/opt/runtime/js-agents"
+_BENCHFLOW_BIN_PREFIX = "/opt/runtime/bin"
+_AGENT_UV_ROOT = f"{BENCHFLOW_ROOT}/agents"
+_AGENT_UV_BIN = f"{_AGENT_UV_ROOT}/bin"
+# OpenHands' uv tool (its venv and the entry point uv links into
+# _BENCHFLOW_BIN_PREFIX), in BenchFlow's protected tree (C8). The direct
+# execution patch (acp.runtime) checks and runs it from there.
+_OPENHANDS_TOOL_DIR = f"{BENCHFLOW_ROOT}/uv-tools"
+_DEEPAGENTS_VENV = f"{_AGENT_UV_ROOT}/deepagents-venv"
+_HARVEY_LAB_VENV = f"{_AGENT_UV_ROOT}/harvey-lab-venv"
+_HARVEY_LAB_ROOT = f"{_AGENT_UV_ROOT}/harvey-labs"
+_HARVEY_LAB_REQUIREMENTS_PATH = f"{_AGENT_UV_ROOT}/harvey-lab-requirements.txt"
+_DEEPAGENTS_REQUIREMENTS_PATH = f"{_AGENT_UV_ROOT}/deepagents-requirements.txt"
+# Root uv's TMPDIR during agent installs (see private_tmpdir_exports).
+_AGENT_UV_TMP = f"{_AGENT_UV_ROOT}/uv-tmp"
+
+
+# Git before 2.32 ignores GIT_CONFIG_GLOBAL and reads $HOME/.gitconfig and
+# $XDG_CONFIG_HOME/git/config, which an earlier role may have written as
+# root's HOME (FF-install-C13). /dev/null holds no file, so every Git reads
+# none; git treats the ENOTDIR as a missing file. Set on each installer Git
+# command and on the uv call that runs Git, not exported: later steps of a
+# recipe still write the agent's settings under the real HOME.
+_AGENT_GIT_HOME = "HOME=/dev/null XDG_CONFIG_HOME=/dev/null"
+_AGENT_GIT = f"{_AGENT_GIT_HOME} git -c core.hooksPath=/dev/null"
+
+
+def _agent_git_exports() -> str:
+    """Give installer Git, including uv's children, only fixed settings.
+
+    A pinned checkout still runs hooks and reads includes or URL rewrites
+    from HOME/XDG config. Earlier roles may own those directories. Clear
+    the entire GIT_* namespace, then disable ambient config, hooks and init
+    templates. Command-scope settings also override a checkout's config.
+    """
+    return (
+        "for v in $(env | sed -n 's/^\\(GIT_[A-Za-z0-9_]*\\)=.*/\\1/p'); "
+        'do unset "$v"; done; '
+        "export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null "
+        "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 "
+        "GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
+        "GIT_CONFIG_KEY_1=init.templateDir GIT_CONFIG_VALUE_1=''"
+    )
+
+
+def _agent_uv_setup() -> str:
+    """Every root-side agent uv call shares the proxy's isolation policy.
+
+    Braces preserve exports in the caller while keeping each required step
+    in the recipe's && chain. The agent's cwd and old role's UV_* variables
+    must never select a Python catalog, tool environment or cache.
+    """
+    # Root runs and replaces what these folders hold (the venvs, the
+    # harness checkout, the tool and its entry point): each is shown root's
+    # alone first (C8), as root; tests run the recipe as their own user.
+    folders = (_AGENT_UV_ROOT, _OPENHANDS_TOOL_DIR, _BENCHFLOW_BIN_PREFIX)
+    checks = " && ".join(
+        root_only_tree_check(folder, "BenchFlow's agent uv tools") for folder in folders
+    )
+    guard = (
+        f'mkdir -p {" ".join(folders)} && {{ [ "$(id -u)" != 0 ] || {{ {checks}; }}; }}'
+    )
+    return (
+        f"{{ {_agent_git_exports()}; }} && "
+        f"{uv_install_command()} && "
+        f"{{ {managed_python_exports()}; }} && "
+        f"{guard} && "
+        # Before the first uv call that downloads: uv unpacks hash-checked
+        # files in TMPDIR, which must not be /tmp (FF-install-C12).
+        f"{private_tmpdir_exports(_AGENT_UV_TMP)} && "
+        f"{{ {managed_python_install_command(shlex.quote(UV_BIN))}; }} && "
+        f"export UV_TOOL_DIR={_OPENHANDS_TOOL_DIR} "
+        f"UV_TOOL_BIN_DIR={_BENCHFLOW_BIN_PREFIX} && "
+        f'export PATH="{UV_DIR}:{_BENCHFLOW_BIN_PREFIX}:{_AGENT_UV_BIN}:$PATH"'
+    )
+
 
 # OpenCode-family proxy provider id. OpenCode hard-codes the OpenAI *Responses*
 # API for the built-in ``openai`` provider id (its ``getModel`` calls
@@ -118,17 +315,71 @@ _BENCHFLOW_BIN_PREFIX = "/opt/benchflow/bin"
 # so the gateway alias must be registered under a *separate* provider id that
 # OpenCode routes through the chat-completions path. Shared with
 # ``benchflow.acp.runtime._format_acp_model`` so set_model targets the same id.
-OPENCODE_PROXY_PROVIDER_ID = "benchflow"
-_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.73.0"
-_OPENHANDS_CLI_GIT_REV = "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271"
+OPENCODE_PROXY_PROVIDER_ID = "runtime"
+# Gemini models skip that chat-completions alias: OpenCode keeps its native
+# ``google`` provider (``@ai-sdk/google``, which carries Gemini's thought
+# signatures and thinking config) and the ``-proxy`` wrapper points it at
+# LiteLLM's byte-preserving Gemini pass-through, the route Gemini CLI uses.
+# Set by ``litellm_runtime._wire_litellm_agent_env``; read by the wrapper.
+OPENCODE_GOOGLE_BASE_URL_ENV = "BENCHFLOW_OPENCODE_GOOGLE_BASE_URL"
+# Exact pins. The Codex Apps and native Claude no-web admission gates verify
+# installed clients against these through pinned_npm_package(), so a bump here
+# retargets them; re-run their credential-free conformance fixtures when bumping.
+# Stay on the 0.81 line: 0.82.0 changed the tool-call contract (AIR).
+_CLAUDE_AGENT_ACP_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.81.2"
+# The Claude Code CLI that claude-agent-acp drives, pinned apart from the
+# adapter. Models set a minimum CLI version
+# (claude-opus-5-5 refuses Claude Code older than 2.1.280, #1137), and the CLI
+# the adapter's SDK bundles only moves with an adapter release, which can
+# break the ACP contract. The launcher hands this CLI to the adapter through
+# CLAUDE_CODE_EXECUTABLE, which claude-agent-acp reads before looking for its
+# SDK's bundled binary. That binary is still installed (npm keeps a global
+# package's optional dependencies even with --omit=optional) but never runs;
+# the native no-web gate verifies the launcher.
+# 2.1.316 (2026-11-04): 2.1.280 predates claude-sonnet-5-5 (2.1.284) and
+# claude-haiku-5-5 (2.1.293, with its token counts behind a gateway fixed in
+# 2.1.296), and its "haiku" alias still meant Haiku 4.5, so 0.81.2 refused
+# claude-haiku-5-5 at connect. 2.1.316 is the CLI claude-agent-acp 0.100.0's
+# SDK was built against; it is past 2.1.304-2.1.313 (tool search turned on
+# behind a custom ANTHROPIC_BASE_URL, which failed requests until 2.1.305 and
+# repeated refusals until 2.1.314) and before 2.1.317's change to Read.
+_CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code@2.1.316"
+_CODEX_ACP_PACKAGE = "@agentclientprotocol/codex-acp@2.0.1"
+# Pi moved to @earendil-works (same maintainers); the old package stopped at
+# 0.73.1, deprecated, and pi-acp 0.0.34 needs pi 0.81.0 or later: with 0.73.1
+# session/new never answered, so every pi-acp trial failed at connect.
+# 1.0.0 (2026-11-04): its catalog has Opus 5.5, Sonnet 5.5, Fable 5.1 and
+# gpt-6.1-sol, which 0.81.1's lacks; it is the last release that ships
+# npm-shrinkwrap.json (1.0.1 dropped it, so later installs float their
+# dependencies).
+_PI_PACKAGE = "@earendil-works/pi-coding-agent@1.0.0"
+_PI_ACP_PACKAGE = "pi-acp@0.0.34"
+# Both harnesses use this exact engine. The ACP install replaces its adapter's
+# caret dependency with the pin in the same tree the launcher and policy probe
+# resolve, then verifies the running CLI before accepting the installation.
+_CODEX_CLI_PACKAGE = "@openai/codex@0.159.3"
+CODEX_APP_SERVER_EXECUTABLE = f"{_BENCHFLOW_BIN_PREFIX}/codex-app-server"
+
+
+# OpenHands-CLI's last commit (2026-10-22; unmaintained since 2026-08-11):
+# only workflows, README and pyproject/uv.lock, raising certifi to
+# 2026.10.19, which drops the eMudhra and emSign roots. Its main still pins
+# openhands-sdk 1.28.1, so the SDK stays there.
+_OPENHANDS_CLI_GIT_REV = "283c6ac3610f4299f405f7389f65766dcb83e12a"
 _OPENHANDS_SDK_VERSION = "1.28.1"
 _OPENHANDS_TOOLS_VERSION = "1.28.1"
 _JS_AGENT_PATH = (
     f"{_BENCHFLOW_BIN_PREFIX}:{_BENCHFLOW_JS_AGENT_PREFIX}/bin:"
     f"{_BENCHFLOW_NODE_PREFIX}/bin:$PATH"
 )
-# Node 22.20.0 supports OpenClaw 2026.6.9. Keep their pin pair in sync.
+# Shared JavaScript-agent runtime pin. Root installs into and runs from
+# /opt/runtime only while it is root's alone (C8): a workspace grant
+# (``WORKDIR /opt``) can hand it to the agent user, whose Node or npm root
+# would run next. The install then stops instead.
 _NODE_INSTALL = (
+    "mkdir -p /opt/runtime && "
+    + root_only_tree_check("/opt/runtime", "BenchFlow's agent runtime folder")
+    + " || exit 1; "
     "export DEBIAN_FRONTEND=noninteractive; "
     f"BF_NODE_DIR={_BENCHFLOW_NODE_PREFIX}; "
     "BF_NODE_VERSION=22.20.0; "
@@ -155,7 +406,7 @@ _NODE_INSTALL = (
     '    *) echo "Unsupported architecture for Node.js: $arch" >&2; exit 1 ;; '
     "  esac; "
     '  tmp="$(mktemp -d)"; '
-    "  mkdir -p /opt/benchflow; "
+    "  mkdir -p /opt/runtime; "
     '  curl -fsSLo "$tmp/node.tar.xz" '
     '"https://nodejs.org/dist/v${BF_NODE_VERSION}/node-v${BF_NODE_VERSION}-linux-${node_arch}.tar.xz"; '
     '  rm -rf "$BF_NODE_DIR"; '
@@ -176,25 +427,123 @@ def _npm_package_spec(package: str) -> str:
     return f"{package}@latest"
 
 
-def _js_agent_install(binary: str, package: str) -> str:
-    """Install an npm-distributed agent into BenchFlow's isolated prefix."""
+def pinned_npm_package(agent: str) -> tuple[str, str]:
+    """Return the built-in ``(package, version)`` pin of a policy-gated client.
+
+    ``agent`` names a policy-gated ACP agent, ``"claude-code"`` for the
+    Claude Code CLI that ``claude-agent-acp`` runs, or ``"codex"`` for the
+    Codex CLI the native harness runs. Reads the constants, not mutable
+    ``AGENTS``: a manifest override must not redefine the version an
+    admission gate verifies.
+    """
+    spec = {
+        "claude-agent-acp": _CLAUDE_AGENT_ACP_PACKAGE,
+        "claude-code": _CLAUDE_CODE_PACKAGE,
+        "codex-acp": _CODEX_ACP_PACKAGE,
+        "codex": _CODEX_CLI_PACKAGE,
+    }[agent]
+    package, _, version = spec.rpartition("@")
+    return package, version
+
+
+# npm links the Claude Code package's native binary here.
+CLAUDE_CODE_EXECUTABLE_PATH = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/claude"
+# The Codex CLI's npm entry point is a Node script; this launcher runs it on
+# BenchFlow's private Node, so the task image needs no Node of its own.
+CODEX_CLI_EXECUTABLE_PATH = f"{_BENCHFLOW_BIN_PREFIX}/codex"
+
+
+def js_agent_launcher(binary: str, env: tuple[tuple[str, str], ...] = ()) -> str:
+    """The launcher script ``_js_agent_install`` writes to ``/opt/runtime/bin``.
+
+    It exports ``env`` and runs the agent on BenchFlow's private Node. The
+    native Claude admission gate compares the installed launcher against it.
+    """
+    lines = [
+        "#!/bin/sh",
+        *(f"export {name}={shlex.quote(value)}" for name, value in env),
+        f"exec {_BENCHFLOW_NODE_PREFIX}/bin/node "
+        f'{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary} "$@"',
+    ]
+    return "".join(f"{line}\n" for line in lines)
+
+
+_CLAUDE_AGENT_ACP_ENV = (("CLAUDE_CODE_EXECUTABLE", CLAUDE_CODE_EXECUTABLE_PATH),)
+CLAUDE_AGENT_ACP_LAUNCHER = js_agent_launcher("claude-agent-acp", _CLAUDE_AGENT_ACP_ENV)
+
+
+def _js_agent_install(
+    binary: str,
+    package: str,
+    *,
+    companion: str = "",
+    launcher_env: tuple[tuple[str, str], ...] = (),
+    verify: str = "",
+) -> str:
+    """Install an npm-distributed agent into BenchFlow's isolated prefix.
+
+    ``companion`` is one more exact package spec installed into the same
+    prefix. The launcher exports ``launcher_env`` before it starts the agent,
+    and ``verify`` is a last shell check the install must pass.
+    """
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
     wrapper = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     package_spec = _npm_package_spec(package)
     install_guard = "" if package_spec == package else f"[ -x {agent_bin} ] || "
+    npm = f"{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g --prefix {_BENCHFLOW_JS_AGENT_PREFIX}"
+    companion_install = f"( {npm} {companion} ) && " if companion else ""
+    launcher_lines = js_agent_launcher(binary, launcher_env).splitlines()
     return (
         f"{_NODE_INSTALL} && "
         f"mkdir -p {_BENCHFLOW_JS_AGENT_PREFIX} {_BENCHFLOW_BIN_PREFIX} && "
         f'export PATH="{_JS_AGENT_PATH}" && '
-        f"( {install_guard}{_BENCHFLOW_NODE_PREFIX}/bin/npm install -g "
-        f"--prefix {_BENCHFLOW_JS_AGENT_PREFIX} {package_spec} ) && "
-        f"printf '%s\\n' '#!/bin/sh' "
-        f"'exec {_BENCHFLOW_NODE_PREFIX}/bin/node {agent_bin} \"$@\"' "
+        f"( {install_guard}{npm} {package_spec} ) && "
+        f"{companion_install}"
+        f"printf '%s\\n' {' '.join(shlex.quote(line) for line in launcher_lines)} "
         f"> {wrapper} && "
         f"chmod +x {wrapper} && "
-        f"chmod -R a+rX /opt/benchflow && "
-        f"[ -x {agent_bin} ] && [ -x {wrapper} ]"
+        f"chmod -R a+rX /opt/runtime && "
+        f"[ -x {agent_bin} ] && [ -x {wrapper} ]" + (f" && {verify}" if verify else "")
     )
+
+
+def _claude_code_version_check() -> str:
+    """Fail the install unless the pinned Claude Code CLI runs and reports its pin.
+
+    The package's postinstall copies the native binary over a stub, so an
+    install that skipped scripts or optional dependencies fails here rather
+    than on the rollout's first model call.
+    """
+    _, version = pinned_npm_package("claude-code")
+    cli = CLAUDE_CODE_EXECUTABLE_PATH
+    expected = f"{version} (Claude Code)"
+    return (
+        f'( v="$({cli} --version 2>&1)"; [ "$v" = {shlex.quote(expected)} ] || '
+        f'{{ echo "BenchFlow: {cli} is not Claude Code {version}: $v" >&2; exit 1; }} )'
+    )
+
+
+def _codex_cli_version_check() -> str:
+    """Fail the install unless the pinned Codex CLI runs and reports its pin."""
+    _, version = pinned_npm_package("codex")
+    cli = CODEX_CLI_EXECUTABLE_PATH
+    expected = f"codex-cli {version}"
+    return (
+        f'( v="$({cli} --version 2>&1)"; [ "$v" = {shlex.quote(expected)} ] || '
+        f'{{ echo "BenchFlow: {cli} is not Codex {version}: $v" >&2; exit 1; }} )'
+    )
+
+
+def codex_cli_install_cmd() -> str:
+    """Install the pinned Codex CLI next to codex-acp, for the native harness."""
+    return _js_agent_install(
+        "codex", _CODEX_CLI_PACKAGE, verify=_codex_cli_version_check()
+    )
+
+
+def claude_code_version_check() -> str:
+    """The install-time check of the pinned Claude Code CLI (see below)."""
+    return _claude_code_version_check()
 
 
 def _js_agent_launch(binary: str, args: str = "") -> str:
@@ -203,17 +552,88 @@ def _js_agent_launch(binary: str, args: str = "") -> str:
     return f"{cmd} {args}".rstrip()
 
 
+def codex_app_server_launcher(
+    node: str, cli: str, *, module_root: str | None = None
+) -> str:
+    """Pass session config to every Codex thread without replacing user TOML.
+
+    codex-acp 2.0.1 ignores its own ``-c`` flags but starts CODEX_PATH with
+    ``app-server``. Codex's global overrides apply to that server's implicit
+    title thread too. Resolve the same bundled CLI as the adapter and its Apps
+    admission probe, never PATH or a previous role's executable. No config
+    parser or image Python is needed.
+    """
+    js = r"""
+const {spawn} = require("node:child_process");
+const config = JSON.parse(process.env.CODEX_CONFIG || "{}");
+if (!config || Array.isArray(config) || typeof config !== "object") {
+  throw new Error("CODEX_CONFIG must be an object");
+}
+function value(v) {
+  if (typeof v === "string") return JSON.stringify(v).replace(/\x7f/g, "\\u007f");
+  if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) {
+    return JSON.stringify(v);
+  }
+  if (Array.isArray(v)) return "[" + v.map(value).join(", ") + "]";
+  if (v && typeof v === "object") {
+    return "{" + Object.entries(v).map(([k, x]) => value(k) + "=" + value(x)).join(",") + "}";
+  }
+  throw new Error("CODEX_CONFIG contains a value without a TOML representation");
+}
+const provider = (config.model_providers || {})[config.model_provider];
+if (provider && typeof provider.base_url === "string" && provider.base_url) {
+  config.openai_base_url = provider.base_url;
+}
+const flags = Object.entries(config).flatMap(([k, v]) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(k)) throw new Error("CODEX_CONFIG top-level key is not a bare key");
+  return ["-c", k + "=" + value(v)];
+});
+const cli = require.resolve(process.argv[1], {paths: MODULE_ROOTS});
+const child = spawn(process.execPath, [cli, ...flags, ...process.argv.slice(2)], {stdio: "inherit"});
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => child.kill(signal));
+}
+child.on("error", () => { console.error("BenchFlow: cannot start pinned Codex CLI"); process.exit(1); });
+child.on("exit", (code, signal) => {
+  if (signal) { process.removeAllListeners(signal); process.kill(process.pid, signal); }
+  else process.exit(code === null ? 1 : code);
+});
+""".strip()
+    js = js.replace("MODULE_ROOTS", json.dumps([module_root] if module_root else []))
+    return f'#!/bin/sh\nexec {shlex.quote(node)} -e {shlex.quote(js)} {shlex.quote(cli)} "$@"\n'
+
+
+def _codex_acp_install() -> str:
+    wrapper = codex_app_server_launcher(
+        f"{_BENCHFLOW_NODE_PREFIX}/bin/node",
+        "@openai/codex/bin/codex.js",
+        module_root=f"{_BENCHFLOW_JS_AGENT_PREFIX}/lib/node_modules/@agentclientprotocol/codex-acp",
+    )
+    encoded = base64.b64encode(visible_script(wrapper).encode()).decode()
+    return (
+        _js_agent_install("codex-acp", _CODEX_ACP_PACKAGE)
+        + f" && {_BENCHFLOW_NODE_PREFIX}/bin/npm install --omit=dev"
+        + f" --prefix {_BENCHFLOW_JS_AGENT_PREFIX}/lib/node_modules/@agentclientprotocol/codex-acp"
+        + f" {_CODEX_CLI_PACKAGE}"
+        + f' && ( v="$({_BENCHFLOW_BIN_PREFIX}/codex-acp cli -V 2>&1)"; '
+        + f'[ "$v" = "codex-cli {pinned_npm_package("codex")[1]}" ] || '
+        + '{ echo "Pinned Codex engine version check failed: $v" >&2; exit 1; } )'
+        + f" && printf '%s' {shlex.quote(encoded)} | base64 -d > {CODEX_APP_SERVER_EXECUTABLE}"
+        + f" && chmod 755 {CODEX_APP_SERVER_EXECUTABLE}"
+    )
+
+
 _MIMO_MANIFEST_INSTALL_CMD = (
     _NODE_INSTALL
     + " && "
-    + "mkdir -p /opt/benchflow/js-agents/mimo-acp && "
+    + "mkdir -p /opt/runtime/js-agents/mimo-acp && "
     + 'printf \'%s\' \'{"name":"bf-mimo-acp","private":true,"type":"module"}\' '
-    + "> /opt/benchflow/js-agents/mimo-acp/package.json && "
-    + "cd /opt/benchflow/js-agents/mimo-acp && "
-    + "/opt/benchflow/node/bin/npm install @mimo-ai/cli@0.1.4 "
-    + "--no-audit --no-fund >/dev/null 2>&1 && "
-    + "chmod -R a+rX /opt/benchflow && "
-    + "[ -f /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
+    + "> /opt/runtime/js-agents/mimo-acp/package.json && "
+    + "cd /opt/runtime/js-agents/mimo-acp && "
+    + "/opt/runtime/node/bin/npm install @mimo-ai/cli@0.1.15 "
+    + "--no-audit --no-fund --loglevel=error && "
+    + "chmod -R a+rX /opt/runtime && "
+    + "[ -f /opt/runtime/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo ]"
 )
 _MIMO_MANIFEST_LAUNCHER = r"""
 A="${BENCHFLOW_LITELLM_MODEL_ALIAS:-}"
@@ -226,6 +646,8 @@ K="${OPENAI_API_KEY:-}"
 # launcher hard-failed (rc78) on "base URL without alias", which broke every
 # direct-provider run.
 if [ -n "$B" ] && [ -n "$A" ]; then
+  (
+  umask 077
   # Canonical config location MiMo Code (OpenCode fork) reads:
   # {home}/.config/mimocode/mimocode.json (matches benchflow-core's native mimo
   # agent). Also written to ./mimocode.json (cwd) as a belt-and-suspenders for
@@ -235,17 +657,19 @@ if [ -n "$B" ] && [ -n "$A" ]; then
   CFG_JSON='{
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "openai": {
+    "runtime": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "BenchFlow Proxy",
-      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-benchflow}"'" },
+      "name": "Model endpoint",
+      "options": { "baseURL": "'"$B"'", "apiKey": "'"${K:-runtime}"'" },
       "models": { "'"$A"'": { "name": "'"$A"'" } }
     }
   },
-  "model": "openai/'"$A"'"
+  "model": "runtime/'"$A"'",
+  "small_model": "runtime/'"$A"'"
 }'
   printf '%s\n' "$CFG_JSON" > "$CFG_HOME/mimocode.json"
   printf '%s\n' "$CFG_JSON" > ./mimocode.json
+  ) || exit 1
   CFG_WRITTEN=yes
 else
   CFG_WRITTEN=no
@@ -267,35 +691,55 @@ if [ -n "${BF_PR8_DEBUG:-}" ]; then
   echo BF_DIAG mimocode_end
 fi
 if [ -n "$A" ]; then
-  # Proxy mode only: mimo's built-in openai provider auto-activates from
+  # Proxy mode only: the alias is registered under the "benchflow" provider
+  # (the id BenchFlow selects over ACP set_model, OPENCODE_PROXY_PROVIDER_ID),
+  # and mimo's built-in openai provider auto-activates from
   # OPENAI_* env and would conflict with the custom provider written above.
   # In direct mode the env IS the provider config — leave it intact.
   unset OPENAI_BASE_URL OPENAI_API_KEY
 fi
-exec /opt/benchflow/node/bin/node /opt/benchflow/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
+exec /opt/runtime/node/bin/node /opt/runtime/js-agents/mimo-acp/node_modules/@mimo-ai/cli/bin/mimo acp
 """
 _MIMO_MANIFEST_LAUNCH_CMD = (
     "printf '%s' '"
-    + base64.b64encode(_MIMO_MANIFEST_LAUNCHER.encode()).decode()
+    + base64.b64encode(visible_script(_MIMO_MANIFEST_LAUNCHER).encode()).decode()
     + "' | base64 -d > /tmp/mimo-acp-launch.sh && sh /tmp/mimo-acp-launch.sh"
 )
 
-
-# Path to the openclaw ACP shim script
-_OPENCLAW_SHIM = (Path(__file__).parent / "openclaw_acp_shim.py").read_text()
 
 # Path to the Pi launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
 _PI_LAUNCHER = (Path(__file__).parent / "pi_acp_launcher.py").read_text()
 
 # Path to the Harvey LAB ACP shim (runs Harvey LAB harness as an ACP agent)
 _HARVEY_LAB_SHIM = (Path(__file__).parent / "harvey_lab_acp_shim.py").read_text()
+# The two Python agents' hash locks (PT b179): uploaded by a live install
+# (agents.install), written by the recipe in an image build; in the folder
+# _agent_uv_setup checks root's alone before uv reads them either way.
+_HARVEY_LAB_LOCK = RequirementsFile(
+    _HARVEY_LAB_REQUIREMENTS_PATH,
+    HARVEY_LAB_REQUIREMENTS,
+    f"{_HARVEY_LAB_VENV}/bin/python",
+)
+_DEEPAGENTS_LOCK = RequirementsFile(
+    _DEEPAGENTS_REQUIREMENTS_PATH,
+    DEEPAGENTS_REQUIREMENTS,
+    f"{_DEEPAGENTS_VENV}/bin/python",
+)
 
 # Path to the deepagents ACP shim (runs LangChain's create_deep_agent as an ACP agent)
 _DEEPAGENTS_SHIM = (Path(__file__).parent / "deepagents_acp_shim.py").read_text()
 
+# Path to the Antigravity ACP shim (drives `agy --input-format=stream-json` as an
+# ACP agent; agy has no ACP mode of its own)
+_ANTIGRAVITY_SHIM = (Path(__file__).parent / "antigravity_acp_shim.py").read_text()
 
-def _json_settings_merge(path: str, mutator: str) -> str:
-    """Idempotent JSON-settings merge as a one-line bash snippet."""
+# Path to the Muse Code ACP shim (runs one `muse exec --json` per ACP prompt;
+# Muse Code has no ACP mode of its own)
+_MUSE_SHIM = (Path(__file__).parent / "muse_acp_shim.py").read_text()
+
+
+def _json_settings_merge_py(path: str, mutator: str) -> str:
+    """The isolated Python command of an idempotent JSON-settings merge."""
     py = (
         "import json,os,pathlib;"
         f"p=pathlib.Path(os.path.expandvars(os.path.expanduser({path!r})));"
@@ -304,19 +748,78 @@ def _json_settings_merge(path: str, mutator: str) -> str:
         f"{mutator};"
         "p.write_text(json.dumps(d, indent=2) + '\\n')"
     )
-    return f"python3 -c {shlex.quote(py)}"
+    # Custom installs may bring only /usr/local/bin/python3. Keep that
+    # supported image layout without consulting the previous role's PATH.
+    return (
+        "bf_settings_python=/usr/bin/python3; "
+        '[ -x "$bf_settings_python" ] || bf_settings_python=/usr/local/bin/python3; '
+        f'"$bf_settings_python" -I -S -c {shlex.quote(py)}'
+    )
+
+
+def _json_settings_merge(path: str, mutator: str) -> str:
+    """Idempotent JSON-settings merge as a one-line bash snippet."""
+    # Name the requirement: a bare "python3: not found" reads as an agent bug.
+    return (
+        "{ [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ] || "
+        "{ echo 'BenchFlow agent settings "
+        "setup needs python3 in the task image' >&2; exit 127; }; "
+        f"{_json_settings_merge_py(path, mutator)}; }}"
+    )
+
+
+def _json_settings_merge_node(path: str, mutator_js: str, mutator_py: str) -> str:
+    """Idempotent JSON-settings merge with the Node runtime a JS agent installs.
+
+    For agents whose install brings BenchFlow's private Node
+    (``_js_agent_install``): their settings no longer need ``python3`` in the
+    task image (REPORT B8: ``FROM ubuntu:24.04``, the base ``bench new``
+    writes, has none). ``mutator_js`` edits ``d`` (the parsed file, ``{}`` when
+    absent or empty) in plain ES2015 so a task's older ``node`` on PATH runs it
+    too; ``mutator_py`` is the same edit for ``python3``, used only when no
+    Node is there (a manifest or plugin replaced the install). ``path`` is
+    expanded by the shell (``$BENCHFLOW_AGENT_HOME``).
+    """
+    js = (
+        'var fs=require("fs"),path=require("path"),p=process.argv[1];'
+        "fs.mkdirSync(path.dirname(p),{recursive:true});"
+        'var t=fs.existsSync(p)?fs.readFileSync(p,"utf8").trim():"";'
+        "var d=t?JSON.parse(t):{};"
+        f"{mutator_js};"
+        'fs.writeFileSync(p,JSON.stringify(d,null,2)+"\\n");'
+    )
+    node = f"{_BENCHFLOW_NODE_PREFIX}/bin/node"
+    return (
+        f'{{ bf_node={node}; [ -x "$bf_node" ] || '
+        'bf_node="$(command -v node 2>/dev/null)" || bf_node=""; '
+        f'if [ -n "$bf_node" ]; then "$bf_node" -e {shlex.quote(js)} "{path}"; '
+        "elif [ -x /usr/bin/python3 ] || [ -x /usr/local/bin/python3 ]; then "
+        f"{_json_settings_merge_py(path, mutator_py)}; "
+        "else echo 'BenchFlow agent settings setup needs node (the agent install "
+        "brings it) or python3 in the task image' >&2; exit 127; fi; }"
+    )
+
+
+def _js_deny_list(key: str, tools: tuple[str, ...]) -> str:
+    """``mutator_js``: add ``tools`` to ``d[key].deny``, once each."""
+    names = ",".join(f'"{tool}"' for tool in tools)
+    return (
+        f"d.{key}=d.{key}||{{}};d.{key}.deny=d.{key}.deny||[];"
+        f"[{names}].forEach(function(t){{"
+        f"if(d.{key}.deny.indexOf(t)<0)d.{key}.deny.push(t);}})"
+    )
 
 
 # OpenCode-family proxy fix: OpenCode and its MiMo fork validate provider/model
 # ids against the models.dev catalog and reject the synthetic
-# ``openai/benchflow-<alias>`` that BenchFlow's LiteLLM proxy serves the model
+# ``openai/runtime-<alias>`` that BenchFlow's LiteLLM proxy serves the model
 # under (ProviderModelNotFoundError -> zero requests -> no
 # ``trajectory/llm_trajectory.jsonl``, which ``benchflow-experiment-review``
 # requires). Registering the alias under ``provider.openai.models`` (with the
 # gateway baseURL) bypasses that catalog check so the agent accepts the id and
 # routes through the proxy.
 def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
-    """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
+    """Install ``/opt/runtime/bin/<binary>-proxy``: a thin wrapper that, in
     proxy mode, registers the LiteLLM gateway alias under a dedicated
     OpenCode provider, then execs the isolated agent binary. Idempotent
     (preserves existing config); no-op outside proxy mode.
@@ -334,6 +837,11 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     expects. ``small_model`` is pinned to the same alias so OpenCode's
     title/summary helper stops falling back to its hard-coded ``gpt-5-nano``
     (which the gateway cannot serve either).
+
+    A Gemini model has no alias: with ``{OPENCODE_GOOGLE_BASE_URL_ENV}`` set,
+    the wrapper instead points OpenCode's built-in ``google`` provider at the
+    gateway's Gemini pass-through and gives it the gateway key, so OpenCode's
+    own Gemini client (thought signatures, thinking config) talks to LiteLLM.
     """
     real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
@@ -350,27 +858,44 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             'const os = require("os");',
             'const path = require("path");',
             'const alias = (process.env.BENCHFLOW_LITELLM_MODEL_ALIAS || "").trim();',
-            "if (alias) {",
+            f'const googleBase = (process.env.{OPENCODE_GOOGLE_BASE_URL_ENV} || "").trim();',
+            "if (alias || googleBase) {",
             '  const home = (process.env.BENCHFLOW_AGENT_HOME || "").trim() || os.homedir();',
             f"  const p = path.join(home, {config_relpath!r});",
             "  fs.mkdirSync(path.dirname(p), { recursive: true });",
             '  const text = fs.existsSync(p) ? fs.readFileSync(p, "utf8").trim() : "";',
             "  const d = text ? JSON.parse(text) : {};",
+            "  const providers = d.provider ||= {};",
+            "  if (alias) {",
             # Dedicated provider id (see docstring) → chat completions, not the
             # Responses API the built-in ``openai`` id is hard-coded to.
-            "  const providers = d.provider ||= {};",
-            f"  const prov = providers[{provider_id!r}] ||= {{}};",
-            '  prov.npm = "@ai-sdk/openai-compatible";',
-            '  prov.name ||= "BenchFlow Gateway";',
-            "  const opts = prov.options ||= {};",
-            '  const base = (process.env.OPENAI_BASE_URL || "").trim();',
-            "  if (base) opts.baseURL = base;",
-            '  const key = (process.env.OPENAI_API_KEY || "").trim();',
-            "  if (key) opts.apiKey = key;",
-            "  const models = prov.models ||= {};",
-            "  models[alias] ||= { name: alias };",
-            f'  d.small_model = "{provider_id}/" + alias;',
-            '  fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\\n");',
+            f"    const prov = providers[{provider_id!r}] ||= {{}};",
+            '    prov.npm = "@ai-sdk/openai-compatible";',
+            '    prov.name ||= "BenchFlow Gateway";',
+            "    const opts = prov.options ||= {};",
+            '    const base = (process.env.OPENAI_BASE_URL || "").trim();',
+            "    if (base) opts.baseURL = base;",
+            '    const key = (process.env.OPENAI_API_KEY || "").trim();',
+            "    if (key) opts.apiKey = key;",
+            "    const models = prov.models ||= {};",
+            "    models[alias] ||= { name: alias };",
+            '    const catalog = JSON.parse(process.env.BENCHFLOW_PROVIDER_MODELS || "[]");',
+            "    const metadata = Array.isArray(catalog) && catalog.find(m => m.id === alias);",
+            "    if (metadata && Array.isArray(metadata.input)) {",
+            '      const input = metadata.input.filter(x => ["text", "image", "audio", "video", "pdf"].includes(x));',
+            '      models[alias].modalities = {input, output: ["text"]};',
+            '      models[alias].attachment = input.includes("image");',
+            "    }",
+            f'    d.small_model = "{provider_id}/" + alias;',
+            "  } else {",
+            # Gemini: the built-in google provider, pointed at the gateway's
+            # Gemini pass-through with the gateway key (see docstring).
+            "    const opts = (providers.google ||= {}).options ||= {};",
+            "    opts.baseURL = googleBase;",
+            '    const key = (process.env.GOOGLE_GENERATIVE_AI_API_KEY || "").trim();',
+            "    if (key) opts.apiKey = key;",
+            "  }",
+            '  fs.writeFileSync(p, JSON.stringify(d, null, 2) + "\\n", {mode: 0o600});',
             "}",
         ]
     )
@@ -381,7 +906,8 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         # set_model "<provider>/<alias>" for a model now missing from its config
         # and hit ProviderModelNotFoundError with nothing explaining why. A hard
         # exit surfaces the cause instead of a silent broken proxy path.
-        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ]; then\n'
+        'if [ -n "$BENCHFLOW_LITELLM_MODEL_ALIAS" ] || '
+        f'[ -n "${OPENCODE_GOOGLE_BASE_URL_ENV}" ]; then\n'
         f"  if ! {_BENCHFLOW_NODE_PREFIX}/bin/node - <<'JSEOF'\n"
         f"{register_js}\n"
         "JSEOF\n"
@@ -401,7 +927,7 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         f'  PATH="{_BENCHFLOW_NODE_PREFIX}/bin:$PATH" exec {agent_bin} "$@"\n'
         "fi\n"
     )
-    b64 = base64.b64encode(wrapper.encode()).decode()
+    b64 = base64.b64encode(visible_script(wrapper).encode()).decode()
     return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
 
 
@@ -440,6 +966,14 @@ class SubscriptionAuth:
     files: list[HostAuthFile] = field(default_factory=list)  # All files to copy
 
 
+# Who carries an agent's model calls (AgentConfig.model_route). "proxy": the
+# LiteLLM proxy BenchFlow starts for the trial, which meters usage and records
+# the model trajectory. "agent": the agent's own endpoint.
+MODEL_ROUTE_PROXY = "proxy"
+MODEL_ROUTE_AGENT = "agent"
+MODEL_ROUTES = (MODEL_ROUTE_PROXY, MODEL_ROUTE_AGENT)
+
+
 @dataclass
 class AgentConfig:
     """Configuration for a supported agent."""
@@ -447,7 +981,8 @@ class AgentConfig:
     name: str
     install_cmd: str
     launch_cmd: str
-    protocol: str = "acp"  # "acp", "cli", or "session-factory"
+    requirements_files: tuple[RequirementsFile, ...] = field(default=(), kw_only=True)
+    protocol: str = "acp"  # "acp" or "session-factory"
     session_factory: str = ""
     # Non-ACP only. When protocol == "session-factory", this is a
     # "module:callable" entrypoint that builds an Agent Protocol object.
@@ -456,6 +991,11 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     install_timeout: int = 900  # seconds
     default_model: str = ""  # default model ID when --model is omitted
+    model_route: str = MODEL_ROUTE_PROXY
+    # "agent": the agent calls its own model endpoint with its own declared
+    # credentials (manifest contract 1.1). BenchFlow then starts no proxy for
+    # it, a model is optional, and a given model is only a label: recorded,
+    # and sent over ACP where the agent takes one (agent_routes_own_model).
     api_protocol: str = ""
     # The LLM API protocol the agent natively speaks:
     # "anthropic-messages" | "openai-completions" | "openai-responses" |
@@ -467,10 +1007,14 @@ class AgentConfig:
     # Maps BENCHFLOW_PROVIDER_* → agent-native env var names.
     # Applied by SDK after provider resolution.
     credential_files: list[CredentialFile] = field(default_factory=list)
+    # Credential files the launch command itself writes ({home}/{workspace}),
+    # e.g. codex-acp's $HOME/.codex/auth.json. Recorded on the connection's
+    # cleanup ledger before launch, so they are removed with the rest.
+    launcher_credential_files: list[str] = field(default_factory=list)
     # Files to write into container before agent launch (e.g. auth.json).
     home_dirs: list[str] = field(default_factory=list)
     # Extra dot-dirs under $HOME to copy to sandbox user (for dirs not
-    # derivable from skill_paths or credential_files, e.g. ".openclaw").
+    # derivable from skill_paths or credential_files).
     acp_model_format: str = "bare"
     # How the agent expects ACP model IDs in session/set_model or config options:
     # "bare"           — just the model name (e.g. "claude-sonnet-4-6").
@@ -484,6 +1028,14 @@ class AgentConfig:
     subscription_auth: SubscriptionAuth | None = None
     # Host CLI login that can substitute for an API key (e.g. OAuth tokens
     # from `claude login`). Detected automatically; API keys take precedence.
+    acp_subagent_transcript: bool = False
+    # Only verified direct harnesses may request the legacy same-session child
+    # transcript extension; this does not advertise native child sessions.
+    acp_typed_failures: bool = False
+    # Ask the agent for typed session failures (the AIR ``sessionFailure``
+    # extension): a spent subscription then arrives as its own failure kind
+    # instead of an opaque -32603. Only for harnesses whose failure records
+    # were checked against the pinned version (benchflow.acp.client).
     supports_acp_set_model: bool = True
     # Some ACP agents configure the model through env/config at launch time and
     # do not implement session/set_model (e.g. OpenHands CLI ACP).
@@ -502,6 +1054,12 @@ class AgentConfig:
     # String appended to launch_cmd when BenchFlow's no-web policy is active.
     # Use for agents whose supported toggle is a launch/config override.
     disallow_web_tools_launch_suffix: str = ""
+    # Shell snippet that switches off hosted (provider-side) search tools when
+    # the denylist egress policy is active; local fetch tools stay on because
+    # they go through the egress proxy. Reuses disallow_web_tools_owned_paths.
+    disallow_hosted_search_setup_cmd: str = ""
+    # String appended to launch_cmd when the denylist egress policy is active.
+    disallow_hosted_search_launch_suffix: str = ""
     # How task-declared MCP servers are delivered to the agent:
     # "acp" sends them in session/new; "native-config" writes an agent-specific
     # config file before launch (for agents whose ACP server drops/reformats
@@ -509,24 +1067,218 @@ class AgentConfig:
     task_mcp_transport: str = "acp"
     # Native-config target path, relative to $HOME unless absolute.
     task_mcp_config_path: str = ""
+    # Folders the agent's tool keeps under the sandbox's temp folder
+    # (``${TMPDIR:-/tmp}/<name>``), by plain name. The root-run install can
+    # leave one root-owned (OpenCode's postinstall runs ``opencode --version``
+    # as root, which creates /tmp/opencode), and the tool then fails as the
+    # sandbox user (#1183). Before launch BenchFlow creates each one for the
+    # sandbox user, or re-owns an existing real folder and its plain files.
+    temp_dirs: list[str] = field(default_factory=list)
+
+
+# Agents that call Google's GenerateContent API themselves (Gemini CLI and its
+# successor, the Antigravity CLI) declare it by mapping the provider base URL
+# onto this env var. The ACP runtime and the LiteLLM gateway key their
+# Gemini-native handling (bare Google model ids, the byte-preserving Gemini
+# pass-through route) off this mapping rather than off agent names.
+GEMINI_NATIVE_BASE_URL_ENV = "GOOGLE_GEMINI_BASE_URL"
+
+
+def routes_gemini_natively(agent_cfg: AgentConfig | None) -> bool:
+    """True when ``agent_cfg`` talks to the Gemini API directly."""
+    if agent_cfg is None:
+        return False
+    return (
+        agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+        == GEMINI_NATIVE_BASE_URL_ENV
+    )
+
+
+_GEMINI_EXCLUDE_WEB_TOOLS_CMD = _json_settings_merge_node(
+    "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
+    "d.tools=d.tools||{};d.tools.exclude=d.tools.exclude||[];"
+    '["google_web_search","web_fetch"].forEach(function(t){'
+    "if(d.tools.exclude.indexOf(t)<0)d.tools.exclude.push(t);})",
+    'd.setdefault("tools",{}).setdefault("exclude",[]);'
+    '[d["tools"]["exclude"].append(t) for t in '
+    '["google_web_search","web_fetch"] '
+    'if t not in d["tools"]["exclude"]]',
+)
+
+
+_ANTIGRAVITY_INSTALL_CMD = (
+    agy_install_cmd(_apt_install("curl", "ca-certificates"))
+    + " && "
+    + _install_python_script(
+        f"{_BENCHFLOW_BIN_PREFIX}/antigravity-acp-shim", _ANTIGRAVITY_SHIM
+    )
+)
+# agy has no tool-exclusion setting; its documented switch is a PreToolUse
+# lifecycle hook answering {"decision": "deny"} (see antigravity_config).
+_ANTIGRAVITY_NO_WEB_TOOLS_CMD = _json_settings_merge(
+    f"$BENCHFLOW_AGENT_HOME/{ANTIGRAVITY_HOOKS_RELPATH}",
+    hooks_deny_mutator(
+        "benchflow-no-web",
+        ANTIGRAVITY_WEB_TOOL_MATCHERS,
+        "BenchFlow policy: web tools are disabled for this run.",
+    ),
+)
+_ANTIGRAVITY_NO_HOSTED_SEARCH_CMD = _json_settings_merge(
+    f"$BENCHFLOW_AGENT_HOME/{ANTIGRAVITY_HOOKS_RELPATH}",
+    hooks_deny_mutator(
+        "benchflow-no-hosted-search",
+        ANTIGRAVITY_HOSTED_WEB_TOOL_MATCHERS,
+        "BenchFlow policy: hosted web search and fetch are disabled for this run.",
+    ),
+)
+
+_MUSE_INSTALL_CMD = (
+    muse_install_cmd(_apt_install("curl", "ca-certificates"))
+    + " && "
+    + _install_python_script(f"{_BENCHFLOW_BIN_PREFIX}/muse-acp-shim", _MUSE_SHIM)
+)
+
+# Immutable built-in command, before manifest/plugin overrides. Policy checks
+# must not confuse a replacement harness with the executable they probed.
+# Global overrides on the pinned app-server cover threads codex-acp starts
+# without session config (its title generator), preserving image config.toml.
+# Remove only a provider file created by the former launcher, never user TOML.
+CODEX_ACP_BUILTIN_LAUNCH = (
+    "( umask 077; "
+    'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
+    'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
+    'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
+    '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
+    "fi; "
+    'c="${CODEX_HOME:-$h/.codex}"; '
+    'if [ "$(head -n 1 "$c/config.toml" 2>/dev/null)" = '
+    "'# runtime-codex-home-config' ]; then "
+    'rm -f "$c/config.toml" || exit 1; '
+    "fi ) && "
+    f"export CODEX_PATH={CODEX_APP_SERVER_EXECUTABLE} && exec "
+    + _js_agent_launch(
+        "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
+    )
+)
+
+
+def launcher_guard_env(agent: str, env: dict[str, str]) -> dict[str, str]:
+    """Explicit values for every input that can enable a launcher writer.
+
+    Missing overrides must be empty at the process boundary: an image or
+    persistent container value must not activate a writer we did not prepare.
+    Keep this after credential filtering, which can remove an input too.
+    """
+    names = {
+        "codex-acp": ("OPENAI_API_KEY", "BENCHFLOW_CODEX_HOME_CONFIG"),
+        "pi-acp": ("BENCHFLOW_PROVIDER_PROTOCOL", "BENCHFLOW_PROVIDER_BASE_URL"),
+        "opencode": ("BENCHFLOW_LITELLM_MODEL_ALIAS", OPENCODE_GOOGLE_BASE_URL_ENV),
+        "mimo": ("OPENAI_BASE_URL", "BENCHFLOW_LITELLM_MODEL_ALIAS"),
+    }.get(agent.removeprefix("acpx:"), ())
+    return {name: env.get(name, "") for name in names}
+
+
+@dataclass(frozen=True)
+class LauncherCredentialPlan:
+    env_overrides: dict[str, str]
+    paths: tuple[str, ...]
+
+
+def launcher_credential_plan(
+    agent: str,
+    paths: list[str],
+    env: dict[str, str],
+    *,
+    codex_acp: bool,
+) -> LauncherCredentialPlan:
+    """Bind the prepared/ledgered destinations to explicit launch guards.
+
+    ``env`` is already credential-filtered. The caller carries these same
+    overrides to launch and records each path before preparing it; cleanup
+    consumes that ledger rather than recomputing guards in a later role.
+    """
+    overrides = launcher_guard_env(agent, env)
+    if agent == "codex-acp" and codex_acp:
+        from benchflow.agents.codex_config import codex_home_config
+
+        try:
+            config = json.loads(env.get("CODEX_CONFIG", "{}"))
+        except (TypeError, ValueError):
+            config = None
+        # Legacy environment field is diagnostic only. The app-server wrapper
+        # applies the same routing without writing/claiming the image config.
+        overrides["BENCHFLOW_CODEX_HOME_CONFIG"] = codex_home_config(config) or ""
+    return LauncherCredentialPlan(
+        overrides,
+        tuple(active_launcher_credential_files(agent, paths, {**env, **overrides})),
+    )
+
+
+def active_launcher_credential_files(
+    agent: str, paths: list[str], env: dict[str, str]
+) -> list[str]:
+    """Select declared destinations using the launchers' actual write guards.
+
+    A declaration is an inventory, not ownership of an inactive writer's
+    file. In particular, MiMo's cwd config can be the task's answer. Native
+    uploads are recorded separately, even if they share a launcher path.
+    Unknown/custom destinations retain their explicit declaration contract.
+    """
+    agent = agent.removeprefix("acpx:")
+    conditions = {
+        "codex-acp": {
+            "{home}/.codex/auth.json": bool(env.get("OPENAI_API_KEY")),
+        },
+        "pi-acp": {
+            "{home}/.pi/agent/models.json": (
+                env.get("BENCHFLOW_PROVIDER_PROTOCOL") == "openai-completions"
+                and bool(env.get("BENCHFLOW_PROVIDER_BASE_URL"))
+            ),
+        },
+        "opencode": {
+            "{home}/.config/opencode/opencode.json": bool(
+                env.get("BENCHFLOW_LITELLM_MODEL_ALIAS", "").strip()
+                or env.get(OPENCODE_GOOGLE_BASE_URL_ENV, "").strip()
+            ),
+        },
+        "mimo": dict.fromkeys(
+            ("{home}/.config/mimocode/mimocode.json", "{workspace}/mimocode.json"),
+            bool(
+                env.get("OPENAI_BASE_URL") and env.get("BENCHFLOW_LITELLM_MODEL_ALIAS")
+            ),
+        ),
+    }
+    guards = conditions.get(agent, {})
+    return [path for path in paths if guards.get(path, True)]
 
 
 # Agent registry — all supported agents
 AGENTS: dict[str, AgentConfig] = {
     "claude-agent-acp": AgentConfig(
         name="claude-agent-acp",
+        acp_subagent_transcript=True,
+        # Verified against claude-agent-acp 0.81.2's session-failure-extension.
+        acp_typed_failures=True,
         description="Claude Code via ACP (Anthropic's Agent Client Protocol)",
         skill_paths=["$HOME/.claude/skills"],
         home_dirs=[".claude"],
-        # Pinned to 0.73.0 (bundles @anthropic-ai/claude-agent-sdk 0.3.257):
-        # claude-fable-5-1 rejects Claude Code < 2.1.251 with
-        # `claude_code_version_too_old` (HTTP 400), so the previous 0.40.0 pin
-        # (sdk 0.3.160) cannot run that model at all. The config-option wiring
-        # below (set_config_option + the "model"/"effort" ids) was re-verified
-        # against 0.73.0 with tests/test_acp_pinned_protocol_guard.py; the ids
-        # stay coupled to this pin — re-run that guard when bumping. runtime.py
+        # The adapter and the Claude Code CLI are pinned separately (see
+        # _CLAUDE_CODE_PACKAGE): a model that needs a newer CLI is a CLI bump.
+        # Models reject a CLI below their minimum with
+        # `claude_code_version_too_old` (HTTP 400) on the first API call
+        # (claude-fable-5-1 needs 2.1.251, claude-opus-5-5 2.1.280). The
+        # config-option wiring below (set_config_option + the "model"/"effort"
+        # ids) was re-verified against 0.81.2 with
+        # tests/test_acp_pinned_protocol_guard.py; the ids stay coupled to the
+        # adapter pin, so re-run that guard when bumping either pin. runtime.py
         # uses capability-first dispatch for the rest of the family.
-        install_cmd=_js_agent_install("claude-agent-acp", _CLAUDE_AGENT_ACP_PACKAGE),
+        install_cmd=_js_agent_install(
+            "claude-agent-acp",
+            _CLAUDE_AGENT_ACP_PACKAGE,
+            companion=_CLAUDE_CODE_PACKAGE,
+            launcher_env=_CLAUDE_AGENT_ACP_ENV,
+            verify=_claude_code_version_check(),
+        ),
         launch_cmd=_js_agent_launch("claude-agent-acp"),
         protocol="acp",
         requires_env=["ANTHROPIC_API_KEY"],
@@ -545,13 +1297,23 @@ AGENTS: dict[str, AgentConfig] = {
                 ),
             ],
         ),
-        disallow_web_tools_setup_cmd=_json_settings_merge(
+        # Written with the agent's own Node, so an image without python3
+        # runs the claude agent (REPORT B8).
+        disallow_web_tools_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
+            _js_deny_list("permissions", ("WebSearch", "WebFetch")),
             'd.setdefault("permissions",{}).setdefault("deny",[]);'
             '[d["permissions"]["deny"].append(t) for t in ["WebSearch","WebFetch"] '
             'if t not in d["permissions"]["deny"]]',
         ),
         disallow_web_tools_owned_paths=["$HOME/.claude"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge_node(
+            "$BENCHFLOW_AGENT_HOME/.claude/settings.json",
+            _js_deny_list("permissions", ("WebSearch",)),
+            'd.setdefault("permissions",{}).setdefault("deny",[]);'
+            '[d["permissions"]["deny"].append(t) for t in ["WebSearch"] '
+            'if t not in d["permissions"]["deny"]]',
+        ),
         supports_acp_set_model=False,
         acp_model_config_id="model",
         acp_effort_config_id="effort",
@@ -561,14 +1323,15 @@ AGENTS: dict[str, AgentConfig] = {
         description="Pi agent via ACP",
         skill_paths=["$HOME/.pi/agent/skills", "$HOME/.agents/skills"],
         install_cmd=(
-            f"{_js_agent_install('pi', '@mariozechner/pi-coding-agent')} && "
-            f"{_js_agent_install('pi-acp', 'pi-acp')} && "
+            f"{_js_agent_install('pi', _PI_PACKAGE)} && "
+            f"{_js_agent_install('pi-acp', _PI_ACP_PACKAGE)} && "
             # Deploy launch wrapper (bridges BENCHFLOW_PROVIDER_* → Pi config)
             + _install_python_script(
                 f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher", _PI_LAUNCHER
             )
         ),
-        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher",
+        launch_cmd=_python_shim_launch(f"{_BENCHFLOW_BIN_PREFIX}/pi-acp-launcher"),
+        launcher_credential_files=["{home}/.pi/agent/models.json"],
         protocol="acp",
         acp_model_format="registered-provider/model",
         requires_env=[],  # inferred from --model at runtime
@@ -579,26 +1342,6 @@ AGENTS: dict[str, AgentConfig] = {
         # env_mapping intentionally empty — the launch wrapper handles
         # protocol-dependent translation (env vars for Anthropic,
         # models.json for OpenAI-compatible providers like vLLM).
-    ),
-    "openclaw": AgentConfig(
-        name="openclaw",
-        description="OpenClaw agent via ACP shim — model set at runtime via --model",
-        skill_paths=["$HOME/.claude/skills", "$WORKSPACE/skills"],
-        install_cmd=(
-            f"{_js_agent_install('openclaw', 'openclaw@2026.6.9')} && "
-            # Configure: auto-approve tools (no model — set at runtime via ACP set_model)
-            "mkdir -p ~/.openclaw && "
-            'echo \'{"version":1,"defaults":{"allow_all":true}}\''
-            " > ~/.openclaw/exec-approvals.json && "
-            # Deploy ACP shim
-            + _install_python_script(
-                f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim", _OPENCLAW_SHIM
-            )
-        ),
-        launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/openclaw-acp-shim",
-        protocol="acp",
-        requires_env=[],  # inferred from --model at runtime
-        home_dirs=[".openclaw"],
     ),
     "codex-acp": AgentConfig(
         name="codex-acp",
@@ -614,10 +1357,18 @@ AGENTS: dict[str, AgentConfig] = {
         # keeps working across the bump. 1.6.0 also advertises a "model"
         # config option, but that option rejects ``model[effort]`` ids
         # (-32602), so runtime.py keeps codex on session/set_model — verified
-        # live 2026-08-19 against gpt-5.6-sol via an Azure provider.
-        install_cmd=_js_agent_install(
-            "codex-acp", "@agentclientprotocol/codex-acp@1.6.0"
-        ),
+        # live 2026-08-19 against gpt-5.6-sol via an Azure provider. 1.13.1
+        # keeps both behaviours (session/set_model still parses
+        # ``model[effort]``; the "model" option still takes bare ids only),
+        # and 2.0.1 leaves session/set_model and its ``model[effort]`` ids
+        # unchanged (#1147).
+        # The pin decides which models Codex knows: codex resolves a model's
+        # tool surface from the catalog bundled with the @openai/codex it
+        # depends on, and a model missing from it gets the fallback surface
+        # (plain function tools, no code mode / apply_patch / spawn_agent, #1145).
+        # 1.6.0 (codex 0.148) lacked gpt-6-astra; 1.13.1 (codex 0.156.1) lacks
+        # gpt-6.1-sol; 2.0.1 (@openai/codex ^0.159.1) lists it.
+        install_cmd=_codex_acp_install(),
         # Self-write ~/.codex/auth.json from OPENAI_API_KEY in the launcher itself,
         # ONLY when the key is set (so subscription/host-auth mode is untouched),
         # instead of relying on core's credential_files writer. This makes the
@@ -625,16 +1376,8 @@ AGENTS: dict[str, AgentConfig] = {
         # byte-identical to the former credential_files template
         # ({"OPENAI_API_KEY": "<key>"}) and keeps the old 0600 secret mode.
         # `exec` so signals/PID reach codex.
-        launch_cmd=(
-            'h="${BENCHFLOW_AGENT_HOME:-$HOME}"; '
-            'if [ -n "$OPENAI_API_KEY" ]; then mkdir -p "$h/.codex" && '
-            'printf \'{"OPENAI_API_KEY": "%s"}\' "$OPENAI_API_KEY" '
-            '> "$h/.codex/auth.json" && chmod 600 "$h/.codex/auth.json"; '
-            "fi; exec "
-            + _js_agent_launch(
-                "codex-acp", "${OPENAI_BASE_URL:+-c openai_base_url=$OPENAI_BASE_URL}"
-            )
-        ),
+        launch_cmd=CODEX_ACP_BUILTIN_LAUNCH,
+        launcher_credential_files=["{home}/.codex/auth.json"],
         protocol="acp",
         requires_env=["OPENAI_API_KEY"],
         api_protocol="openai-responses",
@@ -649,11 +1392,18 @@ AGENTS: dict[str, AgentConfig] = {
                 HostAuthFile("~/.codex/auth.json", "{home}/.codex/auth.json"),
             ],
         ),
-        disallow_web_tools_launch_suffix=" -c tools.web_search=false",
+        # codex-acp ignores CLI -c flags. codex_config applies the web policy
+        # through CODEX_CONFIG before launching the adapter.
     ),
     "gemini": AgentConfig(
         name="gemini",
-        description="Google Gemini CLI via ACP",
+        # Google folded Gemini CLI into the Antigravity CLI (developer blog,
+        # 2026-05-19) and stopped serving AI Pro, Ultra and free users on it on
+        # 2026-06-18; only paid API keys and enterprise licences remain.
+        description=(
+            "Google Gemini CLI via ACP (legacy, API key only: Google folded it "
+            "into the Antigravity CLI, --agent antigravity)"
+        ),
         skill_paths=["$HOME/.gemini/skills"],
         install_cmd=_js_agent_install("gemini", "@google/gemini-cli@0.42.0"),
         # BenchFlow already isolates the agent inside the task sandbox and
@@ -669,67 +1419,155 @@ AGENTS: dict[str, AgentConfig] = {
         requires_env=["GEMINI_API_KEY"],
         # Default to a sane Gemini model so `--agent gemini` works without
         # --model and never cross-wires to a Claude default (#343).
-        default_model="gemini-2.5-flash",
+        default_model="gemini-3.5-flash-lite",
         # api_protocol intentionally empty: Gemini speaks Google's native
         # GenerateContent format, which no current PROVIDERS entry exposes as
         # a multi-endpoint option. Set this when a Gemini-compatible provider
         # with multiple endpoints (e.g. OpenRouter) is added.
         env_mapping={
-            "BENCHFLOW_PROVIDER_BASE_URL": "GOOGLE_GEMINI_BASE_URL",
+            "BENCHFLOW_PROVIDER_BASE_URL": GEMINI_NATIVE_BASE_URL_ENV,
             # Map to the CLI-native var; auto_inherit_env mirrors it to
             # GOOGLE_API_KEY for compatibility with users who set that alias.
             "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
         },
-        subscription_auth=SubscriptionAuth(
-            replaces_env="GEMINI_API_KEY",
-            detect_file="~/.gemini/oauth_creds.json",
-            files=[
-                HostAuthFile(
-                    "~/.gemini/oauth_creds.json", "{home}/.gemini/oauth_creds.json"
-                ),
-                HostAuthFile("~/.gemini/settings.json", "{home}/.gemini/settings.json"),
-                HostAuthFile(
-                    "~/.gemini/google_accounts.json",
-                    "{home}/.gemini/google_accounts.json",
-                ),
-            ],
-        ),
-        disallow_web_tools_setup_cmd=_json_settings_merge(
-            "$BENCHFLOW_AGENT_HOME/.gemini/settings.json",
-            'd.setdefault("tools",{}).setdefault("exclude",[]);'
-            '[d["tools"]["exclude"].append(t) for t in '
-            '["google_web_search","web_fetch"] '
-            'if t not in d["tools"]["exclude"]]',
-        ),
+        # No subscription_auth: a Google sign-in no longer runs Gemini CLI for
+        # AI Pro, Ultra or free accounts, and every BenchFlow Gemini run goes
+        # through the LiteLLM proxy, which needs GEMINI_API_KEY. Copying the
+        # sign-in's OAuth files into the sandbox gave the agent a refresh token
+        # the run could not use.
+        disallow_web_tools_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
         disallow_web_tools_owned_paths=["$HOME/.gemini"],
+        # web_fetch tries the hosted urlContext path before any local fetch, so
+        # the egress proxy cannot filter it; the denylist excludes both tools.
+        disallow_hosted_search_setup_cmd=_GEMINI_EXCLUDE_WEB_TOOLS_CMD,
+    ),
+    "antigravity": AgentConfig(
+        name="antigravity",
+        description=(
+            "Google Antigravity CLI (agy, the Gemini CLI successor) via "
+            "BenchFlow's ACP shim over its headless stream-json mode"
+        ),
+        # agy discovers skills globally under ~/.gemini/config/skills and per
+        # workspace under <workspace>/.agents/skills (the shim launches agy
+        # with --add-dir=<cwd>, which is what makes the workspace tree count).
+        skill_paths=[
+            ANTIGRAVITY_GLOBAL_SKILLS_PATH,
+            ANTIGRAVITY_WORKSPACE_SKILLS_PATH,
+        ],
+        home_dirs=[ANTIGRAVITY_HOME_DIR],
+        # Pinned native binary (see antigravity_config.AGY_RELEASES) plus the
+        # Python shim; no Node.js is involved. The shim writes
+        # ~/.gemini/antigravity-cli/settings.json at launch (Gemini API-key
+        # mode when GEMINI_API_KEY is present, telemetry off, agy's own
+        # terminal sandbox off) — Google sign-in lives in the OS keyring and
+        # cannot be copied into a sandbox, so there is no subscription_auth.
+        install_cmd=_ANTIGRAVITY_INSTALL_CMD,
+        launch_cmd=_python_shim_launch(f"{_BENCHFLOW_BIN_PREFIX}/antigravity-acp-shim"),
+        protocol="acp",
+        requires_env=["GEMINI_API_KEY"],
+        default_model="gemini-3.8-flash",
+        # api_protocol intentionally empty: agy speaks Google's native
+        # GenerateContent format, like the gemini agent.
+        api_protocol="",
+        env_mapping={
+            "BENCHFLOW_PROVIDER_BASE_URL": GEMINI_NATIVE_BASE_URL_ENV,
+            "BENCHFLOW_PROVIDER_API_KEY": "GEMINI_API_KEY",
+        },
+        # The shim implements session/set_model and a "thinking" config
+        # option, so model and effort are driven over ACP like every other
+        # ACP agent. agy's catalog ids carry the effort (gemini-3.8-flash-high);
+        # BenchFlow keeps the bare id and passes --reasoning-effort through the
+        # option, defaulting to high (agy requires one for every model).
+        acp_effort_config_id="thinking",
+        disallow_web_tools_setup_cmd=_ANTIGRAVITY_NO_WEB_TOOLS_CMD,
+        disallow_web_tools_owned_paths=["$HOME/.gemini"],
+        # search_web is hosted and read_url_content fetches server-side, so the
+        # egress proxy never sees either; the denylist mode switches both off.
+        disallow_hosted_search_setup_cmd=_ANTIGRAVITY_NO_HOSTED_SEARCH_CMD,
+        # agy loads MCP servers from mcp_config.json, not from ACP session/new.
+        task_mcp_transport="native-config",
+        task_mcp_config_path=ANTIGRAVITY_MCP_CONFIG_RELPATH,
+    ),
+    "muse-code": AgentConfig(
+        name="muse-code",
+        description=(
+            "Meta Muse Code CLI via BenchFlow's ACP shim over its headless "
+            "`muse exec --json` mode"
+        ),
+        skill_paths=[MUSE_SKILLS_PATH],
+        # Pinned native binary (see muse_config.MUSE_RELEASES) plus the Python
+        # shim; no Node.js is involved.
+        install_cmd=_MUSE_INSTALL_CMD,
+        launch_cmd=_python_shim_launch(f"{_BENCHFLOW_BIN_PREFIX}/muse-acp-shim"),
+        protocol="acp",
+        # A subscription login, MUSE_AUTH_JSON (written to ~/.config/muse/
+        # auth.json below), runs natively: Meta's subscription works only
+        # through the CLI's own login. resolve_agent_env refuses a run without
+        # one; a META_API_KEY run has no proxy route. The shim also withholds
+        # META_API_KEY from Muse, which would otherwise prefer the key.
+        requires_env=["MUSE_AUTH_JSON"],
+        credential_files=[
+            CredentialFile(
+                path=f"{{home}}/{MUSE_AUTH_RELPATH}", env_source=MUSE_AUTH_JSON_ENV
+            ),
+        ],
+        default_model="muse-spark-1.3",
+        # Muse talks to Meta's API itself; no BenchFlow provider sits between.
+        api_protocol="",
+        # The shim implements session/set_model and an "effort" config option.
+        acp_effort_config_id="effort",
+        # Both switches become muse flags in the shim: --disable-web-tools, or
+        # tools.web_search.mode="off" (Meta-side search, out of the egress
+        # proxy's reach; web_fetch fetches from the sandbox through the proxy).
+        disallow_web_tools_launch_suffix=" --disable-web-tools",
+        disallow_hosted_search_launch_suffix=" --disable-hosted-search",
     ),
     "opencode": AgentConfig(
         name="opencode",
         description="OpenCode via ACP — open-source coding agent (TypeScript)",
         skill_paths=["$HOME/.opencode/skills"],
-        home_dirs=[".opencode"],
+        # OpenCode reads its config from ~/.config/opencode; declaring that
+        # subdir copies an image-provided config without all of ~/.config.
+        home_dirs=[".opencode", ".config/opencode"],
         install_cmd=(
-            _js_agent_install("opencode", "opencode-ai@1.18.11")
+            _js_agent_install("opencode", "opencode-ai@1.19.5")
             + " && "
             + _opencode_family_proxy_wrapper_install(
                 "opencode", ".config/opencode/opencode.json"
             )
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
+        launcher_credential_files=["{home}/.config/opencode/opencode.json"],
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
+        # The install's `opencode --version` (postinstall, as root) creates
+        # $TMPDIR/opencode, which OpenCode writes as the sandbox user (#1183).
+        temp_dirs=["opencode"],
         acp_model_format="provider/model",
+        # OpenCode adds an "effort" config option once a reasoning model is
+        # selected (its model variants; gemini-4-argon: low/medium/high) and
+        # defaults it to the lowest, which then overrides any thinking level
+        # in its config (1.18.11, checked 2026-10-14; 1.19.5 also offers a
+        # "default" value and builds the variants itself, checked 2026-11-04).
+        # The model is set first, so the option is there when the effort is set.
+        acp_effort_config_id="effort",
         # OpenCode uses models.dev provider IDs — its parseModel() splits
         # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
         # not just "gemini-3.1-pro-preview".
         env_mapping={
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
         },
-        disallow_web_tools_setup_cmd=_json_settings_merge(
+        disallow_web_tools_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            "d.tools=d.tools||{};d.tools.webfetch=false",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/opencode"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge_node(
+            "$BENCHFLOW_AGENT_HOME/.config/opencode/opencode.json",
+            "d.tools=d.tools||{};d.tools.websearch=false",
+            'd.setdefault("tools",{})["websearch"]=False',
+        ),
     ),
     "mimo": AgentConfig(
         name="mimo",
@@ -739,6 +1577,10 @@ AGENTS: dict[str, AgentConfig] = {
         ),
         install_cmd=_MIMO_MANIFEST_INSTALL_CMD,
         launch_cmd=_MIMO_MANIFEST_LAUNCH_CMD,
+        launcher_credential_files=[
+            "{home}/.config/mimocode/mimocode.json",
+            "{workspace}/mimocode.json",
+        ],
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime
         # MiMo Code ships a fixed endpoint for its native models.dev "xiaomi"
@@ -762,7 +1604,7 @@ AGENTS: dict[str, AgentConfig] = {
         acp_model_format="provider/model",
         # MiMo Code is an OpenCode fork: `mimo acp` reports agentInfo.name="OpenCode"
         # and uses models.dev "provider/model" ids, so set_model must send e.g.
-        # "benchflow/benchflow-<alias>" in proxy mode (the dedicated
+        # "runtime/runtime-<alias>" in proxy mode (the dedicated
         # OPENCODE_PROXY_PROVIDER_ID chat-completions provider the -proxy wrapper
         # registers — NOT the built-in "openai" id, whose Responses-API hard-coding
         # the gateway cannot serve), or "xiaomi/mimo-v2.5" in non-proxy mode via the
@@ -774,11 +1616,17 @@ AGENTS: dict[str, AgentConfig] = {
             "BENCHFLOW_PROVIDER_BASE_URL": "OPENAI_BASE_URL",
             "BENCHFLOW_PROVIDER_API_KEY": "OPENAI_API_KEY",
         },
-        disallow_web_tools_setup_cmd=_json_settings_merge(
+        disallow_web_tools_setup_cmd=_json_settings_merge_node(
             "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            "d.tools=d.tools||{};d.tools.webfetch=false",
             'd.setdefault("tools",{})["webfetch"]=False',
         ),
         disallow_web_tools_owned_paths=["$HOME/.config/mimocode"],
+        disallow_hosted_search_setup_cmd=_json_settings_merge_node(
+            "$BENCHFLOW_AGENT_HOME/.config/mimocode/mimocode.json",
+            "d.tools=d.tools||{};d.tools.websearch=false",
+            'd.setdefault("tools",{})["websearch"]=False',
+        ),
     ),
     "harvey-lab-harness": AgentConfig(
         name="harvey-lab-harness",
@@ -786,27 +1634,55 @@ AGENTS: dict[str, AgentConfig] = {
         "(6 tools: bash, read, write, edit, glob, grep) via ACP shim",
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
-            # Ensure git is available
-            "( command -v git >/dev/null 2>&1 || "
-            "  (apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1) ) && "
-            # Clone Harvey LAB repo
-            "( [ -d /opt/harvey-labs/.git ] || "
-            "  git clone --depth 1 https://github.com/harveyai/harvey-labs.git /opt/harvey-labs ) && "
-            # Install Harvey LAB's Python dependencies
-            "( command -v pip3 >/dev/null 2>&1 || "
-            "  (apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1) ) && "
-            "( python3 -m venv /opt/benchflow/harvey-lab-venv 2>/dev/null || "
-            "  (apt-get update -qq && apt-get install -y -qq python3-venv >/dev/null 2>&1 && "
-            "   python3 -m venv /opt/benchflow/harvey-lab-venv) ) && "
-            "/opt/benchflow/harvey-lab-venv/bin/python -m pip install -q "
-            "anthropic openai google-genai "
-            "python-docx pdfplumber openpyxl python-pptx markitdown pandas && "
+            "( command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 || "
+            f"  {_apt_install('git', 'curl', 'ca-certificates')} ) && "
+            # The pinned uv, checked against its published sha256
+            # (benchflow._uv_pin), as for deepagents and openhands.
+            f"{_agent_uv_setup()} && "
+            # Harvey LAB at a pinned commit (see _python_agent_pins), fetched
+            # alone and checked out sparsely: the shim needs harness/ (about
+            # 0.3 MB), while a full clone of the tree is about 3.2 GB of tasks.
+            # An existing checkout at the pinned commit is reused; one at any
+            # other commit is moved to it. A git without --filter or
+            # sparse-checkout falls back to fetching the whole commit.
+            f'( [ "$({_AGENT_GIT} -C {_HARVEY_LAB_ROOT} rev-parse HEAD 2>/dev/null)" = '
+            f'"{HARVEY_LAB_COMMIT}" ] || ( '
+            f"  ( [ -d {_HARVEY_LAB_ROOT}/.git ] || {_AGENT_GIT} init -q {_HARVEY_LAB_ROOT} ) && "
+            f"  ( {_AGENT_GIT} -C {_HARVEY_LAB_ROOT} sparse-checkout set "
+            f"{' '.join(HARVEY_LAB_SPARSE_PATHS)} >/dev/null 2>&1 || true ) && "
+            f"  ( {_AGENT_GIT} -C {_HARVEY_LAB_ROOT} fetch -q --depth 1 --filter=blob:none "
+            f"{HARVEY_LAB_REPO} {HARVEY_LAB_COMMIT} || "
+            f"    {_AGENT_GIT} -C {_HARVEY_LAB_ROOT} fetch -q --depth 1 "
+            f"{HARVEY_LAB_REPO} {HARVEY_LAB_COMMIT} ) && "
+            f"  {_AGENT_GIT} -C {_HARVEY_LAB_ROOT} -c advice.detachedHead=false "
+            f"checkout -q --force {HARVEY_LAB_COMMIT} ) ) && "
+            # Recreate the dedicated venv on the exact managed Python patch:
+            # installed metadata alone does not prove the lock's hashes.
+            f"uv venv -q --clear --python {PYTHON_VERSION} {_HARVEY_LAB_VENV} && "
+            f"{uv_lock_file_command(_HARVEY_LAB_VENV)} && "
+            + _HARVEY_LAB_LOCK.command
+            + " && "
+            f"uv pip install -q --require-hashes --python {_HARVEY_LAB_VENV}/bin/python "
+            f"-r {_HARVEY_LAB_REQUIREMENTS_PATH} && "
+            # uv's lock files, writable by everyone, lose that (DET-R1).
+            f"{uv_lock_seal_command(_HARVEY_LAB_VENV)} && "
+            f"chmod -R a+rX {PYTHON_INSTALL_DIR} {_HARVEY_LAB_VENV} "
+            f"{_HARVEY_LAB_ROOT} && "
             # Deploy ACP shim
             + _install_python_script(
-                f"{_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim", _HARVEY_LAB_SHIM
+                f"{_AGENT_UV_BIN}/harvey-lab-acp-shim",
+                _HARVEY_LAB_SHIM,
+                python=f"{_HARVEY_LAB_VENV}/bin/python",
             )
+            # Fail the install, not the first prompt, when the pinned harness
+            # or packages are missing: the shim imports these lazily.
+            + f" && test -f {_HARVEY_LAB_ROOT}/harness/tools.py && "
+            f"cd / && {_HARVEY_LAB_VENV}/bin/python -I -c "
+            "'import anthropic, openai, google.genai, docx, pdfplumber, "
+            "openpyxl, pptx, markitdown, pandas' >/dev/null"
         ),
-        launch_cmd=f"HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/harvey-lab-acp-shim",
+        requirements_files=(_HARVEY_LAB_LOCK,),
+        launch_cmd=f"HARVEY_LABS_ROOT={_HARVEY_LAB_ROOT} {_HARVEY_LAB_VENV}/bin/python -I {_AGENT_UV_BIN}/harvey-lab-acp-shim",
         protocol="acp",
         requires_env=[],  # inferred from model at runtime (ANTHROPIC_API_KEY, etc.)
         # Harvey LAB's Anthropic/Gemini adapters read ANTHROPIC_API_KEY /
@@ -839,35 +1715,44 @@ AGENTS: dict[str, AgentConfig] = {
             # install) so this works regardless of the base-image Python.
             "( command -v curl >/dev/null 2>&1 || "
             f"  {_apt_install('curl', 'ca-certificates')} ) && "
-            "( command -v uv >/dev/null 2>&1 || "
-            "  ( curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 ) ) && "
-            'export PATH="$HOME/.local/bin:$PATH" && '
-            "uv venv --python 3.12 /opt/benchflow/deepagents-venv && "
+            # The pinned uv, its tarball checked against the published sha256
+            # (benchflow._uv_pin), never the image's own uv or the latest one.
+            f"{_agent_uv_setup()} && "
+            # Recreate the dedicated venv before decoding and checking hashes;
+            # a same-version package already present is not trusted provenance.
+            f"uv venv -q --clear --python {PYTHON_VERSION} {_DEEPAGENTS_VENV} && "
+            f"{uv_lock_file_command(_DEEPAGENTS_VENV)} && "
             # deepagents pulls in langchain/langchain-core/langchain-anthropic/
             # langchain-google-genai; langchain-openai is NOT a deepagents dep but
             # is required for the OpenAI-compatible deepseek-v4-pro chat model.
-            "uv pip install -q --python /opt/benchflow/deepagents-venv/bin/python "
-            "deepagents langchain-openai && "
+            # Both, and everything they pull in, are exact pins
+            # (_python_agent_pins), so a new upstream release cannot change the
+            # agent between two runs of the same BenchFlow.
+            + _DEEPAGENTS_LOCK.command
+            + " && "
+            f"uv pip install -q --require-hashes --python {_DEEPAGENTS_VENV}/bin/python "
+            f"-r {_DEEPAGENTS_REQUIREMENTS_PATH} && "
+            # uv's lock files, writable by everyone, lose that (DET-R1).
+            f"{uv_lock_seal_command(_DEEPAGENTS_VENV)} && "
             # Let the sandbox user traverse + execute the venv interpreter and the
             # uv-managed CPython it links to.
-            "chmod -R a+rX /opt/benchflow/deepagents-venv && "
-            "chmod o+x /root /root/.local /root/.local/share "
-            "/root/.local/share/uv /root/.local/share/uv/python 2>/dev/null; "
+            f"chmod -R a+rX {_DEEPAGENTS_VENV} {PYTHON_INSTALL_DIR} && "
             # Deploy ACP shim
             + _install_python_script(
-                f"{_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim", _DEEPAGENTS_SHIM
+                f"{_AGENT_UV_BIN}/deepagents-acp-shim",
+                _DEEPAGENTS_SHIM,
+                python=f"{_DEEPAGENTS_VENV}/bin/python",
             )
-            # Verify deepagents actually imports through the pinned venv. Without
-            # this, install rc reflects only the shim-deploy's trailing `chmod +x`
-            # (the `;` above is intentionally non-fatal), so a failed `uv pip
-            # install deepagents` — the exact failure this block fixes — would
-            # report success and fail opaquely later at launch. Mirrors OpenHands'
-            # `command -v openhands` verification tail.
-            + " && /opt/benchflow/deepagents-venv/bin/python -c 'import deepagents' "
-            ">/dev/null 2>&1"
+            # Check the names the shim imports, only after the pinned install
+            # succeeded. A pinned release that moves a name fails at setup.
+            + f" && cd / && {_DEEPAGENTS_VENV}/bin/python -I -c "
+            "'from deepagents import create_deep_agent; "
+            "from deepagents.backends import LocalShellBackend; "
+            "from langchain_openai import ChatOpenAI' >/dev/null"
         ),
+        requirements_files=(_DEEPAGENTS_LOCK,),
         launch_cmd=(
-            f"/opt/benchflow/deepagents-venv/bin/python {_BENCHFLOW_BIN_PREFIX}/deepagents-acp-shim"
+            f"{_DEEPAGENTS_VENV}/bin/python -I {_AGENT_UV_BIN}/deepagents-acp-shim"
         ),
         protocol="acp",
         requires_env=[],  # inferred from --model at runtime (DEEPSEEK_API_KEY, etc.)
@@ -882,12 +1767,16 @@ AGENTS: dict[str, AgentConfig] = {
     ),
     "openhands": AgentConfig(
         name="openhands",
+        launcher_credential_files=["{home}/.openhands/agent_settings.json"],
         description="OpenHands agent via ACP (multi-model, Python-based)",
         skill_paths=["$HOME/.agents/skills", "$WORKSPACE/.agents/skills"],
         home_dirs=[".openhands"],
         install_cmd=(
             "export DEBIAN_FRONTEND=noninteractive && "
-            'export PATH="$HOME/.local/bin:$PATH" && '
+            # Root's install keeps the route's PATH: no $HOME/.local/bin, as
+            # HOME can be the workspace and uv runs the first git on PATH as
+            # root (FF-install-C15, PY8-PT-R8-3). _agent_uv_setup puts the
+            # tool and its entry point in BenchFlow's protected tree.
             "( command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || "
             "  if command -v apt-get >/dev/null 2>&1; then "
             f"    {_apt_install('curl', 'ca-certificates', 'git')}; "
@@ -899,18 +1788,9 @@ AGENTS: dict[str, AgentConfig] = {
             "    echo 'OpenHands GitHub install requires curl and git' >&2; "
             "    exit 127; "
             "  fi ) && "
-            "( UV_OK=0; "
-            "  if command -v uv >/dev/null 2>&1; then "
-            "    UV_VER=$(uv --version 2>/dev/null | awk '{print $2}'); "
-            '    if [ -n "$UV_VER" ] && '
-            '       [ "$(printf \'%s\\n\' 0.11.6 "$UV_VER" | sort -V | head -n1)" = "0.11.6" ]; then '
-            "      UV_OK=1; "
-            "    fi; "
-            "  fi; "
-            '  if [ "$UV_OK" = 0 ]; then '
-            "    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 && "
-            '    export PATH="$HOME/.local/bin:$PATH"; '
-            "  fi && "
+            # The pinned uv, its tarball checked against the published sha256
+            # (benchflow._uv_pin), never the image's own uv or the latest one.
+            f"( {_agent_uv_setup()} && "
             # Pin the OpenHands CLI source and its matching SDK/tools release
             # together so the ACP runtime cannot drift or be forced onto an
             # older, API-incompatible SDK. The 1.28.1 line retains the
@@ -918,25 +1798,30 @@ AGENTS: dict[str, AgentConfig] = {
             # terminal, tool-executor, and event-log stability fixes.
             f"printf 'openhands-sdk=={_OPENHANDS_SDK_VERSION}\\n"
             f"openhands-tools=={_OPENHANDS_TOOLS_VERSION}\\n' "
-            "> /tmp/oh-sdk-overrides.txt && "
-            "uv tool install --force --refresh "
-            "--overrides /tmp/oh-sdk-overrides.txt "
+            f"> {_AGENT_UV_ROOT}/oh-sdk-overrides.txt && "
+            f"{_AGENT_GIT_HOME} uv tool install --force "
+            f"--overrides {_AGENT_UV_ROOT}/oh-sdk-overrides.txt "
             "--from "
             f"'git+https://github.com/OpenHands/OpenHands-CLI.git@{_OPENHANDS_CLI_GIT_REV}' "
-            "openhands --python 3.12 && "
-            "  uv tool list | grep -q '^openhands\\b' ) && "
-            # Let sandbox user traverse to uv-managed Python interpreter path.
-            "chmod o+x /root /root/.local /root/.local/share "
-            "/root/.local/share/uv /root/.local/share/uv/tools 2>/dev/null; "
+            f"openhands --python {PYTHON_VERSION} && "
+            "  uv tool list | grep -q '^openhands\\b' && "
+            # uv's lock files (the tool folder's, each tool venv's, the
+            # cache's), writable by everyone, lose that (DET-R1).
+            f"  {uv_lock_seal_command(_OPENHANDS_TOOL_DIR)} ) && "
+            # Let sandbox user traverse to the tool venv and read the
+            # uv-managed Python it links to. In the && chain: a failed
+            # pinned-uv fetch or check must not fall through to the checks
+            # below on an image that already has openhands.
+            f"chmod -R a+rX {PYTHON_INSTALL_DIR} {_OPENHANDS_TOOL_DIR} && "
             # Seed config so OpenHands ACP auth check passes before env override.
             "mkdir -p ~/.openhands && "
             'echo \'{"llm":{"model":"placeholder","api_key":"placeholder"}}\' '
             "> ~/.openhands/agent_settings.json && "
-            "command -v openhands >/dev/null 2>&1"
+            f"test -x {_BENCHFLOW_BIN_PREFIX}/openhands"
         ),
         launch_cmd=(
-            'export PATH="$HOME/.local/bin:$PATH" && '
-            "mkdir -p ~/.openhands && "
+            f'export PATH="{_BENCHFLOW_BIN_PREFIX}:$HOME/.local/bin:$PATH" && '
+            "( umask 077; mkdir -p ~/.openhands && "
             # Write llm settings including base_url so the BenchFlow LiteLLM
             # gateway (LLM_BASE_URL) is honored. OpenHands' --override-with-envs
             # does not reliably apply base_url; it is omitted when unset.
@@ -959,13 +1844,13 @@ AGENTS: dict[str, AgentConfig] = {
             '?*) printf \',"litellm_extra_body":{"reasoning_effort":"%s"}\' '
             '"$LLM_REASONING_EFFORT" ;; '
             "esac; "
-            "printf '}}'; } > ~/.openhands/agent_settings.json && "
+            "printf '}}'; } > ~/.openhands/agent_settings.json ) && "
             'if [ "${BENCHFLOW_OPENHANDS_DISABLE_SUBAGENTS:-0}" = "1" ]; then '
             'OH_BIN="$(command -v openhands)"; '
             'OH_PY="$(dirname "$(readlink -f "$OH_BIN")")/python"; '
             '[ -x "$OH_PY" ] || { '
             'echo "Cannot locate OpenHands tool interpreter" >&2; exit 127; }; '
-            '"$OH_PY" -c \'from pathlib import Path; '
+            '"$OH_PY" -I -c \'from pathlib import Path; '
             "import openhands_cli.utils as u; "
             "p=Path(u.__file__); s=p.read_text(); "
             'old="        Tool(name=task_tool_name),\\n"; '
@@ -999,21 +1884,97 @@ AGENTS: dict[str, AgentConfig] = {
 # Updated by register_agent() when new agents are added at runtime.
 AGENT_INSTALLERS: dict[str, str] = {name: a.install_cmd for name, a in AGENTS.items()}
 AGENT_LAUNCH: dict[str, str] = {name: a.launch_cmd for name, a in AGENTS.items()}
+_BUILTIN_INSTALL_CMDS = dict(AGENT_INSTALLERS)
 
 
-def get_sandbox_home_dirs() -> set[str]:
+def has_builtin_install(agent: str) -> bool:
+    """Whether the install still uses an unchanged built-in recipe.
+
+    Custom installers may repair the image before its final seal, so the
+    early loader refusal cannot predict their effect.
+    """
+    name = agent.split()[0]
+    original = _BUILTIN_INSTALL_CMDS.get(name)
+    config = AGENTS.get(name)
+    return (
+        original is not None
+        and config is not None
+        and config.install_cmd == original
+        and AGENT_INSTALLERS.get(name) == original
+    )
+
+
+# The install split. An agent's ``install_cmd`` is the cacheable
+# part: system packages, BenchFlow's private Node and the agent's pinned
+# package, all under /opt/runtime, written the same way every trial. What
+# stays per trial is in the other fields and runs in Rollout.install_agent
+# after it: the sandbox user, credential files, subscription auth, the web
+# policy, skills and lockdown. The agents below install exactly the pinned
+# version named here, so on Docker their install is built once into a
+# cached image layer FROM the task image (sandbox.env_layers) and reused
+# while its key matches; the version is part of that key and its record.
+# Not here, so they install in every trial: pi-acp (installs `latest`), and
+# harvey-lab-harness, deepagents and openhands, whose Python packages are not
+# all pinned on this line. A manifest or plugin that replaces one of these
+# agents' install command installs in every trial too (cacheable_install),
+# unless the plugin registers its own pinned install with
+# ``register_agent(cacheable_version=...)``.
+CACHEABLE_INSTALLS: dict[str, str] = {
+    "claude-agent-acp": (
+        f"{pinned_npm_package('claude-agent-acp')[1]}"
+        f"+claude-code@{pinned_npm_package('claude-code')[1]}"
+    ),
+    "codex-acp": pinned_npm_package("codex-acp")[1],
+    "gemini": "0.42.0",
+    "opencode": "1.19.5",
+    "mimo": "0.1.15",
+    "antigravity": AGY_VERSION,
+}
+# The commands those versions describe: the built-in ones before any
+# override, and a plugin's own pinned install (register_agent).
+_CACHEABLE_INSTALL_CMDS: dict[str, str] = {
+    name: AGENTS[name].install_cmd for name in CACHEABLE_INSTALLS
+}
+_BUILTIN_CACHEABLE_INSTALLS = dict(CACHEABLE_INSTALLS)
+_BUILTIN_CACHEABLE_INSTALL_CMDS = dict(_CACHEABLE_INSTALL_CMDS)
+
+
+def cacheable_install(agent: str) -> tuple[str, str] | None:
+    """``(pinned version, install command)`` of ``agent``'s cacheable install.
+
+    None when the agent's install is not pinned, or when the command that
+    would run is no longer the built-in one the version describes (a
+    manifest, plugin or acpx wrapper replaced it): such an install runs in
+    the trial, as before.
+    """
+    version = CACHEABLE_INSTALLS.get(agent)
+    install_cmd = AGENT_INSTALLERS.get(agent)
+    if version is None or install_cmd is None:
+        return None
+    if install_cmd != _CACHEABLE_INSTALL_CMDS[agent]:
+        return None
+    return version, install_cmd
+
+
+def get_sandbox_home_dirs(agents: list[str] | None = None) -> set[str]:
     """Collect user home config/auth dirs BenchFlow may materialize for the sandbox user.
 
-    Derives from three sources across all registered agents:
+    Derives from three sources across the registered agents named in
+    ``agents`` (all registered agents when ``agents`` is None; names that are
+    not registered contribute nothing):
     - credential_files: {home}/.foo/... → ".foo"
     - subscription_auth.files: {home}/.foo/... → ".foo"
-    - home_dirs: explicit extras (e.g. ".openclaw")
+    - home_dirs: explicit extra home directories
 
     Skill paths are excluded: deploy_skills() now links those paths directly to a
     shared skills tree instead of relying on sandbox-home copies.
     """
     dirs: set[str] = set()
-    for cfg in AGENTS.values():
+    if agents is None:
+        cfgs = list(AGENTS.values())
+    else:
+        cfgs = [AGENTS[name] for name in agents if name in AGENTS]
+    for cfg in cfgs:
         for cf in cfg.credential_files:
             # path uses {home}/.foo/... placeholder
             path = cf.path
@@ -1069,8 +2030,9 @@ AGENT_ALIASES: dict[str, str] = {
     "claude": "claude-agent-acp",
     "codex": "codex-acp",
     "gemini": "gemini",
+    "agy": "antigravity",
+    "muse": "muse-code",
     "pi": "pi-acp",
-    "openclaw": "openclaw",
     "openhands": "openhands",
     "oh": "openhands",
     "harvey-lab": "harvey-lab-harness",
@@ -1078,6 +2040,11 @@ AGENT_ALIASES: dict[str, str] = {
 }
 
 VALID_PROTOCOLS = {"acp", "acpx", "session-factory"}
+
+
+_CORE_AGENT_CONFIGS = dict(AGENTS)
+_REGISTRY_LOCK = threading.RLock()
+
 
 # ---------------------------------------------------------------------------
 # The ``acpx:`` runtime-key namespace
@@ -1115,19 +2082,23 @@ def acpx_runtime_key(canonical_name: str) -> str:
 
 
 def parse_agent_spec(spec: str) -> tuple[str, str]:
-    """Parse an agent spec like 'acp/claude-agent-acp', 'acpx/claude', or 'claude'.
-
-    Returns (protocol, agent_name) with alias resolution.
-    Bare names default to 'acp' protocol.
-    The 'acpx' protocol routes through the acpx CLI (https://acpx.sh/).
-    """
+    """Parse protocol/name and resolve aliases."""
+    if is_operator_script(spec):
+        return "acp", spec
     if "/" in spec:
         protocol, name = spec.split("/", 1)
     else:
         protocol, name = "acp", spec
+    return protocol, AGENT_ALIASES.get(name, name)
 
-    name = AGENT_ALIASES.get(name, name)
-    return protocol, name
+
+def is_explicit_raw_agent_command(spec: str) -> bool:
+    """Return whether *spec* explicitly uses supported raw-command syntax."""
+    value = spec.strip()
+    return bool(value) and (
+        any(char.isspace() for char in value)
+        or value.startswith(("/", "./", "../", "~/"))
+    )
 
 
 _ACPX_INSTALL = (
@@ -1171,31 +2142,39 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         skill_paths=config.skill_paths,
         install_timeout=config.install_timeout,
         default_model=config.default_model,
+        model_route=config.model_route,
         api_protocol=config.api_protocol,
         env_mapping=config.env_mapping,
         credential_files=config.credential_files,
+        launcher_credential_files=config.launcher_credential_files,
         home_dirs=config.home_dirs,
         acp_model_format=config.acp_model_format,
         subscription_auth=config.subscription_auth,
+        # acpx forwarding of these extensions has not been verified.
+        acp_subagent_transcript=False,
+        acp_typed_failures=False,
         supports_acp_set_model=config.supports_acp_set_model,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
+        disallow_hosted_search_setup_cmd=config.disallow_hosted_search_setup_cmd,
+        disallow_hosted_search_launch_suffix=config.disallow_hosted_search_launch_suffix,
         task_mcp_transport=config.task_mcp_transport,
         task_mcp_config_path=config.task_mcp_config_path,
+        temp_dirs=config.temp_dirs,
     )
 
 
-# Namespace shorthand — harbor-style "<ns>:<id>" agent specs (design: #876).
+# Namespace shorthand — "<ns>:<id>" agent specs (design: #876).
 # The namespace names the adaptation path; resolution is a deterministic
 # name-candidate mapping onto the existing flat names (the naming law: the
 # native/ACP path owns bare names, every other path prefixes "<path>-"). No new
 # config fields, no ambiguity machinery — exact registered names and aliases
 # always win (checked before this), so "acpx:" runtime keys are unaffected.
 # Phase 2 (#876) keys the registry-backed agent auto-fetch on these same
-# namespaces (mirroring harbor's `--agent acp:<id>[@version]`).
+# namespaces (`--agent acp:<id>[@version]`).
 def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
     """Resolve "<ns>:<id>" (e.g. "omnigent:pi", "acp:mimo", "ai-sdk:codex").
 
@@ -1222,6 +2201,54 @@ def _resolve_namespace_shorthand(name: str) -> AgentConfig | None:
     return None
 
 
+# Agents BenchFlow runs itself instead of launching an ACP agent: ``oracle``
+# runs the task's own solution (oracle/solve.sh); ``nop`` runs nothing, so the
+# verifier scores the untouched workspace (the empty control run that proves a
+# verifier does not pass on untouched state). Neither needs a model or
+# credentials.
+SCRIPTED_AGENTS = frozenset({"oracle", "nop"})
+
+
+def is_scripted_agent(name: str | None) -> bool:
+    """No ACP agent, model or install: controls and operator scripts."""
+    return name in SCRIPTED_AGENTS or is_operator_script(name)
+
+
+def is_operator_script(name: str | None) -> bool:
+    """An operator's bash file, not the task's root oracle solution."""
+    return isinstance(name, str) and name.startswith("script:")
+
+
+def agent_routes_own_model(agent: str | None) -> bool:
+    """True when ``agent`` declares ``model_route = "agent"``.
+
+    Such an agent calls its own model endpoint from the sandbox: BenchFlow
+    starts no proxy for it and cannot meter its usage. The agent is looked up
+    by its registered name, an alias or an acpx spec; anything else (a raw
+    command, a scripted agent) keeps the proxy route.
+    """
+    if not agent:
+        return False
+    config = AGENTS.get(agent)
+    if config is None:
+        _protocol, name = parse_agent_spec(agent)
+        config = AGENTS.get(name) or AGENTS.get(name.removeprefix(ACPX_KEY_PREFIX))
+    # Read like the other optional fields: a plugin's or a test's stand-in
+    # config without the field keeps the proxy route.
+    return getattr(config, "model_route", MODEL_ROUTE_PROXY) == MODEL_ROUTE_AGENT
+
+
+def routed_model(agent: str | None, model: str | None) -> str | None:
+    """The model BenchFlow routes for ``agent``: ``model``, or None for an
+    agent that routes its own model calls, whatever label it was given.
+
+    Route and credential decisions read this instead of the label, so such
+    an agent takes the no-model DIRECT route: no proxy, no provider
+    resolution, and only its own declared credentials.
+    """
+    return None if agent_routes_own_model(agent) else model
+
+
 def resolve_agent(spec: str) -> AgentConfig:
     """Resolve an agent spec to an AgentConfig.
 
@@ -1237,11 +2264,17 @@ def resolve_agent(spec: str) -> AgentConfig:
             f"Unknown protocol: {protocol!r}. Valid: {', '.join(sorted(VALID_PROTOCOLS))}"
         )
 
+    from benchflow.agents import remote_manifests
+
+    remote_manifests.autoload_local_manifest_agents()
+    protocol, name = parse_agent_spec(spec)
+
     # An already-resolved acpx runtime key (e.g. "acpx:claude-agent-acp")
     # round-trips: parse_agent_spec leaves it whole under the default "acp"
     # protocol and it lives in AGENTS. See the ACPX_KEY_PREFIX contract.
-    if protocol == "acp" and name in AGENTS:
-        return AGENTS[name]
+    direct = AGENTS.get(name) if protocol == "acp" else None
+    if direct is not None:
+        return direct
 
     if name not in AGENTS:
         shorthand = _resolve_namespace_shorthand(name)
@@ -1252,16 +2285,15 @@ def resolve_agent(spec: str) -> AgentConfig:
         # manifest agents from the pinned agents source (data only — their
         # install/launch strings run in the sandbox, same trust as task
         # sources) and retry. One-shot per process; local names always win.
-        from benchflow.agents import remote_manifests
-
-        if remote_manifests.autoload_remote_manifest_agents():
-            name = AGENT_ALIASES.get(name, name)
-            if name in AGENTS:
-                config = AGENTS[name]
-                return _acpx_wrap(config) if protocol == "acpx" else config
-            shorthand = _resolve_namespace_shorthand(name)
-            if shorthand is not None:
-                return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
+        remote_manifests.autoload_remote_manifest_agents()
+        registered_name = AGENT_ALIASES.get(name, name)
+        config = AGENTS.get(registered_name)
+        if config is not None:
+            name = registered_name
+            return _acpx_wrap(config) if protocol == "acpx" else config
+        shorthand = _resolve_namespace_shorthand(name)
+        if shorthand is not None:
+            return _acpx_wrap(shorthand) if protocol == "acpx" else shorthand
 
         from difflib import get_close_matches
 
@@ -1278,20 +2310,40 @@ def resolve_agent(spec: str) -> AgentConfig:
             )
         if remote_manifests.last_source_description:
             plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
-        close = get_close_matches(name, list(AGENTS.keys()), n=1, cutoff=0.6)
+        available_agents = list(AGENTS)
+        close = get_close_matches(name, available_agents, n=1, cutoff=0.6)
         if close:
             raise KeyError(
                 f"Unknown agent: {name!r}. Did you mean: {close[0]!r}?{plugin_hint}"
             )
         raise KeyError(
             f"Unknown agent: {name!r}. Available: "
-            f"{', '.join(sorted(AGENTS.keys()))}{plugin_hint}"
+            f"{', '.join(sorted(available_agents))}{plugin_hint}"
         )
 
     config = AGENTS[name]
     if protocol == "acpx":
         return _acpx_wrap(config)
     return config
+
+
+def session_factory_entrypoint(
+    spec: str, *, resolver: Callable[[str], AgentConfig] | None = None
+) -> str | None:
+    """The connection route shared by admission and rollout dispatch.
+
+    Only a complete session-factory configuration bypasses live transport.
+    Unknown/raw commands retain the live route, as rollout has always done.
+    A caller with its own resolution boundary supplies it here, so admission
+    and dispatch interpret that lookup with the same rules.
+    """
+    try:
+        config = (resolve_agent if resolver is None else resolver)(spec)
+    except Exception:
+        return None
+    if config.protocol == "session-factory" and config.session_factory:
+        return config.session_factory
+    return None
 
 
 def resolve_agent_key(spec: str) -> str:
@@ -1307,12 +2359,25 @@ def resolve_agent_key(spec: str) -> str:
     spec string. ``resolve_agent`` then round-trips that key back to the
     wrapped config.
 
-    Unknown agents are returned unchanged so callers can still surface their
-    own diagnostics (raw-command fallback).
+    Unknown bare IDs fail closed. Explicit raw commands are returned unchanged.
+    Built-in non-agent modes and unsupported protocols pass through for their
+    existing downstream validators.
     """
+    if spec in {"oracle", "acp/oracle"}:
+        return "oracle"
+    if is_scripted_agent(spec) or spec == "task-runtime":
+        # A built-in scripted runner (oracle, nop) or the task runtime, not a
+        # registry agent. Resolving it would miss, fail closed, and fetch the
+        # remote agents source on every such run.
+        return spec
+    protocol, _ = parse_agent_spec(spec)
+    if protocol not in VALID_PROTOCOLS:
+        return spec
     try:
         config = resolve_agent(spec)
     except KeyError:
+        if not is_explicit_raw_agent_command(spec):
+            raise
         # The raw-command fallback bypasses resolve_agent's error entirely (the
         # spec is later exec'd verbatim in the sandbox), so surface the failed-
         # plugin breadcrumb HERE too — otherwise a plugin load failure manifests
@@ -1365,9 +2430,11 @@ def register_agent(
     skill_paths: list[str] | None = None,
     install_timeout: int = 900,
     default_model: str = "",
+    model_route: str = MODEL_ROUTE_PROXY,
     api_protocol: str = "",
     env_mapping: dict[str, str] | None = None,
     credential_files: list[CredentialFile] | None = None,
+    launcher_credential_files: list[str] | None = None,
     home_dirs: list[str] | None = None,
     subscription_auth: SubscriptionAuth | None = None,
     acp_model_format: str = "bare",
@@ -1377,6 +2444,9 @@ def register_agent(
     disallow_web_tools_setup_cmd: str = "",
     disallow_web_tools_owned_paths: list[str] | None = None,
     disallow_web_tools_launch_suffix: str = "",
+    disallow_hosted_search_setup_cmd: str = "",
+    disallow_hosted_search_launch_suffix: str = "",
+    cacheable_version: str = "",
 ) -> AgentConfig:
     """Register a custom agent at runtime.
 
@@ -1391,8 +2461,23 @@ def register_agent(
             skill_paths=["$HOME/.my-agent/skills"],
         )
 
+    ``cacheable_version`` marks ``install_cmd`` as pinned, the way
+    ``CACHEABLE_INSTALLS`` marks the built-in ones: it installs exactly what
+    the version names, under /opt/runtime, the same way every trial, so on
+    Docker it is built once into the agent's cached image layer and reused
+    (the version is part of the layer's key and record). Only a plugin whose
+    install pins every package should pass it. Without it the install runs in
+    every trial, as before.
+
+    ``model_route="agent"`` registers an agent that calls its own model
+    endpoint, as the manifest field does (see AgentConfig.model_route).
+
     Returns the created AgentConfig.
     """
+    if model_route not in MODEL_ROUTES:
+        raise ValueError(
+            f"model_route must be one of {', '.join(MODEL_ROUTES)}; got {model_route!r}"
+        )
     config = AgentConfig(
         name=name,
         install_cmd=install_cmd,
@@ -1404,9 +2489,11 @@ def register_agent(
         skill_paths=skill_paths or [],
         install_timeout=install_timeout,
         default_model=default_model,
+        model_route=model_route,
         api_protocol=api_protocol,
         env_mapping=env_mapping or {},
         credential_files=credential_files or [],
+        launcher_credential_files=launcher_credential_files or [],
         home_dirs=home_dirs or [],
         subscription_auth=subscription_auth,
         acp_model_format=acp_model_format,
@@ -1416,26 +2503,26 @@ def register_agent(
         disallow_web_tools_setup_cmd=disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=disallow_web_tools_owned_paths or [],
         disallow_web_tools_launch_suffix=disallow_web_tools_launch_suffix,
+        disallow_hosted_search_setup_cmd=disallow_hosted_search_setup_cmd,
+        disallow_hosted_search_launch_suffix=disallow_hosted_search_launch_suffix,
     )
-    AGENTS[name] = config
-    AGENT_INSTALLERS[name] = install_cmd
-    AGENT_LAUNCH[name] = launch_cmd
+    with _REGISTRY_LOCK:
+        AGENTS[name] = config
+        AGENT_INSTALLERS[name] = install_cmd
+        AGENT_LAUNCH[name] = launch_cmd
+        if cacheable_version:
+            CACHEABLE_INSTALLS[name] = cacheable_version
+            _CACHEABLE_INSTALL_CMDS[name] = install_cmd
+        elif name in _BUILTIN_CACHEABLE_INSTALLS:
+            # A built-in's pin describes only its own command, so a replaced
+            # command does not match it and cacheable_install says no.
+            CACHEABLE_INSTALLS[name] = _BUILTIN_CACHEABLE_INSTALLS[name]
+            _CACHEABLE_INSTALL_CMDS[name] = _BUILTIN_CACHEABLE_INSTALL_CMDS[name]
+        else:
+            # An earlier registration's pin does not describe this command.
+            CACHEABLE_INSTALLS.pop(name, None)
+            _CACHEABLE_INSTALL_CMDS.pop(name, None)
     return config
-
-
-# --- Opt-in dual-source registry (agent-decoupling decision #7) ---------------
-# Merge agents declared as <dir>/manifest.toml files under $BENCHFLOW_AGENTS_DIR
-# into the registry. A NO-OP when the env var is unset, so a default import of
-# core is byte-for-byte unchanged; the manifest path only activates on explicit
-# opt-in. The import is deferred to here (end of module) on purpose: manifest.py
-# imports AgentConfig from this module, so a top-level import would be circular,
-# and the merge must run after AGENTS / AGENT_ALIASES / AGENT_INSTALLERS /
-# AGENT_LAUNCH are fully built above.
-from benchflow.agents.manifest import (  # noqa: E402
-    register_env_manifest_agents as _register_env_manifest_agents,
-)
-
-_register_env_manifest_agents()
 
 
 # --- Agent plugin packages (entry-point autoload) ------------------------------

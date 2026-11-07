@@ -38,7 +38,7 @@ class FakeEnv:
         self._exec_log.append(cmd)
         return FakeExecResult()
 
-    async def upload_dir(self, src: Path, dst: str) -> None:
+    async def upload_dir(self, src: Path, dst: str, **_kwargs) -> None:
         self._uploads.append((Path(src), dst))
 
 

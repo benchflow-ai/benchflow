@@ -95,9 +95,15 @@ jobs:
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
-          enable-cache: true
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          # A publishing build never restores a cache another run saved
+          # (cache poisoning; setup-uv turns it off for these events itself).
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.12
@@ -113,6 +119,19 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         run: uv version "${{ steps.version.outputs.version }}" --frozen
 
+      - name: Install the bfx toolchain
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      # Both static binaries, byte for byte the pinned ones
+      # (src/benchflow/_bfx/pins.py), or the release stops here.
+      - name: Build bfx (pinned)
+        if: steps.version.outputs.publish == 'true'
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
       - name: Build distributions
         if: steps.version.outputs.publish == 'true'
         run: uv build --no-sources
@@ -120,6 +139,10 @@ jobs:
       - name: Check distributions
         if: steps.version.outputs.publish == 'true'
         run: uv run --with twine --no-project twine check dist/*
+
+      - name: Check bfx in distributions
+        if: steps.version.outputs.publish == 'true'
+        run: uv run --no-project python tools/check_dist_bfx.py dist
 
       - name: Publish internal preview
         if: steps.version.outputs.publish == 'true'

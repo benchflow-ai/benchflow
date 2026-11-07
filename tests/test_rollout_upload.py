@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.rollout import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -25,6 +24,7 @@ from benchflow.rollout import (
     _start_env_and_upload,
 )
 from benchflow.sandbox.metadata import persist_sandbox_info
+from tests.reachable_fixture import directory
 
 
 class FakeUploadEnv:
@@ -43,12 +43,12 @@ class FakeUploadEnv:
     ) -> None:
         self.exec_calls.append((command, user, timeout_sec))
 
-    async def upload_file(self, source: Path | str, target: str) -> None:
+    async def upload_file(self, source: Path | str, target: str, **_kwargs) -> None:
         source_path = Path(source)
         self.uploaded_files.append((source_path, target))
         self.uploaded_file_contents.append((source_path.read_text(), target))
 
-    async def upload_dir(self, source: Path, target: str) -> None:
+    async def upload_dir(self, source: Path, target: str, **_kwargs) -> None:
         self.uploaded_dirs.append((source, target))
 
 
@@ -298,7 +298,7 @@ async def test_start_env_does_not_upload_task_environment_skills(
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
-    await _start_env_and_upload(env, task, timing)
+    await _start_env_and_upload(env, task, timing, upload_solution=True)
 
     task_skills = task / "environment" / "skills"
     assert env.started is True
@@ -329,7 +329,7 @@ solve
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
-    await _start_env_and_upload(env, task, timing)
+    await _start_env_and_upload(env, task, timing, upload_solution=True)
 
     assert (task / "oracle", "/oracle") in env.uploaded_dirs
     assert (task / "oracle", "/solution") not in env.uploaded_dirs
@@ -370,15 +370,93 @@ async def test_publish_trajectory_for_verifier_uploads_acp_jsonl(
     env = FakeUploadEnv()
     trajectory = [{"type": "agent_message", "text": "ok"}]
 
-    await _publish_trajectory_for_verifier(env, trajectory, tmp_path / "agent")
+    await _publish_trajectory_for_verifier(
+        env, trajectory, directory(tmp_path / "agent")
+    )
 
-    assert ("mkdir -p /logs/agent", "root", 10) in env.exec_calls
-    assert env.uploaded_file_contents == [
-        (
-            '{"type": "agent_message", "text": "ok"}\n',
-            "/logs/agent/acp_trajectory.jsonl",
+    _assert_logs_agent_made_with_the_stage(env)
+    # Staged in a root-owned folder under /logs, then copied into /logs/agent
+    # (#1182: the final reply goes to output.txt beside the trajectory).
+    assert _published(env) == {
+        "acp_trajectory.jsonl": '{"type": "agent_message", "text": "ok"}\n',
+        "output.txt": "ok\n",
+    }
+
+
+def _assert_logs_agent_made_with_the_stage(env: FakeUploadEnv) -> None:
+    """The defensive ``mkdir -p /logs/agent`` runs once, as root, in the
+    staging folder's own exec (PY8 U12)."""
+    made = [c for c in env.exec_calls if "mkdir -p /logs/agent" in c[0]]
+    assert len(made) == 1, env.exec_calls
+    command, user, _budget = made[0]
+    assert command.startswith("mkdir -p /logs/agent; mkdir -m 755 /logs/"), command
+    assert user == "root"
+
+
+def _published(env: FakeUploadEnv) -> dict[str, str]:
+    """What publishing staged for /logs/agent, by file name."""
+    staged = {}
+    for content, target in env.uploaded_file_contents:
+        assert target.startswith("/logs/.runtime-publish-"), target
+        staged[target.rsplit("/", 1)[1]] = content
+    return staged
+
+
+class FakeTimingOutMkdirEnv(FakeUploadEnv):
+    """Loaded backend whose bookkeeping ``exec`` blows its client-side timeout."""
+
+    async def exec(
+        self, command: str, user: str | None = None, timeout_sec: int | None = None
+    ) -> None:
+        await super().exec(command, user, timeout_sec)
+        if command == "mkdir -p /logs/agent":
+            raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+
+
+@pytest.mark.asyncio
+async def test_publish_trajectory_survives_mkdir_timeout(tmp_path: Path) -> None:
+    """Guards issue #948: a timed-out ``mkdir -p /logs/agent`` discarded rollouts.
+
+    Publishing runs after the agent already finished, so a client-side timeout
+    on that bookkeeping exec used to throw away a completed rollout — a ~40
+    minute run lost to a 10 second budget on a step that does no work on
+    mounted backends. The rollout must survive: the upload and the host copy
+    still happen. Required placement execs must succeed.
+    """
+    env = FakeTimingOutMkdirEnv()
+    agent_dir = tmp_path / "agent"
+
+    await _publish_trajectory_for_verifier(
+        env, [{"type": "agent_message", "text": "ok"}], directory(agent_dir)
+    )
+
+    expected = '{"type": "agent_message", "text": "ok"}\n'
+    _assert_logs_agent_made_with_the_stage(env)
+    assert _published(env)["acp_trajectory.jsonl"] == expected
+    assert (agent_dir / "acp_trajectory.jsonl").read_text() == expected
+
+
+@pytest.mark.asyncio
+async def test_publish_trajectory_still_raises_on_upload_failure(
+    tmp_path: Path,
+) -> None:
+    """Guards issue #948 against over-suppression: only the mkdir is defensive.
+
+    A genuinely missing ``/logs/agent`` surfaces through the upload, which must
+    stay fatal — otherwise the rollout would claim a trajectory the verifier
+    never received.
+    """
+
+    class FailingUploadEnv(FakeTimingOutMkdirEnv):
+        async def upload_file(self, source: Path | str, target: str, **_kwargs) -> None:
+            raise RuntimeError("upload boom")
+
+    with pytest.raises(RuntimeError, match="publication upload failed"):
+        await _publish_trajectory_for_verifier(
+            FailingUploadEnv(),
+            [{"type": "agent_message", "text": "ok"}],
+            directory(tmp_path / "agent"),
         )
-    ]
 
 
 class FakeMountedUploadEnv(FakeUploadEnv):
@@ -388,7 +466,7 @@ class FakeMountedUploadEnv(FakeUploadEnv):
         super().__init__()
         self.host_agent_dir = host_agent_dir
 
-    async def upload_file(self, source: Path | str, target: str) -> None:
+    async def upload_file(self, source: Path | str, target: str, **_kwargs) -> None:
         await super().upload_file(source, target)
         if target.startswith("/logs/agent/"):
             mirrored = self.host_agent_dir / target.removeprefix("/logs/agent/")
@@ -412,19 +490,33 @@ async def test_publish_trajectory_artifact_set_matches_across_backends(
     mounted_env = FakeMountedUploadEnv(mounted_dir)
     remote_env = FakeUploadEnv()
 
-    await _publish_trajectory_for_verifier(mounted_env, trajectory, mounted_dir)
-    await _publish_trajectory_for_verifier(remote_env, trajectory, remote_dir)
+    await _publish_trajectory_for_verifier(
+        mounted_env, trajectory, directory(mounted_dir)
+    )
+    await _publish_trajectory_for_verifier(
+        remote_env, trajectory, directory(remote_dir)
+    )
 
     mounted_files = {p.relative_to(mounted_dir) for p in mounted_dir.rglob("*")}
     remote_files = {p.relative_to(remote_dir) for p in remote_dir.rglob("*")}
-    assert mounted_files == remote_files == {Path("acp_trajectory.jsonl")}
+    assert (
+        mounted_files
+        == remote_files
+        == {
+            Path("acp_trajectory.jsonl"),
+            Path("output.txt"),
+        }
+    )
     expected = '{"type": "agent_message", "text": "ok"}\n'
     assert (mounted_dir / "acp_trajectory.jsonl").read_text() == expected
     assert (remote_dir / "acp_trajectory.jsonl").read_text() == expected
     # The sandbox-side copy verifiers read stays published on both backends.
-    sandbox_target = "/logs/agent/acp_trajectory.jsonl"
-    assert (expected, sandbox_target) in mounted_env.uploaded_file_contents
-    assert (expected, sandbox_target) in remote_env.uploaded_file_contents
+    for env in (mounted_env, remote_env):
+        assert _published(env)["acp_trajectory.jsonl"] == expected
+        assert any(
+            "> /logs/agent/acp_trajectory.jsonl" in command
+            for command, _user, _timeout in env.exec_calls
+        )
 
 
 @pytest.mark.asyncio
@@ -683,6 +775,38 @@ def test_persist_sandbox_info_writes_sandbox_json(tmp_path: Path) -> None:
     assert "created_at" in info
 
 
+def test_persist_sandbox_info_names_each_sandbox_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Daytona rewrites sandbox.json after creation (install
+    layers), and each rewrite logged "Sandbox <id> (DaytonaSandbox)" again,
+    three lines per trial that a first-run reader took for three creates.
+    A new id, as after a retried create, is still named."""
+
+    class FakeDaytonaSandbox:
+        sandbox_id = "sb-first"
+
+    sandbox = FakeDaytonaSandbox()
+    with caplog.at_level("INFO", logger="benchflow.sandbox.metadata"):
+        persist_sandbox_info(sandbox, tmp_path)
+        persist_sandbox_info(sandbox, tmp_path)
+        persist_sandbox_info(sandbox, tmp_path)
+        sandbox.sandbox_id = "sb-retried"
+        persist_sandbox_info(sandbox, tmp_path)
+
+    named = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Sandbox ")
+    ]
+    assert named == [
+        "Sandbox sb-first (FakeDaytonaSandbox)",
+        "Sandbox sb-retried (FakeDaytonaSandbox)",
+    ]
+    assert (
+        json.loads((tmp_path / "sandbox.json").read_text())["sandbox_id"]
+        == "sb-retried"
+    )
+
+
 def test_persist_sandbox_info_skips_when_no_sandbox_id(tmp_path: Path) -> None:
     """No sandbox.json for backends without a provider-side ID (e.g. Docker)."""
 
@@ -752,34 +876,20 @@ async def test_rollout_result_falls_back_to_env_sandbox_id_after_start_failure(
             persist_sandbox_info(self, rollout_dir)
             raise RuntimeError("post-create startup failed")
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=task,
-        scenes=[Scene.single(agent="oracle")],
-        jobs_dir=tmp_path / "jobs",
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=task,
+            scenes=[Scene.single(agent="oracle")],
+            jobs_dir=tmp_path / "jobs",
+        )
     )
     rollout._rollout_dir = rollout_dir
     rollout._started_at = datetime(2026, 5, 25, 12, 0)
     rollout._rollout_name = "my-rollout"
     rollout._agent_name = "oracle"
     rollout._env = CreatedThenFailingEnv()
-    rollout._env_externally_owned = False
-    rollout._timing = {}
-    rollout._executed_prompts = []
-    rollout._resolved_prompts = []
-    rollout._n_tool_calls = 0
     rollout._error = "post-create startup failed"
-    rollout._verifier_error = None
-    rollout._export_error = None
-    rollout._trajectory = []
-    rollout._partial_trajectory = False
-    rollout._trajectory_source = None
-    rollout._rewards = None
-    rollout._evolved_skills = None
-    rollout._diagnostics = RolloutDiagnostics()
     rollout._usage_metrics = {}
-    rollout._task_skill_policy = None
-    rollout._sandbox_id = None
 
     with pytest.raises(RuntimeError, match="post-create startup failed"):
         await rollout.start()
@@ -831,7 +941,7 @@ async def test_on_started_persists_before_upload(tmp_path: Path) -> None:
             await super().start(force_build)
             order.append("start")
 
-        async def upload_file(self, source: Path | str, target: str) -> None:
+        async def upload_file(self, source: Path | str, target: str, **_kwargs) -> None:
             order.append("upload_file")
             await super().upload_file(source, target)
 
@@ -861,7 +971,7 @@ async def test_sandbox_json_survives_upload_failure(tmp_path: Path) -> None:
     class FailingUploadEnv(FakeUploadEnv):
         sandbox_id = "sb-failwindow"
 
-        async def upload_file(self, source: Path | str, target: str) -> None:
+        async def upload_file(self, source: Path | str, target: str, **_kwargs) -> None:
             raise RuntimeError("upload boom")
 
     env = FailingUploadEnv()
@@ -938,7 +1048,8 @@ def _make_daytona_sandbox(rollout_dir: Path, create_impl):
     ``_client_manager`` (whose ``get_client()`` returns a fake daytona whose
     ``create()`` runs ``create_impl``), ``task_env_config`` (for
     ``build_timeout_sec``), ``rollout_paths`` (a real ``RolloutPaths`` at
-    ``rollout_dir``), a no-op ``logger`` and ``_sandbox=None``.
+    ``rollout_dir``), a no-op ``logger``, ``_sandbox=None`` and the
+    ``_create_attempts`` counter ``start()`` resets.
     """
     from benchflow.sandbox.daytona import DaytonaSandbox
     from benchflow.task import RolloutPaths
@@ -955,6 +1066,7 @@ def _make_daytona_sandbox(rollout_dir: Path, create_impl):
 
     env._client_manager = _FakeClientManager()
     env._sandbox = None
+    env._create_attempts = 0
     env.task_env_config = MagicMock(build_timeout_sec=10)
     env.rollout_paths = RolloutPaths(rollout_dir)
     env.logger = MagicMock()

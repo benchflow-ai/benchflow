@@ -151,3 +151,76 @@ def test_field_map_and_shim_only_partition_agentconfig():
         f"unowned={all_fields - declarable - shim}, "
         f"stale={(declarable | shim) - all_fields}"
     )
+
+
+# --- contract 1.1: model_route ----------------------------------------
+
+# The contract 1.0 data keys, frozen: 1.1 may only add to them.
+_CONTRACT_1_0_KEYS = frozenset(
+    {
+        "name",
+        "description",
+        "install_cmd",
+        "launch_cmd",
+        "protocol",
+        "api_protocol",
+        "acp_model_format",
+        "supports_acp_set_model",
+        "requires_env",
+        "install_timeout",
+        "env_mapping",
+        "default_model",
+        "skill_paths",
+        "home_dirs",
+    }
+)
+
+
+def test_contract_1_1_adds_only_model_route_to_the_1_0_fields():
+    """model_route is the one contract 1.1 field; the 1.0
+    data fields are unchanged, so every 1.0 manifest maps as before."""
+    from benchflow.agents.manifest import _FIELD_SINCE_MINOR
+
+    assert set(_FIELD_MAP) == _CONTRACT_1_0_KEYS | {"model_route"}
+    assert _FIELD_SINCE_MINOR == {"model_route": 1}
+    assert _FIELD_MAP["model_route"] == "model_route"
+
+
+def test_a_1_0_manifest_loads_unchanged_on_the_proxy_route(tmp_path: Path):
+    """A 1.0 manifest keeps the default (proxy) route and
+    loads to exactly the config it gave before contract 1.1."""
+    config = load_agent_manifest(_write(tmp_path, _MINIMAL)).config
+    assert config.model_route == "proxy"
+    assert config == AgentConfig(
+        name="demo", install_cmd="echo install", launch_cmd="echo launch"
+    )
+
+
+@pytest.mark.parametrize("route", ["agent", "proxy"])
+def test_a_1_1_manifest_maps_model_route(tmp_path: Path, route: str):
+    """A contract 1.1 manifest declares who carries its model
+    calls, with or without a default model."""
+    body = _MINIMAL.replace('contract_version = "1.0"', 'contract_version = "1.1"')
+    config = load_agent_manifest(
+        _write(tmp_path, body + f'model_route = "{route}"\n')
+    ).config
+    assert config.model_route == route
+    assert config.default_model == ""
+
+
+def test_a_1_0_manifest_cannot_declare_model_route(tmp_path: Path):
+    """The 1.0 author schema has no model_route, so a 1.0
+    manifest naming it is refused, not guessed at in either direction."""
+    with pytest.raises(
+        AgentManifestError, match=r"model_route needs contract_version 1\.1"
+    ):
+        load_agent_manifest(_write(tmp_path, _MINIMAL + 'model_route = "agent"\n'))
+
+
+@pytest.mark.parametrize("value", ['"direct"', '"Agent"', "true"])
+def test_an_unknown_model_route_is_refused(tmp_path: Path, value: str):
+    """A route this loader does not know is refused rather than
+    run on the proxy route the manifest did not ask for."""
+    body = _MINIMAL.replace('contract_version = "1.0"', 'contract_version = "1.1"')
+    with pytest.raises(AgentManifestError, match="model_route must be one of"):
+        load_agent_manifest(_write(tmp_path, body + f"model_route = {value}\n"))

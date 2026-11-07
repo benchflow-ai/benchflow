@@ -280,11 +280,15 @@ class TestEnvHandling:
             await proc.start("agent --serve", env={"API_KEY": "hunter2"}, cwd="/work")
 
         launch = shell.sent[1]
-        assert launch.startswith("( ") and launch.endswith(" )\n")
-        assert launch.index("trap 'rm -f") < launch.index("cd /work")
-        source = launch.index(". /tmp/.benchflow_agent_env_")
+        assert launch.startswith("( ") and launch.endswith(" ); exit $?\n")
+        # The trap is armed before root's /bin/bash starts; the bootstrap
+        # sources and removes the file before it changes folder (C8).
+        assert launch.index("trap '/bin/rm -f") < launch.index(
+            "exec /bin/bash --noprofile"
+        )
+        source = launch.index(". /tmp/.runtime_agent_env_")
         remove_after_source = launch.index("rm -f", source)
-        assert source < remove_after_source < launch.index("trap - EXIT")
+        assert source < remove_after_source < launch.index("cd /work")
         assert "hunter2" not in launch
         await proc.close()
 
@@ -328,7 +332,7 @@ class TestEnvHandling:
             await proc._write_env_file({"API_KEY": "hunter2"})
 
         cleanup = proc._sandbox.exec.call_args.args[0]
-        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert cleanup.startswith("/bin/rm -f /tmp/.runtime_agent_env_")
         assert "hunter2" not in cleanup
 
     @pytest.mark.asyncio
@@ -346,7 +350,7 @@ class TestEnvHandling:
             await proc.start("agent --serve", env={"API_KEY": "hunter2"})
 
         cleanup = proc._sandbox.exec.call_args.args[0]
-        assert cleanup.startswith("rm -f /tmp/.benchflow_agent_env_")
+        assert cleanup.startswith("/bin/rm -f /tmp/.runtime_agent_env_")
         assert "hunter2" not in cleanup
 
 
@@ -475,7 +479,7 @@ async def test_real_agentcore_shell_transport(tmp_path):
         assert await process.readline() == b"ECHO:hello-agentcore\n"
 
         staged = await env.exec(
-            "find /tmp -maxdepth 1 -name '.benchflow_agent_env_*' -print"
+            "find /tmp -maxdepth 1 -name '.runtime_agent_env_*' -print"
         )
         assert staged.return_code == 0
         assert not (staged.stdout or "").strip()

@@ -11,13 +11,45 @@ uv run ty check src/
 uv run ruff check .
 ```
 
+### Suite temporary folders on build VMs
+
+Allow about 7 GB of free space for a full suite's temporary files, in addition
+to the checkout, environment and caches. Check `df -h /tmp` and the filesystem
+that holds your chosen temporary folder before starting.
+
+Give each lane and each invocation its own `--basetemp`. pytest clears that
+folder at the start of a run, so never point it at a shared folder or a folder
+holding evidence you want to keep. Without `--basetemp`, pytest retains only
+the last three runs under `/tmp/pytest-of-<user>` across all lanes using that
+user; another lane can remove your earlier run's files.
+
+```bash
+suite_tmp=$(mktemp -d "$HOME/w/bench-suite-XXXXXX")
+uv run python -m pytest tests/ --basetemp="$suite_tmp"
+```
+
+Keep the default `tmp_path_retention_policy=all`. Do not use
+`-o tmp_path_retention_policy=failed`: successful tests can produce fixtures
+that later tests still need, so early removal breaks the suite.
+
+Some tests freeze files and directories read-only. After the run and all its
+workers have exited, preserve any evidence you need, then make only that
+run's folder writable before deleting it:
+
+```bash
+chmod -R u+w "$suite_tmp"
+rm -r -- "$suite_tmp"
+```
+
+Never clean a shared pytest root or another lane's temporary folder.
+
 ## Conventions
 
 - **Don't rewrite passing tests** to match new behavior. Update for shape changes, not for semantic changes you don't understand. No tautological tests.
 - **Regression tests must name the PR/commit they guard** in the docstring (e.g. `Guards the fix from PR #198 against the regression introduced by PR #193`).
 - **Human review before `main`.** PRs only. No force-pushes to `main`. Self-approval doesn't count.
 - **Trunk-based:** branch off `main`, PR back to `main`. No long-lived release branches.
-- **Releases:** current mechanics live in [`docs/release.md`](./docs/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
+- **Releases:** current mechanics live in [`docs/release.md`](./docs/contributing/release.md). Merges to `main` publish internal preview `.devN` builds after CI passes; public releases require a reviewed stable-version PR, a matching `v<version>` tag on `main`, then a bump back to the next `.dev0`.
 
 ## Experiment guidance (when using benchflow to run batch tasks experiments)
 
@@ -35,7 +67,7 @@ uv run ruff check .
 | Skill | Use it for |
 | --- | --- |
 | `benchflow` | Running benchmarks, creating tasks, inspecting results via the CLI/SDK. |
-| `benchflow-experiment-review` | Auditing **already-published run trajectories** — traj health, reward hacking, no-skill leakage, Daytona/Docker parity. Wired into `.github/scripts/codex_review.py` and `integration-final-review.yml`. |
+| `benchflow-experiment-review` | Auditing **already-published run trajectories**: traj health, reward hacking, no-skill leakage, Daytona/Docker parity. Also covers speed and A/B comparisons, and reviews of changes to sandbox and security code. Wired into `.github/scripts/codex_review.py` and `integration-final-review.yml`. |
 | `benchflow-traj-upload` | Uploading trajectories to the HuggingFace/GCS traj database. |
 | `skill-creator` | Creating, improving, evaluating, and packaging reusable skills. Vendored from [anthropics/skills@f6656c1](https://github.com/anthropics/skills/tree/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/skill-creator). |
 | `task-creator` | Authoring a new **SkillsBench** task, idea → submission-ready PR. |

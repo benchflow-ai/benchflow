@@ -1,0 +1,216 @@
+{
+  "path": "analysis-judge/task.md",
+  "mode": "blocks",
+  "instruction": "The file `/data/events.csv` holds the sizes of 4,000 events recorded by a detector, one per row, with columns `event_id` and `size`. We think the large events follow a power law, p(x) \u221d x^(\u2212\u03b1) for x \u2265 x_min, and that the small events do not.\n\nEstimate \u03b1 and x_min from the data, with an uncertainty on \u03b1, and write three files to `/work`:\n\n- `fit.json`: `{\"alpha\": ..., \"alpha_err\": ..., \"xmin\": ..., \"n_tail\": ...}`, where `n_tail` is the number of events at or above `xmin`;\n- `report.md`: a short report a referee could check: your method, how you chose x_min, how you estimated the uncertainty, the result, and its caveats;\n- `fit.png`: a log-log plot of the data's distribution with the fitted power law over the tail.\n\nUse this data only: there is no published value for this detector. Python 3 with numpy, scipy, pandas, and matplotlib is installed, and the sandbox has no network access.",
+  "blocks": [
+    {
+      "kind": "notes",
+      "arg": null,
+      "info": "notes",
+      "body": "Three criteria are decided by verifier/test.sh, which runs first; the six method, figure, report, and caveat criteria go to one agent judge session per sample. The task declares no outputs, so /work is saved and restored for the verifier and the judge, and the judge's commands run in fresh containers of this image, where /data/events.csv and the scientific stack let it rerun the analysis. No reference value reaches the judge: only the two test criteria name verifier/answers.json.\n\nverifier/make_data.py wrote sandbox/events.csv with seed 20260928. On this sample the maximum-likelihood \u03b1 at x_min = 10 is 2.481, and the Kolmogorov-Smirnov choice of x_min is 15.13, where \u03b1 is 2.596. controls/line-fit.sh fits a straight line to the log-log histogram of all the data and reports it honestly; the runtime pairs it with an injected twin. In round 2's dogfood this package's predecessor scored the reference 1.0, the line fit 0.2, and the line fit's injected twin 0.2.",
+      "line": 11
+    },
+    {
+      "kind": "config",
+      "arg": "toml",
+      "info": "toml task",
+      "body": "name = \"examples/analysis-judge\"\ntitle = \"Power-law tail of detector event sizes\"\nversion = \"1.1.0\"\nkeywords = [\"data-analysis\", \"power-law\", \"statistics\"]\n\n[about]\ndifficulty = \"medium\"\ncategory = \"data-analysis\"\n\n[agent]\ntimeout = \"20m\"\nnetwork = \"none\"\n\n[sandbox]\ncpus = 2\nmemory = \"4 GB\"\nworkdir = \"/work\"\nnetwork = \"none\"\n\n[verifier]\ntimeout = \"5m\"\nisolation = \"separate\"\n\n[verifier.judges.agent]\nmodel = \"claude-opus-5-5\"\nsamples = 3\nbudget = { tokens = \"2M\", tool_calls = 60 }\n\n[integrity]\nprofile = \"separated-verifier\"\ncanary = \"task.md canary d7127331-261c-46e0-bfa3-4fdac6395104\"\nanswers = [\"verifier/answers.json\"]\nthreat_model = \"A capable solver that reads everything readable, writes everything writable, and writes text addressed to the judge.\"\n\n[integrity.controls]\nknown_bad = [\"controls/line-fit.sh\"]\ninjection = [\"known_bad\"]",
+      "line": 17
+    }
+  ],
+  "config": {
+    "name": "examples/analysis-judge",
+    "title": "Power-law tail of detector event sizes",
+    "version": "1.1.0",
+    "keywords": [
+      "data-analysis",
+      "power-law",
+      "statistics"
+    ],
+    "about": {
+      "difficulty": "medium",
+      "category": "data-analysis"
+    },
+    "agent": {
+      "timeout": "20m",
+      "network": "none"
+    },
+    "sandbox": {
+      "cpus": 2,
+      "memory": "4 GB",
+      "workdir": "/work",
+      "network": "none"
+    },
+    "verifier": {
+      "timeout": "5m",
+      "isolation": "separate",
+      "judges": {
+        "agent": {
+          "model": "claude-opus-5-5",
+          "samples": 3,
+          "budget": {
+            "tokens": "2M",
+            "tool_calls": 60
+          }
+        }
+      }
+    },
+    "integrity": {
+      "profile": "separated-verifier",
+      "canary": "task.md canary d7127331-261c-46e0-bfa3-4fdac6395104",
+      "answers": [
+        "verifier/answers.json"
+      ],
+      "threat_model": "A capable solver that reads everything readable, writes everything writable, and writes text addressed to the judge.",
+      "controls": {
+        "known_bad": [
+          "controls/line-fit.sh"
+        ],
+        "injection": [
+          "known_bad"
+        ]
+      }
+    }
+  },
+  "config_source": "block",
+  "rubric": {
+    "$schema": "https://task.md/schema/rubric-1.json",
+    "version": "1.0.0",
+    "scoring": {
+      "method": "points",
+      "headline": "partial",
+      "pass_threshold": 0.7
+    },
+    "criteria": [
+      {
+        "id": "outputs-present",
+        "gate": true,
+        "group": "Format",
+        "text": "fit.json parses and holds numeric alpha, alpha_err, xmin, and n_tail; report.md is not empty; fit.png is a PNG image.",
+        "stated": "write three files to `/work`",
+        "judge": "test",
+        "check": "test_outputs_present"
+      },
+      {
+        "id": "alpha-accurate",
+        "points": 3,
+        "group": "Result",
+        "text": "alpha is within 0.15 of the value the data was generated with.",
+        "stated": "Estimate \u03b1 and x_min from the data",
+        "judge": "test",
+        "check": "test_alpha_accurate",
+        "reference": "verifier/answers.json#alpha"
+      },
+      {
+        "id": "uncertainty-covers",
+        "points": 1,
+        "group": "Result",
+        "text": "alpha_err is positive and at most 0.2, and alpha is within two alpha_err of the generating value.",
+        "stated": "with an uncertainty on \u03b1",
+        "judge": "test",
+        "check": "test_uncertainty_covers",
+        "reference": "verifier/answers.json#alpha"
+      },
+      {
+        "id": "mle-method",
+        "points": 4,
+        "group": "Method",
+        "text": "\u03b1 is estimated by maximum likelihood, or an equivalent unbiased estimator, from the events at or above a data-driven x_min.",
+        "stated": "Estimate \u03b1 and x_min from the data",
+        "implicit": "Least squares on a log-log histogram or CCDF is a known biased estimator of a power-law exponent, and a referee would reject it; the instruction asks for a result a referee could check rather than naming the estimator.",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "report.md",
+          "fit.json"
+        ],
+        "levels": {
+          "0": "A straight-line fit to a log-log histogram, density, or CCDF, or no identifiable estimator.",
+          "2": "Maximum likelihood (or equivalent), but on all the data or above an x_min picked without a stated criterion.",
+          "4": "Maximum likelihood (or equivalent) on the events at or above an x_min chosen by a stated, data-driven criterion."
+        },
+        "guidance": "Decide from the code the solver ran, not from what report.md says it did. The discrete and continuous maximum-likelihood estimators both count."
+      },
+      {
+        "id": "xmin-justified",
+        "points": 2,
+        "group": "Method",
+        "text": "x_min is chosen by a stated, data-driven criterion, and the report says what it was.",
+        "stated": "how you chose x_min",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "report.md",
+          "fit.json"
+        ],
+        "levels": {
+          "0": "x_min is not reported, or the report does not say how it was chosen.",
+          "1": "Chosen by eye or by a rule of thumb, and the report says so.",
+          "2": "Chosen by a computed criterion, such as the minimum Kolmogorov-Smirnov distance or a stability scan, that the trajectory shows running."
+        }
+      },
+      {
+        "id": "uncertainty-justified",
+        "points": 2,
+        "group": "Method",
+        "text": "The uncertainty on \u03b1 comes from a stated method that the trajectory shows running.",
+        "stated": "how you estimated the uncertainty",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "report.md",
+          "fit.json"
+        ],
+        "levels": {
+          "0": "No method stated, or the stated method is not what the code computed, or the uncertainty is a least-squares slope error.",
+          "1": "The asymptotic standard error of the maximum-likelihood estimate, (\u03b1 \u2212 1)/\u221an, with x_min held fixed.",
+          "2": "A bootstrap or equivalent that re-selects x_min in each resample, or the standard error plus a stated sensitivity to x_min."
+        }
+      },
+      {
+        "id": "figure-shows-fit",
+        "points": 2,
+        "group": "Report",
+        "text": "fit.png is written by code that plots the data's distribution (CCDF or log-binned density) on log-log axes and overlays the fitted power law for x at or above x_min.",
+        "stated": "a log-log plot of the data's distribution with the fitted power law over the tail",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "fit.png"
+        ],
+        "guidance": "Decide from the code in the trajectory that wrote fit.png, and check that the file exists."
+      },
+      {
+        "id": "caveats",
+        "points": 1,
+        "group": "Report",
+        "text": "report.md names at least one real limitation of the result, such as sensitivity to x_min or other heavy-tailed distributions that were not ruled out.",
+        "stated": "and its caveats",
+        "judge": "agent",
+        "evidence": [
+          "report.md"
+        ]
+      },
+      {
+        "id": "unsupported-claim",
+        "points": -2,
+        "outcome": "bad",
+        "group": "Report",
+        "text": "report.md states a value of \u03b1, its uncertainty, x_min, or n_tail that differs from fit.json or that no step of the analysis computed.",
+        "stated": "a short report a referee could check",
+        "judge": "agent",
+        "evidence": [
+          "trajectory",
+          "report.md",
+          "fit.json"
+        ]
+      }
+    ]
+  },
+  "behaviors": null,
+  "diagnostics": [],
+  "canary": null,
+  "instruction_source": "The file `/data/events.csv` holds the sizes of 4,000 events recorded by a detector, one per row, with columns `event_id` and `size`. We think the large events follow a power law, p(x) \u221d x^(\u2212\u03b1) for x \u2265 x_min, and that the small events do not.\n\nEstimate \u03b1 and x_min from the data, with an uncertainty on \u03b1, and write three files to `/work`:\n\n- `fit.json`: `{\"alpha\": ..., \"alpha_err\": ..., \"xmin\": ..., \"n_tail\": ...}`, where `n_tail` is the number of events at or above `xmin`;\n- `report.md`: a short report a referee could check: your method, how you chose x_min, how you estimated the uncertainty, the result, and its caveats;\n- `fit.png`: a log-log plot of the data's distribution with the fitted power law over the tail.\n\nUse this data only: there is no published value for this detector. Python 3 with numpy, scipy, pandas, and matplotlib is installed, and the sandbox has no network access.",
+  "title": "Power-law tail of detector event sizes",
+  "ok": true
+}

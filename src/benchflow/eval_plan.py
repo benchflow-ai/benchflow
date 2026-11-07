@@ -30,22 +30,28 @@ from benchflow._utils.config import (
     normalize_sandbox_user,
 )
 from benchflow.agents.registry import parse_agent_spec
+from benchflow.budget import Budget
+from benchflow.errors import UserError
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
 from benchflow.loop_strategies import (
     SINGLE_SHOT,
     LoopStrategySpec,
     parse_loop_strategy_spec,
 )
+from benchflow.review.options import ReviewerConfig
 from benchflow.sandbox.providers import (
+    extra_install_hint,
     is_known_provider,
     provider_extra,
     providers_phrase,
+    sandbox_sdk_missing,
 )
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
     SKILL_MODE_WITH_SKILL,
 )
+from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
 
 if TYPE_CHECKING:
@@ -59,13 +65,23 @@ __all__ = [
 ]
 
 
-class EvalPlanError(ValueError):
+class EvalPlanError(ValueError, UserError):
     """A ``bench eval run`` validation failure.
 
     Carries the operator-facing ``message`` exactly as the CLI used to print it
-    (without Rich markup). The CLI shell renders it ``[red]...[/red]`` and exits
-    with code 1, preserving the original behavior.
+    (without Rich markup). ``hint``, when given, is its next step. The CLI
+    exits with ``exit_code``: 2, a usage mistake (a flag value, an unknown
+    name, a missing path), unless the machine is the problem (1, a missing
+    optional dependency).
     """
+
+    def __init__(
+        self, message: str, *, hint: str | None = None, exit_code: int = 2
+    ) -> None:
+        super().__init__(message)
+        if hint is not None:
+            self.hint = hint
+        self.exit_code = exit_code
 
 
 @dataclass
@@ -85,29 +101,73 @@ class EvalCreateRequest:
     agent: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    harness: str | None = None
     environment: str | None = None
     usage_tracking: str | None = None
     environment_manifest: Path | None = None
     state: str | None = None
     config_override: str | None = None
+    checkpoints: str | None = None
+    # None: not given (a run config's own, else 3).
+    checkpoint_keep: int | None = None
+    freeze_workspace: bool = False
+    # --keep-sandbox: never, on-failure or always (None keeps the config's).
+    keep_sandbox: str | None = None
+    # --accept-deviations: why the run differs from its run-reference.toml.
+    accept_deviations: str | None = None
+    fresh_install: bool = False
+    allow_cloud_metadata: bool = False
+    integrity: str | None = None
+    # --verifier-sandbox: task or separate (None keeps the config's, else task).
+    verifier_sandbox: str | None = None
+    retry_from_checkpoint: str | None = None
+    retry_prompt: str | None = None
+    retry_resume_session: bool = False
+    max_cost_usd: float | None = None
+    max_sandbox_seconds: float | None = None
+    max_tokens: int | None = None
+    max_rollouts: int | None = None
+    # --token-budget / --turn-budget: each trial's own budget, enforced by
+    # the model proxy (benchflow.trial_budget).
+    token_budget: int | None = None
+    turn_budget: int | None = None
     prompt: list[str] | None = None
     concurrency: int | None = None
     build_concurrency: int | None = None
+    warm_pool: int | None = None
     worker_concurrency: int | None = None
     worker_retries: int = 1
     worker_start_stagger_sec: float = 1.0
     agent_idle_timeout: str | None = None
     jobs_dir: str | None = None
+    # A new timestamped job instead of resuming the latest one in jobs_dir,
+    # or an explicit job folder name (new or to resume).
+    fresh: bool = False
+    job_name: str | None = None
+    # A named job that ran with other settings is refused; with this, its
+    # earlier trials are set aside and run again (Evaluation(restart_changed=)).
+    restart_changed: bool = False
+    # CI gates and a machine-readable result.
+    fail_under: float | None = None
+    fail_on: list[str] | None = None
+    summary_out: Path | None = None
+    codex_apps_policy: str | None = field(default=None, kw_only=True)
     sandbox_user: str | None = "agent"
-    sandbox_setup_timeout: int = 120
+    # The shared callback records presence for CLI and direct Python calls:
+    # an explicit default or root sentinel overrides YAML just like any value.
+    sandbox_user_explicit: bool = field(default=False, kw_only=True)
+    sandbox_setup_timeout: int | None = None
     context_root: Path | None = None
     base_image_override: str | None = None
+    separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     skills_dir: Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     skill_creator_dir: Path | None = None
     self_gen_no_internet: bool = False
     loop_strategy: str | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
+    reviewer: ReviewerConfig | None = None
     include: list[str] | None = None
     exclude: list[str] | None = None
     dataset: str | None = None
@@ -132,6 +192,15 @@ class EvalCreateRequest:
     eval_results_task: str | None = None
     matrix: Path | None = None
     trials: int = 1
+    # Set by run_matrix_eval on each trial job's request: the job reports
+    # itself but applies no gate and never exits; the matrix gates once at
+    # its end (DX-F-MATRIX-STOP). Not a flag.
+    matrix_trial: bool = False
+    seeds: str | None = None
+    n_tasks: int | None = None
+    sample_seed: int | None = None
+    timeout_multiplier: float | None = None
+    extra_instruction: str | None = None
 
 
 @dataclass
@@ -157,12 +226,43 @@ class EvalPlan:
     usage_tracking_overridden: bool
     sandbox_user: str | None
     output_jobs_dir: str
+    # The job folder to run into: None resumes the latest (the default).
+    job_name: str | None
     eval_env_manifest: EnvironmentManifest | None
     eval_config_override: dict | None
     eval_loop_strategy: LoopStrategySpec | None
     parsed_env: dict[str, str]
     include_tasks: set[str]
     exclude_tasks: set[str]
+    eval_seeds: list[int] | None = None
+    # "acp" (default) or "native"; checked against the agent at planning.
+    eval_harness: str = "acp"
+
+    @property
+    def eval_budget(self) -> Budget | None:
+        """The per-job cap from --max-cost-usd/-sandbox-seconds/-tokens/-rollouts."""
+        req = self.request
+        caps = (
+            req.max_cost_usd,
+            req.max_sandbox_seconds,
+            req.max_tokens,
+            req.max_rollouts,
+        )
+        if all(c is None for c in caps):
+            return None
+        return Budget(
+            max_cost_usd=req.max_cost_usd,
+            max_sandbox_seconds=req.max_sandbox_seconds,
+            max_tokens=req.max_tokens,
+            max_rollouts=req.max_rollouts,
+        )
+
+    @property
+    def eval_trial_budget(self) -> TrialBudget | None:
+        """Each trial's budget from --token-budget and --turn-budget."""
+        return TrialBudget.coerce(
+            {"tokens": self.request.token_budget, "turns": self.request.turn_budget}
+        )
 
     def make_eval_config(
         self,
@@ -171,6 +271,7 @@ class EvalPlan:
         dataset_version: str | None = None,
         dataset_task_digests: dict[str, str] | None = None,
         include_tasks: set[str] | None = None,
+        exclude_tasks: set[str] | None = None,
     ) -> EvaluationConfig:
         """Build the ``EvaluationConfig`` shared by the source-repo / tasks-dir paths.
 
@@ -186,18 +287,41 @@ class EvalPlan:
         req = self.request
         return EvaluationConfig(
             agent=self.eval_agent,
-            model=effective_model(self.eval_agent, req.model),
+            model=effective_model(self.eval_agent, req.model, self.parsed_env),
             reasoning_effort=self.eval_reasoning_effort,
+            harness=self.eval_harness,
             environment=self.eval_environment,
             concurrency=self.eval_concurrency,
             build_concurrency=req.build_concurrency,
+            warm_pool=req.warm_pool,
             prompts=self.eval_prompts,
             agent_idle_timeout=self.eval_agent_idle_timeout,
+            agent_idle_timeout_given=req.agent_idle_timeout is not None,
+            checkpoints=req.checkpoints,
+            checkpoint_keep=3 if req.checkpoint_keep is None else req.checkpoint_keep,
+            freeze_workspace=req.freeze_workspace,
+            keep_sandbox=req.keep_sandbox or "never",
+            accept_deviations=req.accept_deviations,
+            fresh_install=req.fresh_install,
+            allow_cloud_metadata=req.allow_cloud_metadata,
+            integrity=req.integrity or "off",
+            verifier_sandbox=req.verifier_sandbox or "task",
+            retry_from_checkpoint=req.retry_from_checkpoint,
+            retry_prompt=req.retry_prompt,
+            retry_resume_session=req.retry_resume_session,
+            budget=self.eval_budget,
+            trial_budget=self.eval_trial_budget,
             agent_env=self.parsed_env,
+            reviewer=ReviewerConfig.coerce(req.reviewer),
+            codex_apps_policy=req.codex_apps_policy,
             sandbox_user=self.sandbox_user,
-            sandbox_setup_timeout=req.sandbox_setup_timeout,
+            sandbox_setup_timeout=(
+                120 if req.sandbox_setup_timeout is None else req.sandbox_setup_timeout
+            ),
             context_root=str(req.context_root) if req.context_root else None,
             base_image_override=req.base_image_override,
+            separate_verifier=req.separate_verifier,
+            separate_verifier_include=req.separate_verifier_include,
             skills_dir=str(req.skills_dir) if req.skills_dir else None,
             skill_mode=req.skill_mode,
             skill_creator_dir=(
@@ -211,11 +335,23 @@ class EvalPlan:
             include_tasks=(
                 include_tasks if include_tasks is not None else self.include_tasks
             ),
-            exclude_tasks=self.exclude_tasks,
+            exclude_tasks=(
+                exclude_tasks if exclude_tasks is not None else self.exclude_tasks
+            ),
             usage_tracking=self.eval_usage_tracking,
             environment_manifest=self.eval_env_manifest,
             config_override=self.eval_config_override,
             loop_strategy=self.eval_loop_strategy,
+            seeds=self.eval_seeds,
+            n_tasks=req.n_tasks,
+            sample_seed=req.sample_seed,
+            timeout_multiplier=req.timeout_multiplier,
+            extra_instruction=req.extra_instruction,
+            # no --agent means DEFAULT_AGENT; the CLI warns once.
+            agent_defaulted=req.agent is None,
+            # The model above is resolved: only the request says whether
+            # --model named it (the run card's "given").
+            model_given=bool(req.model),
         )
 
 
@@ -225,12 +361,75 @@ def _normalize_eval_agent(agent_spec: str) -> str:
     Mirrors the old ``_normalize_eval_agent_or_exit`` rule but raises
     :class:`EvalPlanError` instead of exiting, so the CLI shell owns the exit.
     """
+    from benchflow.agents.registry import is_operator_script
+    from benchflow.agents.scripts import normalize_script
+
+    if is_operator_script(agent_spec):
+        try:
+            return normalize_script(agent_spec)
+        except (OSError, ValueError) as exc:
+            raise EvalPlanError(str(exc)) from None
     protocol, canonical_agent = parse_agent_spec(agent_spec)
     if protocol not in ("acp", "acpx"):
         raise EvalPlanError(f"Unsupported eval agent protocol: {protocol}")
     if protocol == "acpx":
         return f"acpx/{canonical_agent}"
+    _refuse_unknown_bare_agent(canonical_agent)
     return canonical_agent
+
+
+def _refuse_unknown_bare_agent(name: str) -> None:
+    """An unregistered one-word agent name is a usage error.
+
+    It used to fall through to the raw-command path: the run created a job,
+    defaulted the model and failed minutes later (or ran a misspelt name as a
+    command). A command with arguments (``myagent --acp``) is still accepted
+    as a raw ACP command, and namespaced specs (``acp:pi``) resolve as before.
+    """
+    from benchflow.agents.registry import is_scripted_agent, resolve_agent
+    from benchflow.runtime import check_agent_names
+
+    if is_scripted_agent(name) or any(c.isspace() for c in name):
+        return
+    try:
+        # A close misspelling gets the SDK's "did you mean" message.
+        check_agent_names([name])
+    except ValueError as exc:
+        raise EvalPlanError(
+            f"{exc} No job was created.", hint=_AGENT_NAME_NEXT
+        ) from None
+    try:
+        resolve_agent(name)
+    except KeyError as exc:
+        message = str(exc.args[0]) if exc.args else f"Unknown agent: {name!r}"
+        raise EvalPlanError(
+            f"{message} (`bench agents` shows the registered agents; to run a "
+            "command as the agent, give it with its arguments, e.g. 'myagent --acp')",
+            hint=_AGENT_NAME_NEXT,
+        ) from None
+
+
+_AGENT_NAME_NEXT = "pass -a with a name `bench agents` lists"
+_EXTRA_NEXT = "run that install command, then `bench doctor` checks this machine"
+
+FAIL_ON_CHOICES = ("timeout", "error", "verifier-error")
+
+
+def split_fail_on(values: list[str] | None) -> list[str]:
+    """``--fail-on timeout,error`` and repeated ``--fail-on`` flags, flattened."""
+    return [v.strip() for raw in values or [] for v in raw.split(",") if v.strip()]
+
+
+def _fresh_job_name(jobs_dir: Path) -> str:
+    """A timestamped job name not yet used under ``jobs_dir``."""
+    from datetime import datetime
+
+    base = datetime.now().strftime("%Y-%m-%d__%H-%M-%S")
+    name, n = base, 1
+    while (jobs_dir / name).exists():
+        n += 1
+        name = f"{base}-{n}"
+    return name
 
 
 def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
@@ -260,17 +459,59 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--registry requires --dataset")
     if request.ignore_bench_version and not request.dataset:
         raise EvalPlanError("--ignore-bench-version requires --dataset")
-    if request.matrix is not None and not request.tasks_dir:
-        raise EvalPlanError("--matrix currently requires --tasks-dir")
+    if request.matrix is not None and not (
+        request.tasks_dir or request.dataset or request.source_repo
+    ):
+        raise EvalPlanError(
+            "--matrix needs a task folder, a task named by repository or --dataset"
+        )
     if request.trials < 1:
         raise EvalPlanError("--trials must be >= 1")
-    if request.trials > 1 and request.matrix is None:
-        # Only the matrix expansion consumes trials; a plain run would silently
-        # do one trial per task while the caller believes it ran N. Per-trial
-        # requests created by run_matrix_eval bypass this planner by design.
+    if request.n_tasks is not None and request.n_tasks < 1:
+        raise EvalPlanError("--n-tasks must be at least 1")
+    if request.timeout_multiplier is not None and request.timeout_multiplier <= 0:
+        raise EvalPlanError("--timeout-multiplier must be positive")
+    if request.verifier_sandbox is not None:
+        from benchflow.task.verifier_sandbox import normalize_verifier_sandbox
+
+        try:
+            normalize_verifier_sandbox(request.verifier_sandbox)
+        except ValueError as exc:
+            raise EvalPlanError(f"--verifier-sandbox: {exc}") from None
+    if request.keep_sandbox is not None:
+        from benchflow.rollout._keep_sandbox import normalize_policy
+
+        try:
+            normalize_policy(request.keep_sandbox)
+        except ValueError as exc:
+            raise EvalPlanError(f"--keep-sandbox: {exc}") from None
+    eval_seeds: list[int] | None = None
+    if request.seeds is not None:
+        from benchflow.embodied.rollouts import parse_seeds
+
+        try:
+            eval_seeds = parse_seeds(request.seeds)
+        except ValueError as exc:
+            raise EvalPlanError(f"Invalid --seeds {request.seeds!r}: {exc}") from None
+        if not (request.tasks_dir or request.source_repo):
+            raise EvalPlanError("--seeds requires --tasks-dir or --source-repo")
+        if request.matrix is not None or request.trials > 1:
+            raise EvalPlanError("--seeds cannot be combined with --matrix or --trials")
+        if request.worker_concurrency is not None:
+            raise EvalPlanError("--seeds cannot be combined with --worker-concurrency")
+    if request.trials > 1 and not (
+        request.tasks_dir or request.dataset or request.source_repo
+    ):
+        # Only the matrix expansion consumes trials (--trials alone is a
+        # one-entry matrix of the run's own agent and model); a config file
+        # or hosted env would silently do one trial per task while the
+        # caller believes it ran N. Per-trial requests created by
+        # run_matrix_eval bypass this planner by design.
         raise EvalPlanError(
-            "--trials > 1 requires --matrix; to repeat one model, use a "
-            'single-entry matrix such as "models: {default: <model>}"'
+            "--trials > 1 needs a task folder, a task named by repository or "
+            "--dataset; a --config file repeats tasks with a job config's "
+            "n_attempts, and a --source-env run with "
+            "--source-env-rollouts-per-example"
         )
     if request.expected_tasks is not None and request.expected_tasks < 1:
         raise EvalPlanError("--expected-tasks must be >= 1")
@@ -294,8 +535,14 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             "--eval-results-model requires --eval-results-dataset and --eval-results-task"
         )
+    from benchflow._utils.command_hints import looked_in
+
     if request.tasks_dir and not Path(request.tasks_dir).exists():
-        raise EvalPlanError(f"--tasks-dir not found: {request.tasks_dir}")
+        raise EvalPlanError(
+            f"--tasks-dir not found: {looked_in(request.tasks_dir)}",
+            hint="pass a local task folder; a task on GitHub goes in "
+            "--source-repo and --source-path, or `bench run org/repo/path`",
+        )
     if request.matrix is not None and not Path(request.matrix).is_file():
         raise EvalPlanError(f"--matrix not found: {request.matrix}")
     if request.context_root and not Path(request.context_root).is_dir():
@@ -310,7 +557,11 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     # CLI error instead of a raw FileNotFoundError/IsADirectoryError traceback from
     # the bare open() in Evaluation.from_yaml.
     if request.config_file and not Path(request.config_file).is_file():
-        raise EvalPlanError(f"--config not found: {request.config_file}")
+        raise EvalPlanError(
+            f"--config not found: {looked_in(request.config_file)}",
+            hint="pass the path of a run config YAML file, relative to this "
+            "folder or absolute",
+        )
     # Validate the --source-repo shape up front (it's otherwise checked deep in
     # resolve_source_with_metadata, after planning, where the ValueError escapes
     # as a traceback). Match that resolver's semantics — split("/", 1) into two
@@ -327,6 +578,48 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     ):
         raise EvalPlanError(
             "--worker-concurrency is supported for --tasks-dir and --source-repo batch runs"
+        )
+    if request.source_env and request.reviewer is not None:
+        raise EvalPlanError(
+            "--reviewer-* options require local tasks; --source-env owns its scoring"
+        )
+    for flag, value in (
+        ("--max-cost-usd", request.max_cost_usd),
+        ("--max-sandbox-seconds", request.max_sandbox_seconds),
+        ("--max-tokens", request.max_tokens),
+        ("--max-rollouts", request.max_rollouts),
+        ("--token-budget", request.token_budget),
+        ("--turn-budget", request.turn_budget),
+    ):
+        if value is not None and not value > 0:
+            raise EvalPlanError(f"{flag} must be > 0")
+    if request.source_env and (
+        request.token_budget is not None or request.turn_budget is not None
+    ):
+        raise EvalPlanError(
+            "--token-budget and --turn-budget are not supported with --source-env: "
+            "vf-eval runs the rollouts, and BenchFlow's model proxy, which "
+            "enforces a trial budget, does not see their calls"
+        )
+    has_budget = any(
+        v is not None
+        for v in (
+            request.max_cost_usd,
+            request.max_sandbox_seconds,
+            request.max_tokens,
+            request.max_rollouts,
+        )
+    )
+    if has_budget and request.worker_concurrency is not None:
+        raise EvalPlanError(
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts cap "
+            "one job and are not supported with --worker-concurrency (each worker "
+            "would get the whole budget)"
+        )
+    if has_budget and request.source_env:
+        raise EvalPlanError(
+            "--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts are "
+            "not supported with --source-env (vf-eval runs the rollouts)"
         )
     if request.worker_retries < 0:
         raise EvalPlanError("--worker-retries must be >= 0")
@@ -362,10 +655,65 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
             except ModuleNotFoundError as exc:
                 raise EvalPlanError(
                     "Missing optional dependency for 'modal' sandbox. "
-                    f"Install it with `uv sync --extra {provider_extra('modal')}`."
+                    f"Install it with {extra_install_hint(provider_extra('modal') or 'sandbox-modal')}.",
+                    hint=_EXTRA_NEXT,
+                    exit_code=1,
                 ) from exc
+        elif sandbox_sdk_missing(eval_environment):
+            # Same fail-fast for the other extra-backed sandboxes: before this,
+            # a missing Daytona SDK created the job, failed every rollout with
+            # a chained traceback and recorded 0/N.
+            extra = provider_extra(eval_environment) or f"sandbox-{eval_environment}"
+            raise EvalPlanError(
+                f"Missing optional dependency for {eval_environment!r} sandbox. "
+                f"Install it with {extra_install_hint(extra)}.",
+                hint=_EXTRA_NEXT
+                + (
+                    "; a Daytona run also needs DAYTONA_API_KEY"
+                    if eval_environment == "daytona"
+                    else ""
+                ),
+                exit_code=1,
+            )
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
+    from benchflow.agents.registry import is_operator_script
+    from benchflow.agents.scripts import validate_script_user
+
+    if is_operator_script(eval_agent):
+        from benchflow._utils.sandbox_providers import (
+            OPERATOR_SCRIPT_PROVIDERS,
+            SANDBOX_PROVIDERS,
+        )
+
+        if eval_environment not in OPERATOR_SCRIPT_PROVIDERS:
+            # Refused here, not once the sandbox is up: the runner check used to
+            # fail only after a Daytona sandbox had started.
+            raise EvalPlanError(
+                "script: runs only on "
+                + ", ".join(
+                    n for n in SANDBOX_PROVIDERS if n in OPERATOR_SCRIPT_PROVIDERS
+                )
+                + f": its runner needs a trusted root transport the {eval_environment} "
+                "backend does not have",
+                hint="use --sandbox docker, or run the logic as an ACP agent "
+                "(docs/agents/custom-agent.md)",
+            )
+        try:
+            validate_script_user(sandbox_user)
+        except ValueError as exc:
+            raise EvalPlanError(str(exc)) from None
+        if request.harness is not None or request.agent_env:
+            raise EvalPlanError(
+                "script: does not use a model harness or agent options; "
+                "drop --harness and --agent-env, or choose a model agent"
+            )
+    if request.codex_apps_policy not in (None, "disabled", "inherit"):
+        raise EvalPlanError("--codex-apps-policy must be disabled or inherit")
+    if request.source_env and request.codex_apps_policy is not None:
+        raise EvalPlanError(
+            "--codex-apps-policy is not supported for hosted source environments"
+        )
     eval_concurrency = request.concurrency if request.concurrency is not None else 4
     if eval_concurrency < 1:
         # A non-positive concurrency builds asyncio.Semaphore(0), which can never
@@ -374,6 +722,11 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     if request.build_concurrency is not None and request.build_concurrency < 1:
         raise EvalPlanError(
             f"--build-concurrency must be >= 1 (got {request.build_concurrency})"
+        )
+    if request.warm_pool is not None and not 0 <= request.warm_pool <= eval_concurrency:
+        raise EvalPlanError(
+            f"--warm-pool must be from 0 to --concurrency ({eval_concurrency}) "
+            f"(got {request.warm_pool})"
         )
     if request.skill_mode not in {
         SKILL_MODE_NO_SKILL,
@@ -417,15 +770,39 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         # falsely reject a legitimately model-bearing config. The no-source case
         # is left to the CLI's "provide a source" error.
         try:
-            effective_model(eval_agent, request.model)
+            planned_model = effective_model(eval_agent, request.model, parsed_env)
         except ValueError as exc:
             raise EvalPlanError(str(exc)) from None
+        if request.token_budget is not None or request.turn_budget is not None:
+            from benchflow.trial_budget import unenforceable_reason
+
+            why = unenforceable_reason(eval_agent, planned_model, parsed_env)
+            if why is not None:
+                raise EvalPlanError(
+                    f"--token-budget and --turn-budget cannot be enforced on "
+                    f"{eval_agent}: {why}, and BenchFlow's model proxy is what "
+                    "counts a trial's tokens and turns. No job was created.",
+                    hint="run it with an API key, so its calls go through the proxy, "
+                    "or drop the budget",
+                )
 
     usage_tracking_overridden = request.usage_tracking is not None
     try:
         eval_usage_tracking = UsageTrackingConfig(mode=request.usage_tracking)
     except (TypeError, ValueError) as exc:
         raise EvalPlanError(f"Invalid usage tracking config: {exc}") from None
+    from benchflow.agents.registry import agent_routes_own_model
+
+    if (
+        request.config_file is None
+        and not request.source_env
+        and eval_usage_tracking.with_env_defaults().mode == "required"
+        and agent_routes_own_model(eval_agent)
+    ):
+        # Before a job exists; every trial's setup would refuse it anyway.
+        from benchflow.task.plan_validation import own_model_route_usage_refusal
+
+        raise EvalPlanError(own_model_route_usage_refusal(eval_agent))
     try:
         eval_agent_idle_timeout = normalize_agent_idle_timeout(
             request.agent_idle_timeout
@@ -442,7 +819,98 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    from benchflow.native_harness.harnesses import check_harness, normalize_harness
+
+    try:
+        eval_harness = normalize_harness(request.harness)
+        if request.harness is not None and request.config_file is None:
+            check_harness(eval_harness, [eval_agent])
+    except ValueError as exc:
+        raise EvalPlanError(f"Invalid --harness {request.harness!r}: {exc}") from None
+    if eval_harness != "acp" and request.source_env:
+        raise EvalPlanError(
+            "--harness is for BenchFlow agent rollouts; --source-env runs its own harness"
+        )
     output_jobs_dir = request.jobs_dir or "jobs"
+    if request.fresh and request.job_name:
+        raise EvalPlanError("give --fresh or --job-name, not both")
+    if (request.fresh or request.job_name) and request.worker_concurrency:
+        raise EvalPlanError(
+            "--fresh and --job-name are not supported with --worker-concurrency"
+        )
+    if request.restart_changed and (request.fresh or request.worker_concurrency):
+        # Both start jobs of their own, with no earlier trials to restart.
+        other = "--fresh" if request.fresh else "--worker-concurrency"
+        raise EvalPlanError(
+            f"--restart-changed restarts a named job's earlier trials; {other} "
+            "starts new jobs, which have none",
+            hint=(
+                "drop --restart-changed for a new job, or drop --fresh and name "
+                "the job to restart with --job-name"
+                if request.fresh
+                else "drop --restart-changed: each shard runs a job of its own"
+            ),
+        )
+    if request.fail_under is not None and not 0.0 <= request.fail_under <= 1.0:
+        raise EvalPlanError("--fail-under is a pass rate between 0 and 1")
+    if request.source_env:
+        # vf-eval scores a hosted run as one mean reward, with no trials to
+        # count, so these would be ignored; refuse them instead of passing CI.
+        ignored = [
+            flag
+            for flag, value in (
+                ("--fail-under", request.fail_under),
+                ("--fail-on", request.fail_on),
+                ("--summary-out", request.summary_out),
+            )
+            if value is not None and value != []
+        ]
+        if ignored:
+            raise EvalPlanError(
+                f"{', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} not "
+                "supported with --source-env: vf-eval scores the run as one mean "
+                "reward, with no trials to count. The run exits 1 when it "
+                "errors; its reward is in <jobs-dir>/hosted-env/<run>/result.json."
+            )
+        # A hosted environment scores with its own verifier, which BenchFlow
+        # cannot move into a separate verifier sandbox. Dropping the switch
+        # would run unisolated and exit 0: the unsafe direction, so refuse.
+        from benchflow.task.verifier_sandbox import normalize_verifier_sandbox
+
+        isolation = [
+            flag
+            for flag, asked in (
+                (
+                    "--verifier-sandbox separate",
+                    request.verifier_sandbox is not None
+                    and normalize_verifier_sandbox(request.verifier_sandbox)
+                    == "separate",
+                ),
+                (
+                    "--integrity strict",
+                    str(request.integrity or "").strip().lower() == "strict",
+                ),
+            )
+            if asked
+        ]
+        if isolation:
+            raise EvalPlanError(
+                f"{' and '.join(isolation)} {'is' if len(isolation) == 1 else 'are'} "
+                "not supported with --source-env: the hosted environment scores "
+                "the run with its own verifier, which BenchFlow cannot move into "
+                "a separate verifier sandbox. Run it without "
+                f"{'that flag' if len(isolation) == 1 else 'those flags'}, or run "
+                "the tasks with --tasks-dir or --dataset."
+            )
+    unknown_gates = sorted(set(split_fail_on(request.fail_on)) - set(FAIL_ON_CHOICES))
+    if unknown_gates:
+        raise EvalPlanError(
+            f"--fail-on {', '.join(unknown_gates)}: choose from "
+            f"{', '.join(FAIL_ON_CHOICES)}"
+        )
+    job_name = request.job_name
+    if request.fresh:
+        job_name = _fresh_job_name(Path(output_jobs_dir))
 
     # Resolve the optional Environment-plane manifest once and reuse across
     # every source branch (config / source_repo / tasks_dir / source_env).
@@ -492,10 +960,13 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         usage_tracking_overridden=usage_tracking_overridden,
         sandbox_user=sandbox_user,
         output_jobs_dir=output_jobs_dir,
+        job_name=job_name,
         eval_env_manifest=eval_env_manifest,
         eval_config_override=eval_config_override,
         eval_loop_strategy=eval_loop_strategy,
         parsed_env=parsed_env,
         include_tasks=include_tasks,
         exclude_tasks=exclude_tasks,
+        eval_seeds=eval_seeds,
+        eval_harness=eval_harness,
     )

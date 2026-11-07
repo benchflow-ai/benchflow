@@ -92,8 +92,8 @@ class TestLoadRubric:
         assert rubric.contract == LEGACY_REVIEW_RUBRIC_CONTRACT
         assert REVIEW_RUBRIC_CONTRACT == LEGACY_REVIEW_RUBRIC_CONTRACT
 
-    def test_loads_frontierphysics_weighted_rubric_contract(self, tmp_path):
-        """Guards FrontierPhysics PR #109 at head commit 4bdbd2e against
+    def test_loads_a_weighted_rubric_contract(self, tmp_path):
+        """Guards a benchmark's PR at head commit 4bdbd2e against
         rejecting or silently downgrading its weighted rubric.json format.
         """
 
@@ -786,6 +786,26 @@ class TestWrapperValidator:
         result["checks"][criterion] = replacement
         code, out = self.run_validator(tmp_path, result, rubric_data=WEIGHTED_RUBRIC)
         assert code == 1, out
+
+    def test_a_weighted_result_that_copied_the_schema_definitions_is_valid(
+        self, tmp_path
+    ):
+        """A reviewer (MiMo, in a 0.10.0rc1 acceptance run) copied the
+        schema's $defs into its result; the verdict itself was well formed."""
+        result = self.good_weighted_result()
+        result["$defs"] = {"Check": {"type": "object"}}
+        result["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+        (tmp_path / "a").mkdir()
+        code, out = self.run_validator(
+            tmp_path / "a", result, rubric_data=WEIGHTED_RUBRIC
+        )
+        assert code == 0, out
+        result["notes"] = "an extra key that is not the schema's"
+        (tmp_path / "b").mkdir()
+        code, out = self.run_validator(
+            tmp_path / "b", result, rubric_data=WEIGHTED_RUBRIC
+        )
+        assert code == 1 and "unexpected key: notes" in out
 
     def test_trial_name_round_trips_without_whitespace_loss(self, tmp_path):
         """Guards PR #942: validator identity matching must be byte-exact."""

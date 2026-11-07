@@ -10,6 +10,7 @@ retry, fails CI.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -56,7 +57,7 @@ async def test_up_timeout_derived_from_build_budget(
 
     await strategy._compose_up_with_retry(env)
 
-    assert recorded == [(["up", "-d"], expected_timeout)]
+    assert recorded == [(["up", "-d", "--no-build"], expected_timeout)]
 
 
 @pytest.mark.asyncio
@@ -164,7 +165,9 @@ def test_long_exec_heartbeat_returns_promptly_after_fast_command():
     assert 'kill "$bf_heartbeat_pid"' not in wrapped
     assert ': > "$bf_stop"' in wrapped
     result = subprocess.run(
-        ["bash", "-lc", wrapped],
+        # Test the wrapper itself, independent of developer login profiles.
+        ["bash", "--noprofile", "--norc", "-c", wrapped],
+        env={key: value for key, value in os.environ.items() if key != "BASH_ENV"},
         capture_output=True,
         check=True,
         text=True,
@@ -200,11 +203,11 @@ async def test_pre_compose_hook_runs_inside_uploaded_environment():
     assert captured == [
         {
             "command": (
-                "if [ -f /benchflow/environment/benchflow-pre-compose.sh ]; then "
-                "chmod +x /benchflow/environment/benchflow-pre-compose.sh && "
-                "/benchflow/environment/benchflow-pre-compose.sh; fi"
+                "if [ -f /runtime/task/environment/benchflow-pre-compose.sh ]; then "
+                "chmod +x /runtime/task/environment/benchflow-pre-compose.sh && "
+                "/runtime/task/environment/benchflow-pre-compose.sh; fi"
             ),
-            "cwd": "/benchflow/environment",
+            "cwd": "/runtime/task/environment",
             "env": {"MAIN_IMAGE_NAME": "bf_task"},
             "timeout_sec": 3600,
         }

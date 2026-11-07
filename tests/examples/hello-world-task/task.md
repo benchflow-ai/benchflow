@@ -1,42 +1,17 @@
 ---
 schema_version: '1.0'
-artifacts: []
 metadata:
   author_name: benchflow
   difficulty: easy
   category: sanity
-  tags:
-  - sanity
-  - hello-world
-verifier:
-  type: test-script
-  timeout_sec: 60.0
-  service: main
-  pytest_plugins: []
-  env: {}
-  judge:
-    model: claude-sonnet-4-6
-    rubric_path: tests/rubric.toml
-    input_dir: /app
-    input_type: deliverables
-    context: ''
-  hardening:
-    cleanup_conftests: true
+  tags: [sanity, hello-world]
 agent:
-  timeout_sec: 300.0
+  timeout_sec: 300
+verifier:
+  timeout_sec: 60
 sandbox:
-  network_mode: public
-  build_timeout_sec: 600.0
-  os: linux
   cpus: 1
   memory_mb: 2048
-  storage_mb: 10240
-  gpus: 0
-  mcp_servers: []
-  allow_internet: true
-  env: {}
-oracle:
-  env: {}
 ---
 
 ## prompt

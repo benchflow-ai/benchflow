@@ -1,4 +1,4 @@
-"""Guard CLI/docs drift — every public flag documented in docs/reference/cli.md
+"""Guard CLI/docs drift — every public flag documented in docs/reference/commands.md
 must still be present in `bench --help` output.
 
 This is the snapshot half of issue #367: docs and CLI help drifted apart so
@@ -23,7 +23,7 @@ runner = CliRunner()
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_CLI_MD = _REPO_ROOT / "docs" / "reference" / "cli.md"
+_CLI_MD = _REPO_ROOT / "docs" / "reference" / "commands.md"
 
 
 def _click_command(path: list[str]) -> click.Command:
@@ -35,11 +35,12 @@ def _click_command(path: list[str]) -> click.Command:
 
 
 def _cli_long_flags(path: list[str]) -> set[str]:
-    """Every ``--long`` option the parser actually accepts for ``path`` (minus --help)."""
+    """Every ``--long`` option the parser actually accepts for ``path`` (minus --help),
+    the ``--no-x`` half of an on/off flag included: commands.md lists both."""
     flags = {
         opt
         for param in _click_command(path).params
-        for opt in getattr(param, "opts", [])
+        for opt in (*getattr(param, "opts", []), *getattr(param, "secondary_opts", []))
         if opt.startswith("--")
     }
     flags.discard("--help")
@@ -47,7 +48,7 @@ def _cli_long_flags(path: list[str]) -> set[str]:
 
 
 def _doc_section(header: str) -> str:
-    """The cli.md block up to the next heading at the same or higher level."""
+    """The commands.md block up to the next heading at the same or higher level."""
     doc = _CLI_MD.read_text()
     i = doc.index(header)
     level = len(header) - len(header.lstrip("#"))
@@ -57,7 +58,7 @@ def _doc_section(header: str) -> str:
 
 
 def _doc_flags(header: str) -> set[str]:
-    """Backtick-wrapped ``--flags`` documented under a cli.md heading."""
+    """Backtick-wrapped ``--flags`` documented under a commands.md heading."""
     return set(re.findall(r"`(--[a-z0-9-]+)`", _doc_section(header)))
 
 
@@ -84,23 +85,24 @@ def _help_command_names(out: str) -> set[str]:
 
 
 def test_top_level_help_lists_public_groups() -> None:
-    """Every public top-level group documented in cli.md is shown in --help."""
+    """Every public top-level group documented in commands.md is shown in --help."""
     out = _help([])
     commands = _help_command_names(out)
     for group in ("eval", "train", "skills", "tasks", "hub", "agent", "sandbox"):
         assert group in commands, f"missing public group {group!r} in: {out}"
+    # The verb set Rust's bench 0.8.2 shares (cli/verbs.py).
+    for verb in ("new", "check", "run", "results", "view", "regrade", "agents"):
+        assert verb in commands, f"missing verb {verb!r} in: {out}"
     # Deprecated, hidden, and removed commands must not show up in public help.
     # `environment` is now a hidden deprecated alias group (→ sandbox / hub env);
     # `adopt` is a hidden deprecated alias group (→ eval adopt).
     for hidden in (
-        "run",
         "job",
-        "agents",
         "metrics",
-        "view",
         "eval-batch",
         "environment",
         "adopt",
+        "embodied",
     ):
         assert hidden not in commands, (
             f"hidden command {hidden!r} unexpectedly shown: {out}"
@@ -108,7 +110,7 @@ def test_top_level_help_lists_public_groups() -> None:
 
 
 def test_eval_run_flags_match_cli_md_bidirectional() -> None:
-    """`bench eval run`'s flags and its cli.md table must be set-equal.
+    """`bench run`'s flags and its commands.md section must be set-equal.
 
     The old guard only checked doc→CLI (a hand-maintained list of documented
     flags must exist in --help). It could not catch the *reverse* — a new CLI
@@ -116,11 +118,16 @@ def test_eval_run_flags_match_cli_md_bidirectional() -> None:
     ``--ignore-bench-version`` rotted out of the docs (#731). Deriving both
     sides from ground truth (the live parser + the doc table) drops the
     hand-maintained list and closes both directions.
+
+    ``## bench run`` documents every ``bench eval run`` flag too: ``bench
+    run``'s parser holds them all (``RunCommand``), and the first assert keeps
+    that true.
     """
-    cli = _cli_long_flags(["eval", "run"])
-    doc = _doc_flags("### bench eval run")
+    cli = _cli_long_flags(["run"])
+    assert _cli_long_flags(["eval", "run"]) <= cli
+    doc = _doc_flags("## bench run")
     assert cli == doc, (
-        "bench eval run CLI↔cli.md flag drift:\n"
+        "bench run CLI↔commands.md flag drift:\n"
         f"  in CLI but UNDOCUMENTED: {sorted(cli - doc)}\n"
         f"  documented but NOT in CLI: {sorted(doc - cli)}"
     )
@@ -130,12 +137,12 @@ def test_documented_defaults_match_cli() -> None:
     """Documented default *values* must match the live param defaults.
 
     The name-only guard happily passed while ``bench hub check --cache-dir``
-    documented the pre-rename ``.cache/compat/harbor`` (the CLI moved to
-    ``.cache/hub/harbor``). Pin the defaults that have drift history so a
+    documented a cache folder the CLI no longer used (it is now
+    ``.cache/hub/registry``). Pin the defaults that have drift history so a
     stale value in either the code or the doc fails CI.
     """
     checks = [
-        (["hub", "check"], "--cache-dir", "### bench hub check", ".cache/hub/harbor"),
+        (["hub", "check"], "--cache-dir", "## bench hub check", ".cache/hub/registry"),
     ]
     for path, flag, header, expected in checks:
         param = next(
@@ -146,7 +153,7 @@ def test_documented_defaults_match_cli() -> None:
             f"expected to contain {expected!r}"
         )
         assert expected in _doc_section(header), (
-            f"cli.md {header!r} no longer documents the {flag} default {expected!r}"
+            f"commands.md {header!r} no longer documents the {flag} default {expected!r}"
         )
 
 
@@ -158,21 +165,22 @@ def test_eval_run_accepts_environment_manifest() -> None:
     assert "--environment-manifest" in out
 
 
-def test_eval_create_is_deprecated_alias_of_run() -> None:
-    """`bench eval create` was renamed to `bench eval run`; the old name stays
-    as a deprecated alias so existing scripts and downstream repos keep working.
+def test_eval_create_is_a_hidden_alias_of_run() -> None:
+    """`bench eval create` was renamed to `bench eval run` (now `bench run`);
+    the old name stays as a hidden alias so existing scripts and downstream
+    repos keep working, and prints the note every 0.8 spelling prints.
     """
     by_name = {c.name: c for c in eval_app.registered_commands}
     assert "run" in by_name, "primary `bench eval run` command missing"
-    assert "create" in by_name, "deprecated `bench eval create` alias missing"
-    assert by_name["create"].deprecated, "`create` must be marked deprecated"
+    assert "create" in by_name, "`bench eval create` alias missing"
+    assert by_name["create"].hidden, "`create` must be hidden"
     assert not by_name["run"].deprecated, "`run` must not be deprecated"
     # Both names share the same callback so flags/behavior never drift apart.
     assert by_name["run"].callback is by_name["create"].callback
 
 
 def test_documented_subcommands_exist() -> None:
-    """Subcommands referenced in docs/reference/cli.md must resolve."""
+    """Subcommands referenced in docs/reference/commands.md must resolve."""
     for cmd in (
         ["eval", "run"],
         ["eval", "create"],
@@ -183,7 +191,7 @@ def test_documented_subcommands_exist() -> None:
         ["train", "validate"],
         ["train", "run"],
         ["train", "run", "sft"],
-        # Adoption is canonically under `eval` (cli.md documents `bench eval adopt`).
+        # Adoption is canonically under `eval` (commands.md documents `bench eval adopt`).
         ["eval", "adopt", "init"],
         ["eval", "adopt", "convert"],
         ["eval", "adopt", "verify"],
@@ -229,12 +237,19 @@ def test_documented_subcommands_exist() -> None:
 # that pattern.
 _INSTALL_URL_DOCS = (
     "README.md",
-    "docs/getting-started.md",
-    "docs/release.md",
-    "docs/agent-quickstart.md",
-    "docs/skill-eval.md",
-    "docs/llm-judge.md",
-    "docs/reference/python-api.md",
+    "docs/start/quick-start.md",
+    "docs/contributing/release.md",
+    "docs/evaluate/skills.md",
+    "docs/tasks/rubric-review.md",
+    "docs/reference/python.md",
+    # The docs v2 pages with an install line.
+    "docs/README.md",
+    "docs/start/install.md",
+    "docs/scale/daytona.md",
+    "docs/scale/modal.md",
+    "docs/scale/ci.md",
+    "docs/versions/0.10.md",
+    "docs/versions/upgrade-from-0.7.md",
     "docs/examples/coder-reviewer-demo.py",
     "docs/examples/scene-patterns.ipynb",
     ".claude/skills/benchflow/SKILL.md",

@@ -11,6 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.scoring import classify_score_outcome, extract_reward
+
 METADATA_GROUP_FIELDS = ("difficulty_level", "reward_mode_initial")
 _ERROR_FIELDS = ("error", "verifier_error", "export_error")
 _UNHEALTHY_REASONS = ("unhealthy", "partial_trajectory")
@@ -23,6 +26,7 @@ class LiftRollout:
     reward: float | None
     metadata: dict[str, Any]
     excluded_reason: str | None
+    gate_passed: bool | None = None
 
     @property
     def healthy(self) -> bool:
@@ -30,7 +34,7 @@ class LiftRollout:
 
     @property
     def passed(self) -> bool:
-        return self.reward == 1.0
+        return self.gate_passed if self.gate_passed is not None else self.reward == 1.0
 
 
 @dataclass(frozen=True)
@@ -261,6 +265,9 @@ def _load_rollouts(job_dir: Path) -> list[LiftRollout]:
                 reward=reward,
                 metadata=_extract_metadata(result, rollout_dir),
                 excluded_reason=_excluded_reason(result, reward),
+                gate_passed=classify_score_outcome(result) == "passed"
+                if result.get("scoring") is not None
+                else None,
             )
         )
     return sorted(rollouts, key=lambda row: (row.task_id, str(row.rollout_dir)))
@@ -275,8 +282,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _iter_rollouts(job_dir: Path) -> list[Path]:
-    if (job_dir / "result.json").is_file():
-        return [job_dir]
     roots = [job_dir]
     shard_root = _worker_shards_root(job_dir)
     if shard_root is not None:
@@ -286,7 +291,7 @@ def _iter_rollouts(job_dir: Path) -> list[Path]:
             path.parent
             for root in roots
             if root.is_dir()
-            for path in root.rglob("result.json")
+            for path in iter_task_result_paths(root)
         }
     )
 
@@ -299,6 +304,8 @@ def _worker_shards_root(job_dir: Path) -> Path | None:
 
 
 def _reward(result: Mapping[str, Any]) -> float | None:
+    if result.get("scoring") is not None:
+        return extract_reward(result)
     rewards = result.get("rewards")
     if isinstance(rewards, Mapping):
         value = rewards.get("reward")
@@ -511,7 +518,7 @@ def _limitations(
 ) -> list[str]:
     limitations = [
         "Only tasks with healthy, scored rollouts on both sides are included in paired lift metrics.",
-        "Pass rate follows BenchFlow scoring: reward == 1.0 is pass; other numeric rewards are failures.",
+        "Pass rate uses the explicit test/blocker verdict for reviewed tasks; legacy results pass at reward == 1.0.",
     ]
     if baseline_duplicate_count or trained_duplicate_count:
         limitations.append(

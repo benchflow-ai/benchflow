@@ -248,3 +248,22 @@ def test_cli_config_override_applies_on_run_config_file_path(tmp_path):
 
     assert result.exit_code == 0, result.stdout
     assert captured["config_override"] == {"agent": {"timeout_sec": 30}}
+
+
+def test_an_override_adds_artifacts_to_the_tasks_own():
+    """A job can collect more files from every task without touching it.
+
+    ``EvaluationConfig`` had no way to add artifacts (the override refused
+    the section), so the hill-climb demo linked Claude Code's session log
+    into /logs/artifacts with a setup command. Added entries never replace
+    the task's own, which a separate verifier may read.
+    """
+    base = TaskConfig.model_validate(
+        {**_cfg().model_dump(by_alias=False), "artifacts": ["/app/report.xlsx"]}
+    )
+    session_logs = {"source": "/home/agent/.claude/projects", "destination": "claude"}
+    out = apply_config_override(base, {"artifacts": [session_logs, "/app/report.xlsx"]})
+    sources = [a if isinstance(a, str) else a.source for a in out.artifacts]
+    assert sources == ["/app/report.xlsx", "/home/agent/.claude/projects"]
+    with pytest.raises(ValueError, match="must be a list"):
+        apply_config_override(base, {"artifacts": "/app/x"})

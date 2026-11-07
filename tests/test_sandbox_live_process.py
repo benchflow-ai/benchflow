@@ -17,6 +17,7 @@ import pytest
 
 from benchflow.sandbox import process as process_pkg
 from benchflow.sandbox._base import BaseSandbox
+from tests._trust_admission import admitted
 
 
 def _stub_sandbox(**attrs: object) -> SimpleNamespace:
@@ -47,7 +48,9 @@ class TestDaytonaTransportSelection:
                 new_callable=AsyncMock,
             ) as ssh,
         ):
-            await DaytonaSandbox.live_process(env, agent="test-agent")
+            await DaytonaSandbox.live_process(
+                env, agent="test-agent", admission=admitted(env)
+            )
 
         pty.assert_awaited_once_with(env)
         ssh.assert_not_awaited()
@@ -72,7 +75,9 @@ class TestDaytonaTransportSelection:
                 new_callable=AsyncMock,
             ) as ssh,
         ):
-            await DaytonaSandbox.live_process(env, agent="test-agent")
+            await DaytonaSandbox.live_process(
+                env, agent="test-agent", admission=admitted(env)
+            )
 
         pty.assert_awaited_once_with(env)
         ssh.assert_not_awaited()
@@ -96,7 +101,9 @@ class TestDaytonaTransportSelection:
                 new_callable=AsyncMock,
             ) as ssh,
         ):
-            await DaytonaSandbox.live_process(env, agent="openhands")
+            await DaytonaSandbox.live_process(
+                env, agent="openhands", admission=admitted(env)
+            )
 
         ssh.assert_awaited_once_with(env)
         pty.assert_not_awaited()
@@ -120,7 +127,9 @@ class TestDaytonaTransportSelection:
                 new_callable=AsyncMock,
             ) as ssh,
         ):
-            await DaytonaSandbox.live_process(env, agent="openhands")
+            await DaytonaSandbox.live_process(
+                env, agent="openhands", admission=admitted(env)
+            )
 
         pty.assert_awaited_once_with(env)
         ssh.assert_not_awaited()
@@ -143,7 +152,9 @@ class TestDaytonaTransportSelection:
                 new_callable=AsyncMock,
             ) as ssh,
         ):
-            await DaytonaSandbox.live_process(env, agent="gemini")
+            await DaytonaSandbox.live_process(
+                env, agent="gemini", admission=admitted(env)
+            )
 
         ssh.assert_awaited_once_with(env)
         pty.assert_not_awaited()
@@ -156,7 +167,7 @@ class TestSingleTransportBackends:
         from benchflow.sandbox.apple_container import AppleContainerSandbox
 
         env = _stub_sandbox(_container_name="bf_run")
-        result = await AppleContainerSandbox.live_process(env)
+        result = await AppleContainerSandbox.live_process(env, admission=admitted(env))
 
         assert isinstance(result, process_pkg.AppleContainerProcess)
 
@@ -169,7 +180,7 @@ class TestSingleTransportBackends:
         with patch.object(
             process_pkg.DockerProcess, "from_sandbox_env", return_value="docker-proc"
         ) as docker:
-            result = await DockerSandbox.live_process(env)
+            result = await DockerSandbox.live_process(env, admission=admitted(env))
 
         docker.assert_called_once_with(env)
         assert result == "docker-proc"
@@ -184,7 +195,7 @@ class TestSingleTransportBackends:
             runtime_session_id="s" * 40,
             region="us-west-2",
         )
-        result = await AgentCoreSandbox.live_process(env)
+        result = await AgentCoreSandbox.live_process(env, admission=admitted(env))
 
         assert isinstance(result, process_pkg.AgentCoreProcess)
 
@@ -208,9 +219,14 @@ class TestSingleTransportBackends:
 
             async def start(self, force_build: bool) -> None: ...
             async def stop(self, delete: bool) -> None: ...
-            async def upload_file(self, source_path, target_path) -> None: ...
+            # mode= keeps this stub protocol-conformant: until it is collected
+            # it is a live BaseSandbox subclass, and the upload_file conformance
+            # test in test_sandbox_prebuilt_validation.py walks those.
+            async def upload_file(
+                self, source_path, target_path, mode=None, **_kwargs
+            ) -> None: ...
             async def upload_dir(
-                self, source_dir, target_dir, service="main"
+                self, source_dir, target_dir, service="main", **_kwargs
             ) -> None: ...
             async def download_file(self, source_path, target_path) -> None: ...
             async def download_dir(
@@ -219,6 +235,7 @@ class TestSingleTransportBackends:
             async def exec(self, command, **kwargs): ...
 
         with pytest.raises(NotImplementedError) as excinfo:
-            await _NoTransportSandbox().live_process()
+            box = _NoTransportSandbox()
+            await box.live_process(admission=admitted(box))
 
         assert "does not provide a live agent transport" in str(excinfo.value)

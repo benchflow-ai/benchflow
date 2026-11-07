@@ -15,7 +15,7 @@ from benchflow.rollout._setup import _agent_process_kill_pattern
 
 
 class LocalShellEnv:
-    async def exec(self, command: str, timeout_sec: int):
+    async def exec(self, command: str, timeout_sec: int, *, user=None):
         completed = subprocess.run(
             command,
             shell=True,
@@ -49,7 +49,7 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/app",
-        skills_sandbox_dir="/opt/benchflow/skills",
+        skills_sandbox_dir="/opt/runtime/skills",
     )
 
     env.upload_dir.assert_not_called()
@@ -59,8 +59,8 @@ async def test_deploy_skills_symlinks_agent_skill_paths_instead_of_copying(tmp_p
     assert "cp -r" not in cmd
     assert " && " in cmd
     assert ";" not in cmd
-    assert "ln -sfn /opt/benchflow/skills /home/agent/.agents/skills" in cmd
-    assert "ln -sfn /opt/benchflow/skills /app/skills" in cmd
+    assert "ln -sfn /opt/runtime/skills /home/agent/.agents/skills" in cmd
+    assert "ln -sfn /opt/runtime/skills /app/skills" in cmd
 
 
 @pytest.mark.asyncio
@@ -120,8 +120,9 @@ async def test_deploy_skills_uploads_runtime_skills_and_links_shared_tree(tmp_pa
         agent_cwd="/workspace",
     )
 
-    env.upload_dir.assert_awaited_once_with(skills_dir, "/skills")
-    env.exec.assert_awaited_once()
+    env.upload_dir.assert_awaited_once()
+    assert env.upload_dir.await_args.args[0] == skills_dir
+    assert env.upload_dir.await_args.args[1].startswith("/.runtime-skills-")
 
     distributed_link_cmd = env.exec.await_args.args[0]
     assert " && " in distributed_link_cmd
@@ -149,7 +150,11 @@ async def test_deploy_skills_fails_closed_when_expected_catalog_is_unreadable(tm
     """Guards the agent-neutral task-skill fidelity gate from PR #919."""
     env = MagicMock()
     env.exec = AsyncMock(
-        return_value=MagicMock(return_code=1, stdout="", stderr="missing SKILL.md")
+        side_effect=lambda cmd, **kwargs: MagicMock(
+            return_code=int("source_catalog=" in cmd),
+            stdout="",
+            stderr="missing SKILL.md",
+        )
     )
     env.upload_dir = AsyncMock()
     agent_cfg = AgentConfig(
@@ -223,12 +228,14 @@ async def test_deploy_skills_uses_policy_sandbox_dir(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        skills_sandbox_dir="/opt/benchflow/skill-eval",
+        skills_sandbox_dir="/opt/runtime/skill-eval",
     )
 
-    env.upload_dir.assert_awaited_once_with(skills_dir, "/opt/benchflow/skill-eval")
+    env.upload_dir.assert_awaited_once()
+    assert env.upload_dir.await_args.args[0] == skills_dir
+    assert env.upload_dir.await_args.args[1].startswith("/.runtime-skills-")
     link_cmd = env.exec.await_args.args[0]
-    assert "ln -sfn /opt/benchflow/skill-eval /home/agent/.agents/skills" in link_cmd
+    assert "ln -sfn /opt/runtime/skill-eval /home/agent/.agents/skills" in link_cmd
 
 
 @pytest.mark.asyncio
@@ -323,20 +330,14 @@ async def test_deploy_skills_chowns_full_dir_chain_for_pi_acp_layout(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        skills_sandbox_dir="/opt/benchflow/skills",
+        skills_sandbox_dir="/opt/runtime/skills",
     )
 
     cmd = env.exec.await_args.args[0]
-    # Both newly-created dirs must be chowned in one chain — without
-    # `/home/agent/.pi`, pi-acp can't mkdir `~/.pi/pi-acp` for session state.
-    assert "chown agent:agent /home/agent/.pi /home/agent/.pi/agent" in cmd
-    # Single-segment chain stays single-arg.
-    assert "chown agent:agent /home/agent/.agents " in cmd
-    pi_chown = "chown agent:agent /home/agent/.pi /home/agent/.pi/agent"
-    pi_link = "ln -sfn /opt/benchflow/skills /home/agent/.pi/agent/skills"
-    assert cmd.index(pi_chown) < cmd.index(pi_link), (
-        "chown must precede ln so the symlink's ancestors are agent-owned"
-    )
+    # Creating the whole chain as the agent preserves writable pi session dirs.
+    assert "mkdir -p /home/agent/.pi/agent" in cmd
+    assert "chown" not in cmd
+    assert env.exec.await_args.kwargs["user"] == "agent"
 
 
 @pytest.mark.asyncio
@@ -360,12 +361,12 @@ async def test_deploy_skills_skips_chown_when_no_sandbox_user(tmp_path):
         agent_cfg=agent_cfg,
         sandbox_user=None,
         agent_cwd="/workspace",
-        skills_sandbox_dir="/opt/benchflow/skills",
+        skills_sandbox_dir="/opt/runtime/skills",
     )
 
     cmd = env.exec.await_args.args[0]
     assert "chown" not in cmd
-    assert "ln -sfn /opt/benchflow/skills /root/.agents/skills" in cmd
+    assert "ln -sfn /opt/runtime/skills /root/.agents/skills" in cmd
 
 
 @pytest.mark.asyncio
@@ -387,7 +388,7 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
         agent_cfg=agent_cfg,
         sandbox_user="agent",
         agent_cwd="/workspace",
-        skills_sandbox_dir="/opt/benchflow/skills",
+        skills_sandbox_dir="/opt/runtime/skills",
     )
 
     env.upload_dir.assert_not_called()
@@ -395,17 +396,16 @@ async def test_deploy_skills_falls_back_when_local_skills_dir_is_missing(tmp_pat
 
     distributed_link_cmd = env.exec.await_args.args[0]
     assert (
-        "ln -sfn /opt/benchflow/skills /home/agent/.agents/skills"
-        in distributed_link_cmd
+        "ln -sfn /opt/runtime/skills /home/agent/.agents/skills" in distributed_link_cmd
     )
-    assert "ln -sfn /opt/benchflow/skills /workspace/skills" in distributed_link_cmd
+    assert "ln -sfn /opt/runtime/skills /workspace/skills" in distributed_link_cmd
     assert "ln -sfn /skills /home/agent/.agents/skills" not in distributed_link_cmd
     assert "ln -sfn /skills /workspace/skills" not in distributed_link_cmd
 
 
 @pytest.mark.asyncio
 async def test_deploy_skills_oracle_uses_default_paths_and_root_home(tmp_path):
-    """When agent_cfg is None (oracle), skills go to _ORACLE_SKILL_PATHS under /root."""
+    """The trusted oracle explicitly selects root, independently of agent config."""
     env = MagicMock()
     env.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
     env.upload_dir = AsyncMock()
@@ -419,17 +419,17 @@ async def test_deploy_skills_oracle_uses_default_paths_and_root_home(tmp_path):
         task_path=tmp_path,
         skills_dir=str(skills),
         agent_cfg=None,
-        sandbox_user="agent",
+        sandbox_user=None,
         agent_cwd="/app",
     )
 
     env.upload_dir.assert_awaited_once()
-    assert env.exec.await_count == 1
-    link_cmd = env.exec.await_args_list[0].args[0]
+    link_cmd = env.exec.await_args.args[0]
     assert "/root/.claude/skills" in link_cmd
     assert "/root/.codex/skills" in link_cmd
     assert "/app/skills" in link_cmd
     assert "/home/agent" not in link_cmd
+    assert env.exec.await_args.kwargs["user"] is None
 
 
 @pytest.mark.asyncio
@@ -561,7 +561,7 @@ async def test_deploy_skills_raises_when_skill_linking_fails(tmp_path):
             agent_cfg=agent_cfg,
             sandbox_user="agent",
             agent_cwd="/app",
-            skills_sandbox_dir="/opt/benchflow/skills",
+            skills_sandbox_dir="/opt/runtime/skills",
         )
 
 
@@ -590,9 +590,8 @@ async def test_apply_web_tool_policy_preserves_sandbox_home_ownership():
 
     commands = [call.args[0] for call in env.exec.call_args_list]
     assert any("BENCHFLOW_AGENT_HOME=/home/agent" in command for command in commands)
-    assert any(
-        "chown -R agent:agent /home/agent/.gemini" in command for command in commands
-    )
+    assert env.exec.await_args.kwargs["user"] == "agent"
+    assert all("chown" not in command for command in commands)
 
 
 @pytest.mark.asyncio
@@ -662,7 +661,8 @@ async def test_apply_web_tool_policy_repairs_config_paths_written_by_policy():
     )
 
     cmd = env.exec.await_args.args[0]
-    assert "chown -R agent:agent /home/agent/.config/opencode" in cmd
+    assert env.exec.await_args.kwargs["user"] == "agent"
+    assert "chown" not in cmd
     syntax = subprocess.run(
         ["bash", "-n"],
         input=cmd,
@@ -678,6 +678,7 @@ async def test_apply_web_tool_policy_repairs_config_paths_written_by_policy():
     [
         ("claude-agent-acp", ["/home/agent/.claude"]),
         ("gemini", ["/home/agent/.gemini"]),
+        ("antigravity", ["/home/agent/.gemini"]),
         ("opencode", ["/home/agent/.config/opencode", "/home/agent/.opencode"]),
         ("openhands", ["/home/agent/.agents", "/home/agent/.openhands"]),
     ],
@@ -700,8 +701,9 @@ async def test_apply_web_tool_policy_repairs_registry_policy_paths(
     )
 
     cmd = env.exec.await_args.args[0]
-    for path in expected_paths:
-        assert f"chown -R agent:agent {path}" in cmd
+    assert expected_paths
+    assert env.exec.await_args.kwargs["user"] == "agent"
+    assert "chown" not in cmd
     assert "; if [ -e " not in cmd
 
 
@@ -725,16 +727,18 @@ async def test_install_agent_writes_command_stdout_and_stderr_on_failure(
         await install_agent(env, "openhands", tmp_path)
 
     err = exc_info.value
-    log_path = Path(err.log_path)
+    from tests.reachable_fixture import on_disk
+
+    log_path = on_disk(err.log_path)
     assert log_path == tmp_path / "agent" / "install-stdout.txt"
     assert log_path.exists()
     log_text = log_path.read_text()
     assert log_text.startswith("$ ")
     assert (
-        "uv tool install --force --refresh "
-        "--overrides /tmp/oh-sdk-overrides.txt "
+        "uv tool install --force "
+        "--overrides /opt/runtime/agents/oh-sdk-overrides.txt "
         "--from 'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-        "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
+        "283c6ac3610f4299f405f7389f65766dcb83e12a' "
         "openhands --python 3.12" in log_text
     )
     assert "=== stderr ===" in log_text
@@ -785,10 +789,12 @@ async def test_apply_web_tool_policy_runs_agent_setup_command(tmp_path):
     assert (home / "no-web").read_text() == "disabled"
     assert len(calls) == 1
     cmd, timeout_sec, kwargs = calls[0]
+    # Behind the root setup environment (FF-install-C15): a checked PATH.
+
     assert cmd.startswith("export BENCHFLOW_AGENT_HOME=")
     assert 'printf disabled > "$BENCHFLOW_AGENT_HOME/no-web"' in cmd
     assert timeout_sec == 15
-    assert kwargs == {}
+    assert kwargs == {"user": None}
 
 
 @pytest.mark.asyncio
@@ -834,21 +840,21 @@ _PY_SERVICE_ARGV = (
     [
         # python-launched shims: the regression — must key on the shim, not python
         (
-            "/opt/benchflow/deepagents-venv/bin/python /opt/benchflow/bin/deepagents-acp-shim",
-            "/opt/benchflow/deepagents-venv/bin/python /opt/benchflow/bin/deepagents-acp-shim",
+            "/opt/runtime/agents/deepagents-venv/bin/python /opt/runtime/agents/bin/deepagents-acp-shim",
+            "/opt/runtime/agents/deepagents-venv/bin/python /opt/runtime/agents/bin/deepagents-acp-shim",
         ),
         # env-assignment prefix + python launcher (harvey-lab)
         (
-            "HARVEY_LABS_ROOT=/opt/harvey-labs /opt/benchflow/harvey-lab-venv/bin/python "
-            "/opt/benchflow/bin/harvey-lab-acp-shim",
-            "/opt/benchflow/harvey-lab-venv/bin/python /opt/benchflow/bin/harvey-lab-acp-shim",
+            "HARVEY_LABS_ROOT=/opt/runtime/agents/harvey-labs /opt/runtime/agents/harvey-lab-venv/bin/python "
+            "/opt/runtime/agents/bin/harvey-lab-acp-shim",
+            "/opt/runtime/agents/harvey-lab-venv/bin/python /opt/runtime/agents/bin/harvey-lab-acp-shim",
         ),
         # direct wrapper binaries (pi, claude, gemini-with-args)
-        ("/opt/benchflow/bin/pi-acp-launcher", "/opt/benchflow/bin/pi-acp-launcher"),
-        ("/opt/benchflow/bin/claude-agent-acp", "/opt/benchflow/bin/claude-agent-acp"),
+        ("/opt/runtime/bin/pi-acp-launcher", "/opt/runtime/bin/pi-acp-launcher"),
+        ("/opt/runtime/bin/claude-agent-acp", "/opt/runtime/bin/claude-agent-acp"),
         (
-            "/opt/benchflow/bin/gemini --acp --yolo",
-            "/opt/benchflow/bin/gemini --acp --yolo",
+            "/opt/runtime/bin/gemini --acp --yolo",
+            "/opt/runtime/bin/gemini --acp --yolo",
         ),
         # compound `setup && … && <agent>` launch: key on the final command,
         # not the leading `export` builtin (openhands).

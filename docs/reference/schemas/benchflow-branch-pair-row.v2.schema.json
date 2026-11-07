@@ -1,0 +1,226 @@
+{
+  "$defs": {
+    "message": {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "reasoning_content": {
+          "description": "The agent's visible thinking for this turn.",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant",
+            "tool"
+          ]
+        },
+        "tool_call_id": {
+          "description": "On role tool: the id of the call it answers.",
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/tool_call"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "type": "object"
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/message"
+      },
+      "type": "array"
+    },
+    "session": {
+      "description": "fork snapshot agent_session: fresh, resumed, \u2026",
+      "type": "string"
+    },
+    "tool": {
+      "description": "Inferred from the recorded calls (argument names only); the agent's own tool definitions are not recorded.",
+      "properties": {
+        "function": {
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "parameters": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "parameters"
+          ],
+          "type": "object"
+        },
+        "type": {
+          "const": "function"
+        }
+      },
+      "required": [
+        "type",
+        "function"
+      ],
+      "type": "object"
+    },
+    "tool_call": {
+      "properties": {
+        "function": {
+          "properties": {
+            "arguments": {
+              "description": "The call's input as a JSON string.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The agent's tool name (Write, Bash, \u2026); inferred from the call when the agent did not send one (see tool_names).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "arguments"
+          ],
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "function"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "function"
+      ],
+      "type": "object"
+    },
+    "tools": {
+      "items": {
+        "$ref": "#/$defs/tool"
+      },
+      "type": "array"
+    }
+  },
+  "$id": "https://benchflow.ai/schemas/benchflow-branch-pair-row.v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Two siblings of one fork with different rewards, in prompt/chosen/rejected form for preference training.",
+  "properties": {
+    "agent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "chosen": {
+      "$ref": "#/$defs/messages"
+    },
+    "chosen_label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "chosen_reward": {
+      "type": "number"
+    },
+    "depth": {
+      "description": "1 for a fork of the trial, 2 for a fork inside a child\u2026",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "fork_id": {
+      "type": "string"
+    },
+    "kind": {
+      "const": "branch_pair"
+    },
+    "margin": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parent_node": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prefix_complete": {
+      "description": "False when the trial started from a kept checkpoint whose source conversation could not be found, so the prefix lacks it.",
+      "type": "boolean"
+    },
+    "prompt": {
+      "$ref": "#/$defs/messages",
+      "description": "The shared prefix plus, when same_request, the shared user turn."
+    },
+    "rejected": {
+      "$ref": "#/$defs/messages"
+    },
+    "rejected_label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rejected_reward": {
+      "type": "number"
+    },
+    "same_request": {
+      "description": "Both siblings were asked the same thing; only these are exported unless --pairs-any-request is given.",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "session": {
+      "$ref": "#/$defs/session"
+    },
+    "task": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tools": {
+      "$ref": "#/$defs/tools"
+    },
+    "trial": {
+      "description": "Trial folder name.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "schema_version",
+    "trial",
+    "fork_id",
+    "same_request",
+    "prompt",
+    "chosen",
+    "rejected",
+    "chosen_reward",
+    "rejected_reward",
+    "margin",
+    "tools"
+  ],
+  "title": "BenchFlow branch-tree pair row (pairs.jsonl)",
+  "type": "object"
+}

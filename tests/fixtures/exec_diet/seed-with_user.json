@@ -1,0 +1,1 @@
+"/logs root:root 755\n/logs/agent agent:agent 755\n/logs/artifacts agent:agent 755\n/logs/verifier root:root 755\n/testbed_verify root:root 755\n/testbed_verify/a.txt root:root 644\n/testbed_verify/sub root:root 705\n/testbed_verify/sub/b.txt root:root 644\n"

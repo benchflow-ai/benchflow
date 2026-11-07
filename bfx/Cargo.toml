@@ -1,0 +1,29 @@
+[package]
+name = "bfx"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.99"
+license = "Apache-2.0"
+description = "BenchFlow's static helper for its own root steps inside a sandbox"
+publish = false
+
+# Every dependency is pure Rust and pinned exactly; Cargo.lock pins each
+# crate's SHA-256, and scripts/build_bfx.sh builds offline from a vendor tree
+# that `cargo vendor --locked` makes from that lock.
+[dependencies]
+# libc declares the musl functions std already links: kill(-1), getresuid,
+# getresgid and close_range, which rustix does not wrap. No C code.
+libc = { version = "=0.2.191", default-features = false }
+object = { version = "=0.40.0", default-features = false, features = ["read_core", "elf", "std", "unaligned"] }
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "process", "thread", "event", "pipe"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["std"] }
+sha2 = { version = "=0.11.1", default-features = false }
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false

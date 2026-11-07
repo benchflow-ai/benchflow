@@ -3,7 +3,7 @@
 These tests guard the false-green hazard: the live smoke ``skipif``s (exit 0)
 when Docker is down or the chosen model has no credential. They pin down the
 pure helpers so a skip is always specific and attributable to a named missing
-credential, and they assert the JUnit-summary gate used by ``docs/release.md``
+credential, and they assert the JUnit-summary gate used by ``docs/contributing/release.md``
 / launch-prep would treat such a skip as RED, not green.
 
 They never touch Docker or any model — ``_smoke_skip_reason`` (which shells out
@@ -41,6 +41,15 @@ def clean_env(monkeypatch):
     """
     for var in ALL_SMOKE_CRED_VARS:
         monkeypatch.delenv(var, raising=False)
+    # A developer's existing Claude login is also a credential source. Keep
+    # it out of missing-credential tests; the login test opts back in explicitly.
+    credential_path = Path("~/.claude/.credentials.json").expanduser()
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path == credential_path else real_is_file(path),
+    )
     return monkeypatch
 
 

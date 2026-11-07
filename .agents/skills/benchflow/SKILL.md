@@ -43,7 +43,7 @@ Or via Python SDK:
 import asyncio
 import benchflow as bf
 from benchflow import RolloutConfig, Scene
-from benchflow._utils.benchmark_repos import resolve_source
+from benchflow import resolve_source
 
 async def main():
     config = RolloutConfig(
@@ -57,7 +57,7 @@ async def main():
 asyncio.run(main())
 ```
 
-Note: `resolve_source()` is required for remote repos in the SDK. The CLI
+Note: `bf.resolve_source()` is required for remote repos in the SDK. The CLI
 handles this transparently via `--source-repo` / `--source-path`.
 
 API keys are auto-inherited from `os.environ` into the sandbox.
@@ -147,7 +147,7 @@ bench skills eval skills/citation-management \
 ### `hub` — check external-environment-hub compatibility
 
 ```bash
-bench hub check          # inventory/structurally-check representative Harbor-registry tasks
+bench hub check          # inventory/structurally-check representative BenchFlow registry tasks
 ```
 
 ### `agents` — list available agents
@@ -159,6 +159,7 @@ bench agent list
 | Agent | Protocol | Auth |
 |-------|----------|------|
 | `gemini` | ACP | GEMINI_API_KEY or host login |
+| `antigravity` (alias: `agy`) | ACP (bundled shim over `agy --output-format stream-json`) | GEMINI_API_KEY |
 | `claude-agent-acp` (alias: `claude`) | ACP | ANTHROPIC_API_KEY or host login |
 | `codex-acp` (alias: `codex`) | ACP | OPENAI_API_KEY or host login |
 | `opencode` | ACP | inferred from model |

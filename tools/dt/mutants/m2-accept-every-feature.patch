@@ -1,0 +1,12 @@
+diff --git a/src/benchflow/task/runtime_capabilities.py b/src/benchflow/task/runtime_capabilities.py
+index 8e4502f..97b9f7a 100644
+--- a/src/benchflow/task/runtime_capabilities.py
++++ b/src/benchflow/task/runtime_capabilities.py
+@@ -86,6 +86,7 @@ def validate_task_runtime_support(
+     checking, or a plain :class:`TaskConfig` for legacy split packages.
+     """
+ 
++    return []
+     config = task.config if isinstance(task, TaskDocument) else task
+     document = task if isinstance(task, TaskDocument) else None
+     unsupported: list[UnsupportedTaskFeature] = []

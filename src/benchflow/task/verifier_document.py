@@ -15,14 +15,17 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from benchflow.errors import UserError
+
 VERIFIER_DOCUMENT_FILENAME = "verifier.md"
 
 VerifierStrategyType = Literal[
     "script",
-    "reward-kit",
+    "criteria-runner",
     "llm-judge",
     "agent-judge",
     "ors-episode",
+    "taskmd",
 ]
 
 _ROLE_SECTION_RE = re.compile(
@@ -31,15 +34,19 @@ _ROLE_SECTION_RE = re.compile(
 )
 _KNOWN_STRATEGY_TYPES = {
     "script",
-    "reward-kit",
+    "criteria-runner",
     "llm-judge",
     "agent-judge",
     "ors-episode",
+    # A materialized task.md draft 2 package's verifier (benchflow.taskmd.verify).
+    "taskmd",
 }
 
 
-class VerifierDocumentParseError(ValueError):
+class VerifierDocumentParseError(ValueError, UserError):
     """Raised when ``verifier/verifier.md`` cannot be parsed."""
+
+    fault = "task"
 
 
 @dataclass(frozen=True)
@@ -261,8 +268,10 @@ def _parse_strategies(
         config = _mapping(raw_strategy, f"verifier.strategies.{name}")
         raw_type = _required_str(config.get("type"), f"verifier.strategies.{name}.type")
         if raw_type not in _KNOWN_STRATEGY_TYPES:
+            known = ", ".join(sorted(_KNOWN_STRATEGY_TYPES))
             raise VerifierDocumentParseError(
-                f"verifier.strategies.{name}.type is unsupported: {raw_type}"
+                f"verifier.strategies.{name}.type {raw_type!r} is an unknown "
+                f"value; choose one of: {known}"
             )
         _validate_strategy(name, raw_type, config, role_prompts=role_prompts)
         strategies[name] = VerifierStrategy(
@@ -283,7 +292,7 @@ def _validate_strategy(
     prefix = f"verifier.strategies.{name}"
     if strategy_type == "script":
         _required_str(config.get("command"), f"{prefix}.command")
-    elif strategy_type == "reward-kit":
+    elif strategy_type == "criteria-runner":
         _safe_relative_path(
             _required_str(config.get("root"), f"{prefix}.root"), f"{prefix}.root"
         )
@@ -336,6 +345,32 @@ def _validate_strategy(
             raise VerifierDocumentParseError(
                 f"{prefix}.inputs must be a non-empty list of strings"
             )
+    elif strategy_type == "taskmd":
+        grading = config.get("grading")
+        if grading not in ("rubric", "script"):
+            raise VerifierDocumentParseError(
+                f"{prefix}.grading must be 'rubric' or 'script'"
+            )
+        if "command" in config:
+            _safe_relative_path(
+                _required_str(config.get("command"), f"{prefix}.command"),
+                f"{prefix}.command",
+            )
+        elif grading == "script":
+            raise VerifierDocumentParseError(
+                f"{prefix}.command is required when grading is 'script'"
+            )
+        workdir = config.get("workdir")
+        if workdir is not None and not (
+            isinstance(workdir, str) and workdir.startswith("/")
+        ):
+            raise VerifierDocumentParseError(f"{prefix}.workdir must be absolute")
+        if config.get("isolation", "shared") not in ("shared", "separate"):
+            raise VerifierDocumentParseError(
+                f"{prefix}.isolation must be 'shared' or 'separate'"
+            )
+        if not isinstance(config.get("offline", False), bool):
+            raise VerifierDocumentParseError(f"{prefix}.offline must be a boolean")
     elif strategy_type == "ors-episode":
         inputs = config.get("inputs")
         if (

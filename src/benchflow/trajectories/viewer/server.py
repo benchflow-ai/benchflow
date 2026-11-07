@@ -1,15 +1,16 @@
 """HTTP serving: single-trajectory pages (with --confirm) and browse mode."""
 
 import hmac
+import os
 import secrets
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .catalog import (
     _discover_rollouts,
     _resolve_browse_rollout,
-    _rollout_summary,
+    _rollout_summaries,
     _runs_cap,
 )
 from .legacy import (
@@ -18,7 +19,12 @@ from .legacy import (
     render_jsonl_file,
     render_rollout,
 )
-from .payload import _build_acp_payload, _is_acp_rollout_dir, _safe_json
+from .payload import (
+    _build_acp_payload,
+    _build_branch_child_payload,
+    _is_acp_rollout_dir,
+    _safe_json,
+)
 from .render import _render_shell
 from .sources import (
     HfDatasetSource,
@@ -36,10 +42,58 @@ def _utf8_safe_text(value: str) -> str:
     return value.encode("utf-8", errors="replace").decode("utf-8")
 
 
+def _plural(count: int, noun: str) -> str:
+    """``1 run``, ``2 runs``: a count with its noun in agreement."""
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _use_localhost(port: int) -> str:
+    """Body text for a request whose Host is not localhost.
+
+    No final period: the error page template adds one (it printed "..").
+    """
+    return (
+        f"This viewer only answers at http://localhost:{port}/, or at "
+        "http://localhost:<any port>/ through an ssh tunnel to it (other host "
+        "names, including 127.0.0.1, are refused)"
+    )
+
+
+def _remote_hint(port: int) -> str | None:
+    """The tunnel recipe, when this viewer runs on a machine reached by ssh.
+
+    The viewer listens on this machine's localhost only; from a laptop an ssh
+    tunnel reaches it, on any local port (DF-p1-first-run-16).
+    """
+    if not os.environ.get("SSH_CONNECTION"):
+        return None
+    return (
+        f"Over ssh: on your own machine run `ssh -N -L {port}:localhost:{port} "
+        f"<this machine>` and open http://localhost:{port}/ (another local "
+        f"port works too: -L 9000:localhost:{port}, then http://localhost:9000/)"
+    )
+
+
+def _authority_port(value: str, *, is_origin: bool = False) -> int | None:
+    """The port of a Host value or an Origin URL (80 when it has none)."""
+    try:
+        parsed = urlsplit(value if is_origin else f"http://{value}")
+        port = parsed.port
+    except ValueError:
+        return None
+    return port if port is not None else 80
+
+
 def _matches_local_authority(
-    value: str, expected_port: int, *, is_origin: bool = False
+    value: str, expected_port: int | None, *, is_origin: bool = False
 ) -> bool:
-    """Accept only the printed localhost authority, never a DNS-rebinding host."""
+    """Accept only a localhost authority, never a DNS-rebinding host.
+
+    The host name is what stops DNS rebinding: a page on another site that
+    rebinds its name to 127.0.0.1 still sends its own name. ``expected_port``
+    None accepts any port, so an ssh tunnel whose local port differs from the
+    viewer's (``ssh -L 9000:localhost:8888``) reaches it.
+    """
     try:
         parsed = urlsplit(value if is_origin else f"http://{value}")
         supplied_port = parsed.port
@@ -51,6 +105,8 @@ def _matches_local_authority(
         return False
     if parsed.path or parsed.query or parsed.fragment:
         return False
+    if expected_port is None:
+        return True
     effective_port = supplied_port if supplied_port is not None else 80
     return effective_port == expected_port
 
@@ -105,7 +161,8 @@ def serve(
             if confirm:
                 print(
                     "--confirm needs a single rollout or session file, but "
-                    f"{path} is a directory of {n_runs}{'+' if capped else ''} runs"
+                    f"{path} is a directory of "
+                    + (f"{n_runs}+ runs" if capped else _plural(n_runs, "run"))
                 )
                 sys.exit(1)
             _serve_browse(path, port, n_runs=n_runs, capped=capped)
@@ -156,8 +213,15 @@ def _serve_single(
         html_content = render_rollout(path, prompts)
         write_sidecar = persist_sidecar
     else:
-        print(f"Not a file or directory: {path}")
-        sys.exit(1)
+        from benchflow._utils.command_hints import looked_in
+
+        print(
+            f"Not a file or directory: {looked_in(path)}\n"
+            "  next: pass a job folder, a trial folder or a trajectory .jsonl "
+            "file (`bench run` writes jobs under ./jobs)",
+            file=sys.stderr,
+        )
+        sys.exit(2)  # a usage mistake: a path that is not there
 
     if html_content == _NO_TRAJECTORIES_HTML:
         # Don't write a blank trajectory.html into an unrelated directory or
@@ -191,9 +255,8 @@ def _serve_single(
     class Handler(SimpleHTTPRequestHandler):
         def _has_expected_host(self) -> bool:
             values = self.headers.get_all("Host") or []
-            return len(values) == 1 and _matches_local_authority(
-                values[0], expected_port
-            )
+            # Any port: the request may come through a tunnel's local port.
+            return len(values) == 1 and _matches_local_authority(values[0], None)
 
         def _send_page(self, *, include_body: bool) -> None:
             self.send_response(200)
@@ -213,7 +276,9 @@ def _serve_single(
                 self.send_error(404)
                 return
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             self._send_page(include_body=True)
 
@@ -226,7 +291,9 @@ def _serve_single(
                 self.end_headers()
                 return
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             self._send_page(include_body=False)
 
@@ -246,9 +313,16 @@ def _serve_single(
                 if not self._has_expected_host():
                     self.send_error(403, "Invalid confirmation origin")
                     return
+                # Same origin as the page: the port the browser used, the
+                # viewer's own or a tunnel's (the Host's).
                 origins = self.headers.get_all("Origin") or []
-                if len(origins) != 1 or not _matches_local_authority(
-                    origins[0], expected_port, is_origin=True
+                host_port = _authority_port(self.headers.get("Host") or "")
+                if (
+                    len(origins) != 1
+                    or host_port is None
+                    or not _matches_local_authority(
+                        origins[0], host_port, is_origin=True
+                    )
                 ):
                     self.send_error(403, "Invalid confirmation origin")
                     return
@@ -312,11 +386,15 @@ def _serve_single(
     server = HTTPServer(("localhost", port), handler_cls)
     expected_port = server.server_port
     print(f"Trajectory viewer: http://localhost:{expected_port}")
+    if hint := _remote_hint(expected_port):
+        print(hint)
     print(f"Trial: {path}")
     if confirm:
         print("Waiting for Approve / Not this one in the browser (Ctrl+C to stop)\n")
     else:
         print("Press Ctrl+C to stop\n")
+    # A piped stdout is block-buffered; flush so the URL shows while serving.
+    sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -333,16 +411,14 @@ def _serve_single(
 def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> None:
     """Multi-rollout browser: sidebar shell + JSON API, rescanned per request."""
     from http.server import HTTPServer, SimpleHTTPRequestHandler
-    from urllib.parse import parse_qs
 
     expected_port = port
 
     class Handler(SimpleHTTPRequestHandler):
         def _has_expected_host(self) -> bool:
             values = self.headers.get_all("Host") or []
-            return len(values) == 1 and _matches_local_authority(
-                values[0], expected_port
-            )
+            # Any port: the request may come through a tunnel's local port.
+            return len(values) == 1 and _matches_local_authority(values[0], None)
 
         def _send(
             self,
@@ -369,7 +445,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
 
         def do_GET(self):
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             parsed = urlsplit(self.path)
             if parsed.path == "/":
@@ -379,7 +457,7 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                     {
                         "mode": "browse",
                         "capped": capped,
-                        "rollouts": [_rollout_summary(base, r) for r in ids],
+                        "rollouts": _rollout_summaries(base, ids),
                     },
                 )
                 self._send(
@@ -388,7 +466,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                     shell.encode("utf-8", errors="replace"),
                 )
             elif parsed.path == "/api/rollout":
-                rid = (parse_qs(parsed.query).get("id") or [None])[0]
+                query = parse_qs(parsed.query)
+                rid = (query.get("id") or [None])[0]
+                branch = (query.get("branch") or [None])[0]
                 rollout_dir = _resolve_browse_rollout(base, rid)
                 if rollout_dir is None:
                     self._send(
@@ -397,7 +477,19 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
                         b'{"error": "unknown rollout id"}',
                     )
                     return
-                body = _safe_json(_build_acp_payload(rollout_dir, None).to_payload())
+                if branch is None:
+                    payload = _build_acp_payload(rollout_dir, None)
+                else:
+                    # Resolved only through the rollout's own tree.json.
+                    payload = _build_branch_child_payload(rollout_dir, branch)
+                if payload is None:
+                    self._send(
+                        404,
+                        "application/json; charset=utf-8",
+                        b'{"error": "unknown branch child"}',
+                    )
+                    return
+                body = _safe_json(payload.to_payload())
                 self._send(
                     200,
                     "application/json; charset=utf-8",
@@ -411,7 +503,9 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
             # process cwd, bypassing the rollout-id whitelist — answer only
             # for the shell page and refuse everything else.
             if not self._has_expected_host():
-                self.send_error(403, "Invalid Host header")
+                self.send_error(
+                    403, "Invalid Host header", _use_localhost(expected_port)
+                )
                 return
             if urlsplit(self.path).path == "/":
                 self._send(200, "text/html; charset=utf-8", b"")
@@ -425,12 +519,15 @@ def _serve_browse(base: Path, port: int, n_runs: int, capped: bool = False) -> N
 
     server = HTTPServer(("localhost", port), Handler)
     expected_port = server.server_port
-    runs_desc = f"{n_runs} runs"
+    runs_desc = _plural(n_runs, "run")
     if capped:
-        runs_desc = f"first {n_runs} runs (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
+        runs_desc = f"first {runs_desc} (capped — raise BENCHFLOW_VIEWER_MAX_RUNS)"
     print(f"Trajectory browser: http://localhost:{expected_port}")
+    if hint := _remote_hint(expected_port):
+        print(hint)
     print(f"Scanning: {base} ({runs_desc})")
     print("Press Ctrl+C to stop\n")
+    sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

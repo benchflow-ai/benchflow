@@ -12,15 +12,26 @@ from benchflow.sandbox.setup import override_dockerfile_base_image
 
 
 async def _run_setup_sandbox_user(
-    *, sandbox_user: str = "agent", workspace: str = "/app"
+    *,
+    sandbox_user: str = "agent",
+    workspace: str = "/app",
+    agents: list[str] | None = None,
 ):
     env = MagicMock()
+    env.supports_system_shell = True
     env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
 
-    await setup_sandbox_user(env, sandbox_user, workspace)
+    await setup_sandbox_user(env, sandbox_user, workspace, agents=agents)
 
-    env.exec.assert_awaited_once()
-    return env.exec.call_args.args[0], env.exec.call_args.kwargs
+    # The workspace's physical path, the user's setup, then the lock of the
+    # folders on PATH.
+    assert env.exec.await_count == 3
+    # Read from a receipt.
+    assert (
+        f"cd {shlex.quote(workspace)} && pwd -P" in env.exec.await_args_list[0].args[0]
+    )
+    setup = env.exec.await_args_list[1]
+    return setup.args[0], setup.kwargs
 
 
 def _assert_conditional_legacy_symlink(cmd: str, *, source: str, dest: str) -> None:
@@ -84,7 +95,8 @@ class TestSetupSandboxUser:
         """The non-copy setup contract still creates the user and grants access."""
         cmd, _ = await _run_setup_sandbox_user()
 
-        assert "id -u agent >/dev/null 2>&1 || useradd -m -s /bin/bash agent" in cmd
+        assert "id -u agent >/dev/null 2>&1 || {" in cmd
+        assert 'useradd -m -u "$bf_uid" -g "$bf_uid" -s /bin/bash agent' in cmd
         assert "mkdir -p /home/agent/.local/bin" not in cmd
         assert "chown -R agent:agent /home/agent" in cmd
         assert f"chown -R agent:agent {shlex.quote('/app')}" in cmd
@@ -139,6 +151,35 @@ class TestSetupSandboxUser:
         assert ".claude" in copy_loop_dirs
         assert "mkdir -p /home/agent/$d && if [ -d /root/$d ]; then" in cmd
         assert "chown -R agent:agent /home/agent" in cmd
+
+    @pytest.mark.asyncio
+    async def test_setup_command_copies_only_the_running_agents_dirs(self):
+        """Guards the fix from PR #1163 against copying every agent's home dirs
+        into one sandbox.
+
+        That union dates back to the hard-coded list in 28d9acdf and became
+        registry-derived in 39d9b829. Each copied dir is a recursive ``cp -a``
+        of root-only state into a home the sandbox user owns, so a Codex
+        rollout must not receive other agents' trees such as /root/.claude or
+        the shared /root/.config. The other dirs are still created empty, so
+        root-run uploads into them (e.g. Vertex ADC under ~/.config/gcloud)
+        keep a user-owned parent.
+        """
+        cmd, _ = await _run_setup_sandbox_user(agents=["codex-acp"])
+        assert _get_copy_loop_dirs(cmd) == [".codex"]
+        empty_dirs = " ".join(sorted(get_sandbox_home_dirs() - {".codex", ".local"}))
+        assert f"for d in {empty_dirs}; do mkdir -p /home/agent/$d; done" in cmd
+
+        cmd, _ = await _run_setup_sandbox_user(agents=["codex-acp", "claude-agent-acp"])
+        assert _get_copy_loop_dirs(cmd) == [".claude", ".codex"]
+
+    @pytest.mark.asyncio
+    async def test_setup_command_copies_opencode_config_without_all_of_config(self):
+        """Guards the OpenCode config dir from PR #1163 once ~/.config stopped
+        being copied: OpenCode used to receive an image-provided
+        ~/.config/opencode only because all of /root/.config was copied."""
+        cmd, _ = await _run_setup_sandbox_user(agents=["opencode"])
+        assert _get_copy_loop_dirs(cmd) == [".config/opencode", ".opencode"]
 
     @pytest.mark.asyncio
     async def test_setup_command_does_not_copy_heavy_tool_trees_into_home(self):

@@ -23,6 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.embodied.spec import RestoreBoundary, RestoreRefused, SpecError
+from benchflow.embodied.trials import task_dir_restore_boundary, trial_restore_boundary
+from benchflow.errors import UserError
 from benchflow.trajectories.types import LLMExchange
 
 logger = logging.getLogger(__name__)
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_CATEGORIES = frozenset({"timeout", "idle_timeout"})
 
 
-class RunFolderError(ValueError):
+class RunFolderError(ValueError, UserError):
     """Raised when a run folder is missing required artifacts or malformed."""
 
 
@@ -168,8 +171,50 @@ def load_llm_exchanges(path: Path) -> list[LLMExchange]:
     return exchanges
 
 
+def run_restore_boundary(path: Path, config: dict[str, Any]) -> RestoreBoundary:
+    """What software may do to the original run's world, before its task is resolved.
+
+    The declaration of the task ``config.json`` names, when that folder exists
+    here (most runs record only the task's name, so ``continue_run`` gates the
+    task it resolves again), overruled by the run's own episode records (see
+    :func:`benchflow.embodied.trials.trial_restore_boundary`).
+    """
+    declared = RestoreBoundary()
+    task_path = config.get("task_path")
+    if isinstance(task_path, str) and task_path and Path(task_path).is_dir():
+        try:
+            _, declared = task_dir_restore_boundary(Path(task_path))
+        except SpecError:
+            raise
+        except (OSError, ValueError, RuntimeError):
+            declared = RestoreBoundary()  # an unreadable task: the records decide
+    return trial_restore_boundary(path, declared)
+
+
+def require_replayable_task(run: RunFolder, task_path: Path) -> Path:
+    """Refuse to replay ``run`` against ``task_path`` unless its world allows it.
+
+    ``task_path`` is the task ``benchflow continue`` resolved (``--tasks-dir``
+    or the recorded path). A folder in a registered task format is materialized
+    and its native package returned. Its declaration, overruled by the run's
+    episode records, must grant ``action_replay``.
+    """
+    try:
+        native, declared = task_dir_restore_boundary(task_path)
+        trial_restore_boundary(run.path, declared).require_action_replay(
+            "benchflow continue"
+        )
+    except (RestoreRefused, ValueError, RuntimeError) as exc:
+        raise RunFolderError(str(exc)) from exc
+    return native
+
+
 def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> RunFolder:
     """Load + validate an original run folder.
+
+    Runs of an embodied task that forbids action replay (every real robot, and
+    a simulator unless it declares ``action_replay``) are refused before any
+    other artifact is read.
 
     ``require_timeout`` rejects runs whose recorded status is not a
     timeout/idle-timeout. The default is permissive (warn only): a run with no
@@ -181,6 +226,13 @@ def load_run_folder(folder: str | Path, *, require_timeout: bool = False) -> Run
         raise RunFolderError(f"not a directory: {path}")
 
     config = _read_json(path / "config.json", required=True)
+    # Record-replay re-executes the agent's recorded actions for real. On a
+    # real robot that would move hardware again from an unreset scene; on a
+    # simulator it would act on a world the replay never restored.
+    try:
+        run_restore_boundary(path, config).require_action_replay("benchflow continue")
+    except (RestoreRefused, ValueError) as exc:
+        raise RunFolderError(str(exc)) from exc
     result = _read_json(path / "result.json", required=False)
     prompts = _load_prompts(path / "prompts.json")
     exchanges = load_llm_exchanges(path / "trajectory" / "llm_trajectory.jsonl")

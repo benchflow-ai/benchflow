@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import logging
 import warnings
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchflow._types import Scene
 from benchflow.contracts import default_rollout_planes
-from benchflow.diagnostics import VerifierTimeoutDiagnostic
+from benchflow.diagnostics import Diagnostic
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult, TrajectorySource
+from benchflow.review.options import ReviewerConfig
 from benchflow.rollout import (
+    RolloutConfig,
     _build_rollout_result,
     _init_rollout,
     _resolve_prompts,
@@ -39,13 +42,27 @@ RunResult = RolloutResult
 
 
 class SDK:
-    """Backward-compat shim — delegates to :mod:`benchflow.rollout`.
+    """Deprecated backward-compat shim — delegates to :mod:`benchflow.rollout`.
 
-    Usage::
+    Constructing it emits a ``DeprecationWarning``. Replace::
 
-        sdk = SDK()
-        result = await sdk.run(task_path=..., agent=...)
+        result = await SDK().run(task_path=..., agent=..., model=...)
+
+    with::
+
+        result = await bf.run(bf.RolloutConfig(task_path=..., agent=..., model=...))
+
+    ``SDK.run`` takes the same keyword arguments as ``RolloutConfig``.
     """
+
+    def __init__(self) -> None:
+        warnings.warn(
+            "benchflow.SDK is deprecated; use "
+            "bf.run(bf.RolloutConfig(task_path=..., agent=..., model=...)), "
+            "which takes the same keyword arguments as SDK.run().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     @staticmethod
     def _init_trial(
@@ -114,9 +131,12 @@ class SDK:
         )
 
     async def _start_env_and_upload(
-        self, env: Any, task_path: Path, timing: dict
+        self, env: Any, task_path: Path, timing: dict, *, upload_solution: bool = False
     ) -> None:
-        await _start_env_and_upload(env, task_path, timing)
+        # The solution only for an oracle run (GAP-ORACLE-READABLE).
+        await _start_env_and_upload(
+            env, task_path, timing, upload_solution=upload_solution
+        )
 
     async def _run_oracle(
         self,
@@ -135,7 +155,7 @@ class SDK:
         timing: dict,
         sandbox_user: str | None = None,
         workspace: str | None = None,
-    ) -> tuple[dict | None, str | None, VerifierTimeoutDiagnostic | None]:
+    ) -> tuple[dict | None, str | None, Diagnostic | None]:
         return await _verify_rollout(
             env,
             task,
@@ -164,17 +184,21 @@ class SDK:
         environment: str = "docker",
         environment_manifest: EnvironmentManifest | None = None,
         skills_dir: str | Path | None = None,
+        codex_apps_policy: Literal["disabled", "inherit"] | None = None,
         sandbox_user: str | None = "agent",
         sandbox_locked_paths: list[str] | None = None,
         sandbox_setup_timeout: int = 120,
         pre_agent_hooks: list | None = None,
         context_root: str | Path | None = None,
         base_image_override: str | None = None,
+        separate_verifier: bool = False,
+        separate_verifier_include: Sequence[str] = (),
         skill_mode: str = SKILL_MODE_NO_SKILL,
         skill_creator_dir: str | Path | None = None,
         self_gen_no_internet: bool = False,
         source_provenance: dict[str, Any] | None = None,
         usage_tracking: Any = None,
+        reviewer: ReviewerConfig | None = None,
     ) -> RolloutResult:
         """Run a task — delegates to :func:`benchflow.run`.
 
@@ -183,7 +207,6 @@ class SDK:
         :class:`DeprecationWarning` and maps to ``rollout_name``. Passing both
         ``trial_name`` and ``rollout_name`` raises :class:`TypeError`.
         """
-        from benchflow.rollout import RolloutConfig
         from benchflow.runtime import run
 
         if trial_name is not None:
@@ -214,16 +237,20 @@ class SDK:
             environment=environment,
             environment_manifest=environment_manifest,
             skills_dir=skills_dir,
+            codex_apps_policy=codex_apps_policy,
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
             pre_agent_hooks=pre_agent_hooks,
             context_root=context_root,
             base_image_override=base_image_override,
+            separate_verifier=separate_verifier,
+            separate_verifier_include=tuple(separate_verifier_include),
             skill_mode=skill_mode,
             skill_creator_dir=skill_creator_dir,
             self_gen_no_internet=self_gen_no_internet,
             source_provenance=source_provenance,
             usage_tracking=usage_tracking,
+            reviewer=ReviewerConfig.coerce(reviewer),
         )
-        return await run(config)  # type: ignore[return-value]  # ty: ignore[invalid-return-type]
+        return await run(config)

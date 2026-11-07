@@ -210,12 +210,12 @@ class TestLoadEvalDataset:
     def test_configurable_skill_mount_dir(self, skill_dir):
         evals_json = skill_dir / "evals" / "evals.json"
         data = json.loads(evals_json.read_text())
-        data["defaults"]["skill_mount_dir"] = "/opt/benchflow/skill-eval"
+        data["defaults"]["skill_mount_dir"] = "/opt/runtime/skill-eval"
         evals_json.write_text(json.dumps(data))
 
         ds = load_eval_dataset(skill_dir)
 
-        assert ds.skill_mount_dir == "/opt/benchflow/skill-eval"
+        assert ds.skill_mount_dir == "/opt/runtime/skill-eval"
 
     @pytest.mark.parametrize(
         "mount_dir",
@@ -422,7 +422,7 @@ class TestGenerateTasks:
     ):
         evals_json = skill_dir / "evals" / "evals.json"
         data = json.loads(evals_json.read_text())
-        data["defaults"]["skill_mount_dir"] = "/opt/benchflow/skill-eval"
+        data["defaults"]["skill_mount_dir"] = "/opt/runtime/skill-eval"
         evals_json.write_text(json.dumps(data))
 
         ds = load_eval_dataset(skill_dir)
@@ -430,10 +430,8 @@ class TestGenerateTasks:
         task_dirs = generate_tasks(ds, output, with_skill=True)
 
         dockerfile = (task_dirs[0] / "environment" / "Dockerfile").read_text()
-        assert (
-            Task(task_dirs[0]).config.sandbox.skills_dir == "/opt/benchflow/skill-eval"
-        )
-        assert "COPY skills/ /opt/benchflow/skill-eval/" in dockerfile
+        assert Task(task_dirs[0]).config.sandbox.skills_dir == "/opt/runtime/skill-eval"
+        assert "COPY skills/ /opt/runtime/skill-eval/" in dockerfile
 
 
 # cleanup_tasks
@@ -486,8 +484,9 @@ class TestSkillEvaluatorResultCollection:
     async def test_collects_timestamp_nested_rollout_results(
         self, skill_dir, tmp_path, monkeypatch
     ):
-        """Guards the ENG-84 fix from commit b69bdf4 for nested result dirs."""
+        """Guards the fix from commit b69bdf4 for nested result dirs."""
         from benchflow.evaluation import EvaluationResult
+        from benchflow.models import RolloutResult
 
         async def fake_run(self):
             rollout_dir = self._jobs_dir / "2026-05-18__12-00-00" / "calc-001__abc123"
@@ -506,7 +505,20 @@ class TestSkillEvaluatorResultCollection:
             (verifier_dir / "judge_result.json").write_text(
                 json.dumps({"items": [{"criterion": "correct", "score": 1.0}]})
             )
-            return EvaluationResult(job_name="fake", config=self._config, total=1)
+            return EvaluationResult(
+                job_name="fake",
+                config=self._config,
+                total=1,
+                job_dir=rollout_dir.parent,
+                results={
+                    "calc-001": RolloutResult(
+                        "calc-001",
+                        rollout_dir.name,
+                        rewards={"reward": 1.0},
+                        n_tool_calls=4,
+                    )
+                },
+            )
 
         monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
 
@@ -542,6 +554,7 @@ class TestSkillEvaluatorResultCollection:
         Finding 7.
         """
         from benchflow.evaluation import EvaluationResult
+        from benchflow.models import RolloutResult
 
         # Skill with two cases whose ids are prefixes of each other.
         skill = tmp_path / "globskill"
@@ -559,6 +572,7 @@ class TestSkillEvaluatorResultCollection:
 
         async def fake_run(self):
             # Write rollout dirs following the {case_id}__{uuid8} contract.
+            results = {}
             for case_id, reward in (("case-1", 0.0), ("case-10", 1.0)):
                 rollout_dir = (
                     self._jobs_dir / "2026-05-21__09-00-00" / f"{case_id}__deadbeef"
@@ -573,7 +587,19 @@ class TestSkillEvaluatorResultCollection:
                         }
                     )
                 )
-            return EvaluationResult(job_name="fake", config=self._config, total=2)
+                results[case_id] = RolloutResult(
+                    case_id,
+                    rollout_dir.name,
+                    rewards={"reward": reward},
+                    n_tool_calls=1,
+                )
+            return EvaluationResult(
+                job_name="fake",
+                config=self._config,
+                total=2,
+                job_dir=self._jobs_dir / "2026-05-21__09-00-00",
+                results=results,
+            )
 
         monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_run)
 

@@ -13,10 +13,13 @@ only):
 
 - The rollout dir is resolved exactly, from the ``rollout_name`` the engine
   records on every result — never guessed from globs.
-- Evidence sources are tried in order (CTRF report, then reward.json metric
-  breakdown, then test-stdout tail); the first that yields a line wins.
-- Every read is bounded (``_ARTIFACT_READ_BYTES`` per file) and nothing here
-  raises — any surprise degrades to ``None``, i.e. the bare reward reason.
+- Evidence sources are tried in order (a task.md rubric check that matched no
+  test, then the CTRF report, then reward.json metric breakdown, then
+  test-stdout tail); the first that yields a line wins.
+- JSON reads and the retained stdout tail are bounded (``_ARTIFACT_READ_BYTES``).
+  Stdout reads add credential-length overlap, redacted before retaining the
+  tail, so a seek cannot expose a credential's suffix. Nothing here raises —
+  any surprise degrades to ``None``, i.e. the bare reward reason.
 - The report block's ``(details: …)`` pointer is decided separately, by
   :func:`verifier_dir_for` from dir existence alone — every failure block
   with artifacts on disk gets one pointer, evidence or not.
@@ -28,15 +31,22 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from benchflow._diagnostics import _literal_spellings, redact_stream, render_diagnostic
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
-    from pathlib import Path
 
-# Never read more than this many bytes per file, and evidence is only mined
+    from benchflow._utils.reachable_write import ReachablePath
+
+from pathlib import Path
+
+# Never retain more than this much evidence, and evidence is only mined
 # for the <= _MAX_FAILURE_LINES tasks the report block displays.
 _ARTIFACT_READ_BYTES = 64 * 1024
 # Pytest final summary, decoration stripped: "1 failed, 2 passed in 40.86s".
-_PYTEST_SUMMARY_RE = re.compile(r"\d+ failed\b")
+_PYTEST_SUMMARY_RE = re.compile(r"\d+ (?:failed|errors?)\b")
+# The verifier's pytest plugin guard stopping pytest (sandbox/_pytest_plugin_guard.py).
+_GUARD_REFUSAL_MARKER = "Verifier plugin trust rejected: "
 # Metric-breakdown cap: one metric-happy verifier can't flood the line.
 _BREAKDOWN_METRICS = 3
 
@@ -54,6 +64,13 @@ class FailureLine(NamedTuple):
 
     body: str
     suffix: str = ""
+
+
+def _captured_text(text: str) -> str:
+    """Protect intact child evidence before any lossy selection or formatting."""
+    from benchflow.cli._errors import _secrets
+
+    return "".join(redact_stream((text,), _secrets()))
 
 
 def _numeric_items(mapping: Mapping[str, Any]) -> list[tuple[str, Any]]:
@@ -125,15 +142,26 @@ def metric_breakdown(rewards: Mapping[str, Any]) -> str | None:
         if _pair_total(name, value) is not None
     }
     entries: list[tuple[float, str]] = []
+    from benchflow.cli._errors import _secrets
+
+    secrets = _secrets()
     for name, value in shown:
         if name in consumed:
             continue
         total = _pair_total(name, value)
         if total is not None:
-            base = name.removesuffix("_found")
-            entries.append((value / total, f"{base} {value}/{total}"))
+            fragment = render_diagnostic(
+                (name,),
+                secrets,
+                lambda fields, value=value, total=total: (
+                    f"{fields[0].removesuffix('_found')} {value}/{total}"
+                ),
+            )
+            entries.append((value / total, fragment))
         else:
-            entries.append((0.0 if value == 0 else 1.0, f"{name} {value}"))
+            entries.append(
+                (0.0 if value == 0 else 1.0, _captured_text(f"{name} {value}"))
+            )
     entries.sort(key=lambda entry: entry[0])  # stable: ties keep dict order
     return ", ".join(fragment for _, fragment in entries[:_BREAKDOWN_METRICS])
 
@@ -154,7 +182,7 @@ def _display_test_name(raw_name: str) -> str:
     return head.rsplit("::", 1)[-1] + bracket + param
 
 
-def _bounded_json(path: Path) -> dict[str, Any] | None:
+def _bounded_json(path: Path | ReachablePath) -> dict[str, Any] | None:
     """The file parsed as a JSON object, or ``None`` when it can't serve.
 
     JSON only parses whole — an oversized (> ``_ARTIFACT_READ_BYTES``) file is
@@ -167,7 +195,7 @@ def _bounded_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
+def _ctrf_failure_line(ctrf_path: Path | ReachablePath) -> FailureLine | None:
     """``<test> failed[: <assertion>]`` from the first failed CTRF test.
 
     The verifier's pytest run writes a CTRF report (``pytest --ctrf``, see the
@@ -198,10 +226,10 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
             f" (+{extra} more failure{plural}; {passed}/{len(tests)} checks passed)"
         )
     test = failed[0]
-    name = _display_test_name(str(test.get("name") or "test"))
+    name = _display_test_name(_captured_text(str(test.get("name") or "test")))
     trace = test.get("trace")
     if isinstance(trace, str):
-        for line in trace.splitlines():
+        for line in _captured_text(trace).splitlines():
             stripped = line.strip()
             if stripped.startswith("E "):
                 assertion = stripped[2:].strip()
@@ -211,11 +239,144 @@ def _ctrf_failure_line(ctrf_path: Path) -> FailureLine | None:
                 return FailureLine(f"{name} failed: {assertion}", suffix)
     message = test.get("message")
     if isinstance(message, str) and message.strip():
-        return FailureLine(f"{name} failed: {' '.join(message.split())}", suffix)
+        return FailureLine(
+            f"{name} failed: {' '.join(_captured_text(message).split())}", suffix
+        )
     return FailureLine(f"{name} failed", suffix)
 
 
-def _reward_json_failure_line(reward_path: Path) -> FailureLine | None:
+# What ``taskmd/verify.py`` wrote as a test-judged verdict's rationale when its
+# check matched no test: the note (``check X matched no test in ctrf.json
+# ...``), or before it the bare sentence older jobs hold.
+_OLD_UNMATCHED_RATIONALE = "no test in ctrf.json matches this check"
+
+
+def _unmatched_check_failure_line(
+    review_path: Path | ReachablePath,
+) -> FailureLine | None:
+    """``check X matched no test in ctrf.json (...); did you mean Y?``.
+
+    A task.md rubric's test-judged criterion whose ``check`` names no test in
+    the verifier's CTRF report fails in every trial, the oracle's included,
+    whatever the agent did; a typo in the check reads as an agent failure
+    unless the summary says so. Read from the verifier's ``review.json``:
+    the verdicts the verifier failed because their check matched no test (it
+    read the whole CTRF report, so this needs no second matching here, which
+    a report over the read cap would get wrong). For an older job, whose
+    rationale is the bare sentence, the note is rebuilt from ``ctrf.json``
+    beside it when that can be read. Further unmatched checks are counted in
+    the suffix.
+    """
+    from benchflow.taskmd import grading
+
+    review = _bounded_json(review_path)
+    if review is None:
+        return None
+    unmatched: list[tuple[str, str | None]] = []  # (check, the verifier's note)
+    for verdict in review.get("verdicts") or []:
+        if not isinstance(verdict, dict) or verdict.get("verdict") != "fail":
+            continue
+        judge = verdict.get("judge")
+        if not isinstance(judge, dict) or judge.get("role") != "test":
+            continue
+        check = verdict.get("check")
+        rationale = verdict.get("rationale")
+        if not isinstance(check, str) or not isinstance(rationale, str):
+            continue
+        if rationale.startswith("check ") and " matched no test in " in rationale:
+            unmatched.append((check, rationale))
+        elif rationale.strip() == _OLD_UNMATCHED_RATIONALE:
+            unmatched.append((check, None))
+    if not unmatched:
+        return None
+    # With no valid CTRF report (none written, not JSON, a test without a
+    # status) every test-judged check matches nothing, so its note blames a
+    # check that may be right. The verifier recorded why there were no tests:
+    # say that instead (PT-R2-A-1). Older jobs have no such record.
+    extras = review.get("x-benchflow")
+    tests_record = extras.get("tests") if isinstance(extras, dict) else None
+    problem = tests_record.get("problem") if isinstance(tests_record, dict) else None
+    problem = problem.strip() if isinstance(problem, str) else ""
+    if isinstance(tests_record, dict):
+        no_tests = tests_record.get("count") == 0
+        legacy_tests = None
+    else:
+        # An older job holds no such record: the ctrf.json beside it, and the
+        # notes the verifier wrote from it, say whether it had a test. Such
+        # jobs blamed a check for a pytest that collected nothing too
+        # (PT-CONF-5). A report over the read cap is not judged empty.
+        legacy_tests, missing = _legacy_ctrf_tests(review_path.with_name("ctrf.json"))
+        no_tests = (
+            missing
+            or (
+                legacy_tests is not None
+                and not any(t.get("name") for t in legacy_tests)
+            )
+            or any(n is not None and n.endswith("(it has none)") for _, n in unmatched)
+        )
+    if no_tests or problem:
+        # A valid-but-empty report often means pytest failed collection. Its
+        # stdout summary/guard refusal outranks both rubric and reward.json.
+        try:
+            detail = _stdout_tail_failure_line(review_path.with_name("test-stdout.txt"))
+        except (OSError, ValueError):
+            detail = None
+        if detail is not None:
+            return detail
+        if problem:
+            n = len(unmatched)
+            return FailureLine(
+                f"{n} test-judged check{'' if n == 1 else 's'} failed: {problem}"
+            )
+        if isinstance(tests_record, dict):
+            return FailureLine("the verifier reported no tests in ctrf.json")
+    extra = len(unmatched) - 1
+    suffix = (
+        f" (+{extra} more check{'' if extra == 1 else 's'} matched no test)"
+        if extra
+        else ""
+    )
+    check, note = unmatched[0]
+    if note is None:
+        if legacy_tests is not None:
+            note = grading.unmatched_check_note(check, legacy_tests)
+        else:
+            # The report could not be read: say what the verifier found
+            # without claiming the report holds no tests.
+            note = f"check {check} matched no test in ctrf.json"
+    return FailureLine(note, suffix)
+
+
+def _legacy_ctrf_tests(
+    ctrf_path: Path | ReachablePath,
+) -> tuple[list[dict[str, Any]] | None, bool]:
+    """An older job's CTRF tests, and whether the report is missing or invalid.
+
+    ``(None, False)`` for a report over the read cap: it cannot be read, but
+    it is not shown to hold no tests.
+    """
+    from benchflow.taskmd import grading
+
+    try:
+        if not ctrf_path.is_file():
+            return None, True
+        if ctrf_path.stat().st_size > _ARTIFACT_READ_BYTES:
+            return None, False
+        data = ctrf_path.read_bytes()[: _ARTIFACT_READ_BYTES + 1]
+    except OSError:
+        return None, True
+    if len(data) > _ARTIFACT_READ_BYTES:
+        return None, False  # it grew past the cap after the size check
+    # The grader's own reading (names and statuses checked): a report it
+    # holds no tests in is invalid here too, so stdout names the cause
+    # (PT-CONF-7).
+    report = grading.read_ctrf(data)
+    if report.problem is not None:
+        return None, True
+    return report.tests, False
+
+
+def _reward_json_failure_line(reward_path: Path | ReachablePath) -> FailureLine | None:
     """Metric breakdown mined from the verifier's ``reward.json``.
 
     env0-style verifiers write ``{"reward": …, "metrics": {…}, "details":
@@ -234,16 +395,49 @@ def _reward_json_failure_line(reward_path: Path) -> FailureLine | None:
     return FailureLine(shown) if shown is not None else None
 
 
-def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
+def _redacted_tail(raw: Any) -> str:
+    """A bounded tail of an opened capture, credentials masked, from a whole line."""
+    from benchflow.cli._errors import _secrets
+
+    secrets = _secrets()
+    # Four bytes per code point also covers a seek into a UTF-8 sequence.
+    # A partial credential at the read boundary ends within this overlap.
+    overlap = 4 * max(map(len, _literal_spellings(secrets)), default=1)
+    budget = _ARTIFACT_READ_BYTES + overlap
+    raw.seek(0, 2)
+    start = max(0, raw.tell() - budget)
+    raw.seek(start)
+    text = raw.read(budget).decode("utf-8", errors="surrogateescape")
+    # Redact before discarding even the overlap. Dropping raw overlap could
+    # itself bisect a complete credential present in the captured window.
+    tail = "".join(
+        redact_stream((text[i : i + 8192] for i in range(0, len(text), 8192)), secrets)
+    )
+    if start:
+        # Discard the uncertain prefix and its partial line. This also drops
+        # a URL authority of arbitrary length whose scheme precedes the read.
+        tail = "".join(tail[overlap:].splitlines(keepends=True)[1:])
+    return tail[-_ARTIFACT_READ_BYTES:]
+
+
+def _stdout_tail_failure_line(stdout_path: Path | ReachablePath) -> FailureLine | None:
     """Last pytest summary ("N failed, M passed …") — else last ``FAILED …``
     line — from a bounded tail of the verifier's test-stdout capture. No count
-    suffix: the summary line already carries the full counts itself."""
-    with stdout_path.open("rb") as fh:
-        fh.seek(0, 2)  # SEEK_END
-        fh.seek(max(0, fh.tell() - _ARTIFACT_READ_BYTES))
-        tail = fh.read(_ARTIFACT_READ_BYTES).decode("utf-8", errors="replace")
+    suffix: the summary line already carries the full counts itself. A plugin
+    refusal by the verifier's pytest guard, which stops pytest before it runs
+    any test, is reported as such."""
+    with stdout_path.open("rb") as raw:
+        tail = _redacted_tail(raw)
     last_failed: str | None = None
     for line in reversed(tail.splitlines()):
+        if _GUARD_REFUSAL_MARKER in line:
+            # pytest stopped before collecting: the 0 is the guard's, not a
+            # test result, and nothing else in the tail explains it.
+            refused = line.split(_GUARD_REFUSAL_MARKER, 1)[1].strip()
+            return FailureLine(
+                "pytest did not run: the verifier guard refused pytest plugin "
+                f"{refused} (see docs/tasks/reward-hacking.md)"
+            )
         bare = line.strip().strip("=").strip()
         if _PYTEST_SUMMARY_RE.match(bare):
             return FailureLine(bare)
@@ -252,7 +446,38 @@ def _stdout_tail_failure_line(stdout_path: Path) -> FailureLine | None:
     return FailureLine(last_failed) if last_failed is not None else None
 
 
-def verifier_dir_for(job_dir: Path, rollout_name: str) -> Path | None:
+def verifier_output_tail(
+    job_dir: Path, rollout_name: str, lines: int = 5
+) -> tuple[ReachablePath, list[str]] | None:
+    """test.sh's last ``lines`` output lines (verifier/test-stdout.txt), and the file.
+
+    For the summary of a crashed verifier (DF-p2-task-author-11): its
+    traceback is usually there. Bounded and redacted like the rest of this
+    module; None when there is no such file or it cannot be read.
+    """
+    from benchflow._utils.reachable_write import read_stream
+    from benchflow.task.paths import RolloutPaths
+
+    try:
+        path = RolloutPaths(rollout_dir=job_dir / rollout_name).test_stdout_path
+        if not path.is_file():
+            return None
+        # Through the helper: the folder is the sandbox's to write.
+        with read_stream(path) as raw:
+            tail = _redacted_tail(raw)
+    except Exception:
+        return None
+    # The capture is the task's own output: no escape sequence or other
+    # control character of it reaches the terminal.
+    kept = [
+        "".join(ch if ch.isprintable() or ch == "\t" else "?" for ch in line).rstrip()
+        for line in tail.encode("utf-8", "replace").decode("utf-8").splitlines()
+        if line.strip()
+    ]
+    return (path, kept[-lines:]) if kept else None
+
+
+def verifier_dir_for(job_dir: Path, rollout_name: str) -> ReachablePath | None:
     """The rollout's verifier dir when it exists on disk, else ``None``.
 
     Powers the report block's ``(details: …)`` pointer rule: every failure
@@ -281,7 +506,11 @@ def artifact_failure_evidence(job_dir: Path, rollout_name: str) -> FailureLine |
 
     rollout_paths = RolloutPaths(rollout_dir=job_dir / rollout_name)
     verifier_dir = rollout_paths.verifier_dir
-    attempts: list[tuple[Path, Callable[[Path], FailureLine | None]]] = [
+    attempts: list[
+        tuple[ReachablePath, Callable[[Path | ReachablePath], FailureLine | None]]
+    ] = [
+        # Unmatched rubric checks precede individual failed tests.
+        (verifier_dir / "review.json", _unmatched_check_failure_line),
         # ctrf.json has no RolloutPaths property — the verifier recovers it by
         # literal name (verifier_core.py, `_recover_main_verifier_outputs`).
         (verifier_dir / "ctrf.json", _ctrf_failure_line),

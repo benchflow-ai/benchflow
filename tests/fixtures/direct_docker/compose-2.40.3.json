@@ -1,0 +1,512 @@
+{
+ "printed": {
+  "name": "perf-e-fixture",
+  "networks": {
+   "default": {
+    "name": "perf-e-fixture_default",
+    "ipam": {
+     "config": [
+      {
+       "subnet": "172.30.253.0/28"
+      }
+     ]
+    },
+    "labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2"
+    }
+   }
+  },
+  "services": {
+   "main": {
+    "command": [
+     "sh",
+     "-c",
+     "sleep infinity"
+    ],
+    "deploy": {
+     "resources": {
+      "limits": {
+       "cpus": 1.5,
+       "memory": "2147483648"
+      }
+     },
+     "placement": {}
+    },
+    "entrypoint": null,
+    "environment": {
+     "EMPTY": "",
+     "PERF_E": "a$$b <c>&d"
+    },
+    "image": "alexgshaw/regex-log:20251031",
+    "labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2"
+    },
+    "networks": {
+     "default": null
+    },
+    "security_opt": [
+     "no-new-privileges:true"
+    ],
+    "volumes": [
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/verifier",
+      "target": "/logs/verifier",
+      "bind": {
+       "create_host_path": true
+      }
+     },
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/agent",
+      "target": "/logs/agent",
+      "bind": {
+       "create_host_path": true
+      }
+     },
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/artifacts",
+      "target": "/logs/artifacts",
+      "bind": {
+       "create_host_path": true
+      }
+     }
+    ]
+   }
+  }
+ },
+ "printed_bootstrap": {
+  "name": "perf-e-fixture",
+  "networks": {
+   "default": {
+    "name": "perf-e-fixture_default",
+    "ipam": {
+     "config": [
+      {
+       "subnet": "172.30.253.0/28"
+      }
+     ]
+    },
+    "labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2"
+    }
+   }
+  },
+  "services": {
+   "main": {
+    "command": [],
+    "deploy": {
+     "resources": {
+      "limits": {
+       "cpus": 1.5,
+       "memory": "2147483648"
+      }
+     },
+     "placement": {}
+    },
+    "entrypoint": [
+     "/bin/sh",
+     "-c",
+     "trap 'r=1' USR1; exec \"$$@\"",
+     "benchflow-bootstrap",
+     "PATH=/bin",
+     "sh",
+     "-c",
+     "sleep infinity"
+    ],
+    "environment": {
+     "BASH_ENV": null,
+     "EMPTY": "",
+     "LD_PRELOAD": null,
+     "PERF_E": "a$$b <c>&d"
+    },
+    "healthcheck": {
+     "disable": true
+    },
+    "image": "alexgshaw/regex-log:20251031",
+    "labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2",
+     "io.benchflow.bootstrap.v1": "cmVjZWlwdA=="
+    },
+    "networks": {
+     "default": null
+    },
+    "security_opt": [
+     "no-new-privileges:true"
+    ],
+    "volumes": [
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/verifier",
+      "target": "/logs/verifier",
+      "bind": {
+       "create_host_path": true
+      }
+     },
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/agent",
+      "target": "/logs/agent",
+      "bind": {
+       "create_host_path": true
+      }
+     },
+     {
+      "type": "bind",
+      "source": "/tmp/perf-e-fixture/logs/artifacts",
+      "target": "/logs/artifacts",
+      "bind": {
+       "create_host_path": true
+      }
+     }
+    ]
+   }
+  }
+ },
+ "hash": "2a5ad6bd1cf0f93568b25106480bcab4a60273728408860d70a1ef4ceeb28b06",
+ "hash_bootstrap": "990e678d460d47ce4a5265bdf9a76bb100a1e3b6a8e5c8255acb12b7f94788c5",
+ "compose_version": "2.40.3+ds1-0ubuntu1~24.04.1",
+ "image_id": "sha256:90101b2e815323a8da20528a1439bebc407eb9761c9c68a3d557730856c878e9",
+ "requests": [
+  {
+   "path": "/v1.51/networks/create",
+   "body": {
+    "Attachable": false,
+    "ConfigFrom": null,
+    "ConfigOnly": false,
+    "Driver": "",
+    "IPAM": {
+     "Config": [
+      {
+       "Subnet": "172.30.253.0/28"
+      }
+     ],
+     "Driver": "",
+     "Options": null
+    },
+    "Ingress": false,
+    "Internal": false,
+    "Labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2",
+     "com.docker.compose.config-hash": "5abbf35566a117e0208e9b92b4887921e21fb155a50923b106641ed767e71903",
+     "com.docker.compose.network": "default",
+     "com.docker.compose.project": "perf-e-fixture",
+     "com.docker.compose.version": "2.40.3"
+    },
+    "Name": "perf-e-fixture_default",
+    "Options": null,
+    "Scope": ""
+   }
+  },
+  {
+   "path": "/v1.51/containers/create?name=perf-e-fixture-main-1",
+   "body": {
+    "AttachStderr": true,
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "Cmd": [
+     "sh",
+     "-c",
+     "sleep infinity"
+    ],
+    "Domainname": "",
+    "Entrypoint": null,
+    "Env": [
+     "EMPTY=",
+     "PERF_E=a$b <c>&d"
+    ],
+    "HostConfig": {
+     "AutoRemove": false,
+     "Binds": [
+      "/tmp/perf-e-fixture/logs/verifier:/logs/verifier:rw",
+      "/tmp/perf-e-fixture/logs/agent:/logs/agent:rw",
+      "/tmp/perf-e-fixture/logs/artifacts:/logs/artifacts:rw"
+     ],
+     "BlkioDeviceReadBps": null,
+     "BlkioDeviceReadIOps": null,
+     "BlkioDeviceWriteBps": null,
+     "BlkioDeviceWriteIOps": null,
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": null,
+     "CapAdd": null,
+     "CapDrop": null,
+     "Cgroup": "",
+     "CgroupParent": "",
+     "CgroupnsMode": "",
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "ContainerIDFile": "",
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpuShares": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "Devices": null,
+     "Dns": null,
+     "DnsOptions": null,
+     "DnsSearch": null,
+     "ExtraHosts": [],
+     "GroupAdd": null,
+     "IOMaximumBandwidth": 0,
+     "IOMaximumIOps": 0,
+     "IpcMode": "",
+     "Isolation": "",
+     "Links": null,
+     "LogConfig": {
+      "Config": null,
+      "Type": ""
+     },
+     "MaskedPaths": null,
+     "Memory": 2147483648,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "NanoCpus": 1500000000,
+     "NetworkMode": "perf-e-fixture_default",
+     "OomKillDisable": false,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "PidsLimit": null,
+     "PortBindings": {},
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyPaths": null,
+     "ReadonlyRootfs": false,
+     "RestartPolicy": {
+      "MaximumRetryCount": 0,
+      "Name": ""
+     },
+     "SecurityOpt": [
+      "no-new-privileges:true"
+     ],
+     "ShmSize": 0,
+     "UTSMode": "",
+     "Ulimits": null,
+     "UsernsMode": "",
+     "VolumeDriver": "",
+     "VolumesFrom": null
+    },
+    "Hostname": "",
+    "Image": "alexgshaw/regex-log:20251031",
+    "Labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2",
+     "com.docker.compose.config-hash": "2a5ad6bd1cf0f93568b25106480bcab4a60273728408860d70a1ef4ceeb28b06",
+     "com.docker.compose.container-number": "1",
+     "com.docker.compose.depends_on": "",
+     "com.docker.compose.image": "sha256:90101b2e815323a8da20528a1439bebc407eb9761c9c68a3d557730856c878e9",
+     "com.docker.compose.oneoff": "False",
+     "com.docker.compose.project": "perf-e-fixture",
+     "com.docker.compose.project.config_files": "/tmp/perf-e-fixture/files/docker-compose-base.yaml,/tmp/perf-e-fixture/files/docker-compose-prebuilt.yaml,/tmp/perf-e-fixture/files/env.json,/tmp/perf-e-fixture/files/networks.json",
+     "com.docker.compose.project.working_dir": "/tmp/perf-e-fixture/project",
+     "com.docker.compose.service": "main",
+     "com.docker.compose.version": "2.40.3"
+    },
+    "NetworkingConfig": {
+     "EndpointsConfig": {
+      "perf-e-fixture_default": {
+       "Aliases": [
+        "perf-e-fixture-main-1",
+        "main"
+       ],
+       "DNSNames": null,
+       "DriverOpts": null,
+       "EndpointID": "",
+       "Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "GwPriority": 0,
+       "IPAMConfig": null,
+       "IPAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "Links": null,
+       "MacAddress": "",
+       "NetworkID": ""
+      }
+     }
+    },
+    "OnBuild": null,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Tty": false,
+    "User": "",
+    "Volumes": null,
+    "WorkingDir": ""
+   }
+  },
+  {
+   "path": "/v1.51/containers/create?name=6ade65effe7e_perf-e-fixture-main-1",
+   "body": {
+    "AttachStderr": true,
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "Cmd": [],
+    "Domainname": "",
+    "Entrypoint": [
+     "/bin/sh",
+     "-c",
+     "trap 'r=1' USR1; exec \"$@\"",
+     "benchflow-bootstrap",
+     "PATH=/bin",
+     "sh",
+     "-c",
+     "sleep infinity"
+    ],
+    "Env": [
+     "EMPTY=",
+     "PERF_E=a$b <c>&d",
+     "BASH_ENV",
+     "LD_PRELOAD"
+    ],
+    "Healthcheck": {
+     "Test": [
+      "NONE"
+     ]
+    },
+    "HostConfig": {
+     "AutoRemove": false,
+     "Binds": [
+      "/tmp/perf-e-fixture/logs/verifier:/logs/verifier:rw",
+      "/tmp/perf-e-fixture/logs/agent:/logs/agent:rw",
+      "/tmp/perf-e-fixture/logs/artifacts:/logs/artifacts:rw"
+     ],
+     "BlkioDeviceReadBps": null,
+     "BlkioDeviceReadIOps": null,
+     "BlkioDeviceWriteBps": null,
+     "BlkioDeviceWriteIOps": null,
+     "BlkioWeight": 0,
+     "BlkioWeightDevice": null,
+     "CapAdd": null,
+     "CapDrop": null,
+     "Cgroup": "",
+     "CgroupParent": "",
+     "CgroupnsMode": "",
+     "ConsoleSize": [
+      0,
+      0
+     ],
+     "ContainerIDFile": "",
+     "CpuCount": 0,
+     "CpuPercent": 0,
+     "CpuPeriod": 0,
+     "CpuQuota": 0,
+     "CpuRealtimePeriod": 0,
+     "CpuRealtimeRuntime": 0,
+     "CpuShares": 0,
+     "CpusetCpus": "",
+     "CpusetMems": "",
+     "DeviceCgroupRules": null,
+     "DeviceRequests": null,
+     "Devices": null,
+     "Dns": null,
+     "DnsOptions": null,
+     "DnsSearch": null,
+     "ExtraHosts": [],
+     "GroupAdd": null,
+     "IOMaximumBandwidth": 0,
+     "IOMaximumIOps": 0,
+     "IpcMode": "",
+     "Isolation": "",
+     "Links": null,
+     "LogConfig": {
+      "Config": null,
+      "Type": ""
+     },
+     "MaskedPaths": null,
+     "Memory": 2147483648,
+     "MemoryReservation": 0,
+     "MemorySwap": 0,
+     "MemorySwappiness": null,
+     "NanoCpus": 1500000000,
+     "NetworkMode": "perf-e-fixture_default",
+     "OomKillDisable": false,
+     "OomScoreAdj": 0,
+     "PidMode": "",
+     "PidsLimit": null,
+     "PortBindings": {},
+     "Privileged": false,
+     "PublishAllPorts": false,
+     "ReadonlyPaths": null,
+     "ReadonlyRootfs": false,
+     "RestartPolicy": {
+      "MaximumRetryCount": 0,
+      "Name": ""
+     },
+     "SecurityOpt": [
+      "no-new-privileges:true"
+     ],
+     "ShmSize": 0,
+     "UTSMode": "",
+     "Ulimits": null,
+     "UsernsMode": "",
+     "VolumeDriver": "",
+     "VolumesFrom": null
+    },
+    "Hostname": "",
+    "Image": "alexgshaw/regex-log:20251031",
+    "Labels": {
+     "benchflow.owned": "process",
+     "benchflow.process": "perf-e-fixture<1>&2",
+     "com.docker.compose.config-hash": "990e678d460d47ce4a5265bdf9a76bb100a1e3b6a8e5c8255acb12b7f94788c5",
+     "com.docker.compose.container-number": "1",
+     "com.docker.compose.depends_on": "",
+     "com.docker.compose.image": "sha256:90101b2e815323a8da20528a1439bebc407eb9761c9c68a3d557730856c878e9",
+     "com.docker.compose.oneoff": "False",
+     "com.docker.compose.project": "perf-e-fixture",
+     "com.docker.compose.project.config_files": "/tmp/perf-e-fixture/files/docker-compose-base.yaml,/tmp/perf-e-fixture/files/docker-compose-prebuilt.yaml,/tmp/perf-e-fixture/files/env.json,/tmp/perf-e-fixture/files/networks.json,/tmp/perf-e-fixture/files/bootstrap.json",
+     "com.docker.compose.project.working_dir": "/tmp/perf-e-fixture/project",
+     "com.docker.compose.replace": "main-1",
+     "com.docker.compose.service": "main",
+     "com.docker.compose.version": "2.40.3",
+     "io.benchflow.bootstrap.v1": "cmVjZWlwdA=="
+    },
+    "NetworkingConfig": {
+     "EndpointsConfig": {
+      "perf-e-fixture_default": {
+       "Aliases": [
+        "perf-e-fixture-main-1",
+        "main"
+       ],
+       "DNSNames": null,
+       "DriverOpts": null,
+       "EndpointID": "",
+       "Gateway": "",
+       "GlobalIPv6Address": "",
+       "GlobalIPv6PrefixLen": 0,
+       "GwPriority": 0,
+       "IPAMConfig": null,
+       "IPAddress": "",
+       "IPPrefixLen": 0,
+       "IPv6Gateway": "",
+       "Links": null,
+       "MacAddress": "",
+       "NetworkID": ""
+      }
+     }
+    },
+    "OnBuild": null,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Tty": false,
+    "User": "",
+    "Volumes": null,
+    "WorkingDir": ""
+   }
+  }
+ ]
+}

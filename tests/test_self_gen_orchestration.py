@@ -235,11 +235,10 @@ async def test_sdk_self_gen_cleanup_exports_generated_skills_to_sidecar(
             skill.mkdir(parents=True)
             (skill / "SKILL.md").write_text("# Solver Made\n")
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = trial_cfg
+    rollout = Rollout(trial_cfg)
     rollout._env = FakeEnv()
 
-    await Rollout._export_generated_skills(rollout)
+    await rollout._export_generated_skills()
 
     assert downloads == [(trial_cfg.generated_skills_root, export_target)]
     assert export_target.parent.parent == tmp_path / "jobs" / "_self_gen"

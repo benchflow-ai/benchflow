@@ -8,6 +8,8 @@ reimplementing those primitives with host subprocess state or shell pipelines.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import itertools
 import json
 import os
 import platform
@@ -19,7 +21,31 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from benchflow.sandbox._base import BaseSandbox, ExecResult, wrap_command_with_env_file
+from benchflow._utils.reachable_write import (
+    ReachablePath,
+    declare_harness_mount,
+)
+from benchflow.sandbox import _transport
+from benchflow.sandbox._base import (
+    STARTUP_ENV_ARGV,
+    SYSTEM_SHELL,
+    BaseSandbox,
+    ExecResult,
+    StartupNamesRefused,
+    _root_exec_command,
+    capture_pid1_image_env,
+    env_file_body,
+    env_stdin_body,
+    restore_image_env,
+    startup_env_refusal,
+    system_shell_env_flags,
+    with_system_path,
+    wrap_command_with_env_stdin,
+)
+from benchflow.sandbox._download import private_download
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox._transport import fit, reader_cat
+from benchflow.sandbox.protocol import ExecTimeoutError
 
 if TYPE_CHECKING:
     from benchflow.sandbox.process import LiveProcess
@@ -144,7 +170,11 @@ async def _run_cli(
             proc.communicate(input=stdin_data), timeout=timeout
         )
     except TimeoutError:
-        proc.kill()
+        # A child that finished inside the timeout window is already reaped,
+        # and killing it would raise an empty ProcessLookupError in place of
+        # the TimeoutError this re-raises (#1065).
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
         await proc.wait()
         raise
     return ExecResult(
@@ -158,8 +188,30 @@ def _failure_output(result: ExecResult) -> str:
     return (result.stderr or result.stdout or "no command output").strip()
 
 
+def _mount_sources(args: list[str]) -> list[str]:
+    """Host sources of the ``--mount`` and ``--volume`` options in a run command."""
+    sources: list[str] = []
+    for option, value in itertools.pairwise(args):
+        if option == "--mount":
+            fields = dict(
+                field.split("=", 1) for field in value.split(",") if "=" in field
+            )
+            source = fields.get("source") or fields.get("src")
+            if source:
+                sources.append(source)
+        elif option in ("-v", "--volume"):
+            source = value.split(":", 1)[0]
+            if source.startswith("/"):
+                sources.append(source)
+    return sources
+
+
 class AppleContainerSandbox(BaseSandbox):
     """Sandbox backend for Apple Container 1.1+ micro-VMs."""
+
+    # a root agent here runs under the provider's own metadata
+    # policy (the block's record says provider-managed).
+    cloud_metadata_provider_managed = True
 
     _container_name: str | None = None
     _holds_run_slot: bool = False
@@ -288,6 +340,9 @@ class AppleContainerSandbox(BaseSandbox):
     async def start(self, force_build: bool) -> None:
         if self._holds_run_slot or self._container_name is not None:
             raise RuntimeError("Apple Container sandbox is already started.")
+        from benchflow.trust import state as trust_state
+
+        trust_state.begin_fresh(self)
 
         await _RUN_SLOT.acquire()
         self._holds_run_slot = True
@@ -319,6 +374,10 @@ class AppleContainerSandbox(BaseSandbox):
                     ["--mount", f"type=bind,source={logs_dir},target=/logs"]
                 )
 
+            # The folders this run mounts (the whole rollout folder is /logs
+            # here) are never staging; publication never depends on it.
+            for source in _mount_sources(cmd_args):
+                declare_harness_mount(source)
             cmd_args.extend(
                 [
                     "--entrypoint",
@@ -341,10 +400,19 @@ class AppleContainerSandbox(BaseSandbox):
             deadline = asyncio.get_running_loop().time() + _STARTUP_TIMEOUT
             while asyncio.get_running_loop().time() < deadline:
                 try:
+                    # A builtin in the system shell by path, its loader
+                    # variables empty: nothing from the image's PATH (C8).
                     ready = await _run_cli(
-                        "exec", self._container_name, "true", timeout=5
+                        "exec",
+                        *system_shell_env_flags(),
+                        self._container_name,
+                        SYSTEM_SHELL,
+                        "-c",
+                        ":",
+                        timeout=5,
                     )
                     if ready.return_code == 0:
+                        await self._refuse_startup_names()
                         self.logger.info(
                             "Started container %s (image=%s)",
                             self._container_name,
@@ -364,6 +432,34 @@ class AppleContainerSandbox(BaseSandbox):
             await self._force_cleanup()
             raise
 
+    async def _refuse_startup_names(self) -> None:
+        """Refuse an image whose ENV sets bash's start-up names
+        (``startup_name``): ``container exec`` starts every process with the
+        image's environment, and a root bash there would import them before
+        its first command. Read by ``cat`` (argv, no shell) before any agent
+        runs; start()'s clean-up removes the container on a refusal."""
+        assert self._container_name is not None
+        argv = ["exec", self._container_name, *STARTUP_ENV_ARGV]
+        _transport.sent("apple-container", argv)
+        result = await _run_cli(*argv, timeout=60)
+        refusal = startup_env_refusal(
+            result.stdout, result.return_code, "the Apple container image"
+        )
+        if refusal is not None:
+            self.logger.error(refusal)
+            raise StartupNamesRefused(refusal)
+
+    @property
+    def supports_system_shell(self) -> bool:
+        return True
+
+    @property
+    def supports_runtime_kit(self) -> bool:
+        return True
+
+    # The env goes on the exec's stdin (exec below).
+    exec_env_is_private = True
+
     async def exec(
         self,
         command: str,
@@ -372,7 +468,17 @@ class AppleContainerSandbox(BaseSandbox):
         timeout_sec: int | None = None,
         user: str | int | None = None,
         service: str = "main",
+        system_shell: bool = False,
     ) -> ExecResult:
+        """Run ``command`` in the container.
+
+        ``system_shell``: ``/bin/sh`` with the image's loader variables set
+        empty at the exec and PATH the system folders' before anything else
+        runs (see :data:`benchflow.sandbox._base.SYSTEM_SHELL`).
+        """
+        from benchflow.sandbox.agent_exec import AgentExecCommand, native_agent_argv
+
+        agent_bootstrap = isinstance(command, AgentExecCommand)
         if service != "main":
             raise ValueError(
                 "apple-container is a single-container backend; "
@@ -381,30 +487,122 @@ class AppleContainerSandbox(BaseSandbox):
         if not self._container_name:
             raise RuntimeError("Container not started. Call start() first.")
 
+        # C8: plumbing (route.pin) pins PATH and never sees the loader
+        # variables; the task's own command as root starts without them too
+        # and gets them back (from PID 1) before it runs.
+        route = await self.exec_route(user, system_shell=system_shell)
+        merged_env = self._merge_env(
+            env,
+            user,
+            plumbing=route.pin is not None,
+            explicit_root=route.explicit_root,
+        )
         wrapped = command
-        merged_env = self._merge_env(env)
-        if merged_env:
-            wrapped = wrap_command_with_env_file(
-                merged_env, wrapped, env_path_prefix="/tmp/.bf_env_"
-            )
+        stdin_data = None
+        # K1's env JSON is the first line of the agent exec's stdin; an agent
+        # command over the transport bound follows it (DX-1 review A L3).
+        env_line = None
+        if agent_bootstrap and merged_env:
+            from benchflow.sandbox.native_agent_env import restore_command
 
-        args = ["exec"]
+            wrapped = restore_command(command, stdin=True)
+            env_line = json.dumps(merged_env, ensure_ascii=True).encode() + b"\n"
+            stdin_data = env_line
+        else:
+            if route.task_root:
+                command = (
+                    restore_image_env(
+                        merged_env or (),
+                        tools=route.tools if route.kit and route.root else None,
+                    )
+                    + command
+                )
+            wrapped = command
+            if merged_env:
+                # The env goes on the exec's stdin, as on Docker: no value on a
+                # command line, no argument size limit, no file.
+                stdin_data = env_stdin_body(merged_env)
+                wrapped = wrap_command_with_env_stdin(command)
+
+        base = ["exec"]
         if cwd:
-            args.extend(["--workdir", cwd])
+            base.extend(["--workdir", cwd])
         resolved_user = self._resolve_user(user)
         if resolved_user is not None:
-            args.extend(["--user", str(resolved_user)])
-        args.extend([self._container_name, "sh", "-c", wrapped])
+            base.extend(["--user", str(resolved_user)])
+        if route.pin is not None or route.task_root:
+            base.extend(system_shell_env_flags())
+        base.append(self._container_name)
+
+        def args_for(inner: str) -> list[str]:
+            if route.pin is not None:
+                inner = with_system_path(inner, route.pin)
+            else:
+                inner = _root_exec_command(inner, route.explicit_root, route.root_path)
+                if route.task_root:
+                    inner = capture_pid1_image_env(route.tools) + inner
+            # The route's shell: the protected kit's for root once the
+            # sandbox has one (C8). An agent command starts inside K1's
+            # barrier instead.
+            return [
+                *base,
+                *(
+                    native_agent_argv(inner)
+                    if agent_bootstrap
+                    else [route.shell, "-c", inner]
+                ),
+            ]
+
+        # The transport contract (benchflow.sandbox._transport): a command
+        # over the bound goes on the exec's stdin, after its env lines, and
+        # a constant reader runs it. A K1 agent command's payload is the
+        # agent's own command, its barrier rebuilt around the reader.
+        agent = command if isinstance(command, AgentExecCommand) else None
+        build = args_for
+        if env_line is not None and agent is not None:
+            from benchflow.sandbox.native_agent_env import restore_command
+
+            def build(inner: str) -> list[str]:
+                # The reader, rebuilt as the agent's command, is what the
+                # decoder execs once it has read the env's line.
+                if inner is not wrapped:
+                    inner = restore_command(inner, stdin=True)
+                return args_for(inner)
+
+        fitted = fit(build, wrapped, cat=reader_cat(route), agent=agent)
+        if fitted.payload is not None and env_line is not None and agent is None:
+            raise _transport.CommandTooLarge(
+                "apple-container: a root body over the "
+                f"{_transport.COMMAND_BOUND}-byte transport bound with an "
+                "environment cannot be sent here; this is a BenchFlow bug"
+            )
+        if fitted.payload is not None and env_line is not None:
+            stdin_data = env_line + fitted.payload
+        elif fitted.payload is not None:
+            stdin_data = fitted.frame(
+                (env_file_body(merged_env).encode() if merged_env else b"")
+                + (
+                    agent.agent_command.encode()
+                    if agent is not None
+                    else command.encode()
+                )
+            )
+        args = fitted.sent
+        if stdin_data is not None:
+            args.insert(1, "-i")
+        _transport.sent("apple-container", args)
 
         try:
+            if stdin_data is not None:
+                return await _run_cli(*args, timeout=timeout_sec, stdin_data=stdin_data)
             return await _run_cli(*args, timeout=timeout_sec)
         except TimeoutError:
             self.logger.error(
                 "exec timed out after %ss, removing container", timeout_sec
             )
             await self._force_cleanup()
-            raise RuntimeError(
-                f"Command timed out after {timeout_sec}s: {command[:100]}"
+            raise ExecTimeoutError(
+                timeout_sec, f"Command timed out after {timeout_sec}s: {command[:100]}"
             ) from None
 
     async def _copy(
@@ -421,17 +619,26 @@ class AppleContainerSandbox(BaseSandbox):
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        host_path = self._mounted_host_path(target_path)
+        host_path = self._mounted_destination(target_path)
         if host_path is not None:
-            host_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, host_path)
-            if mode is not None:
-                host_path.chmod(int(mode, 8))
+            from benchflow._utils.reachable_write import copy_mounted
+
+            await asyncio.to_thread(
+                copy_mounted,
+                source.parent,
+                (source.name,),
+                host_path,
+                directory=False,
+                mode=int(mode, 8) if mode is not None else None,
+            )
             return
 
         target_parent = str(PurePosixPath(target_path).parent)
-        prep = await self.exec(
-            f"mkdir -p {shlex.quote(target_parent)}", timeout_sec=30, user="root"
+        prep = await exec_raw(
+            self.exec,
+            f"mkdir -p {shlex.quote(target_parent)}",
+            timeout_sec=30,
+            user="root",
         )
         if prep.return_code != 0:
             raise RuntimeError(
@@ -457,15 +664,24 @@ class AppleContainerSandbox(BaseSandbox):
         if not self._container_name:
             raise RuntimeError("Container not started.")
 
-        host_path = self._mounted_host_path(target_dir)
+        host_path = self._mounted_destination(target_dir)
         if host_path is not None:
-            if host_path.exists():
-                shutil.rmtree(host_path)
-            shutil.copytree(source, host_path)
+            from benchflow._utils.reachable_write import copy_mounted
+
+            await asyncio.to_thread(
+                copy_mounted,
+                source.parent,
+                (source.name,),
+                host_path,
+                directory=True,
+            )
             return
 
-        prep = await self.exec(
-            f"mkdir -p {shlex.quote(target_dir)}", timeout_sec=30, user="root"
+        prep = await exec_raw(
+            self.exec,
+            f"mkdir -p {shlex.quote(target_dir)}",
+            timeout_sec=30,
+            user="root",
         )
         if prep.return_code != 0:
             raise RuntimeError(
@@ -484,6 +700,7 @@ class AppleContainerSandbox(BaseSandbox):
                 operation=f"upload_dir ({child.name})",
             )
 
+    @private_download(directory=False)
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         target = Path(target_path)
         if not self._container_name:
@@ -491,17 +708,12 @@ class AppleContainerSandbox(BaseSandbox):
 
         host_path = self._mounted_host_path(source_path)
         if host_path is not None:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(host_path, target)
+            await self._copy_mounted_download(source_path, target, directory=False)
             return
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await self._copy(
-            f"{self._container_name}:{source_path}",
-            str(target),
-            operation="download_file",
-        )
+        await self._copy_unmounted_download(source_path, target, directory=False)
 
+    @private_download(directory=True)
     async def download_dir(
         self, source_dir: str, target_dir: Path | str, service: str = "main"
     ) -> None:
@@ -515,18 +727,48 @@ class AppleContainerSandbox(BaseSandbox):
 
         host_path = self._mounted_host_path(source_dir)
         if host_path is not None:
-            if target.exists():
-                shutil.rmtree(target)
-            shutil.copytree(host_path, target)
+            await self._copy_mounted_download(source_dir, target, directory=True)
             return
 
-        if target.exists():
-            shutil.rmtree(target)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await self._copy(
-            f"{self._container_name}:{source_dir}",
-            str(target),
-            operation="download_dir",
+        await self._copy_unmounted_download(source_dir, target, directory=True)
+
+    async def _copy_unmounted_download(
+        self, source: str, target: Path, *, directory: bool
+    ) -> None:
+        from benchflow._utils.reachable_write import staging_for
+        from benchflow.sandbox._download import join_publication
+        from benchflow.sandbox._host_copy import copy_mounted
+
+        # The CLI must never write into a live sandbox mount by pathname.
+        # Receive privately on the destination's filesystem, then use the same
+        # anchored publication as /logs.
+        with staging_for(target) as staging:
+            await self._copy(
+                f"{self._container_name}:{source}",
+                str(staging / "payload"),
+                operation="download_dir" if directory else "download_file",
+            )
+            await join_publication(
+                asyncio.to_thread(
+                    copy_mounted, staging, ("payload",), target, directory=directory
+                )
+            )
+
+    async def _copy_mounted_download(
+        self, source: str, target: Path, *, directory: bool
+    ) -> None:
+        from benchflow.sandbox._download import join_publication
+        from benchflow.sandbox._host_copy import copy_mounted
+
+        assert self.rollout_paths is not None
+        await join_publication(
+            asyncio.to_thread(
+                copy_mounted,
+                self.rollout_paths.rollout_dir.resolve(),
+                PurePosixPath(source).relative_to("/logs").parts,
+                target,
+                directory=directory,
+            )
         )
 
     async def stop(self, delete: bool) -> None:
@@ -590,6 +832,21 @@ class AppleContainerSandbox(BaseSandbox):
         finally:
             self._container_name = None
             self._release_run_slot()
+
+    def _mounted_destination(self, container_path: str) -> ReachablePath | None:
+        """A ``/logs`` destination as a capability held at the rollout folder.
+
+        The whole rollout folder is this sandbox's ``/logs`` mount, so it is
+        the trusted anchor and every component below it is walked without
+        following a link; nothing there is resolved by pathname.
+        """
+        if self._mounted_host_path(container_path) is None:
+            return None
+        assert self.rollout_paths is not None
+        parts = PurePosixPath(container_path).relative_to("/logs").parts
+        if not parts:
+            raise ValueError("cannot replace the /logs mount")
+        return ReachablePath.directory(self.rollout_paths.rollout_dir) / Path(*parts)
 
     def _mounted_host_path(self, container_path: str) -> Path | None:
         """Map a container path to a host path when it is under ``/logs``."""

@@ -1,0 +1,770 @@
+{
+  "rule": "benchflow.score.v1",
+  "about": "Trial outcomes and the figures the scoring rule benchflow.score.v1 gives them. A reader that counts the same way reproduces every case's expected figures, exactly for the counts and within tolerance for the real numbers. Each trial has its task (the interval's cluster), its outcome, who ended it when it has no score (ending: provider, harness or null), and whether it ran out of time or met a rate limit; a trial with a result also gives the result.json fields BenchFlow reads them from. See docs/reference/scoring-rule.md.",
+  "outcomes": {
+    "passed": "scored and passed: reward 1, or the rubric review's pass verdict (counts 1)",
+    "failed": "scored below a pass (counts 0)",
+    "refused": "no score because of something the agent can cause: the plugin guard refused a pytest plugin, or the final verify found no usable reward (counts 0; kept in the error-excluding figure as a failure)",
+    "errored": "no score: the agent, its sandbox or its model provider errored, or BenchFlow's time limits ended it (counts 0; left out of the error-excluding figure)",
+    "verifier_errored": "no score: the verifier failed (counts 0; left out of the error-excluding figure)",
+    "no_verdict": "no score and no recorded error, such as an assessment still pending (counts 0; left out of the error-excluding figure)"
+  },
+  "endings": {
+    "provider": "the model provider ended a trial with no score: its API failed, it rate-limited the run, it refused the credential or the request, or the login's usage limit ran out",
+    "harness": "BenchFlow's own limits ended a trial with no score: its time limit, or the idle watchdog"
+  },
+  "interval": "95% interval over tasks: Wilson's score interval over the trials with one trial per task or one task (wilson); else Wilson's interval on the effective sample size n / max(1, se^2 / (p(1-p)/n)), with se the cluster-robust standard error over tasks (factor T/(T-1)), or on the number of tasks when every trial passed or none did (wilson-clustered). z = 1.96.",
+  "tolerance": 1e-09,
+  "cases": [
+    {
+      "name": "every outcome, with repeated trials",
+      "trials": [
+        {
+          "task": "alpha",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        },
+        {
+          "task": "alpha",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.626
+            },
+            "scoring": {
+              "status": "complete",
+              "passed": true,
+              "tests_pass": true,
+              "all_blockers_pass": true,
+              "verifier_reward": 1.0,
+              "rubric_reward": 0.626,
+              "reviewer_run": "review-alpha__0002"
+            }
+          }
+        },
+        {
+          "task": "alpha",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.5
+            }
+          }
+        },
+        {
+          "task": "beta",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.0
+            }
+          }
+        },
+        {
+          "task": "beta",
+          "outcome": "errored",
+          "ending": "harness",
+          "timed_out": true,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "error": "Agent prompt exceeded wall-clock budget 600s",
+            "error_category": "timeout"
+          }
+        },
+        {
+          "task": "gamma",
+          "outcome": "verifier_errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "verifier_error": "verifier crashed: No reward file found at verifier/reward.txt"
+          }
+        },
+        {
+          "task": "delta",
+          "outcome": "no_verdict",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            },
+            "assessment": "pending"
+          }
+        },
+        {
+          "task": "delta",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        },
+        {
+          "task": "epsilon",
+          "outcome": "refused",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "verifier_error": "verifier crashed: PluginGuardLoadError: the pytest plugin guard _benchflow_guard_0a1b2c refused a pytest plugin it could not trust: /app/conftest.py"
+          }
+        },
+        {
+          "task": "zeta",
+          "outcome": "refused",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "verifier_error": "verifier wrote no usable reward: Failed to parse rewards from text file verifier/reward.txt"
+          }
+        },
+        {
+          "task": "zeta",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.0
+            }
+          }
+        }
+      ],
+      "expected": {
+        "n": 11,
+        "n_tasks": 6,
+        "passed": 3,
+        "score": 0.2727272727272727,
+        "n_excl_errors": 8,
+        "score_excl_errors": 0.375,
+        "se": 0.1525683406177101,
+        "ci95": [
+          0.08523760723992335,
+          0.601462623895557
+        ],
+        "ci_method": "wilson-clustered",
+        "outcomes": {
+          "passed": 3,
+          "failed": 3,
+          "refused": 2,
+          "errored": 1,
+          "verifier_errored": 1,
+          "no_verdict": 1
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 1
+        },
+        "timeouts": 1,
+        "rate_limited": 0,
+        "tries": {
+          "min": 1,
+          "max": 3
+        },
+        "pass_at_k": {
+          "1": 0.19444444444444445
+        }
+      },
+      "se_squared": "1704/73205"
+    },
+    {
+      "name": "provider and harness endings left after retries count 0, by who ended them",
+      "trials": [
+        {
+          "task": "t1",
+          "outcome": "errored",
+          "ending": "provider",
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "error": "provider api error [api_error/transient]: HTTP 500 after 3 retries",
+            "error_category": "api_error"
+          }
+        },
+        {
+          "task": "t1",
+          "outcome": "errored",
+          "ending": "provider",
+          "timed_out": false,
+          "rate_limited": true,
+          "result": {
+            "rewards": null,
+            "error": "the provider rate-limited the run: HTTP 429",
+            "error_category": "provider_rate_limit"
+          }
+        },
+        {
+          "task": "t1",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        },
+        {
+          "task": "t2",
+          "outcome": "errored",
+          "ending": "harness",
+          "timed_out": true,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "error": "Agent idle for 600s with no output",
+            "error_category": "idle_timeout"
+          }
+        },
+        {
+          "task": "t2",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": true,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            },
+            "error": "Agent prompt exceeded wall-clock budget 3600s",
+            "error_category": "timeout"
+          }
+        },
+        {
+          "task": "t2",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.0
+            }
+          }
+        },
+        {
+          "task": "t3",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": true,
+          "result": {
+            "rewards": {
+              "reward": 0.0
+            },
+            "agent_outcome": {
+              "http_status_counts": {
+                "200": 11,
+                "429": 2
+              },
+              "agent_retries": 2,
+              "upstream_retries": 1
+            }
+          }
+        },
+        {
+          "task": "t3",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        },
+        {
+          "task": "t3",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        }
+      ],
+      "expected": {
+        "n": 9,
+        "n_tasks": 3,
+        "passed": 4,
+        "score": 0.4444444444444444,
+        "n_excl_errors": 6,
+        "score_excl_errors": 0.6666666666666666,
+        "se": 0.1111111111111111,
+        "ci95": [
+          0.188775429471914,
+          0.7333526542559703
+        ],
+        "ci_method": "wilson-clustered",
+        "outcomes": {
+          "passed": 4,
+          "failed": 2,
+          "refused": 0,
+          "errored": 3,
+          "verifier_errored": 0,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 2,
+          "harness": 1
+        },
+        "timeouts": 2,
+        "rate_limited": 2,
+        "tries": {
+          "min": 3,
+          "max": 3
+        },
+        "pass_at_k": {
+          "1": 0.4444444444444444,
+          "2": 0.7777777777777778,
+          "3": 1.0
+        }
+      },
+      "se_squared": "1/81"
+    },
+    {
+      "name": "a reward decides, whatever error the trial also records",
+      "trials": [
+        {
+          "task": "t1",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": true,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            },
+            "error": "Agent prompt exceeded wall-clock budget 600s",
+            "error_category": "timeout"
+          }
+        },
+        {
+          "task": "t1",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 0.0
+            },
+            "verifier_error": "verifier crashed: stale reward rejected"
+          }
+        },
+        {
+          "task": "t2",
+          "outcome": "errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "error": "ACP error -32603: Internal error",
+            "verifier_error": "verifier crashed: No reward file found at verifier/reward.txt"
+          }
+        },
+        {
+          "task": "t2",
+          "outcome": "no_verdict",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": null,
+            "error": null,
+            "verifier_error": null
+          }
+        },
+        {
+          "task": "t3",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false,
+          "result": {
+            "rewards": {
+              "reward": 1.0
+            }
+          }
+        }
+      ],
+      "expected": {
+        "n": 5,
+        "n_tasks": 3,
+        "passed": 2,
+        "score": 0.4,
+        "n_excl_errors": 3,
+        "score_excl_errors": 0.6666666666666666,
+        "se": 0.24979991993593592,
+        "ci95": [
+          0.10007617410730973,
+          0.7998645908255306
+        ],
+        "ci_method": "wilson-clustered",
+        "outcomes": {
+          "passed": 2,
+          "failed": 1,
+          "refused": 0,
+          "errored": 1,
+          "verifier_errored": 0,
+          "no_verdict": 1
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 1,
+        "rate_limited": 0,
+        "tries": {
+          "min": 1,
+          "max": 2
+        },
+        "pass_at_k": {
+          "1": 0.5
+        }
+      },
+      "se_squared": "39/625"
+    },
+    {
+      "name": "one trial per task: Wilson over the trials",
+      "trials": [
+        {
+          "task": "a",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "b",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "c",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "d",
+          "outcome": "errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "e",
+          "outcome": "verifier_errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        }
+      ],
+      "expected": {
+        "n": 5,
+        "n_tasks": 5,
+        "passed": 2,
+        "score": 0.4,
+        "n_excl_errors": 3,
+        "score_excl_errors": 0.6666666666666666,
+        "se": 0.2449489742783178,
+        "ci95": [
+          0.1176182311592533,
+          0.769280067791163
+        ],
+        "ci_method": "wilson",
+        "outcomes": {
+          "passed": 2,
+          "failed": 1,
+          "refused": 0,
+          "errored": 1,
+          "verifier_errored": 1,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 0,
+        "rate_limited": 0,
+        "tries": {
+          "min": 1,
+          "max": 1
+        },
+        "pass_at_k": {
+          "1": 0.4
+        }
+      },
+      "se_squared": "3/50"
+    },
+    {
+      "name": "one task: Wilson over its trials, no standard error",
+      "trials": [
+        {
+          "task": "only",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "only",
+          "outcome": "failed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "only",
+          "outcome": "errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        }
+      ],
+      "expected": {
+        "n": 3,
+        "n_tasks": 1,
+        "passed": 1,
+        "score": 0.3333333333333333,
+        "n_excl_errors": 2,
+        "score_excl_errors": 0.5,
+        "se": null,
+        "ci95": [
+          0.0614903152761605,
+          0.7923450448735121
+        ],
+        "ci_method": "wilson",
+        "outcomes": {
+          "passed": 1,
+          "failed": 1,
+          "refused": 0,
+          "errored": 1,
+          "verifier_errored": 0,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 0,
+        "rate_limited": 0,
+        "tries": {
+          "min": 3,
+          "max": 3
+        },
+        "pass_at_k": {
+          "1": 0.3333333333333333,
+          "2": 0.6666666666666666,
+          "3": 1.0
+        }
+      }
+    },
+    {
+      "name": "every trial passed: the interval is over the tasks",
+      "trials": [
+        {
+          "task": "a",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "a",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "b",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "b",
+          "outcome": "passed",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        }
+      ],
+      "expected": {
+        "n": 4,
+        "n_tasks": 2,
+        "passed": 4,
+        "score": 1.0,
+        "n_excl_errors": 4,
+        "score_excl_errors": 1.0,
+        "se": 0.0,
+        "ci95": [
+          0.34237195288961925,
+          1.0
+        ],
+        "ci_method": "wilson-clustered",
+        "outcomes": {
+          "passed": 4,
+          "failed": 0,
+          "refused": 0,
+          "errored": 0,
+          "verifier_errored": 0,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 0,
+        "rate_limited": 0,
+        "tries": {
+          "min": 2,
+          "max": 2
+        },
+        "pass_at_k": {
+          "1": 1.0,
+          "2": 1.0
+        }
+      },
+      "se_squared": "0/1"
+    },
+    {
+      "name": "every trial errored: no error-excluding figure",
+      "trials": [
+        {
+          "task": "a",
+          "outcome": "errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "a",
+          "outcome": "errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        },
+        {
+          "task": "b",
+          "outcome": "verifier_errored",
+          "ending": null,
+          "timed_out": false,
+          "rate_limited": false
+        }
+      ],
+      "expected": {
+        "n": 3,
+        "n_tasks": 2,
+        "passed": 0,
+        "score": 0.0,
+        "n_excl_errors": 0,
+        "score_excl_errors": null,
+        "se": 0.0,
+        "ci95": [
+          0.0,
+          0.6576280471103807
+        ],
+        "ci_method": "wilson-clustered",
+        "outcomes": {
+          "passed": 0,
+          "failed": 0,
+          "refused": 0,
+          "errored": 2,
+          "verifier_errored": 1,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 0,
+        "rate_limited": 0,
+        "tries": {
+          "min": 1,
+          "max": 2
+        },
+        "pass_at_k": {
+          "1": 0.0
+        }
+      },
+      "se_squared": "0/1"
+    },
+    {
+      "name": "no trials",
+      "trials": [],
+      "expected": {
+        "n": 0,
+        "n_tasks": 0,
+        "passed": 0,
+        "score": null,
+        "n_excl_errors": 0,
+        "score_excl_errors": null,
+        "se": null,
+        "ci95": null,
+        "ci_method": null,
+        "outcomes": {
+          "passed": 0,
+          "failed": 0,
+          "refused": 0,
+          "errored": 0,
+          "verifier_errored": 0,
+          "no_verdict": 0
+        },
+        "endings": {
+          "provider": 0,
+          "harness": 0
+        },
+        "timeouts": 0,
+        "rate_limited": 0,
+        "tries": {
+          "min": 0,
+          "max": 0
+        },
+        "pass_at_k": {}
+      }
+    }
+  ]
+}

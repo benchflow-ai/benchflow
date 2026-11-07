@@ -196,10 +196,17 @@ class TestResolveAgentEnv:
         self, monkeypatch
     ):
         """Only mapped agent-native keys can bypass provider-specific key checks."""
+        from benchflow.agents.registry import AGENTS, AgentConfig
+
+        monkeypatch.setitem(
+            AGENTS,
+            "auth-probe",
+            AgentConfig("auth-probe", "true", "true"),
+        )
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(ValueError, match="OPENAI_API_KEY required"):
             self._resolve(
-                agent="openclaw",
+                agent="auth-probe",
                 model="openai/gpt-4.1-mini",
                 agent_env={"BENCHFLOW_PROVIDER_API_KEY": "x"},
             )
@@ -221,7 +228,7 @@ class TestResolveAgentEnv:
         # Ensure no host subscription auth files are found
         self._patch_expanduser(monkeypatch, tmp_path)
         # Anthropic model
-        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY required"):
+        with pytest.raises(ValueError, match="No Claude login found"):
             self._resolve(
                 model="claude-haiku-4-5-20251001",
                 agent_env={},

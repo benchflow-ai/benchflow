@@ -1,0 +1,223 @@
+{
+  "source": "engine-bench-1015 raw/trials/trials-jobs.tar.gz: jobs/pre-r0-005-rust-0.8.2-oracle-hello-split/2026-10-16__04-14-53",
+  "arm": "rust-0.8.2",
+  "agent": "oracle",
+  "task": "hello-split",
+  "job_name": "2026-10-16__04-14-53",
+  "files": {
+    "summary.json": {
+      "job_name": "2026-10-16__04-14-53",
+      "agent": "oracle",
+      "model": null,
+      "environment": "docker",
+      "concurrency": 1,
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "errored": 0,
+      "verifier_errored": 0,
+      "unscored": 0,
+      "pass": 1,
+      "fail": 0,
+      "error": 0,
+      "not_started": 0,
+      "stopped": 0,
+      "partial": false,
+      "score": "100.0%",
+      "score_ratio": 1,
+      "score_interval": [
+        0.20654931437723745,
+        1
+      ],
+      "score_excl_errors": "100.0%",
+      "score_excl_errors_ratio": 1,
+      "mean_reward": 1,
+      "elapsed_sec": 3.647985939,
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_tokens": 0,
+      "total_cost_usd": null,
+      "pass_at_k": {
+        "1": 1
+      },
+      "pass_at_k_scored_only": {
+        "1": 1
+      },
+      "failures_by_cause": [],
+      "environment_warnings": [],
+      "graded_unlocked_system_dirs": 0,
+      "rewards_out_of_range": [],
+      "engine": {
+        "name": "benchflow-rs",
+        "version": "0.8.2"
+      }
+    },
+    "hello-split__e9344103/result.json": {
+      "task_name": "hello-split",
+      "rollout_name": "hello-split__e9344103",
+      "rewards": {
+        "reward": 1
+      },
+      "agent": "oracle",
+      "agent_name": "oracle",
+      "model": null,
+      "skill_mode": "no-skill",
+      "n_tool_calls": 0,
+      "n_prompts": 1,
+      "agent_result": {
+        "n_tool_calls": 0,
+        "n_prompts": 1,
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": null,
+        "usage_source": "unavailable"
+      },
+      "trajectory_summary": {
+        "steps": 1,
+        "tool_call_steps": 0,
+        "user_message_steps": 0,
+        "agent_message_steps": 0,
+        "agent_thought_steps": 0,
+        "other_steps": 1,
+        "event_type_counts": {
+          "oracle": 1
+        },
+        "tool_call_status_counts": {},
+        "partial_trajectory": false,
+        "trajectory_source": "scripted"
+      },
+      "trajectory_source": "scripted",
+      "error": null,
+      "error_category": null,
+      "verifier_error": null,
+      "verifier_error_category": null,
+      "started_at": "2026-10-16T04:14:53.356857+00:00",
+      "finished_at": "2026-10-16T04:14:56.987023+00:00",
+      "timing": {
+        "environment_setup": 2.156286057,
+        "agent_execution": 0.414630847,
+        "verifier": 0.932773792,
+        "total": 3.6301356,
+        "image": 0.132909603,
+        "sandbox_start": 0.159672049,
+        "setup": 1.750011739,
+        "handoff": 0.279140155,
+        "verify": 0.653631717
+      },
+      "task_digest": "sha256:a7af16f1c4b915ccc6c13d20ff0d96d79a10ff6acadcc3e88e33049e7fc7cfdb",
+      "sandbox_id": "bf-hello-split--e9344103-fd5f0248",
+      "task_id": "hello-split",
+      "status": "scored",
+      "passed": true,
+      "timed_out": false,
+      "problem": null,
+      "defenses": {
+        "agent_user": {
+          "name": "agent_user",
+          "state": "enforced",
+          "note": "agent, uid 1001; not checked: file capabilities (no getcap); net_admin stays in its commands' capability sets: docker starts them itself, with the container's sets, so BenchFlow cannot drop it, and no file on its PATH or in the system folders gives it the firewall (file capabilities (no getcap) unchecked); its probe could not change the firewall"
+        },
+        "clean_verifier_env": {
+          "name": "clean_verifier_env",
+          "state": "off",
+          "note": "no loader variables, PYTHONSAFEPATH off: left to the image, as 0.8 runs this task format, PATH of root-owned folders only"
+        },
+        "clean_verifier_logs": {
+          "name": "clean_verifier_logs",
+          "state": "enforced"
+        },
+        "cloud_metadata": {
+          "name": "cloud_metadata",
+          "state": "enforced",
+          "note": "the uid firewall refuses TCP from every user, root included (the reference solution runs as root) to the cloud metadata endpoints (169.254.169.254, 169.254.170.2, 169.254.170.23, 100.100.100.200, 168.63.129.16, 169.254.0.23, fd00:ec2::254, fd00:ec2::23, fd20:ce::254, fd00:c1::a9fe:a9fe) on every port but 53; proof: the agent user's connect to 169.254.169.254:80 was refused and the rule counted 1 packet"
+        },
+        "hidden_verifier": {
+          "name": "hidden_verifier",
+          "state": "enforced",
+          "note": "the verifier and oracle are uploaded only when needed"
+        },
+        "kill_before_grading": {
+          "name": "kill_before_grading",
+          "state": "enforced",
+          "note": "0 processes"
+        },
+        "ld_so_preload": {
+          "name": "ld_so_preload",
+          "state": "enforced",
+          "note": "absent before and after the agent's turn"
+        },
+        "locked_system_dirs": {
+          "name": "locked_system_dirs",
+          "state": "enforced",
+          "note": "system folders were already writable by root alone"
+        },
+        "locked_system_path": {
+          "name": "locked_system_path",
+          "state": "enforced",
+          "note": "the folders on PATH are root's alone"
+        },
+        "memory_limit": {
+          "name": "memory_limit",
+          "state": "enforced",
+          "note": "1024 MB (cgroup v2 memory.max)"
+        },
+        "network_policy": {
+          "name": "network_policy",
+          "state": "enforced",
+          "note": "agent: open: everything but the cloud metadata endpoints (see cloud_metadata)"
+        },
+        "oom_order": {
+          "name": "oom_order",
+          "state": "enforced",
+          "note": "agent processes start at oom_score_adj 1000, the runner and the verifier at 0, so the kernel stops the agent's first"
+        },
+        "planted_file_cleanup": {
+          "name": "planted_file_cleanup",
+          "state": "enforced"
+        },
+        "process_limit": {
+          "name": "process_limit",
+          "state": "enforced",
+          "note": "at most 4096 processes"
+        },
+        "special_file_custody": {
+          "name": "special_file_custody",
+          "state": "enforced"
+        },
+        "trusted_path": {
+          "name": "trusted_path",
+          "state": "enforced",
+          "note": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+        }
+      },
+      "login": null,
+      "verifier_exit_code": 0,
+      "rubric": null,
+      "engine": {
+        "name": "benchflow-rs",
+        "version": "0.8.2"
+      }
+    },
+    "hello-split__e9344103/timing.json": {
+      "environment_setup": 2.156286057,
+      "agent_execution": 0.414630847,
+      "verifier": 0.932773792,
+      "total": 3.6301356,
+      "image": 0.132909603,
+      "sandbox_start": 0.159672049,
+      "setup": 1.750011739,
+      "handoff": 0.279140155,
+      "verify": 0.653631717
+    },
+    "hello-split__e9344103/prompts.json": [
+      "Write the number 42 to `/app/answer.txt`.\n"
+    ],
+    "hello-split__e9344103/verifier/reward.txt": "1\n",
+    "hello-split__e9344103/verifier/test-stdout.txt": ""
+  }
+}

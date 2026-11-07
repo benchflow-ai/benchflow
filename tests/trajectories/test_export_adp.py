@@ -337,7 +337,7 @@ def test_reward_with_no_action_is_surfaced(caplog):
     import logging
 
     for reward in (0.0, 1.0):
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             caplog.clear()
             rec = trajectory_to_adp_record(
                 trajectory_id="crashed",
@@ -347,7 +347,8 @@ def test_reward_with_no_action_is_surfaced(caplog):
             )
         # No action carries a reward...
         assert all("reward" not in item for item in rec["content"])
-        # ...so the exact score is surfaced in details, with a warning.
+        # ...so the exact score is surfaced in details, with a debug note
+        # (an export detail, not a user action: DF-p1-first-run-13).
         assert rec["details"]["terminal_reward"] == reward
         assert any("terminal reward" in r.message for r in caplog.records)
 

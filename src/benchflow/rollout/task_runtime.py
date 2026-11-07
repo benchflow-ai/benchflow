@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import contextlib
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 from benchflow.environment.manifest import EnvironmentManifest
 from benchflow.models import RolloutResult
+from benchflow.review.options import ReviewerConfig
 from benchflow.rollout._config import RolloutConfig
+from benchflow.sandbox._exec_output import exec_raw
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL
 
 
@@ -27,6 +29,9 @@ class TaskRuntimeConfig:
 
     task_path: str | Path
     environment: str = "docker"
+    codex_apps_policy: Literal["disabled", "inherit"] | None = field(
+        default=None, kw_only=True
+    )
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
@@ -35,13 +40,24 @@ class TaskRuntimeConfig:
     jobs_dir: str | Path = "jobs"
     context_root: str | Path | None = None
     base_image_override: str | None = None
+    separate_verifier: bool = False
+    separate_verifier_include: tuple[str, ...] = ()
     pre_agent_hooks: list | None = None
     environment_manifest: EnvironmentManifest | None = None
     config_override: dict | None = None
     skills_dir: str | Path | None = None
     skill_mode: str = SKILL_MODE_NO_SKILL
     runtime_label: str = "task-runtime"
+    reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     planes: Any | None = None
+    # Reward integrity (benchflow.integrity): "audit" checks the recorded bash
+    # calls against the task's contract after verify(); "strict" also runs the
+    # verifier in a separate verifier sandbox. The verdict is on
+    # TaskRuntimeResult.integrity; the reward is never changed.
+    integrity: str = "off"
+    # "separate" moves the verifier into the separate verifier sandbox without
+    # the audit (RolloutConfig.verifier_sandbox); "task" keeps the task's mode.
+    verifier_sandbox: str = "task"
 
     def __post_init__(self) -> None:
         self.task_path = Path(self.task_path)
@@ -51,6 +67,12 @@ class TaskRuntimeConfig:
             self.skills_dir = Path(self.skills_dir)
         if self.skill_mode not in {SKILL_MODE_NO_SKILL, SKILL_MODE_WITH_SKILL}:
             raise ValueError("TaskRuntimeConfig supports no-skill and with-skill only")
+        from benchflow.integrity.constants import normalize_integrity_mode
+
+        self.integrity = normalize_integrity_mode(self.integrity)
+        from benchflow.task.verifier_sandbox import normalize_verifier_sandbox
+
+        self.verifier_sandbox = normalize_verifier_sandbox(self.verifier_sandbox)
 
     def to_rollout_config(self) -> RolloutConfig:
         """Lower to the Rollout configuration used to own lifecycle/artifacts."""
@@ -58,6 +80,7 @@ class TaskRuntimeConfig:
         return RolloutConfig(
             task_path=Path(self.task_path),
             environment=self.environment,
+            codex_apps_policy=self.codex_apps_policy,
             sandbox_user=self.sandbox_user,
             sandbox_locked_paths=self.sandbox_locked_paths,
             sandbox_setup_timeout=self.sandbox_setup_timeout,
@@ -67,9 +90,12 @@ class TaskRuntimeConfig:
             jobs_dir=self.jobs_dir,
             context_root=self.context_root,
             base_image_override=self.base_image_override,
+            separate_verifier=self.separate_verifier,
+            separate_verifier_include=self.separate_verifier_include,
             pre_agent_hooks=self.pre_agent_hooks,
             environment_manifest=self.environment_manifest,
             config_override=self.config_override,
+            reviewer=self.reviewer,
             agent=self.runtime_label,
             model=None,
             prompts=[],
@@ -77,6 +103,8 @@ class TaskRuntimeConfig:
             skill_mode=self.skill_mode,
             allow_document_user=False,
             planes=self.planes,
+            integrity=self.integrity,
+            verifier_sandbox=self.verifier_sandbox,
         )
 
 
@@ -103,6 +131,10 @@ class TaskRuntimeResult:
     error: str | None
     rollout_dir: Path
     result: RolloutResult
+    # The integrity verdict when TaskRuntimeConfig.integrity is audit or
+    # strict: ``integrity.exploited`` / ``integrity.reason`` feed
+    # ``benchflow.integrations.rewards.apply_integrity``. Never changes reward.
+    integrity: Any = None
 
 
 class TaskRuntime:
@@ -129,22 +161,25 @@ class TaskRuntime:
 
     @property
     def rollout(self) -> Any:
+        """The underlying rollout; raises until :meth:`start` ran."""
         if self._rollout is None:
             raise RuntimeError("TaskRuntime.start() must run first")
         return self._rollout
 
     @property
     def env(self) -> Any:
+        """The task's sandbox."""
         return self.rollout.env
 
     @property
     def workspace(self) -> str:
-        rollout = self.rollout
-        return getattr(rollout, "_agent_cwd", None) or "/app"
+        """The agent's working directory in the sandbox."""
+        return self.rollout._agent_cwd or "/app"
 
     @property
     def rollout_dir(self) -> Path:
-        rollout_dir = getattr(self.rollout, "_rollout_dir", None)
+        """The rollout's artifact folder on the host."""
+        rollout_dir = self.rollout._rollout_dir
         if not isinstance(rollout_dir, Path):
             raise RuntimeError("TaskRuntime.start() did not initialize artifacts")
         return rollout_dir
@@ -159,6 +194,11 @@ class TaskRuntime:
         rollout = await Rollout.create(self.config.to_rollout_config())
         try:
             await rollout.setup()
+            if rollout._egress_denylist is not None:
+                raise RuntimeError(
+                    f"network_mode={rollout._egress_denylist.mode!r} requires an ACP agent rollout; "
+                    "the bash primitive runs without the egress proxy"
+                )
             await rollout.start()
             await rollout.install_agent()
         except BaseException:
@@ -188,13 +228,23 @@ class TaskRuntime:
             raise RuntimeError("Active sandbox does not expose exec()")
         workspace = shlex.quote(self.workspace)
         script = f"cd {workspace} && {command}"
-        shell_command = f"bash -lc {shlex.quote(script)}"
         exec_user = user if user is not None else self.config.sandbox_user
+        from benchflow.sandbox.agent_exec import agent_exec_call
+
+        # The policy's commands get the same barrier as session-factory execs
+        # (sandbox/agent_exec.py).
+        shell_command, run_as = agent_exec_call(
+            f"bash -lc {shlex.quote(script)}",
+            exec_user or "root",
+            identity_switch=getattr(self.env, "agent_identity_switch", ()) or (),
+            sandbox=self.env,
+        )
 
         t0 = monotonic()
-        result = await self.env.exec(
+        result = await exec_raw(
+            self.env.exec,
             shell_command,
-            user=exec_user or "root",
+            user=run_as,
             timeout_sec=timeout_sec,
         )
         elapsed = monotonic() - t0
@@ -232,16 +282,25 @@ class TaskRuntime:
         )
 
     async def verify(self) -> TaskRuntimeResult:
-        """Run the task verifier, write normal rollout artifacts, and return reward."""
+        """Finish task scoring, including automatic review when a rubric exists.
+
+        Rubric review releases the solver sandbox first so all telemetry is
+        durable and reviewer jobs do not compete with idle solver VMs.
+        """
 
         if self._verified:
             raise RuntimeError("TaskRuntime.verify() can only be called once")
-        rewards = await self.rollout.verify()
+        await self.rollout.verify()
         self._verified = True
-        result = self.rollout.result
-        if result is None:
-            raise RuntimeError("Rollout did not produce a verified result")
+        result = await self.rollout.finalize()
+        self._started = False
+        rewards = result.rewards
         reward = (rewards or {}).get("reward") if isinstance(rewards, dict) else None
+        integrity = None
+        if self.config.integrity != "off":
+            from benchflow.integrity import read_verdict
+
+            integrity = read_verdict(self.rollout_dir)
         return TaskRuntimeResult(
             task_name=result.task_name,
             rollout_name=result.rollout_name,
@@ -251,12 +310,13 @@ class TaskRuntime:
             error=result.error,
             rollout_dir=self.rollout_dir,
             result=result,
+            integrity=integrity,
         )
 
     async def close(self) -> None:
         """Clean up the sandbox lifecycle owned by this runtime."""
 
-        if self._rollout is None:
+        if self._rollout is None or not self._started:
             return
         await self._rollout.cleanup()
         self._started = False

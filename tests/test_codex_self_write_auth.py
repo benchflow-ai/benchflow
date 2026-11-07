@@ -18,9 +18,11 @@ import subprocess
 from benchflow.agents.registry import AGENTS
 
 
-def _write_prefix(launch_cmd: str) -> str:
-    """The launcher is ``<auth-write...>; exec <agent>``; return the part before exec."""
-    return launch_cmd.split("; exec ", 1)[0]
+def _without_agent(launch_cmd: str) -> str:
+    """Run the full writer, stubbing only the executable (092eb18ad)."""
+    executable = "/opt/runtime/bin/codex-acp"
+    assert executable in launch_cmd
+    return launch_cmd.replace(executable, "true", 1)
 
 
 def test_credential_files_relocated_off_core():
@@ -31,7 +33,7 @@ def test_credential_files_relocated_off_core():
 
 
 def test_launcher_writes_auth_json_byte_identical_when_key_set(tmp_path):
-    prefix = _write_prefix(AGENTS["codex-acp"].launch_cmd)
+    prefix = _without_agent(AGENTS["codex-acp"].launch_cmd)
     env = {
         **os.environ,
         "OPENAI_API_KEY": "sk-test-123",
@@ -47,7 +49,7 @@ def test_launcher_writes_auth_json_byte_identical_when_key_set(tmp_path):
 
 
 def test_launcher_does_not_clobber_subscription_auth_when_key_unset(tmp_path):
-    prefix = _write_prefix(AGENTS["codex-acp"].launch_cmd)
+    prefix = _without_agent(AGENTS["codex-acp"].launch_cmd)
     codex = tmp_path / ".codex"
     codex.mkdir(parents=True)
     (codex / "auth.json").write_text(

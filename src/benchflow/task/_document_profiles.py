@@ -47,10 +47,10 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "harbor-compatible": {
+    "task-toml-compatible": {
         "schema_version": "1.3",
         "metadata": {
-            "category": "harbor-compatible",
+            "category": "task-toml-compatible",
         },
         "sandbox": {
             "cpus": 1,
@@ -58,20 +58,20 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
         },
         "benchflow": {
             "compatibility": {
-                "harbor": {
+                "task-toml": {
                     "export": "supported",
                 },
             },
         },
     },
-    "reward-kit": {
+    "criteria-runner": {
         "benchflow": {
             "verifier": {
                 "spec": "verifier/verifier.md",
                 "rubric": "verifier/rubrics/verifier.md",
-                "entrypoint": "verifier/reward_kit/reward.py",
+                "entrypoint": "verifier/criteria_runner/reward.py",
                 "implementation": {
-                    "type": "reward-kit",
+                    "type": "criteria-runner",
                 },
             },
         },
@@ -129,8 +129,14 @@ _TASK_AUTHORING_PROFILES: dict[str, dict[str, Any]] = {
                     "capabilities": ["code-edit", "tests"],
                 },
                 "reviewer": {
+                    # The pinned claude-agent-acp (0.81.2, registry.py) refuses
+                    # a model its Claude Code does not list at
+                    # session/set_config_option (claude-sonnet-4-6, and with
+                    # Claude Code 2.1.316 claude-sonnet-5 too), so a task
+                    # generated from this profile got a reviewer that failed on
+                    # every run. Keep this id one the pinned adapter accepts.
                     "agent": "claude-agent-acp",
-                    "model": "claude-sonnet-4-6",
+                    "model": "claude-sonnet-5-5",
                     "capabilities": ["review"],
                 },
             },

@@ -185,20 +185,18 @@ class TestDryRunPipeline:
     @patch("benchflow.evaluation.Evaluation")
     async def test_evaluator_configures_job_correctly(self, MockJob, mock_skill):
         """Verify SkillEvaluator passes correct config to Evaluation."""
+        from benchflow.evaluation import EvaluationConfig, EvaluationResult
+
         mock_job_instance = MockJob.return_value
         mock_job_instance.run = AsyncMock(
-            return_value=type(
-                "R",
-                (),
-                {
-                    "passed": 1,
-                    "failed": 1,
-                    "errored": 0,
-                    "total": 2,
-                    "score": 0.5,
-                    "elapsed_sec": 10,
-                },
-            )()
+            return_value=EvaluationResult(
+                job_name="fake",
+                config=EvaluationConfig(),
+                passed=1,
+                failed=1,
+                total=2,
+                elapsed_sec=10,
+            )
         )
 
         evaluator = SkillEvaluator(mock_skill)

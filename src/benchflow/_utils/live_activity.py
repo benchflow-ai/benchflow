@@ -12,6 +12,7 @@ never to a render error.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any, NamedTuple
 
 
@@ -86,3 +87,30 @@ def activity(task_name: str) -> ActivitySnapshot | None:
         # Dashboard reads race a live rollout; degrading to "no activity" is
         # always preferable to perturbing the render.
         return None
+
+
+def utilization_sample() -> list[tuple[str, int | None]]:
+    """Each live rollout's lifecycle phase and its model requests in flight
+    (None when its proxy's count cannot be read here), for the utilization
+    watcher (benchflow._utils.utilization). Best-effort like the dashboard."""
+    with _lock:
+        rollouts = list(_live.values())
+    sample: list[tuple[str, int | None]] = []
+    for rollout in rollouts:
+        try:
+            phase = str(getattr(rollout, "_phase", "") or "")
+            reader = getattr(rollout, "model_requests_in_flight", None)
+            in_flight = reader() if callable(reader) else None
+        except Exception:
+            continue
+        sample.append((phase, in_flight if isinstance(in_flight, int) else None))
+    return sample
+
+
+def trial_dirs() -> list[Path]:
+    """The live rollouts' trial folders, for the sampling check
+    (benchflow._utils.utilization)."""
+    with _lock:
+        rollouts = list(_live.values())
+    dirs = [getattr(rollout, "_rollout_dir", None) for rollout in rollouts]
+    return [d for d in dirs if isinstance(d, Path)]

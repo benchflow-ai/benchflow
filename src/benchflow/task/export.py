@@ -9,7 +9,7 @@ import tempfile
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import tomli_w
 
@@ -23,7 +23,20 @@ from benchflow.task.package import TaskPackage
 from benchflow.task.paths import TaskPaths
 from benchflow.task.runtime_view import TaskRuntimeView
 
-CompatibilityTarget = Literal["harbor"]
+CompatibilityTarget = Literal["task-toml"]
+#: The layouts `bench tasks export --target` writes.
+EXPORT_TARGETS: tuple[CompatibilityTarget, ...] = ("task-toml",)
+
+
+def check_export_target(target: str) -> CompatibilityTarget:
+    """Return ``target`` when it is a layout this module writes; any other
+    value (a retired one too) is refused with the CLI's unknown-value error."""
+    if target not in EXPORT_TARGETS:
+        raise ValueError(
+            f"target {target!r} is an unknown value; choose one of: "
+            f"{', '.join(EXPORT_TARGETS)}"
+        )
+    return cast(CompatibilityTarget, target)
 
 
 @dataclass(frozen=True)
@@ -60,7 +73,7 @@ class CompatibilityExportReport:
 
 
 @dataclass(frozen=True)
-class HarborRoundTripMismatch:
+class TaskTomlRoundTripMismatch:
     """One failed comparison in split -> task.md -> split conformance."""
 
     path: str
@@ -68,8 +81,8 @@ class HarborRoundTripMismatch:
 
 
 @dataclass(frozen=True)
-class HarborRoundTripConformanceReport:
-    """Machine-readable Harbor split round-trip conformance result."""
+class TaskTomlRoundTripConformanceReport:
+    """Machine-readable task.toml split round-trip conformance result."""
 
     target: CompatibilityTarget
     status: Literal["lossless", "drift"]
@@ -80,30 +93,33 @@ class HarborRoundTripConformanceReport:
     solution_file_map_equal: bool
     tests_file_map_equal: bool
     restored_extension_paths: list[str]
-    mismatches: list[HarborRoundTripMismatch] = field(default_factory=list)
+    mismatches: list[TaskTomlRoundTripMismatch] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def build_harbor_roundtrip_conformance_report(
+def build_task_toml_roundtrip_conformance_report(
     task_dir: str | Path,
     *,
-    target: CompatibilityTarget = "harbor",
-) -> HarborRoundTripConformanceReport:
+    target: CompatibilityTarget = "task-toml",
+) -> TaskTomlRoundTripConformanceReport:
     """Compare a split task against its migrated task.md split export.
 
-    This is the first pure conformance check for Harbor parity. It does
-    not execute the task. Instead it proves that the supported compatibility
+    This is a pure conformance check of the task.toml layout. It does not
+    execute the task. Instead it proves that the supported compatibility
     surface survives the native authoring hop: canonical ``task.toml`` config,
     normalized ``instruction.md`` prompt, and file maps for environment,
     solution/oracle, and tests/verifier.
     """
 
+    check_export_target(target)
     source = Path(task_dir)
-    mismatches: list[HarborRoundTripMismatch] = []
+    mismatches: list[TaskTomlRoundTripMismatch] = []
 
-    with tempfile.TemporaryDirectory(prefix="benchflow-harbor-roundtrip-") as raw_tmp:
+    with tempfile.TemporaryDirectory(
+        prefix="benchflow-task-toml-roundtrip-"
+    ) as raw_tmp:
         tmp_root = Path(raw_tmp)
         migrated = tmp_root / "migrated"
         exported = tmp_root / "exported"
@@ -127,7 +143,7 @@ def build_harbor_roundtrip_conformance_report(
         )
         if not config_equal:
             mismatches.append(
-                HarborRoundTripMismatch(
+                TaskTomlRoundTripMismatch(
                     path="task.toml",
                     reason="canonical TaskConfig differs after migrate/export",
                 )
@@ -138,7 +154,7 @@ def build_harbor_roundtrip_conformance_report(
         )
         if not prompt_equal:
             mismatches.append(
-                HarborRoundTripMismatch(
+                TaskTomlRoundTripMismatch(
                     path="instruction.md",
                     reason="normalized prompt text differs after migrate/export",
                 )
@@ -149,7 +165,7 @@ def build_harbor_roundtrip_conformance_report(
         )
         if not environment_equal:
             mismatches.append(
-                HarborRoundTripMismatch(
+                TaskTomlRoundTripMismatch(
                     path="environment/",
                     reason="environment file hashes differ after migrate/export",
                 )
@@ -160,7 +176,7 @@ def build_harbor_roundtrip_conformance_report(
         )
         if not solution_equal:
             mismatches.append(
-                HarborRoundTripMismatch(
+                TaskTomlRoundTripMismatch(
                     path="solution/",
                     reason="solution file hashes differ after migrate/export",
                 )
@@ -169,7 +185,7 @@ def build_harbor_roundtrip_conformance_report(
         tests_equal = _file_map(source / "tests") == _file_map(exported / "tests")
         if not tests_equal:
             mismatches.append(
-                HarborRoundTripMismatch(
+                TaskTomlRoundTripMismatch(
                     path="tests/",
                     reason="tests file hashes differ after migrate/export",
                 )
@@ -177,7 +193,7 @@ def build_harbor_roundtrip_conformance_report(
 
         restored_extension_paths = list(export_report.restored_extension_paths)
 
-    return HarborRoundTripConformanceReport(
+    return TaskTomlRoundTripConformanceReport(
         target=target,
         status="drift" if mismatches else "lossless",
         source_task_dir=str(source),
@@ -194,11 +210,12 @@ def build_harbor_roundtrip_conformance_report(
 def build_compatibility_export_report(
     task_dir: str | Path,
     *,
-    target: CompatibilityTarget = "harbor",
+    target: CompatibilityTarget = "task-toml",
     output_dir: str | Path | None = None,
 ) -> CompatibilityExportReport:
     """Build a report without writing export files."""
 
+    check_export_target(target)
     package = TaskPackage.from_task_dir(task_dir)
     view = package.view
     losses = _detect_losses(package)
@@ -224,10 +241,10 @@ def export_task_to_split_layout(
     task_dir: str | Path,
     output_dir: str | Path,
     *,
-    target: CompatibilityTarget = "harbor",
+    target: CompatibilityTarget = "task-toml",
     overwrite: bool = False,
 ) -> CompatibilityExportReport:
-    """Materialize a Harbor-compatible split task layout.
+    """Materialize a task.toml split task layout.
 
     The export preserves supported split-layout surfaces:
     ``task.toml``, ``instruction.md``, ``environment/``, ``solution/``, and
@@ -235,6 +252,7 @@ def export_task_to_split_layout(
     ``compatibility/export-report.json``.
     """
 
+    check_export_target(target)
     package = TaskPackage.from_task_dir(task_dir)
     view = package.view
     dest = Path(output_dir)
@@ -365,7 +383,7 @@ def _load_document(view: TaskRuntimeView) -> TaskDocument | None:
 
 
 def _export_task_toml(
-    view: TaskRuntimeView, *, target: CompatibilityTarget = "harbor"
+    view: TaskRuntimeView, *, target: CompatibilityTarget = "task-toml"
 ) -> str:
     data = tomllib.loads(view.config.model_dump_toml())
     document = _load_document(view)
@@ -380,10 +398,11 @@ def _export_task_toml(
         # TaskDocument.
         extra = convert_legacy_environment_keys(copy.deepcopy(extra))
         data = merge_compat_extra(data, extra)
-    if target == "harbor":
-        # Harbor speaks 'environment' / 'environment_mode'; emit the foreign
-        # spelling on the way out — the exact inverse of the import-side
-        # conversion — so a stock Harbor consumer can read the export.
+    if target == "task-toml":
+        # The task.toml layout spells the sandbox 'environment' /
+        # 'environment_mode'; emit that spelling on the way out — the exact
+        # inverse of the import-side conversion — so a stock task.toml reader
+        # can read the export.
         data = convert_native_keys_to_legacy_environment(data)
     return tomli_w.dumps(data)
 

@@ -1,0 +1,24 @@
+# Mutant (a): classify_result calls a reward of 0.5 or more "passed"
+# (src/benchflow/_utils/scoring.py:429-430). result.json stores no outcome,
+# so no record changes; the arm's own reader (bench eval inspect --json,
+# whose trial document's score_outcome comes from classify_result) now
+# disagrees with the pinned reader. Cells: the smoke tasks whose reward is
+# in [0.5, 1) at BASE_T0 (the A/A run: reward-fraction 0.75 and reward-json
+# 0.5, oracle and nop alike, since their verifiers write the same file
+# whatever the agent did).
+#
+# Revised after the first round of the mutant run: GOALS also predicted a
+# summary_change on the pass count. At BASE_T0 summary.json's counts come
+# from count_audit_outcomes -> classify_audit_outcome
+# (src/benchflow/_utils/scoring.py:534-539, :591-621, called from
+# evaluation.py's score_summary_fields), not from classify_result, so
+# summary.json does not move; only EvaluationResult (the CLI's printed score)
+# and the readers use classify_result. The mutant run's record keeps the
+# original prediction beside the result.
+
+[[change]]
+id = "a-reader"
+target = "DT1"
+item = "mutant:a"
+cells = ["reward-fraction/oracle", "reward-fraction/nop", "reward-json/oracle", "reward-json/nop"]
+class = "reader_drift"

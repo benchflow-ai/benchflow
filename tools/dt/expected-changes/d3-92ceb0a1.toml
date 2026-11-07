@@ -1,0 +1,14 @@
+# D3 runs the shared sandbox-free capability check before resolving prompts.
+# S1 (refused tasks): metadata of the existing verifier.collect R401,
+# not a new refusal or score change. Select only for D3 with --expected.
+[[change]]
+id = "d3-refuse-before-recording-prompt"
+target = "D3"
+item = "S1: D3 shared preflight for snapshot-hook verifier.collect"
+mode = "before-after"
+merge = "92ceb0a1"
+cells = ["snapshot-hook/oracle", "snapshot-hook/nop"]
+class = "field_change"
+fields = ["counts.n_prompts", "prompt.n", "prompt.raw_sha256", "prompt.stripped_sha256"]
+exact_fields = true
+cite = "D3: sandbox-free shared gate before any sandbox; the D3 preflight patch and its three-round confirmation: prompt 1 -> 0 before the same R401, both agents, 3/3 paired rounds; S1 refused tasks."

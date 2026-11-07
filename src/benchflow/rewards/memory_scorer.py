@@ -1,6 +1,6 @@
 """Memory-space scoring — capability #1 (SkillsBench).
 
-The architecture's **Memory space** (``docs/architecture.md`` § "Evaluation —
+The architecture's **Memory space** (``docs/start/how-it-works.md`` § "Evaluation —
 the five spaces") asks one question: *did the agent update its memory / skills
 correctly?* — and answers it by **diffing the store**. Skills *are* memory
 (Han, ``architecture.md`` § "skill 是属于 memory").

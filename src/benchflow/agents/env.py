@@ -24,7 +24,18 @@ from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
 from benchflow.agents.codex_config import apply_codex_provider_config
-from benchflow.agents.registry import AGENTS
+from benchflow.agents.login_dirs import login_display, login_path
+from benchflow.agents.muse_config import validate_muse_model
+from benchflow.agents.registry import (
+    AGENTS,
+    infer_env_key_for_model,
+    is_vertex_model,
+    routed_model,
+)
+from benchflow.errors import MissingCredentialError
+
+# Claude Code's output cap, which BenchFlow sets for every agent unless the operator does (the run card names it).
+CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT = "128000"
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +56,23 @@ _BEDROCK_PROVIDER_PLACEHOLDER_API_KEY = "benchflow-litellm"
 _CODEX_API_KEY_ENV = "CODEX_API_KEY"
 _CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN"
 _CODEX_AUTH_JSON_ENV = "CODEX_AUTH_JSON"
+_MUSE_AGENT = "muse-code"
+_MUSE_AUTH_JSON_ENV = "MUSE_AUTH_JSON"
+# The shim's own settings (muse_acp_shim.QUOTA_WAIT_ENV, QUOTA_SLACK_ENV): no credentials.
+_MUSE_SETTINGS_ENV = ("BENCHFLOW_MUSE_QUOTA_WAIT_SEC", "BENCHFLOW_MUSE_QUOTA_SLACK_SEC")
+# muse_acp_shim.PROMPT_BUDGET_ENV: set by the rollout, never inherited from the host.
+_MUSE_PROMPT_BUDGET_ENV = "BENCHFLOW_MUSE_PROMPT_BUDGET_SEC"
 _CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 _SUBSCRIPTION_AUTH_MARKER = "_BENCHFLOW_SUBSCRIPTION_AUTH"
+# The run's credential policy (launch_env.CredentialPolicy), by variable names
+# only, recorded at the end of resolution. Every placement reads it.
+CREDENTIAL_POLICY_MARKER = "_BENCHFLOW_CREDENTIAL_POLICY"
+# A BenchFlow alias and the name its CLI reads.
+_LOGIN_ALIASES = {
+    "CLAUDE_OAUTH_TOKEN": "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_API_KEY": "OPENAI_API_KEY",
+}
 _CUSTOM_OPENAI_ENDPOINT_KEYS = frozenset(
     {"BENCHFLOW_PROVIDER_BASE_URL", "OPENAI_BASE_URL"}
 )
@@ -140,6 +165,40 @@ def _unsupported_provider_protocol_message(
     )
 
 
+def unroutable_agent_model(agent: str, model: str | None) -> str | None:
+    """Why no provider route serves ``agent`` with ``model``, or None.
+
+    The protocol check ``resolve_provider_env`` makes when a trial starts,
+    made before a job exists so the pair is refused up front, as an unknown
+    agent name is (REPORT B11: the refusal came inside the job, as an errored
+    trial). Only a model of a registered provider is checked, and only
+    against a registered agent (or its alias) that declares its protocol.
+    An agent that routes its own model calls has no route here to check.
+    """
+    model = routed_model(agent, model)
+    if not model:
+        return None
+    from benchflow.agents.providers import find_provider, find_provider_for_bare_model
+    from benchflow.agents.registry import AGENT_ALIASES
+
+    name = AGENT_ALIASES.get(agent, agent)
+    agent_cfg = AGENTS.get(name)
+    agent_protocol = agent_cfg.api_protocol if agent_cfg else ""
+    provider = find_provider(model) or find_provider_for_bare_model(model)
+    if provider is None or _provider_supports_agent_protocol(
+        provider[1], agent_protocol
+    ):
+        return None
+    provider_name, provider_cfg = provider
+    return _unsupported_provider_protocol_message(
+        agent=name,
+        agent_protocol=agent_protocol,
+        provider_name=provider_name,
+        model=model,
+        supported_protocols=sorted(provider_cfg.all_endpoints),
+    )
+
+
 def _normalize_openhands_model(model: str) -> str:
     """Translate benchflow model IDs to OpenHands/LiteLLM model IDs.
 
@@ -151,7 +210,6 @@ def _normalize_openhands_model(model: str) -> str:
         find_provider_for_bare_model,
         strip_provider_prefix,
     )
-    from benchflow.agents.registry import is_vertex_model
 
     if model.startswith(("gemini/", "vertex_ai/", "openhands/")):
         return model
@@ -175,16 +233,14 @@ def _normalize_openhands_model(model: str) -> str:
     return stripped
 
 
-def auto_inherit_env(
-    agent_env: dict[str, str],
-    *,
-    source_env: dict[str, str] | None = None,
-) -> None:
-    """Copy well-known agent env vars from a source mapping into agent_env."""
+def inheritable_env_names() -> frozenset[str]:
+    """Every name auto_inherit_env copies from the host or .env.
+
+    launch_env treats each of them as a credential unless it names it as a
+    runtime setting, so the two lists cannot drift apart.
+    """
     from benchflow.agents.providers import PROVIDERS
 
-    source = source_env if source_env is not None else os.environ
-    explicit_keys = set(agent_env)
     keys = {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -221,7 +277,18 @@ def auto_inherit_env(
             keys.add(cfg.auth_env)
         for env_var in cfg.url_params.values():
             keys.add(env_var)
-    for key in keys:
+    return frozenset(keys)
+
+
+def auto_inherit_env(
+    agent_env: dict[str, str],
+    *,
+    source_env: dict[str, str] | None = None,
+) -> None:
+    """Copy well-known agent env vars from a source mapping into agent_env."""
+    source = source_env if source_env is not None else os.environ
+    explicit_keys = set(agent_env)
+    for key in inheritable_env_names():
         value = source.get(key)
         # An exported-but-blank var ("export X=" or "export X=' '") is
         # effectively unset; copying it can shadow a real value resolved
@@ -282,7 +349,9 @@ def _is_codex_native_openai_context(
 
     result = find_provider(model)
     if result is None:
-        return True
+        # An unregistered provider prefix (or another bare model family)
+        # does not become OpenAI merely because a Codex host login exists.
+        return "/" not in model and infer_env_key_for_model(model) == "OPENAI_API_KEY"
     name, cfg = result
     return name == "openai" and cfg.base_url == _CANONICAL_OPENAI_URL
 
@@ -315,6 +384,19 @@ def _can_use_codex_subscription_auth(
     ) and not _has_custom_openai_endpoint(agent_env)
 
 
+def _has_provider_api_key(required_key: str | None, agent_env: dict[str, str]) -> bool:
+    """Choose API-key auth before either native routing or host-file fallback.
+
+    The generic key has not necessarily been mapped to the agent's variable
+    yet. Both decisions must see it, including calls made by plan validation
+    before provider resolution. Codex's alias can likewise arrive unmapped.
+    """
+    keys = ("BENCHFLOW_PROVIDER_API_KEY", required_key)
+    if required_key == "OPENAI_API_KEY":
+        keys += (_CODEX_API_KEY_ENV,)
+    return any(agent_env.get(key) for key in keys if key is not None)
+
+
 def _can_use_subscription_auth(
     agent: str,
     model: str | None,
@@ -322,6 +404,15 @@ def _can_use_subscription_auth(
     agent_env: dict[str, str],
 ) -> bool:
     """Return True when host subscription files can satisfy provider auth."""
+    # A supplied credential selects its account; discovering another host
+    # login would also authorize uploading that account's complete login.
+    # Use the same family/precedence table as login_label, on every fallback
+    # path (native, provider and no-model), including inline Codex auth.
+    keys = _LOGIN_KEYS_BY_FAMILY.get(required_key or "", ())
+    if _has_provider_api_key(required_key, agent_env) or any(
+        agent_env.get(key) for key in keys
+    ):
+        return False
     if agent == "codex-acp" and required_key == "OPENAI_API_KEY":
         return _can_use_codex_subscription_auth(
             agent,
@@ -380,6 +471,56 @@ def _has_codex_auth_json_auth(
     ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
 
 
+# Agents that call Vertex themselves with the host's ADC login:
+# the Gemini CLI's own Vertex backend. Every other agent on a Vertex model goes
+# through the proxy, which keeps the ADC in its own storage.
+_VERTEX_NATIVE_AGENTS = frozenset({"gemini"})
+VERTEX_ADC_ENV = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+
+
+def uses_native_vertex_login(agent: str, model: str | None) -> bool:
+    """True for the one native Vertex route: Gemini CLI on a google-vertex/ model."""
+    return agent in _VERTEX_NATIVE_AGENTS and bool(
+        model and model.lower().startswith("google-vertex/")
+    )
+
+
+def uses_direct_anthropic_endpoint(
+    agent: str, model: str | None, agent_env: dict[str, str]
+) -> bool:
+    """An explicit Claude Code token/URL pair for a non-Claude model.
+
+    Provider-generated environments and proxy reconnects retain their route.
+    This is not fallback on a proxy error or a subscription login.
+    """
+    cfg = AGENTS.get(agent)
+    # An agent config without a subscription login (a custom one) has no
+    # direct route.
+    login = getattr(cfg, "subscription_auth", None)
+    if (
+        cfg is None
+        or login is None
+        or login.replaces_env != "ANTHROPIC_API_KEY"
+        or not model
+        or infer_env_key_for_model(model) == "ANTHROPIC_API_KEY"
+        or not agent_env.get("ANTHROPIC_AUTH_TOKEN")
+        or agent_env.get("ANTHROPIC_API_KEY")
+        or agent_env.get("BENCHFLOW_PROVIDER_NAME")
+        or any(agent_env.get(key) for key in _LITELLM_RUNTIME_MARKER_KEYS)
+    ):
+        return False
+    url = urlparse(agent_env.get("ANTHROPIC_BASE_URL") or "")
+    host = (url.hostname or "").lower()
+    return bool(
+        url.scheme in {"http", "https"}
+        and host
+        and host != "anthropic.com"
+        and not host.endswith(".anthropic.com")
+        and not url.username
+        and not url.password
+    )
+
+
 def uses_native_subscription_auth(
     agent: str,
     model: str | None,
@@ -387,7 +528,7 @@ def uses_native_subscription_auth(
 ) -> bool:
     """Return True when an agent should use CLI/subscription auth directly.
 
-    This is the Harbor-style split point: API-key runs can be routed through
+    This is the split point: API-key runs can be routed through
     LiteLLM, while subscription-auth runs stay on the native Codex/Claude ACP
     path and report usage from the agent protocol response.
     """
@@ -396,8 +537,17 @@ def uses_native_subscription_auth(
     ):
         return False
 
+    if uses_native_vertex_login(agent, model):
+        return True
+
+    if agent == _MUSE_AGENT:
+        # Muse Code's subscription works only through the CLI's own login
+        # (Meta's terms), so a login run talks to Meta directly and reports
+        # usage over ACP; there is no API key to put behind the proxy.
+        return bool(agent_env.get(_MUSE_AUTH_JSON_ENV))
+
     if agent == "codex-acp":
-        if agent_env.get("OPENAI_API_KEY"):
+        if _has_provider_api_key("OPENAI_API_KEY", agent_env):
             return False
         required_key = "OPENAI_API_KEY"
         if not _can_use_codex_subscription_auth(
@@ -423,13 +573,10 @@ def uses_native_subscription_auth(
         and claude_cfg.subscription_auth is not None
         and claude_cfg.subscription_auth.replaces_env == "ANTHROPIC_API_KEY"
     ):
-        if agent_env.get("ANTHROPIC_API_KEY"):
+        if _has_provider_api_key("ANTHROPIC_API_KEY", agent_env):
             return False
-        if model is not None:
-            from benchflow.agents.registry import infer_env_key_for_model
-
-            if infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
-                return False
+        if model is not None and infer_env_key_for_model(model) != "ANTHROPIC_API_KEY":
+            return False
         return (
             bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
             or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
@@ -441,24 +588,159 @@ def uses_native_subscription_auth(
     return False
 
 
+# The next step for a missing credential, by the variable the model needs.
+_LOGIN_HINTS = {
+    "ANTHROPIC_API_KEY": (
+        "`claude login` works too (it writes ~/.claude/.credentials.json); "
+        "`bench doctor` lists the logins it finds"
+    ),
+    "OPENAI_API_KEY": (
+        "for a ChatGPT plan run `codex login` (it writes ~/.codex/auth.json); "
+        "`bench doctor` lists the logins it finds"
+    ),
+}
+_LOGIN_LABEL_ENV = "BENCHFLOW_LOGIN_LABEL"
+# The credentials each family reads, in the order its CLI prefers them (an
+# API key wins over a subscription token in Claude Code and in codex-acp).
+_LOGIN_KEYS_BY_FAMILY: dict[str, tuple[str, ...]] = {
+    "ANTHROPIC_API_KEY": (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        _CLAUDE_CODE_OAUTH_TOKEN_ENV,
+        _CLAUDE_OAUTH_TOKEN_ENV,
+    ),
+    "OPENAI_API_KEY": (
+        "OPENAI_API_KEY",
+        _CODEX_API_KEY_ENV,
+        _CODEX_ACCESS_TOKEN_ENV,
+        _CODEX_AUTH_JSON_ENV,
+    ),
+}
+
+
+def _login_family(agent: str, model: str | None) -> str | None:
+    subscription = getattr(AGENTS.get(agent), "subscription_auth", None)
+    if subscription is not None:
+        return subscription.replaces_env
+    return infer_env_key_for_model(model) if model else None
+
+
+def _select_login(
+    candidates: list[str], env: dict[str, str], explicit_keys: set[str]
+) -> str | None:
+    """One login: an explicitly supplied one first, then the family's order."""
+    present = [key for key in dict.fromkeys(candidates) if env.get(key)]
+    explicit = [key for key in present if key in explicit_keys]
+    return (explicit or present or [None])[0]
+
+
+def _bridge_outranked(
+    required_key: str | None,
+    bridge_key: str,
+    env: dict[str, str],
+    explicit_keys: set[str],
+) -> bool:
+    """True when another login of the same family is the selected one."""
+    family = list(_LOGIN_KEYS_BY_FAMILY.get(required_key or "", ()))
+    if bridge_key not in family or bridge_key == required_key:
+        return False
+    selected = _select_login(family, env, explicit_keys)
+    return selected is not None and selected != bridge_key
+
+
+def _record_credential_policy(
+    agent: str,
+    model: str | None,
+    env: dict[str, str],
+    explicit_keys: set[str],
+) -> None:
+    """Compute the run's credential table once and record it by names."""
+    from benchflow.agents.launch_env import DIRECT, NATIVE, compute_credential_policy
+
+    policy = compute_credential_policy(agent, model, env, explicit_keys)
+    selected = policy.login[0] if policy.login else None
+    canonical = _LOGIN_ALIASES.get(selected or "")
+    # Proxy routes already chose their key in provider resolution; only a
+    # login the agent itself presents needs its CLI's variable pointed at it.
+    if selected and canonical and policy.route in (NATIVE, DIRECT):
+        env[canonical] = env[selected]
+    if policy.login and policy.route in (NATIVE, DIRECT):
+        # A resolved environment may be resolved again when a role connects.
+        # Retaining an inherited competing login would make it look explicit
+        # on that pass and could silently select a different account. Empty
+        # guards suppress re-inheritance without trusting a prior policy marker.
+        for key in _LOGIN_KEYS_BY_FAMILY.get(_login_family(agent, model) or "", ()):
+            if key not in policy.login and env.get(key):
+                env[key] = ""
+    env[CREDENTIAL_POLICY_MARKER] = policy.to_json()
+
+
+def _recorded_login(env: dict[str, str]) -> list[str]:
+    try:
+        data = json.loads(env.get(CREDENTIAL_POLICY_MARKER) or "{}")
+    except json.JSONDecodeError:
+        return []
+    login = data.get("login") if isinstance(data, dict) else None
+    return [n for n in login if isinstance(n, str)] if isinstance(login, list) else []
+
+
+def login_label(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    explicit_env: dict[str, str] | None = None,
+) -> str | None:
+    """Which login the agent runs on, as a label: never a credential's value.
+
+    ``BENCHFLOW_LOGIN_LABEL`` in the agent's environment (for example the
+    name of a pooled account) wins. Otherwise the variable the credential is
+    in and where it came from (``CLAUDE_CODE_OAUTH_TOKEN (agent_env)`` for one
+    passed with ``--agent-env``/``agent_env``, ``(environment)`` for one
+    inherited from the shell or ``.env``), or the host login file BenchFlow
+    copied in (``host login (~/.claude/.credentials.json)``).
+    """
+    custom = " ".join((agent_env.get(_LOGIN_LABEL_ENV) or "").split())
+    if custom:
+        return custom[:80]
+    explicit_env = explicit_env or {}
+    cfg = AGENTS.get(agent)
+    family = (
+        cfg.subscription_auth.replaces_env
+        if cfg is not None and cfg.subscription_auth is not None
+        else (infer_env_key_for_model(model) if model else None)
+    )
+    keys = _LOGIN_KEYS_BY_FAMILY.get(family or "", (family,) if family else ())
+    recorded = _recorded_login(agent_env)
+    if recorded and recorded[0] in keys:
+        keys = (recorded[0],)
+    for key in keys:
+        if agent_env.get(key):
+            where = "agent_env" if explicit_env.get(key) else "environment"
+            return f"{key} ({where})"
+    if agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1":
+        if cfg is not None and cfg.subscription_auth is not None:
+            return f"host login ({login_display(cfg.subscription_auth.detect_file)})"
+        return "host login"
+    return None
+
+
 def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
     """Inject ADC credentials and defaults for Vertex AI models."""
-    from benchflow.agents.registry import is_vertex_model
-
     if not is_vertex_model(model):
         return
     adc_path = Path.home() / ".config/gcloud/application_default_credentials.json"
     if not adc_path.exists():
-        raise ValueError(
-            f"Vertex AI model {model!r} requires ADC credentials. "
-            f"Run: gcloud auth application-default login"
+        raise MissingCredentialError(
+            f"Vertex AI model {model!r} requires ADC credentials.",
+            hint="gcloud auth application-default login",
         )
     agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
     agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     if "GOOGLE_CLOUD_PROJECT" not in agent_env:
-        raise ValueError(
-            f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}. "
-            f"Export it or pass via --agent-env GOOGLE_CLOUD_PROJECT=<project>"
+        raise MissingCredentialError(
+            f"GOOGLE_CLOUD_PROJECT required for Vertex AI model {model!r}.",
+            hint="export GOOGLE_CLOUD_PROJECT=<project>, or pass "
+            "--agent-env GOOGLE_CLOUD_PROJECT=<project>",
         )
 
 
@@ -469,6 +751,7 @@ def resolve_provider_env(
 ) -> None:
     """Detect provider for model, inject BENCHFLOW_PROVIDER_* and env_mapping."""
     from benchflow.agents.providers import (
+        REGISTRY_BASE_PROVIDERS,
         ZAI_CODING_REGISTRY_BASE_ENV,
         find_provider,
         find_provider_for_bare_model,
@@ -484,7 +767,7 @@ def resolve_provider_env(
     # Resolve bare family ids (e.g. "deepseek-v4-pro") too, not just explicit
     # "provider/" prefixes — otherwise the provider env (NAME/BASE_URL/API_KEY)
     # is never emitted and harnesses that rely on it misroute (openhands' litellm
-    # saw no provider; openclaw defaulted to anthropic/). Mirrors acp/runtime.py.
+    # saw no provider and defaulted incorrectly). Mirrors acp/runtime.py.
     _prov = find_provider(model) or find_provider_for_bare_model(model)
     if _prov:
         _prov_name, _prov_cfg = _prov
@@ -516,7 +799,7 @@ def resolve_provider_env(
                 "BENCHFLOW_PROVIDER_BASE_URL",
                 base_url,
             )
-            if _prov_name == "zai-coding" and base_url:
+            if _prov_name in REGISTRY_BASE_PROVIDERS and base_url:
                 agent_env[ZAI_CODING_REGISTRY_BASE_ENV] = "1"
         agent_env.setdefault(
             "BENCHFLOW_PROVIDER_PROTOCOL",
@@ -539,8 +822,6 @@ def resolve_provider_env(
         # No registered provider prefix — bridge the model's well-known API key
         # to BENCHFLOW_PROVIDER_API_KEY so env_mapping can translate it to
         # agent-native vars (e.g. GEMINI_API_KEY → LLM_API_KEY for openhands).
-        from benchflow.agents.registry import infer_env_key_for_model
-
         _inferred = infer_env_key_for_model(model)
         if _inferred and _inferred in agent_env:
             agent_env.setdefault("BENCHFLOW_PROVIDER_API_KEY", agent_env[_inferred])
@@ -561,7 +842,7 @@ def check_subscription_auth(agent: str, required_key: str) -> bool:
     sa = agent_cfg.subscription_auth
     if sa.replaces_env != required_key:
         return False
-    return Path(sa.detect_file).expanduser().is_file()
+    return login_path(sa.detect_file).is_file()
 
 
 def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
@@ -569,14 +850,16 @@ def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
     token = agent_env.get("AWS_BEARER_TOKEN_BEDROCK")
     region = agent_env.get("AWS_REGION") or agent_env.get("AWS_DEFAULT_REGION")
     if not token:
-        raise ValueError(
+        raise MissingCredentialError(
             f"AWS_BEARER_TOKEN_BEDROCK required for Bedrock model {model!r} but not set. "
-            "Export it or pass via agent_env."
+            "Export it in your shell or put it in a .env file.",
+            hint="export AWS_BEARER_TOKEN_BEDROCK=... AWS_REGION=us-west-2",
         )
     if not region:
-        raise ValueError(
+        raise MissingCredentialError(
             f"AWS_REGION or AWS_DEFAULT_REGION required for Bedrock model {model!r} "
-            "but not set. Export one of them or pass via agent_env."
+            "but not set. Export one of them in your shell or put it in a .env file.",
+            hint="export AWS_REGION=us-west-2",
         )
     agent_env.setdefault("AWS_REGION", region)
     agent_env.setdefault("AWS_DEFAULT_REGION", region)
@@ -618,10 +901,19 @@ def _configure_codex_custom_provider(
     if not base_url or not provider_model:
         return
 
+    from benchflow.providers.litellm_config import strip_provider_prefix
+
+    # Codex resolves model metadata (tool mode, apply_patch tool type,
+    # multi-agent version) by model slug. The proxy alias in
+    # BENCHFLOW_PROVIDER_MODEL (``benchflow-azure-foundry-openai-gpt-5.6-luna``)
+    # is unknown to it: Codex warns "Model metadata for `...` not found.
+    # Defaulting to fallback metadata" and offers a reduced tool surface (no
+    # native apply_patch, no code mode, no subagents; #1145). The proxy serves
+    # the bare slug next to the alias, so that is the id Codex gets.
     apply_codex_provider_config(
         agent_env,
         base_url=base_url,
-        model=provider_model,
+        model=strip_provider_prefix(model),
         provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible"),
         strict=True,
     )
@@ -638,7 +930,6 @@ def _drop_inherited_generic_provider_overrides(
         return
 
     from benchflow.agents.providers import find_provider
-    from benchflow.agents.registry import infer_env_key_for_model
 
     provider = find_provider(model)
     if provider is None:
@@ -675,35 +966,156 @@ def _bridge_explicit_openhands_provider_env(
         agent_env["BENCHFLOW_PROVIDER_API_KEY"] = agent_env["LLM_API_KEY"]
 
 
+def _inherit_the_muse_login(agent_env: dict[str, str]) -> None:
+    """Copy the Muse login and the shim's settings from .env, then the host.
+
+    Only a muse-code run reads them: auto_inherit_env hands every agent the
+    names it lists, so a host that exports MUSE_AUTH_JSON for Muse would
+    otherwise put Meta's subscription login into every other agent's sandbox
+    (an OpenCode or Claude run on the same machine). Explicit agent env wins,
+    as in auto_inherit_env, and a blank value counts as unset.
+    """
+    for source in (load_dotenv_env(), os.environ):
+        for key in (_MUSE_AUTH_JSON_ENV, *_MUSE_SETTINGS_ENV):
+            value = source.get(key)
+            if value and value.strip():
+                agent_env.setdefault(key, value)
+
+
+def _keep_only_the_muse_login(
+    agent_env: dict[str, str],
+    explicit_agent_env_keys: set[str],
+    *,
+    require_login: bool = True,
+) -> None:
+    """Drop every inherited credential but the Muse login; refuse a run without one.
+
+    Muse Code talks to Meta with its own login and needs no other key. Anything
+    else auto-inherited from the host (another provider's key, a reviewer's
+    Azure credentials in the same process) would only reach a third party's
+    agent sandbox. Explicit ``agent_env`` entries are the caller's choice and
+    stay, and so do the shim's own settings (the quota wait), which hold no
+    credential.
+    """
+    keep = {_MUSE_AUTH_JSON_ENV, *_MUSE_SETTINGS_ENV}
+    for key in list(agent_env):
+        if key not in explicit_agent_env_keys and key not in keep:
+            del agent_env[key]
+    if require_login and not agent_env.get(_MUSE_AUTH_JSON_ENV):
+        # A MissingCredentialError, not a bare ValueError: check_credentials
+        # (the bench eval run preflight) re-raises only this type, so any other
+        # error let the job start and every trial fail at setup instead.
+        raise MissingCredentialError(
+            "muse-code runs on a Muse Code subscription login: set MUSE_AUTH_JSON to "
+            "the contents of the auth.json that `TBH_CREDENTIAL_BACKEND=file muse "
+            "login` writes. A META_API_KEY (pay-as-you-go) run has no BenchFlow proxy "
+            "route, and BenchFlow never sends API-key traffic around the proxy.",
+            hint="run `TBH_CREDENTIAL_BACKEND=file muse login`, then "
+            '`export MUSE_AUTH_JSON="$(cat ~/.config/muse/auth.json)"` '
+            "(or put MUSE_AUTH_JSON in .env)",
+        )
+
+
+def with_prompt_budget(
+    agent: str, agent_env: dict[str, str], timeout_sec: float | None
+) -> dict[str, str]:
+    """``agent_env`` plus the prompt's wall-clock budget, for the agents that read it.
+
+    Only the Muse shim does: it holds a turn open while a spent subscription
+    window resets, and must not wait past BenchFlow's own prompt timeout,
+    where the trial would be scored as an agent timeout on a partial
+    workspace and the turn's usage lost. Past the budget it fails with the
+    usage-limit error instead. Every other agent gets ``agent_env`` unchanged.
+    """
+    if agent != _MUSE_AGENT or not timeout_sec or timeout_sec <= 0:
+        return agent_env
+    return {**agent_env, _MUSE_PROMPT_BUDGET_ENV: str(int(timeout_sec))}
+
+
+def inherit_agent_auth_env(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Inherit and normalize auth inputs without requiring a credential.
+
+    Plan inspection and execution must choose the same native/proxy route,
+    including agent-specific aliases. Provider validation belongs to execution.
+    """
+    model = routed_model(agent, model)
+    inherited = dict(agent_env or {})
+    auto_inherit_env(inherited, source_env=load_dotenv_env())
+    auto_inherit_env(inherited)
+    _normalize_codex_auth_env(agent, model, inherited)
+    if agent == _MUSE_AGENT:
+        _inherit_the_muse_login(inherited)
+        _keep_only_the_muse_login(inherited, set(agent_env or {}), require_login=False)
+    elif model and agent not in ("oracle", "nop"):
+        explicit_keys = set(agent_env or {})
+        _drop_inherited_generic_provider_overrides(
+            inherited, model=model, explicit_agent_env_keys=explicit_keys
+        )
+        if agent == "openhands":
+            _bridge_explicit_openhands_provider_env(inherited, explicit_keys)
+    return inherited
+
+
 def resolve_agent_env(
     agent: str,
     model: str | None,
     agent_env: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Resolve agent environment from explicit overrides, then .env defaults."""
-    agent_env = dict(agent_env or {})
+    """Resolve agent environment from explicit overrides, then .env defaults.
+
+    An agent that routes its own model calls resolves as with no model: its
+    label selects no provider, and it gets only its own declared credentials.
+    """
+    model = routed_model(agent, model)
+    if agent == _MUSE_AGENT:
+        validate_muse_model(model)
+    from benchflow.agents.visible_runtime import host_env_aliases
+
+    agent_env = host_env_aliases(agent_env or {})
     explicit_agent_env_keys = set(agent_env)
-    # Inherit from .env file first, then from os.environ as fallback.
-    # Both sources use setdefault so explicit agent_env keys take priority.
-    auto_inherit_env(agent_env, source_env=load_dotenv_env())
-    auto_inherit_env(agent_env)
-    _normalize_codex_auth_env(agent, model, agent_env)
+    agent_env = inherit_agent_auth_env(agent, model, agent_env)
+    # This is a decision for this resolution, never an input carried from a
+    # previous role/account. Only the host-file fallback below may set it.
+    agent_env.pop(_SUBSCRIPTION_AUTH_MARKER, None)
+    agent_env.pop(CREDENTIAL_POLICY_MARKER, None)
+    if agent == _MUSE_AGENT:
+        _keep_only_the_muse_login(agent_env, explicit_agent_env_keys)
+        # A supported Muse subscription never enters the provider pipeline:
+        # in particular, no host Vertex ADC is discovered or injected.
+        _record_credential_policy(agent, model, agent_env, explicit_agent_env_keys)
+        return agent_env
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
+    if (
+        not model
+        and agent_cfg
+        and agent_cfg.subscription_auth
+        and agent_env.get("BENCHFLOW_PROVIDER_API_KEY")
+    ):
+        # Without a model there is no provider mapping. Do not silently leave
+        # the supplied key unused or select a different account's host login.
+        raise MissingCredentialError(
+            "A model is required with BENCHFLOW_PROVIDER_API_KEY.",
+            hint="pass --model/model so the supplied provider key can be routed",
+        )
     # Oracle runs solve.sh and never calls an LLM — model env vars and
     # API-key validation are skipped even if a caller forwards a model.
-    if model and agent != "oracle":
+    from benchflow.agents.registry import is_scripted_agent
+
+    # Native authentication consumes the shared normalized inputs directly.
+    # Provider resolution would synthesize a conflicting endpoint or turn a
+    # native token alias into a generic API key after check accepted the plan.
+    if (
+        model
+        and not is_scripted_agent(agent)
+        and not uses_native_subscription_auth(agent, model, agent_env)
+        and not uses_direct_anthropic_endpoint(agent, model, agent_env)
+    ):
         inject_vertex_credentials(agent_env, model)
-        _drop_inherited_generic_provider_overrides(
-            agent_env,
-            model=model,
-            explicit_agent_env_keys=explicit_agent_env_keys,
-        )
-        if agent == "openhands":
-            _bridge_explicit_openhands_provider_env(
-                agent_env,
-                explicit_agent_env_keys,
-            )
         resolve_provider_env(agent_env, model, agent)
         from benchflow.agents.providers import find_provider
 
@@ -720,8 +1132,6 @@ def resolve_agent_env(
                     # explicit agent_env overrides supplied by the caller.
                     agent_env[dst] = agent_env[src]
         # Validate required API key for the chosen model
-        from benchflow.agents.registry import infer_env_key_for_model
-
         required_key = infer_env_key_for_model(model)
         mapped_provider_key = (
             agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_API_KEY")
@@ -730,7 +1140,20 @@ def resolve_agent_env(
         )
         has_agent_native_bridge_key = bool(
             mapped_provider_key
+            and not (
+                "BENCHFLOW_PROVIDER_API_KEY" in explicit_agent_env_keys
+                and pre_provider_env.get("BENCHFLOW_PROVIDER_API_KEY")
+            )
             and pre_provider_env.get(mapped_provider_key)
+            # An agent-native bridge never replaces a higher-ranked login of
+            # the same family (an explicit ANTHROPIC_API_KEY over an inherited
+            # ANTHROPIC_AUTH_TOKEN): the proxy serves the selected one.
+            and not _bridge_outranked(
+                required_key,
+                mapped_provider_key,
+                pre_provider_env,
+                explicit_agent_env_keys,
+            )
             and (
                 _shares_auth_context(required_key, mapped_provider_key)
                 or (
@@ -757,7 +1180,7 @@ def resolve_agent_env(
             )
         )
         has_oauth = any(
-            key in agent_env and _shares_auth_context(required_key, key)
+            agent_env.get(key) and _shares_auth_context(required_key, key)
             for key in (
                 _CLAUDE_CODE_OAUTH_TOKEN_ENV,
                 _CLAUDE_OAUTH_TOKEN_ENV,
@@ -778,7 +1201,7 @@ def resolve_agent_env(
         )
         if (
             required_key
-            and required_key not in agent_env
+            and not agent_env.get(required_key)
             and not has_oauth
             and not has_agent_native_bridge_key
             and not has_explicit_generic_provider_key
@@ -797,18 +1220,42 @@ def resolve_agent_env(
                     required_key,
                 )
             else:
-                raise ValueError(
-                    f"{required_key} required for model {model!r} but not set. "
-                    "Pass it explicitly (for example via --agent-env/agent_env) "
-                    "or define it in .env."
+                # Claude leads with its login, which needs no key (the
+                # README's step 3; dogfood p1-13).
+                lead = (
+                    f"No Claude login found for model {model!r}: run `claude "
+                    "setup-token` and export CLAUDE_CODE_OAUTH_TOKEN, or set "
+                    "ANTHROPIC_API_KEY. "
+                    if required_key == "ANTHROPIC_API_KEY"
+                    else f"{required_key} required for model {model!r} but not set. "
+                )
+                raise MissingCredentialError(
+                    lead + "Export it in your shell or put it in a .env file (a "
+                    "key typed into a command stays in your shell history).",
+                    hint=_LOGIN_HINTS.get(required_key),
                 )
         _configure_codex_custom_provider(agent, model, agent_env)
     else:
-        # No model specified — still check subscription auth for required env vars
-        if agent_cfg:
+        # Native login or no model: retain host-login discovery without entering
+        # the provider pipeline or translating native credentials into API keys.
+        if model and uses_native_vertex_login(agent, model):
+            # The Gemini CLI's Vertex login is the host ADC (and its project
+            # and location); no other host login of the agent is discovered.
+            inject_vertex_credentials(agent_env, model)
+        elif agent_cfg:
+            # Native authentication still uses the caller's endpoint. Map only
+            # the URL: provider resolution would also synthesize an API key and
+            # change the selected native account. An explicit agent URL wins.
+            native_url_key = agent_cfg.env_mapping.get("BENCHFLOW_PROVIDER_BASE_URL")
+            if (
+                native_url_key
+                and agent_env.get("BENCHFLOW_PROVIDER_BASE_URL")
+                and native_url_key not in explicit_agent_env_keys
+            ):
+                agent_env[native_url_key] = agent_env["BENCHFLOW_PROVIDER_BASE_URL"]
             for req_key in agent_cfg.requires_env:
                 if (
-                    req_key not in agent_env
+                    not agent_env.get(req_key)
                     and not _has_codex_access_token_auth(
                         agent,
                         model,
@@ -830,7 +1277,10 @@ def resolve_agent_env(
                         req_key,
                     )
     # Increase output token limit to avoid truncation errors
-    agent_env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000")
+    agent_env.setdefault(
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS", CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT
+    )
     # Disable telemetry/non-essential traffic in container
     agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+    _record_credential_policy(agent, model, agent_env, explicit_agent_env_keys)
     return agent_env

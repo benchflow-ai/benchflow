@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._diagnostics import render_text
+from benchflow._utils.result_paths import iter_task_result_paths
+from benchflow._utils.scoring import below_zero_caveat, extract_reward
 from benchflow._utils.task_authoring import task_digest
-from benchflow._utils.text import truncate_end
+from benchflow.publish._snapshot import staged_folder
 from benchflow.task.discovery import is_task_dir, resolve_task_collection_root
 from benchflow.trajectories.export_prime_sft import (
     PrimeSftTrajectoryJsonlError,
@@ -100,8 +103,6 @@ def write_task_manifest(path: Path, options: TaskManifestOptions) -> dict[str, A
 
 
 def _iter_rollouts(job_dir: Path) -> list[Path]:
-    if (job_dir / "result.json").is_file():
-        return [job_dir]
     roots = [job_dir]
     shard_root = _worker_shards_root(job_dir)
     if shard_root is not None:
@@ -111,7 +112,7 @@ def _iter_rollouts(job_dir: Path) -> list[Path]:
             path.parent
             for root in roots
             if root.is_dir()
-            for path in root.rglob("result.json")
+            for path in iter_task_result_paths(root)
         }
     )
 
@@ -166,6 +167,8 @@ def _iter_selected_rollouts(selection_path: Path) -> list[Path]:
 
 
 def _reward(result: dict[str, Any]) -> float | None:
+    if result.get("scoring") is not None:
+        return extract_reward(result)
     rewards = result.get("rewards")
     if isinstance(rewards, dict):
         value = rewards.get("reward")
@@ -292,9 +295,13 @@ def render_run_summary_markdown(
     """Render a Markdown run summary (results + issues) for publish folders."""
     rows = canonical_task_rows(job_dir)
     rewards = [row["reward"] for row in rows if row["scored"]]
-    mean_reward = sum(rewards) / len(rewards) if rewards else None
-    scored_count = sum(1 for row in rows if row["scored"])
+    scored_count = len(rewards)
+    # Every task counted (an unscored one as 0), then BenchFlow 0.7's mean
+    # over the scored tasks only when some task is unscored.
+    mean_reward = sum(rewards) / len(rows) if rows else None
+    mean_scored = sum(rewards) / scored_count if rewards else None
     tool_call_count = sum(1 for row in rows if row["tool_calls"] > 0)
+    caveat = below_zero_caveat(rewards, unscored=len(rows) - scored_count)
 
     lines = ["# BenchFlow run summary", ""]
     if agent:
@@ -304,9 +311,19 @@ def render_run_summary_markdown(
     lines += [
         f"- Tasks: {len(rows)}",
         f"- Scored: {scored_count} / Unscored: {len(rows) - scored_count}",
-        f"- Mean reward: {mean_reward:.3f}"
+        f"- Mean reward: {mean_reward:.3f} (n = {len(rows)}, unscored as 0)"
         if mean_reward is not None
         else "- Mean reward: n/a",
+        *(
+            [
+                f"- Mean reward, scored only: {mean_scored:.3f} (n = {scored_count})"
+                if mean_scored is not None
+                else "- Mean reward, scored only: n/a"
+            ]
+            if scored_count < len(rows)
+            else []
+        ),
+        *([f"- Caveat: {caveat}"] if caveat else []),
         f"- Tasks with tool calls: {tool_call_count}",
         "",
         "## Tasks",
@@ -317,7 +334,7 @@ def render_run_summary_markdown(
     for row in rows:
         reward = f"{row['reward']:.3f}" if isinstance(row["reward"], float) else "—"
         issue = row.get("error") or row.get("verifier_error") or ""
-        issue = truncate_end(_escape_md_cell(str(issue)), _ISSUE_CELL_LIMIT)
+        issue = render_text(_escape_md_cell(render_text(str(issue))), _ISSUE_CELL_LIMIT)
         lines.append(
             f"| {_escape_md_cell(str(row['task_id']))} | {reward} | "
             f"{row['tool_calls']} | {issue} |"
@@ -405,7 +422,11 @@ def materialize_canonical_job(selection_path: Path, output_dir: Path) -> None:
         if not rollout_dir.is_dir():
             raise ValueError(f"selected rollout dir not found: {rollout_dir}")
         dest = output_dir / rollout_dir.name
-        shutil.copytree(rollout_dir, dest)
+        # Canonical jobs may be published inside the original job. Following
+        # an artifact link here would launder its target into an ordinary file
+        # that later upload checks cannot distinguish from legitimate output.
+        with staged_folder(rollout_dir) as snapshot:
+            shutil.copytree(snapshot, dest)
 
 
 def task_overlap(left_manifest: Path, right_manifest: Path) -> dict[str, Any]:

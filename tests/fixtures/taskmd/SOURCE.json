@@ -1,0 +1,22 @@
+{
+  "repository": "task.md",
+  "commit": "99052af827073133a7af47c3dfa16af1022ff4f3",
+  "copied": {
+    "examples/<name>": "examples/<name> (regex-log from examples/datasets/terminal-mini/tasks/regex-log)",
+    "vectors/judge-prompt-1": "schema/vectors/judge-prompt-1"
+  },
+  "golden": "golden/<name>.json records the pinned reference parser output; local_changes records neutral metadata updates to both input and expected output.",
+  "note": "Test fixtures for benchflow.taskmd. Source copies except for the explicit local_changes, with both source and installed hashes retained.",
+  "local_changes": {
+    "examples/regex-log/task.md": {
+      "source_sha256": "f8ea724ef9cff4745f551dc1fc93636a0bd236fda1c4eb887e3a722ba36ee343",
+      "sha256": "b16b5f72f769a43eb27ecb252487517cdbbce52391e8d44e4f9dcb9e73bd6e79",
+      "reason": "Import metadata is named import.toml."
+    },
+    "golden/regex-log.json": {
+      "source_sha256": "2a7744cb69aad89a57adb1736c3e6a96cc2dbad53133e3c90b0bdc2b86569f59",
+      "sha256": "a633b50a83681a514c26e30e1c079a67b2ea3673e472166cb19aeb312222b386",
+      "reason": "Import metadata is named import.toml."
+    }
+  }
+}

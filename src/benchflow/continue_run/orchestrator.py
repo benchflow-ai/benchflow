@@ -32,7 +32,12 @@ from typing import Any, cast
 
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
-from benchflow.continue_run.run_folder import RunFolder, RunFolderError, load_run_folder
+from benchflow.continue_run.run_folder import (
+    RunFolder,
+    RunFolderError,
+    load_run_folder,
+    require_replayable_task,
+)
 from benchflow.continue_run.sandbox_proxy import (
     SandboxReplayProxy,
     sandbox_replay_base_url,
@@ -48,7 +53,7 @@ logger = logging.getLogger(__name__)
 # of a real provider. The model name is irrelevant (the proxy serves by index),
 # but litellm needs an ``openai/`` prefix to treat LLM_BASE_URL as an
 # OpenAI-compatible endpoint.
-_REPLAY_API_KEY = "sk-benchflow-replay"
+_REPLAY_API_KEY = "sk-runtime-replay"
 _REPLAY_MODEL = "openai/replay"
 # Providers whose replay and model proxies must run inside the sandbox. This is
 # the same placement contract used by the normal LiteLLM runtime.
@@ -169,7 +174,92 @@ def build_rollout_config(
     """
     from benchflow.rollout import RolloutConfig
 
+    recorded = run.config
+    _validate_reward_policy(recorded)
+    settings = {
+        name: recorded[name]
+        for name in (
+            "base_image_override",
+            "sandbox_locked_paths",
+            "sandbox_setup_timeout",
+            "context_root",
+            "integrity",
+            "freeze_workspace",
+            "codex_apps_policy",
+        )
+        if name in recorded
+    }
+    settings["skip_agent_install"] = recorded.get("skip_install", False)
+    settings["skill_mode"] = recorded.get("skill_mode", "no-skill")
+    skills = recorded.get("requested_skills_dir")
+    if not skills and recorded.get("skill_source") == "custom_runtime":
+        skills = recorded.get("effective_skills_dir")
+        if not skills:
+            raise RunFolderError(
+                "cannot reconstruct skills: missing recorded directory"
+            )
+    settings["skills_dir"] = skills
+    # These artifacts contain only summaries, not executable definitions. A
+    # continuation cannot quietly replace them with a fresh default world.
+    if (
+        recorded.get("environment_manifest")
+        or settings["skill_mode"] == "self-gen"
+        or recorded.get("harness_mode", "acp") != "acp"
+        or (recorded.get("loop") or {}).get("strategy", "single-shot") != "single-shot"
+    ):
+        raise RunFolderError(
+            "cannot reconstruct recorded environment, loop, skills or harness; "
+            "start a new evaluation with the original configuration"
+        )
+    for name in ("context_root", "skills_dir"):
+        if settings.get(name) and not Path(settings[name]).is_dir():
+            raise RunFolderError(
+                f"cannot reconstruct {name}: restore its recorded directory "
+                "before continuing"
+            )
+    overlay = recorded.get("config_override")
+    if overlay is not None:
+        if not isinstance(overlay, dict) or not isinstance(overlay.get("patch"), dict):
+            raise RunFolderError("cannot reconstruct config_override: missing patch")
+        settings["config_override"] = overlay["patch"]
+    review = recorded.get("review")
+    if review is not None:
+        saved_reviewer = review.get("reviewer") if isinstance(review, dict) else None
+        if not isinstance(saved_reviewer, dict):
+            raise RunFolderError("cannot reconstruct review: missing reviewer settings")
+        # Match review-resume's public-artifact contract: credential values are
+        # resolved in the current process, never recovered from a public record.
+        settings["reviewer"] = {
+            key: value
+            for key, value in saved_reviewer.items()
+            if key != "agent_env_keys"
+        }
+
+    # Role env values and scene prompts are deliberately absent from config.json.
+    # The recorded prompt stream covers a flat OpenHands solver only; don't
+    # flatten a richer authored plan into a different execution by accident.
+    scenes = recorded.get("scenes") or []
+    if scenes:
+        roles = scenes[0].get("roles") or []
+        if (
+            len(scenes) != 1
+            or len(roles) != 1
+            or roles[0].get("agent") != "openhands"
+            or scenes[0].get("skills_dir")
+            or any(
+                roles[0].get(key) is not None
+                for key in ("skills_dir", "timeout_sec", "idle_timeout_sec")
+            )
+            or roles[0].get("env_keys")
+            or roles[0].get("reasoning_effort") != run.reasoning_effort
+        ):
+            raise RunFolderError(
+                "cannot reconstruct recorded scene settings; start a new evaluation "
+                "with the original configuration"
+            )
+
     return RolloutConfig.from_legacy(
+        **settings,
         task_path=task_path,
         agent="openhands",
         # model=None on purpose: the agent targets the replay proxy purely via
@@ -183,12 +273,13 @@ def build_rollout_config(
         prompts=cast("list[str | None] | None", run.prompts or None),
         environment=run.environment,
         sandbox_user=run.sandbox_user,
-        agent_env=agent_env,
+        agent_env={**(recorded.get("agent_env") or {}), **agent_env},
         # The seam that stops benchflow starting its own gateway / rewriting
         # LLM_BASE_URL — our replay proxy stays in front of the agent.
         usage_tracking="off",
         timeout=timeout,
         agent_idle_timeout=run.agent_idle_timeout_sec,
+        agent_idle_timeout_given=True,  # the limit the recorded run had
         jobs_dir=str(output_dir),
         rollout_name=rollout_name,
         source_provenance={
@@ -200,6 +291,23 @@ def build_rollout_config(
             "n_recorded_exchanges": run.n_recorded_exchanges,
         },
     )
+
+
+def _validate_reward_policy(recorded: dict[str, Any]) -> None:
+    """A process-wide verifier policy cannot silently change during replay."""
+    from benchflow.rewards.validation import reward_lenient_from_env
+
+    if "reward_lenient" not in recorded:
+        return  # Older artifacts did not record this policy.
+    policy = recorded["reward_lenient"]
+    if not isinstance(policy, bool):
+        raise RunFolderError("cannot reconstruct reward_lenient: expected a boolean")
+    if policy != reward_lenient_from_env():
+        value = "1" if policy else "0"
+        raise RunFolderError(
+            "cannot continue with a different reward parsing policy; "
+            f"set BENCHFLOW_REWARD_LENIENT={value} to match the recorded run"
+        )
 
 
 class LiteLLMLiveForwarder:
@@ -226,16 +334,31 @@ class LiteLLMLiveForwarder:
     )
 
     def __init__(self, model: str, *, env: dict[str, str] | None = None) -> None:
+        from benchflow.agents.providers import find_provider_for_bare_model
         from benchflow.providers.litellm_config import resolve_litellm_route
 
         merged_env = {**os.environ, **(env or {})}
-        route = resolve_litellm_route(model, merged_env)
+        provider = find_provider_for_bare_model(model)
+        route_model = f"{provider[0]}/{model}" if provider is not None else model
+        route = resolve_litellm_route(route_model, merged_env)
         self.model = model
         self.upstream_model = route.upstream_model
+        # SDK calls do not expand the proxy config's environment references.
+        # Bind every route parameter to the same environment used to resolve it.
+        self._route_params = dict(route.litellm_params)
+        for key, value in self._route_params.items():
+            if isinstance(value, str) and value.startswith("os.environ/"):
+                name = value.removeprefix("os.environ/")
+                if not merged_env.get(name):
+                    raise RunFolderError(
+                        f"Live continuation requires {name}; set it before continuing"
+                    )
+                self._route_params[key] = merged_env[name]
 
     def build_kwargs(self, request_body: dict[str, Any]) -> dict[str, Any]:
         """Translate an OpenAI request body into ``litellm.completion`` kwargs."""
         kwargs: dict[str, Any] = {
+            **self._route_params,
             "model": self.upstream_model,
             "messages": request_body.get("messages") or [],
             "stream": False,
@@ -250,7 +373,7 @@ class LiteLLMLiveForwarder:
 
         response = litellm.completion(**self.build_kwargs(request_body))
         dump = getattr(response, "model_dump", None)
-        return dump() if callable(dump) else dict(response)
+        return dump() if callable(dump) else dict(cast(Any, response))
 
 
 def stitched_trajectory_lines(
@@ -359,7 +482,25 @@ def update_continued_metadata(
     HF-compatible artifacts still need the actual live model and token usage.
     The stitched LLM trajectory is authoritative for provider usage.
     """
+    result_path = rollout_dir / "result.json"
+    # A missing response usage field is not evidence of zero usage. Cleanup
+    # may have imported authoritative native/proxy telemetry independently.
+    retained_result = (
+        json.loads(result_path.read_text()) if result_path.is_file() else {}
+    )
+    retained_usage = retained_result.get("agent_result") or {}
+    preserve_usage = (
+        usage.total_tokens == 0 and (retained_usage.get("total_tokens") or 0) > 0
+    )
     config_path = rollout_dir / "config.json"
+    if preserve_usage:
+        if config_path.is_file():
+            config = json.loads(config_path.read_text())
+            config["model"] = live_model
+            config_path.write_text(json.dumps(config, indent=2) + "\n")
+        retained_result["model"] = live_model
+        result_path.write_text(json.dumps(retained_result, indent=2) + "\n")
+        return
     if config_path.is_file():
         config = json.loads(config_path.read_text())
         config["model"] = live_model
@@ -379,7 +520,6 @@ def update_continued_metadata(
         }
         config_path.write_text(json.dumps(config, indent=2) + "\n")
 
-    result_path = rollout_dir / "result.json"
     if not result_path.is_file():
         return
     result = json.loads(result_path.read_text())
@@ -463,16 +603,23 @@ async def _safe_sandbox_continuation_teardown(
     return errors
 
 
-def _result_after_sandbox_teardown(rollout: Any) -> Any | None:
-    """Return a Rollout result, forcing artifact emission after cleanup warnings."""
-    result = rollout.result
-    if result is not None:
-        return result
-    if getattr(rollout, "_rollout_dir", None) is None:
-        return None
+async def _result_after_sandbox_teardown(
+    rollout: Any, *, usage: ContinuedUsageSummary
+) -> Any | None:
+    """Build the verdict only after cleanup and authoritative usage collection.
+
+    The continuation owns a separate provider runtime, so its stitched response
+    usage must reach classification before the result is built (PR #1131).
+    Missing response usage does not erase telemetry imported by cleanup.
+    """
+    if usage.total_tokens > 0:
+        rollout._usage_metrics = {
+            **(getattr(rollout, "_usage_metrics", None) or {}),
+            **usage.as_agent_result_patch(),
+        }
     if getattr(rollout, "_phase", None) not in ("verified", "cleaned"):
         rollout._phase = "cleaned"
-    return rollout.result
+    return await rollout.finalize()
 
 
 async def continue_run(
@@ -490,12 +637,16 @@ async def continue_run(
     """Resume ``folder`` to completion via record-replay + live continuation.
 
     ``model`` overrides the live-continuation model (tests pass
-    ``gemini-3.1-flash-lite-preview``); defaults to the original run's model.
+    ``gemini-3.5-flash-lite``); defaults to the original run's model.
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
     the replay without provider credentials.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
-    task_path = resolve_task_path(run, tasks_dir)
+    # Refuse before starting either replay proxy or resolving live credentials.
+    _validate_reward_policy(run.config)
+    # config.json records only the task's name, so load_run_folder rarely sees
+    # the declaration of the task that actually runs: gate that task here.
+    task_path = require_replayable_task(run, resolve_task_path(run, tasks_dir))
 
     live_model = model or run.model
     live_forwarder = None
@@ -611,7 +762,6 @@ async def _continue_run_with_sandbox_proxy(
     rollout = await Rollout.create(config)
     replay_proxy: SandboxReplayProxy | None = None
     provider_runtime: Any | None = None
-    result: Any | None = None
     pending_acp_error: AgentProtocolError | None = None
     agent_timed_out = False
     rollout_dir: Path | None = None
@@ -619,13 +769,12 @@ async def _continue_run_with_sandbox_proxy(
     artifacts_written = False
 
     async def _write_artifacts_before_cleanup() -> None:
-        nonlocal artifacts_written, live_exchanges, result, rollout_dir
-        if artifacts_written:
+        nonlocal artifacts_written, live_exchanges, rollout_dir
+        if artifacts_written or rollout._rollout_dir is None:
             return
-        result = _result_after_sandbox_teardown(rollout)
-        if result is None:
-            return
-        rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+        # Preserve provider evidence before sandbox teardown without asking
+        # Rollout.result to classify temporarily missing usage (#1131).
+        rollout_dir = Path(rollout._rollout_dir)
         live_exchanges = replay_proxy.live_exchanges if replay_proxy is not None else []
         stitched_path = write_stitched_trajectory(
             rollout_dir,
@@ -658,6 +807,8 @@ async def _continue_run_with_sandbox_proxy(
             session_id=rollout_name,
             usage_tracking="required",
             sandbox=rollout.env,
+            disallow_web_tools=rollout._disallow_web_tools
+            or rollout._egress_denylist is not None,
         )
         replay_proxy = await SandboxReplayProxy.start(
             sandbox=rollout.env,
@@ -684,10 +835,7 @@ async def _continue_run_with_sandbox_proxy(
                 )
         except TimeoutError as exc:
             agent_timed_out = True
-            detail = str(exc).strip()
-            rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-            rollout._diagnostics.capture_idle(exc)
-            logger.error(rollout._error)
+            rollout._record_agent_timeout(exc, agent_phase=True)
 
         if not config.skip_verify:
             await rollout.verify()
@@ -700,10 +848,7 @@ async def _continue_run_with_sandbox_proxy(
                 rollout._verifier_error = None
 
     except TimeoutError as exc:
-        detail = str(exc).strip()
-        rollout._error = detail or f"Agent timed out after {rollout._timeout}s"
-        rollout._diagnostics.capture_idle(exc)
-        logger.error(rollout._error)
+        rollout._record_agent_timeout(exc, agent_phase=False)
     except ConnectionError as exc:
         rollout._error = str(exc)
         rollout._diagnostics.capture_transport(exc)
@@ -736,6 +881,20 @@ async def _continue_run_with_sandbox_proxy(
     await _write_artifacts_before_cleanup()
     if rollout_dir is None:
         rollout_dir = Path(rollout._rollout_dir or (output_dir / rollout_name))
+    # Cleanup can write a provider trajectory of its own. Reinstall the retained
+    # stitched trajectory before deriving final usage and publishing one verdict.
+    stitched_path = write_stitched_trajectory(
+        rollout_dir,
+        run.path / "trajectory" / "llm_trajectory.jsonl",
+        live_exchanges,
+    )
+    usage = summarize_llm_trajectory_usage(
+        stitched_path, n_recorded=run.n_recorded_exchanges
+    )
+    result = await _result_after_sandbox_teardown(rollout, usage=usage)
+    update_continued_metadata(
+        rollout_dir, live_model=live_model, usage=usage, environment=run.environment
+    )
 
     return ContinueResult(
         rollout_dir=rollout_dir,

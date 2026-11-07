@@ -1,0 +1,250 @@
+{
+  "source": "engine-bench-1015 raw/trials/trials-jobs.tar.gz: jobs/pre-r0-051-py-0.8-oracle-snapshot-hook/2026-10-16__04-24-10",
+  "arm": "py-0.8",
+  "agent": "oracle",
+  "task": "snapshot-hook",
+  "job_name": "2026-10-16__04-24-10",
+  "files": {
+    "summary.json": {
+      "job_name": "2026-10-16__04-24-10",
+      "reviewer": {
+        "agent": "opencode",
+        "model": null,
+        "reasoning_effort": null,
+        "environment": "docker",
+        "timeout_sec": 1800,
+        "idle_timeout_sec": 600,
+        "concurrency": 4,
+        "image": "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91",
+        "open_network": false,
+        "agent_env": {},
+        "agent_env_keys": [],
+        "ran": false
+      },
+      "agent": "oracle",
+      "codex_apps_policy": null,
+      "model": null,
+      "environment": "docker",
+      "concurrency": 1,
+      "agent_idle_timeout_sec": 600,
+      "usage_tracking": {
+        "requested": "auto"
+      },
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "total": 1,
+      "passed": 0,
+      "failed": 0,
+      "errored": 1,
+      "verifier_errored": 0,
+      "unscored": 0,
+      "pass": 0,
+      "fail": 0,
+      "error": 1,
+      "idle_timeout": 0,
+      "error_categories": {
+        "other": 1
+      },
+      "verifier_error_categories": null,
+      "integration_failures": {
+        "total": 0,
+        "by_cause": {}
+      },
+      "score": "0.0%",
+      "score_ratio": 0,
+      "score_excl_errors": "0.0%",
+      "score_excl_errors_ratio": 0,
+      "mean_reward": null,
+      "elapsed_sec": 0.04771590232849121,
+      "memory_score": null,
+      "memory_score_coverage": 0,
+      "memory": {
+        "scored": 0,
+        "avg_score": null,
+        "score": null
+      },
+      "memory_scores": {},
+      "total_skill_invocations": 0,
+      "avg_skill_invocations": 0,
+      "total_input_tokens": 0,
+      "total_output_tokens": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_creation_tokens": 0,
+      "total_tokens": 0,
+      "total_cost_usd": null,
+      "avg_cost_per_trial_usd": null,
+      "telemetry_coverage": 0,
+      "solve_rates": {
+        "success_rule": "passed (reward = 1)",
+        "solve_threshold": null,
+        "tasks": 0,
+        "trials": 0,
+        "unscored": 1,
+        "controls_excluded": 0,
+        "min_trials_per_task": 0,
+        "max_trials_per_task": 0,
+        "solve_rate": null,
+        "solve_rate_interval": null,
+        "solve_rate_interval_method": null,
+        "nonbinary_rewards": 0,
+        "ks": [
+          1
+        ],
+        "pass_at_k": {
+          "1": null
+        },
+        "pass_hat_k": {
+          "1": null
+        },
+        "tasks_at_k": {
+          "1": 0
+        },
+        "tasks_short_at_k": {
+          "1": 0
+        },
+        "caveats": [
+          "1 unscored trial(s) are left out of n, not counted as failures."
+        ]
+      },
+      "total_tool_calls": 0,
+      "avg_tool_calls_per_task": 0,
+      "max_tool_calls_per_task": 0,
+      "total_trajectory_steps": 0,
+      "avg_trajectory_steps_per_task": 0,
+      "max_trajectory_steps_per_task": 0,
+      "total_trajectory_tool_call_steps": 0,
+      "avg_trajectory_tool_call_steps_per_task": 0,
+      "max_trajectory_tool_call_steps_per_task": 0,
+      "trajectory_summary_coverage": 1,
+      "timing_coverage": 1,
+      "environment_setup_time_sec": 0,
+      "avg_environment_setup_time_sec": null,
+      "max_environment_setup_time_sec": null,
+      "agent_setup_time_sec": 0,
+      "avg_agent_setup_time_sec": null,
+      "max_agent_setup_time_sec": null,
+      "agent_execution_time_sec": 0,
+      "avg_agent_execution_time_sec": null,
+      "max_agent_execution_time_sec": null,
+      "verifier_time_sec": 0,
+      "avg_verifier_time_sec": null,
+      "max_verifier_time_sec": null,
+      "total_time_sec": 0,
+      "avg_total_time_sec": 0,
+      "max_total_time_sec": 0
+    },
+    "snapshot-hook__d5c2d85f/result.json": {
+      "task_name": "snapshot-hook",
+      "rollout_name": "snapshot-hook__d5c2d85f",
+      "rewards": null,
+      "agent": "oracle",
+      "agent_name": "",
+      "model": null,
+      "skill_mode": "no-skill",
+      "skill_source": "none",
+      "requested_skills_dir": null,
+      "effective_skills_dir": null,
+      "skills_sandbox_dir": null,
+      "include_task_skills": false,
+      "n_tool_calls": 0,
+      "n_skill_invocations": 0,
+      "n_prompts": 1,
+      "agent_result": {
+        "n_tool_calls": 0,
+        "n_skill_invocations": 0,
+        "n_prompts": 1,
+        "n_input_tokens": 0,
+        "n_output_tokens": 0,
+        "n_cache_read_tokens": 0,
+        "n_cache_creation_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": null,
+        "usage_source": "unavailable",
+        "price_source": null
+      },
+      "final_metrics": {
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "total_cached_tokens": 0,
+        "total_cost_usd": null
+      },
+      "trajectory_summary": {
+        "steps": 0,
+        "tool_call_steps": 0,
+        "user_message_steps": 0,
+        "agent_message_steps": 0,
+        "agent_thought_steps": 0,
+        "other_steps": 0,
+        "event_type_counts": {},
+        "tool_call_status_counts": {},
+        "partial_trajectory": false,
+        "trajectory_source": null
+      },
+      "usage_tracking": {
+        "requested": "auto",
+        "status": "unavailable",
+        "environment": "docker",
+        "endpoint_kind": "none",
+        "usage_source": "unavailable"
+      },
+      "error": "UnsupportedTaskFeatureError: Task uses parsed runtime features that BenchFlow cannot execute on the selected sandbox:\n- verifier.collect: task.toml verifier collect hooks (commands run in a service before verification) are not executed (sandbox=docker)",
+      "error_category": "other",
+      "verifier_error": null,
+      "verifier_error_category": null,
+      "export_error": null,
+      "usage_limit_info": null,
+      "integration_failure_info": null,
+      "idle_timeout_info": null,
+      "agent_timeout_info": null,
+      "sandbox_startup_info": null,
+      "transport_error_info": null,
+      "verifier_timeout_info": null,
+      "api_error_info": null,
+      "suspected_api_error_info": null,
+      "partial_trajectory": false,
+      "trajectory_source": null,
+      "started_at": "2026-10-16 04:24:10.172504",
+      "finished_at": "2026-10-16 04:24:10.176157",
+      "timing": {
+        "total": 0
+      },
+      "scenes": [
+        {
+          "name": "default",
+          "skills_dir": null,
+          "roles": [
+            {
+              "name": "agent",
+              "agent": "oracle",
+              "model": null,
+              "reasoning_effort": null,
+              "timeout_sec": null,
+              "idle_timeout_sec": null,
+              "skills_dir": null,
+              "capabilities": null,
+              "env_keys": []
+            }
+          ],
+          "turns": [
+            {
+              "role": "agent",
+              "has_prompt": false
+            }
+          ]
+        }
+      ],
+      "loop": {
+        "strategy": "single-shot"
+      },
+      "task_digest": "sha256:527e5bed873ec7d66cb1aa084f350e80270824d6c974ab9bbeb6c407eec79fdb",
+      "sandbox_id": null
+    },
+    "snapshot-hook__d5c2d85f/timing.json": {
+      "total": 0
+    },
+    "snapshot-hook__d5c2d85f/prompts.json": [
+      "Write the word `ready` to `/app/status.txt`, with no trailing newline."
+    ]
+  }
+}

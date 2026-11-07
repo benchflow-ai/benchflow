@@ -12,6 +12,7 @@ through fail loudly via ``allow_nan=False`` (#426).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from benchflow._paths import assert_within, safe_path_segment
 from benchflow._utils.json_safe import dumps_finite
+from benchflow._utils.reachable_write import ReachablePath
 
 from ._core import CaseResult, EvalCase, EvalDataset, SkillEvalResult
 
@@ -37,7 +39,7 @@ def _load_acp_trajectory(rollout_dir: Path) -> list[dict] | None:
     if not traj_file.exists():
         # Fall back to the legacy /logs/agent/acp_trajectory.jsonl path
         # the judge reads, in case future layouts move things.
-        traj_file = rollout_dir / "agent" / "acp_trajectory.jsonl"
+        traj_file = ReachablePath.rollout(rollout_dir, "agent") / "acp_trajectory.jsonl"
     if not traj_file.exists():
         return None
     events: list[dict] = []
@@ -92,8 +94,8 @@ def export_gepa_traces(
     Output structure:
         output_dir/
         ├── skill.md              # current SKILL.md content
-        ├── traces/               # one file per case × agent
-        │   ├── case-001-claude.json
+        ├── traces/               # one file per case × agent × model × mode
+        │   ├── trace-<identity digest>.json
         │   └── ...
         └── summary.json          # aggregate scores
 
@@ -124,9 +126,11 @@ def export_gepa_traces(
         # but CaseResult objects can be constructed independently (e.g. by a
         # caller assembling a SkillEvalResult by hand).
         safe_path_segment(cr.case_id, kind="case id")
-        agent_label = cr.agent.split("/")[-1] if "/" in cr.agent else cr.agent
-        mode = "with" if cr.with_skill else "without"
-        trace_file = traces_dir / f"{cr.case_id}-{agent_label}-{mode}.json"
+        # Hash a structured full identity, never a delimited string or a model
+        # basename. The same trace keeps its name even in a partial export.
+        identity = json.dumps([cr.case_id, cr.agent, cr.model, cr.with_skill])
+        digest = hashlib.sha256(identity.encode()).hexdigest()
+        trace_file = traces_dir / f"trace-{digest}.json"
         assert_within(trace_file, traces_dir)
 
         # Derive trace fields from CaseResult; fall back to the dataset's

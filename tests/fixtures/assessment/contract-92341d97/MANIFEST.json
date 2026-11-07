@@ -1,0 +1,18 @@
+{
+  "purpose": "The frozen assessment-sidecar-v1 contract this implementation follows, copied byte for byte. Never edit these files: change the contract upstream and copy a new commit.",
+  "repository": "benchflow-ai/lab",
+  "commit": "92341d974f84c4f7f3f40ef87d075a78080c23a6",
+  "path": "sdk/rounds/py8/release-readiness-20261024/assessment-sidecar-v1",
+  "files": {
+    "assessment-event.v1.schema.json": {
+      "from": "assessment-event.v1.schema.json",
+      "git_blob": "9a8bd20beaa411251d57f92b0578b73254378c49",
+      "sha256": "b1a1284b0425842ba8fd50c6136bc1eb05314fbe20a8dffa51954ae3d851c985"
+    },
+    "acceptance-cases.json": {
+      "from": "fixtures/acceptance-cases.json",
+      "git_blob": "02495bf539eb4c67e255eac3eface6ec8ef7b83d",
+      "sha256": "5e54267d11fb7ed0338cff49d7611528625e3ca65f3e06c5fa185ab57fd0aac4"
+    }
+  }
+}

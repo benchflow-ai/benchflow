@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests._package_files import package_path
+
 # ``rollout.py`` was split into the ``benchflow.rollout`` package; the kernel
 # invariant now spans every module in it.
-ROLL_OUT = Path("src/benchflow/rollout")
+ROLL_OUT = package_path("rollout")
 
 CONCRETE_PLANE_MODULES = {
     "benchflow.acp.client",
@@ -53,6 +55,6 @@ def test_rollout_kernel_does_not_import_concrete_planes() -> None:
 
 def test_concrete_plane_bindings_live_at_composition_boundary() -> None:
     """Guards the fix from PR #515 for issue #415: concrete imports stay outside."""
-    imported = _imported_modules(Path("src/benchflow/rollout_planes.py"))
+    imported = _imported_modules(package_path("rollout_planes.py"))
 
     assert imported >= COMPOSITION_BOUNDARY_MODULES

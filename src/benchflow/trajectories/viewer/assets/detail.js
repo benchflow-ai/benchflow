@@ -1,8 +1,10 @@
 BF.detail = (() => {
   const {
+    EXECUTION_LABELS,
     el,
     fmtDuration,
     fmtTokens,
+    plural,
     requirePayload,
     textWithRedaction,
   } = BF.core;
@@ -14,12 +16,25 @@ BF.detail = (() => {
     ["trace", "view-trace"],
     ["verifier", "view-verifier"],
     ["metrics", "view-metrics"],
+    ["rubric", "view-rubric"],
+    ["lineage", "view-lineage"],
   ]);
-  const STEP_KINDS = new Set(["prompt", "message", "thought", "tool", "timeout", "unknown"]);
+  const STEP_KINDS = new Set(["prompt", "message", "thought", "tool", "timeout", "notice", "unknown", "subagent"]);
+  const GROUP_REASONS = new Map([
+    ["parent_not_captured", "The tool call these events name as their parent is not in the capture."],
+    ["too_deep", "These events are nested deeper than the subagent depth limit shared with the ATIF export."],
+    ["cyclic", "The parent_tool_call_id attribution of these events forms a cycle."],
+  ]);
   const TOOL_HUES = new Set(["read", "edit", "execute", "fetch", "search", "think", "skill", "other"]);
   const TOOL_STATUSES = new Set(["completed", "failed", "cancelled", "pending", "in_progress", "unknown"]);
+  // What the Lineage tab's derived numbers mean (see rollout_branch.py).
+  const FORK_VALUE_NOTE = "Value: mean reward of the fork's children, recorded only when every child was scored.";
+  const REWARD_SOURCE_NOTES = new Map([
+    ["runner_return", "Runner return: the reward the custom child runner returned, not read from the verifier by the branch engine (the runner may still have run the verifier itself)."],
+  ]);
 
   let currentPayload = null;
+  let currentOptions = {};
   let timelineBase = null;
   let traceGeneration = 0;
   let disclosureSequence = 0;
@@ -64,6 +79,35 @@ BF.detail = (() => {
     return Math.floor(total / 60) + "m " + (total % 60) + "s";
   }
 
+  function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  // Visit every step, subagent steps included, depth-first in display order.
+  function walkSteps(steps, visit) {
+    (Array.isArray(steps) ? steps : []).forEach((step, index) => {
+      visit(step, index);
+      const trace = asRecord(asRecord(step).subagent);
+      if (Array.isArray(trace.steps)) walkSteps(trace.steps, visit);
+    });
+  }
+
+  function countEvents(steps) {
+    let count = 0;
+    walkSteps(steps, (step) => { if (normalizedKind(step) !== "subagent") count += 1; });
+    return count;
+  }
+
+  function withDetail(label, detail) {
+    return detail ? label + " (" + detail + ")" : label;
+  }
+
+  function statusColor(value) {
+    if (/^(completed|complete|scored|restored|available|passed|yes)\b/.test(value)) return "var(--ok-ink)";
+    if (/^(errored|timed out|failed|unscored|cancelled|partial|unavailable|no)\b/.test(value)) return "var(--bad-ink)";
+    return "";
+  }
+
   function renderHeader(payload) {
     const meta = payload.meta || {};
     const steps = payload.steps || [];
@@ -75,9 +119,10 @@ BF.detail = (() => {
     heading.tabIndex = -1;
     titleRow.appendChild(heading);
     const reward = meta.reward;
-    if (reward === null || reward === undefined) {
+    const scoreStatus = BF.core.scoreStatus((meta.status || {}).score_outcome, reward);
+    if (scoreStatus === "unscored") {
       titleRow.appendChild(el("span", "badge unscored", "unscored"));
-    } else if (reward >= 1) {
+    } else if (scoreStatus === "pass") {
       titleRow.appendChild(el("span", "badge pass", "pass " + reward));
     } else {
       titleRow.appendChild(el("span", "badge fail", "fail " + reward));
@@ -88,6 +133,13 @@ BF.detail = (() => {
     const subtitle = [];
     if (payload.rollout_name) subtitle.push(payload.rollout_name);
     if (meta.trajectory_source) subtitle.push("source: " + meta.trajectory_source);
+    const branch = asRecord(meta.branch);
+    if (branch.node_id) {
+      subtitle.push(
+        "branch child " + branch.node_id + " of fork " + String(branch.fork_id || "").slice(0, 8)
+          + (branch.parent_node ? " at node " + branch.parent_node : ""),
+      );
+    }
     header.appendChild(el("div", "sub", subtitle.join("  \u00b7  ")));
 
     const stats = el("div");
@@ -112,6 +164,11 @@ BF.detail = (() => {
       false,
       meta.skill_mode ? (String(meta.skill_mode).startsWith("no") ? "skill-off" : "skill-on") : null,
     );
+    const status = asRecord(meta.status);
+    if (status.execution) {
+      tile(identity, "execution", withDetail(EXECUTION_LABELS.get(status.execution) || status.execution, status.execution_detail));
+      tile(identity, "assessment", withDetail(status.assessment, status.assessment_detail));
+    }
     tile(numbers, "duration", fmtDuration(meta.duration_sec));
     tile(numbers, "tokens in", fmtTokens(usage.n_input_tokens));
     tile(numbers, "tokens out", fmtTokens(usage.n_output_tokens));
@@ -120,7 +177,7 @@ BF.detail = (() => {
     if (typeof usage.cost_usd === "number" && Number.isFinite(usage.cost_usd)) {
       tile(numbers, "cost", "$" + usage.cost_usd.toFixed(4));
     }
-    tile(numbers, "events", steps.length || null);
+    tile(numbers, "events", countEvents(steps) || null);
     tile(numbers, "tool calls", (meta.counts || {}).tools);
     tile(numbers, "prompts", (meta.counts || {}).prompts);
     tile(numbers, "usage", usage.usage_source);
@@ -164,11 +221,15 @@ BF.detail = (() => {
     const meta = payload.meta || {};
     const verifier = payload.verifier || {};
     const available = [["trace", "Trace"]];
+    const status = asRecord(meta.status);
     if (
       verifier.reward !== null && verifier.reward !== undefined
       || verifier.stdout
       || verifier.stderr
       || (Array.isArray(verifier.ctrf) && verifier.ctrf.length)
+      || verifier.recovery
+      || status.scoring
+      || (status.execution === "completed" && status.assessment === "unscored")
     ) {
       available.push(["verifier", "Verifier"]);
     }
@@ -177,6 +238,12 @@ BF.detail = (() => {
       || meta.usage && typeof meta.usage === "object" && Object.keys(meta.usage).length
     ) {
       available.push(["metrics", "Metrics"]);
+    }
+    if (payload.rubric && typeof payload.rubric === "object") {
+      available.push(["rubric", "Rubric"]);
+    }
+    if (payload.lineage && typeof payload.lineage === "object") {
+      available.push(["lineage", "Lineage"]);
     }
 
     const tabs = document.getElementById("tabs");
@@ -317,7 +384,10 @@ BF.detail = (() => {
 
   function cardPassesFilters(card) {
     const kind = card.dataset.kind;
-    const filterKind = kind === "timeout" || kind === "unknown" ? "tool" : kind;
+    // An unattributed-subagent group is a container: under a filter it shows
+    // only through the events inside it.
+    if (kind === "subagent") return !state.kinds.size && !state.failedOnly;
+    const filterKind = kind === "timeout" || kind === "notice" || kind === "unknown" ? "tool" : kind;
     if (state.kinds.size && !state.kinds.has(filterKind)) return false;
     if (state.focus && kind === "thought") return false;
     if (state.failedOnly && kind !== "timeout" && !card.classList.contains("failed")) return false;
@@ -325,18 +395,34 @@ BF.detail = (() => {
   }
 
   function applyCardVisibility() {
-    document.querySelectorAll("#view-trace .card").forEach((card) => {
+    // Innermost cards first, so a card that holds a subagent trace stays
+    // visible while any event inside it passes the filters.
+    [...document.querySelectorAll("#view-trace .card")].reverse().forEach((card) => {
       const isActiveMatch = state.activeMatch !== null && card.id === state.activeMatch;
-      card.classList.toggle("hidden", !isActiveMatch && !cardPassesFilters(card));
+      let visible = isActiveMatch || cardPassesFilters(card);
+      if (!visible && card.dataset.subagent) {
+        visible = card.querySelector(".subtrace .card:not(.hidden)") !== null;
+      }
+      card.classList.toggle("hidden", !visible);
     });
   }
 
-  function collapsibleText(container, text, className) {
+  // Open every collapsed subagent trace that contains the target card.
+  function revealCard(target) {
+    for (let node = target.parentElement; node && node.id !== "view-trace"; node = node.parentElement) {
+      if (!node.classList.contains("subtrace") || !node.classList.contains("hidden")) continue;
+      const toggle = node.previousElementSibling;
+      if (toggle && toggle.classList.contains("subagent-toggle")) toggle.click();
+    }
+  }
+
+  function collapsibleText(container, text, className, language = null) {
     const value = String(text);
     const lines = value.split("\n");
     const body = el("div", className);
     if (value.length <= COLLAPSE_CHARS && lines.length <= COLLAPSE_LINES) {
       textWithRedaction(body, value);
+      BF.highlight.paint(body, value, language);
       container.appendChild(body);
       return;
     }
@@ -354,6 +440,7 @@ BF.detail = (() => {
       const open = button.getAttribute("aria-expanded") === "true";
       body.textContent = "";
       textWithRedaction(body, open ? preview + " ..." : value);
+      if (!open) BF.highlight.paint(body, value, language);
       button.setAttribute("aria-expanded", open ? "false" : "true");
       button.textContent = open
         ? "\u25b8 expand (" + value.length.toLocaleString() + " chars)"
@@ -365,6 +452,66 @@ BF.detail = (() => {
   function eventId(step, index) {
     if (step && typeof step === "object" && step.i !== undefined && step.i !== null) return String(step.i);
     return String(index + 1);
+  }
+
+  function cardDomId(step, index) {
+    if (normalizedKind(step) === "subagent") return String(asRecord(step).gid || "g" + (index + 1));
+    return "e" + eventId(step, index);
+  }
+
+  function subagentLabel(trace, open) {
+    const parts = ["subagent"];
+    if (trace.subagent_type) parts[0] += " " + trace.subagent_type;
+    if (trace.description) parts.push(trace.description);
+    const count = countEvents(trace.steps);
+    return (open ? "\u25be " : "\u25b8 ") + parts.join(": ") + " (" + count + " event" + (count === 1 ? "" : "s") + ")";
+  }
+
+  // Nested, collapsed-by-default trace of the events a subagent emitted.
+  function appendSubagent(card, trace, ownerId) {
+    const body = el("div", "subtrace hidden");
+    body.id = "subtrace-" + ownerId;
+    (Array.isArray(trace.steps) ? trace.steps : []).forEach((step, index) => {
+      body.appendChild(buildStepNode(step, index));
+    });
+    const button = el("button", "expander subagent-toggle", subagentLabel(trace, false));
+    button.type = "button";
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-controls", body.id);
+    button.addEventListener("click", () => {
+      const open = button.getAttribute("aria-expanded") !== "true";
+      body.classList.toggle("hidden", !open);
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+      button.textContent = subagentLabel(trace, open);
+    });
+    card.dataset.subagent = "1";
+    card.append(button, body);
+  }
+
+  function buildGroupCard(step, index) {
+    const trace = asRecord(step.subagent);
+    const card = el("article", "card k-unknown");
+    card.id = cardDomId(step, index);
+    card.dataset.kind = "subagent";
+    const head = el("div", "chead");
+    head.appendChild(el("span", "klabel", "unattributed subagent"));
+    head.appendChild(el("span", "ttitle", trace.parent_tool_call_id || ""));
+    card.appendChild(head);
+    card.appendChild(el("div", "body", GROUP_REASONS.get(step.reason) || "These events have no spawning tool call in this trace."));
+    appendSubagent(card, trace, card.id);
+    return card;
+  }
+
+  function buildStepNode(step, index) {
+    try {
+      return normalizedKind(step) === "subagent" ? buildGroupCard(step, index) : buildCard(step, index);
+    } catch (error) {
+      const card = el("article", "card k-unknown");
+      card.dataset.kind = "unknown";
+      card.appendChild(el("span", "klabel", "render error"));
+      card.appendChild(el("div", "body", "Could not render event #" + eventId(step, index) + ": " + error));
+      return card;
+    }
   }
 
   function normalizedKind(step) {
@@ -391,6 +538,12 @@ BF.detail = (() => {
     else if (kind === "message") head.appendChild(el("span", "klabel", "agent"));
     else if (kind === "thought") head.appendChild(el("span", "klabel", "thought"));
     else if (kind === "timeout") head.appendChild(el("span", "klabel", "agent timeout"));
+    else if (kind === "notice") {
+      // An ACP session notice: the adapter composed it; the agent did not say it.
+      const severity = typeof record.severity === "string" && record.severity ? record.severity : "info";
+      card.classList.add("sev-" + (severity === "warning" || severity === "error" ? severity : "info"));
+      head.appendChild(el("span", "klabel", "adapter notice \u00b7 " + severity));
+    }
     else if (kind === "unknown") head.appendChild(el("span", "klabel", record.type || record.kind || "unknown"));
 
     let toolHue = null;
@@ -413,11 +566,13 @@ BF.detail = (() => {
       const tool = record.tool && typeof record.tool === "object" ? record.tool : {};
       const outputClass = "tout" + (toolHue === "execute" ? " term" : "");
       const content = Array.isArray(tool.content) ? tool.content : [];
-      content.forEach((item) => {
+      content.forEach((item, position) => {
         const wrapper = el("div");
-        collapsibleText(wrapper, item, outputClass);
+        const language = BF.highlight.languageFor(String(item), toolHue, tool.title, position);
+        collapsibleText(wrapper, item, outputClass, language);
         card.appendChild(wrapper);
       });
+      if (record.subagent && typeof record.subagent === "object") appendSubagent(card, record.subagent, card.id);
     } else if (kind === "timeout") {
       const timeout = record.timeout && typeof record.timeout === "object" ? record.timeout : {};
       const pending = Array.isArray(timeout.pending) ? timeout.pending : [];
@@ -459,15 +614,7 @@ BF.detail = (() => {
       if (generation !== traceGeneration) return;
       const fragment = document.createDocumentFragment();
       for (let count = 0; count < TRACE_CHUNK && index < steps.length; count += 1, index += 1) {
-        try {
-          fragment.appendChild(buildCard(steps[index], index));
-        } catch (error) {
-          const card = el("article", "card k-unknown");
-          card.dataset.kind = "unknown";
-          card.appendChild(el("span", "klabel", "render error"));
-          card.appendChild(el("div", "body", "Could not render event #" + eventId(steps[index], index) + ": " + error));
-          fragment.appendChild(card);
-        }
+        fragment.appendChild(buildStepNode(steps[index], index));
       }
       main.appendChild(fragment);
       applyCardVisibility();
@@ -484,6 +631,7 @@ BF.detail = (() => {
       }
       const target = state.activeMatch ? document.getElementById(state.activeMatch) : (hashId ? document.getElementById(hashId) : null);
       if (target) {
+        revealCard(target);
         target.scrollIntoView({ block: "center" });
         target.classList.add("flash");
       }
@@ -497,6 +645,11 @@ BF.detail = (() => {
     if (step.tool && typeof step.tool === "object") {
       const content = Array.isArray(step.tool.content) ? step.tool.content : [];
       value += " " + (step.tool.title || "") + " " + (step.tool.kind || "") + " " + content.join(" ");
+    }
+    const trace = asRecord(step.subagent);
+    if (trace.parent_tool_call_id) {
+      value += " subagent " + (trace.subagent_type || "") + " " + (trace.description || "")
+        + (normalizedKind(step) === "subagent" ? " unattributed " + trace.parent_tool_call_id : "");
     }
     return value.toLowerCase();
   }
@@ -512,8 +665,8 @@ BF.detail = (() => {
       applyCardVisibility();
       return;
     }
-    ((currentPayload && currentPayload.steps) || []).forEach((step, index) => {
-      if (stepSearchText(step).includes(state.query)) state.matches.push("e" + eventId(step, index));
+    walkSteps((currentPayload && currentPayload.steps) || [], (step, index) => {
+      if (stepSearchText(step).includes(state.query)) state.matches.push(cardDomId(step, index));
     });
     if (info) info.textContent = state.matches.length + " match" + (state.matches.length === 1 ? "" : "es");
     if (state.matches.length) jumpMatch(1);
@@ -527,6 +680,7 @@ BF.detail = (() => {
     applyCardVisibility();
     const target = document.getElementById(state.activeMatch);
     if (target) {
+      revealCard(target);
       target.scrollIntoView({ block: "center" });
       target.classList.remove("flash");
       void target.offsetWidth;
@@ -534,6 +688,114 @@ BF.detail = (() => {
     }
     const info = document.getElementById("matchinfo");
     if (info) info.textContent = (state.matchIndex + 1) + " / " + state.matches.length;
+  }
+
+  function factsTable(rows) {
+    const table = el("table", "plain");
+    rows.forEach(([label, value, color]) => {
+      const row = el("tr");
+      row.appendChild(el("th", null, label));
+      const cell = el("td", null, value);
+      if (color) cell.style.color = color;
+      row.appendChild(cell);
+      table.appendChild(row);
+    });
+    return table;
+  }
+
+  // A heading is a label or [label, hover text]; a cell is a value, a Node,
+  // or [value, color, hover text].
+  function gridTable(headings, rows) {
+    const table = el("table", "plain");
+    const heading = el("tr");
+    headings.forEach((entry) => {
+      const [label, hint] = Array.isArray(entry) ? entry : [entry, ""];
+      const th = el("th", null, label);
+      if (hint) th.title = hint;
+      heading.appendChild(th);
+    });
+    table.appendChild(heading);
+    rows.forEach((cells) => {
+      const row = el("tr");
+      cells.forEach((cell) => {
+        if (cell instanceof Node) {
+          const td = el("td");
+          td.appendChild(cell);
+          row.appendChild(td);
+          return;
+        }
+        const [value, color, hint] = Array.isArray(cell) ? cell : [cell, "", ""];
+        const td = el("td", null, value);
+        if (color) td.style.color = color;
+        if (hint) td.title = hint;
+        row.appendChild(td);
+      });
+      table.appendChild(row);
+    });
+    return table;
+  }
+
+  function scoringText(scoring) {
+    if (scoring.status !== "complete") return "error: " + (scoring.error || "no explanation");
+    const blockers = scoring.all_blockers_pass
+      ? "all blockers pass"
+      : "failed blockers: " + (Array.isArray(scoring.failed_blockers) ? scoring.failed_blockers.join(", ") : "?");
+    return [
+      scoring.passed ? "complete, passed" : "complete, not passed",
+      scoring.tests_pass ? "tests pass" : "tests fail",
+      blockers,
+      "verifier reward " + scoring.verifier_reward,
+      "rubric reward " + scoring.rubric_reward,
+    ].join(" \u00b7 ");
+  }
+
+  // Execution vs assessment plus verifier-recovery evidence, one row each.
+  function assessmentRows(payload) {
+    const status = asRecord(asRecord(payload.meta).status);
+    const recovery = asRecord(asRecord(payload.verifier).recovery);
+    const rows = [];
+    if (status.execution) {
+      const execution = withDetail(EXECUTION_LABELS.get(status.execution) || status.execution, status.execution_detail);
+      const assessment = withDetail(status.assessment, status.assessment_detail);
+      rows.push(["Execution", execution, statusColor(execution)]);
+      rows.push(["Assessment", assessment, statusColor(assessment)]);
+    }
+    const scoring = asRecord(status.scoring);
+    if (scoring.status) rows.push(["Scoring (tests + rubric)", scoringText(scoring), statusColor(scoring.status)]);
+    if (recovery.pointer) rows.push(["Verification pointer", "verification.json \u2192 " + recovery.pointer]);
+    else if (recovery.pointer_error) rows.push(["Verification pointer", "verification.json " + recovery.pointer_error, "var(--bad-ink)"]);
+    const attempts = Array.isArray(recovery.attempts) ? recovery.attempts.map(asRecord) : [];
+    const admitted = attempts.find((attempt) => attempt.admitted);
+    const shown = admitted || attempts[attempts.length - 1];
+    if (shown) {
+      const state = shown.status || "receipt not available";
+      rows.push([admitted ? "Recovery attempt" : "Recovery attempt (not admitted)", state + " \u00b7 " + shown.attempt, statusColor(state)]);
+      if (shown.original_error) rows.push(["Original verifier error", shown.original_error]);
+      if (shown.error) rows.push(["Recovery error", shown.error, "var(--bad-ink)"]);
+      if (shown.reward !== null && shown.reward !== undefined) rows.push(["Recovered reward", String(shown.reward)]);
+      const verifierTime = fmtShortDuration(shown.verifier_sec);
+      const evidence = [
+        shown.evidence,
+        shown.solver_replayed === false ? "solver not replayed" : (shown.solver_replayed ? "solver replayed" : null),
+        verifierTime ? "verifier " + verifierTime : null,
+      ].filter(Boolean);
+      if (evidence.length) rows.push(["Recovery evidence", evidence.join(" \u00b7 ")]);
+      if (shown.publication_error) {
+        rows.push([
+          "Publication error",
+          shown.publication_error + " \u2014 verifier/ still holds the outputs from before recovery; the recovered outputs are in "
+            + shown.attempt + "/verifier/.",
+          "var(--bad-ink)",
+        ]);
+      }
+      if (shown.cleanup_error) rows.push(["Recovery cleanup error", shown.cleanup_error]);
+      if (shown.admission) rows.push(["Admission", shown.admission]);
+    }
+    const others = attempts.filter((attempt) => attempt !== shown);
+    if (others.length) {
+      rows.push(["Other recovery attempts", others.map((attempt) => (attempt.status || "no receipt") + " (" + attempt.attempt + ")").join(", ")]);
+    }
+    return rows;
   }
 
   function renderVerifier(payload) {
@@ -547,6 +809,13 @@ BF.detail = (() => {
       const reward = el("div", "bigreward", verifier.reward);
       reward.style.color = number >= 1 ? "var(--ok-ink)" : "var(--bad-ink)";
       block.appendChild(reward);
+      main.appendChild(block);
+    }
+    const assessment = assessmentRows(payload);
+    if (assessment.length) {
+      const block = el("div", "panelblock");
+      block.appendChild(el("h2", null, "Assessment"));
+      block.appendChild(factsTable(assessment));
       main.appendChild(block);
     }
     if (Array.isArray(verifier.ctrf) && verifier.ctrf.length) {
@@ -579,6 +848,165 @@ BF.detail = (() => {
       main.appendChild(block);
     });
     if (!main.children.length) main.appendChild(el("div", "panelblock", "No verifier artifacts in this rollout."));
+  }
+
+  function renderRubric(payload) {
+    const rubric = payload.rubric && typeof payload.rubric === "object" ? payload.rubric : null;
+    const main = document.getElementById("view-rubric");
+    main.textContent = "";
+    if (!rubric) {
+      main.appendChild(el("div", "panelblock", "No review report found for this rollout."));
+      return;
+    }
+    const scoring = rubric.scoring && typeof rubric.scoring === "object" ? rubric.scoring : {};
+    const head = el("div", "panelblock");
+    head.appendChild(el("h2", null, "Review"));
+    const facts = el("table", "plain");
+    const rows = [
+      ["Reviewer", rubric.reviewer_model || ""],
+      ["Valid", rubric.review_valid ? "yes" : "no"],
+      ["Verifier pass", scoring.deterministic_pass === undefined ? "" : (scoring.deterministic_pass ? "yes" : "no")],
+      ["Blockers", scoring.all_blockers_pass === undefined ? ""
+        : (scoring.all_blockers_pass ? "all pass" : "failed: " + (scoring.failed_blockers || []).join(", "))],
+      ["Raw quality", scoring.raw_quality === undefined ? "" : String(scoring.raw_quality)],
+      ["Gated quality", scoring.gated_quality === undefined ? "" : String(scoring.gated_quality)],
+      ["Decision", scoring.decision || ""],
+    ];
+    rows.forEach(([label, value]) => {
+      const row = el("tr");
+      row.appendChild(el("th", null, label));
+      const cell = el("td", null, value);
+      if (label === "Blockers" || label === "Verifier pass") {
+        cell.style.color = /fail|^no$/.test(value) ? "var(--bad-ink)" : (value ? "var(--ok-ink)" : "");
+      }
+      row.appendChild(cell);
+      facts.appendChild(row);
+    });
+    head.appendChild(facts);
+    if (rubric.summary) collapsibleText(head, rubric.summary, "body");
+    main.appendChild(head);
+
+    const criteria = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+    if (criteria.length) {
+      const block = el("div", "panelblock");
+      block.appendChild(el("h2", null, "Criteria"));
+      const table = el("table", "plain");
+      const heading = el("tr");
+      ["Criterion", "Kind", "Verdict", "Reviewer note"].forEach((label) => heading.appendChild(el("th", null, label)));
+      table.appendChild(heading);
+      criteria.forEach((criterion) => {
+        const record = criterion && typeof criterion === "object" ? criterion : {};
+        const row = el("tr");
+        row.appendChild(el("td", null, record.name));
+        // blocker true: v0.2 blocker; false: v0.2 scored; null: legacy v0.1 (outcome only)
+        const scored = record.blocker === false;
+        const kind = record.blocker === true ? "blocker" : (scored ? "weight " + (record.weight ?? "?") : "criterion");
+        row.appendChild(el("td", null, kind));
+        const verdict = el("td", null, scored ? ((record.score ?? "?") + " / 2") : (record.outcome || ""));
+        if (!scored && record.outcome) {
+          verdict.style.color = record.outcome === "pass" ? "var(--ok-ink)"
+            : (record.outcome === "fail" ? "var(--bad-ink)" : "var(--muted-foreground)");
+        }
+        row.appendChild(verdict);
+        row.appendChild(el("td", null, record.explanation || ""));
+        table.appendChild(row);
+      });
+      block.appendChild(table);
+      main.appendChild(block);
+    }
+  }
+
+  function branchLink(ref, label) {
+    const link = el("a", null, label);
+    link.href = currentOptions.branchHref ? currentOptions.branchHref(ref) : "?branch=" + encodeURIComponent(ref);
+    if (currentOptions.openBranch) {
+      link.addEventListener("click", (event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        currentOptions.openBranch(ref);
+      });
+    }
+    return link;
+  }
+
+  function renderLineage(payload) {
+    const main = document.getElementById("view-lineage");
+    main.textContent = "";
+    if (!payload.lineage || typeof payload.lineage !== "object") return;
+    const lineage = payload.lineage;
+    if (lineage.error) {
+      main.appendChild(el("div", "panelblock", "tree.json could not be read: " + lineage.error));
+      return;
+    }
+    const forks = Array.isArray(lineage.forks) ? lineage.forks.map(asRecord) : [];
+    if (!forks.length) {
+      main.appendChild(el("div", "panelblock", "tree.json records no forks."));
+      return;
+    }
+    const overview = el("div", "panelblock");
+    overview.appendChild(el("h2", null, "Forks (" + plural(lineage.nodes || 0, "tree node") + ")"));
+    overview.appendChild(gridTable(
+      ["Fork", "Parent \u2192 children", "Status", ["Value", FORK_VALUE_NOTE], "Snapshot", "Parent restore"],
+      forks.map((fork) => {
+        const children = Array.isArray(fork.children) ? fork.children : [];
+        const captured = Array.isArray(fork.captured_layers) ? fork.captured_layers : [];
+        const requested = Array.isArray(fork.requested_layers) ? fork.requested_layers : [];
+        const status = [fork.status || "", fork.error, fork.artifact_error ? "artifact: " + fork.artifact_error : null]
+          .filter(Boolean).join(" \u2014 ");
+        const restore = [fork.parent_restore || "", fork.parent_restore_error].filter(Boolean).join(" \u2014 ");
+        return [
+          String(fork.id || "").slice(0, 8),
+          (fork.parent_node || "?") + " \u2192 " + children.length + (fork.requested_children ? " of " + fork.requested_children : ""),
+          [status, statusColor(status)],
+          fork.value === null || fork.value === undefined ? "\u2014" : String(fork.value),
+          (captured.length ? captured.join(", ") : "none captured")
+            + (requested.join(",") !== captured.join(",") ? " (requested " + requested.join(", ") + ")" : ""),
+          [restore, statusColor(restore)],
+        ];
+      }),
+    ));
+    overview.appendChild(el("p", "note", FORK_VALUE_NOTE));
+    main.appendChild(overview);
+
+    forks.forEach((fork) => {
+      const children = Array.isArray(fork.children) ? fork.children.map(asRecord) : [];
+      const block = el("div", "panelblock");
+      block.appendChild(el("h2", null, "Fork " + String(fork.id || "").slice(0, 8) + ": children of " + (fork.parent_node || "?")));
+      const sourceNotes = new Set();
+      block.appendChild(gridTable(
+        ["Child", "Status", "Reward", "Intervention", "Trajectory"],
+        children.map((child) => {
+          const node = child.node_id || "#" + child.index;
+          const status = [child.status || "", child.error, child.cleanup_error ? "cleanup: " + child.cleanup_error : null]
+            .filter(Boolean).join(" \u2014 ");
+          const hasReward = typeof child.reward === "number";
+          const source = child.reward_source && child.reward_source !== "verifier" ? " (" + child.reward_source.replace(/_/g, " ") + ")" : "";
+          const sourceNote = hasReward ? REWARD_SOURCE_NOTES.get(child.reward_source) || "" : "";
+          if (sourceNote) sourceNotes.add(sourceNote);
+          const intervention = asRecord(child.intervention);
+          const parts = [
+            intervention.label,
+            intervention.requested ? "requested: " + intervention.requested : null,
+            intervention.execution && intervention.execution !== "unspecified" ? "execution: " + intervention.execution : null,
+            intervention.evidence ? "evidence: " + intervention.evidence : null,
+          ].filter(Boolean);
+          const artifacts = [child.artifacts_status || "", child.artifacts_path].filter(Boolean).join(" ");
+          return [
+            node,
+            [status, statusColor(status)],
+            [
+              hasReward ? child.reward + source : "\u2014",
+              hasReward ? (child.reward >= 1 ? "var(--ok-ink)" : "var(--bad-ink)") : "",
+              sourceNote,
+            ],
+            parts.length ? parts.join(" \u00b7 ") : "\u2014",
+            child.ref ? branchLink(child.ref, "open " + node) : (artifacts || "\u2014"),
+          ];
+        }),
+      ));
+      sourceNotes.forEach((note) => block.appendChild(el("p", "note", note)));
+      main.appendChild(block);
+    });
   }
 
   function renderMetrics(payload) {
@@ -651,7 +1079,7 @@ BF.detail = (() => {
       const table = el("table", "plain");
       countRows.forEach(([label, value]) => {
         const row = el("tr");
-        row.appendChild(el("td", null, label));
+        row.appendChild(el("td", null, label.replace(/_/g, " ")));
         row.appendChild(el("td", null, value));
         table.appendChild(row);
       });
@@ -662,7 +1090,7 @@ BF.detail = (() => {
   }
 
   function clearDetail() {
-    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics"].forEach((id) => {
+    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric", "view-lineage"].forEach((id) => {
       document.getElementById(id).textContent = "";
     });
     document.getElementById("toolbar").textContent = "";
@@ -673,6 +1101,7 @@ BF.detail = (() => {
   function showMessage(label, message, isError) {
     cancel();
     currentPayload = null;
+    currentOptions = {};
     clearDetail();
     const main = document.getElementById("view-trace");
     const box = el("div", isError ? "errbox" : "panelblock");
@@ -696,12 +1125,15 @@ BF.detail = (() => {
     cancel();
     resetState();
     currentPayload = payload;
+    currentOptions = options;
     const heading = renderHeader(payload);
     renderTabs(payload);
     renderToolbar();
     renderTrace(payload);
     renderVerifier(payload);
     renderMetrics(payload);
+    renderRubric(payload);
+    renderLineage(payload);
     document.title = (payload.meta && payload.meta.task_name) || payload.rollout_name || "benchflow trajectory";
     if (options.focusHeading) requestAnimationFrame(() => heading.focus());
   }

@@ -1,8 +1,8 @@
 """Demo tasks — self-contained evaluation tasks for local debugging.
 
-These are independent of Harbor tasks. Evaluator logic is inlined here
+These are independent of the task folders. Evaluator logic is inlined here
 so there are no cross-references to tasks/email-*/tests/evaluate.py.
-Divergence from Harbor scoring is expected and fine.
+Divergence from the task folders' scoring is expected and fine.
 """
 
 from __future__ import annotations

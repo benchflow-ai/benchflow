@@ -9,7 +9,16 @@ import json
 import math
 from pathlib import Path
 
-from .models import MessageStep, PromptStep, ThoughtStep, ToolStep, tool_hue
+from benchflow._utils.command_hints import local_path_arg
+
+from .models import (
+    MessageStep,
+    PromptStep,
+    ThoughtStep,
+    ToolStep,
+    iter_event_steps,
+    tool_hue,
+)
 from .payload import _load_prompts, _load_result_json, _normalize_steps, _parse_jsonl
 from .render import _render_acp_trajectory, _theme_css
 
@@ -387,6 +396,13 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
 _NO_TRAJECTORIES_HTML = "<p>No trajectory files found</p>"
 
 
+def _literal_code(text: str) -> str:
+    """Keep paths and commands literal in rendered and copied HTML text."""
+    # Escaping alone leaves repeated spaces collapsed and long paths wrapped
+    # by the browser. The style travels with the fragment (D2b-CONF8-2).
+    return f'<code style="white-space: pre">{html.escape(text)}</code>'
+
+
 def _user_prompt_html(text: str) -> str:
     return (
         '<div class="step prompt">'
@@ -431,12 +447,15 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
         except OSError:
             rollouts = []
         if rollouts:
-            items = "".join(f"<li><code>{html.escape(r)}</code></li>" for r in rollouts)
+            items = "".join(f"<li>{_literal_code(r)}</li>" for r in rollouts)
+            command = "bench view " + local_path_arg(
+                rollout_dir / rollouts[0], "<rollout folder>"
+            )
             return (
-                f"<p>No trajectory here — <code>{html.escape(rollout_dir.name)}</code> "
-                f"looks like a job directory with {len(rollouts)} rollout(s). "
-                f"View one with <code>bench eval view {html.escape(rollout_dir.name)}/"
-                f"&lt;rollout&gt;</code>:</p><ul>{items}</ul>"
+                f"<p>No trajectory here — {_literal_code(rollout_dir.name)} "
+                f"looks like a job directory with {len(rollouts)} rollout"
+                f"{'' if len(rollouts) == 1 else 's'}. "
+                f"View one with {_literal_code(command)}:</p><ul>{items}</ul>"
             )
         return _NO_TRAJECTORIES_HTML
 
@@ -502,8 +521,9 @@ def _render_acp_events(
 
     # Raw ACP events use the same normalization and status/classification
     # boundary as the interactive renderer. Timeout/future variants remain
-    # intentionally absent from this compact legacy page.
-    for step in _normalize_steps(events, prompts):
+    # intentionally absent from this compact legacy page, which stays flat:
+    # nested subagent steps render in capture order.
+    for step in iter_event_steps(_normalize_steps(events, prompts)):
         if isinstance(step, PromptStep):
             blocks.append(
                 f'<div class="step prompt">'

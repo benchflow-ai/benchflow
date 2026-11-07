@@ -23,15 +23,31 @@ import shlex
 import uuid
 from typing import Any
 
+from benchflow._runtime_tree import KIT_BIN, RUN_DIR
+from benchflow.sandbox._exec_output import exec_raw
+from benchflow.sandbox._root_launch import (
+    inert_task_env,
+    launch_bash,
+    launch_path,
+    launch_route,
+    protect_root_terminal_home,
+    require_protected_root_terminal,
+    root_launch_argv,
+    root_launch_script,
+    typed_root_prelude,
+)
 from benchflow.sandbox.process._base import (
     _ANSI_CSI_RE_BYTES,
     _ANSI_OSC_RE_BYTES,
     _ENV_KEY_RE,
     LiveProcess,
-    _timeout_sec_from_env,
+    _readline_timeout_sec,
 )
 
 logger = logging.getLogger(__name__)
+
+# The terminal's stty, by path: the shell typing it is root's (C8).
+_STTY = "/bin/stty"
 
 #: Channels the AgentCore shell multiplexes alongside agent stdout. Forwarding
 #: these into the ACP stream would let a diagnostic be parsed as JSON-RPC.
@@ -45,12 +61,21 @@ _READLINE_TIMEOUT_ENV = "BENCHFLOW_AGENTCORE_READLINE_TIMEOUT"
 _READLINE_TIMEOUT_DEFAULT_SEC = 900.0
 
 
-def _readline_timeout_sec() -> float:
-    return _timeout_sec_from_env(_READLINE_TIMEOUT_ENV, _READLINE_TIMEOUT_DEFAULT_SEC)
+def _agentcore_readline_timeout_sec(silence_floor: float | None = None) -> float:
+    return _readline_timeout_sec(
+        _READLINE_TIMEOUT_ENV, _READLINE_TIMEOUT_DEFAULT_SEC, silence_floor
+    )
+
+
+def _kit_rm(route: Any) -> str:
+    """``rm`` by absolute path: the protected kit's on the kit (C8)."""
+    return f"{KIT_BIN}/rm" if getattr(route, "kit", False) else "/bin/rm"
 
 
 class AgentCoreProcess(LiveProcess):
     """Live stdin/stdout over an AgentCore ``open_shell`` WebSocket terminal."""
+
+    _silence_floor_sec: float | None = None
 
     def __init__(
         self,
@@ -60,6 +85,8 @@ class AgentCoreProcess(LiveProcess):
         region: str,
     ) -> None:
         self._sandbox = sandbox
+        # Root's route for the launch (C8), set when it starts.
+        self._route: Any = None
         self._runtime_arn = runtime_arn
         self._session_id = session_id
         self._region = region
@@ -70,6 +97,9 @@ class AgentCoreProcess(LiveProcess):
         self._closed = False
         self._failure: BaseException | None = None
         self._reader_done = False
+
+    def expect_silence(self, seconds: float) -> None:
+        self._silence_floor_sec = seconds
 
     @classmethod
     def from_sandbox_env(cls, env: Any) -> AgentCoreProcess:
@@ -178,13 +208,22 @@ class AgentCoreProcess(LiveProcess):
             raise ValueError(
                 "Invalid environment variable name(s): " + ", ".join(sorted(invalid))
             )
-        remote_path = f"/tmp/.benchflow_agent_env_{uuid.uuid4().hex[:16]}"
+        # BenchFlow's private staging folder once the sandbox has its
+        # protected kit (C8, PT-C8-R3-8); a random name in /tmp before.
+        remote_path = (
+            f"{RUN_DIR}/env-{uuid.uuid4().hex}"
+            if getattr(self._route, "kit", False)
+            else f"/tmp/.runtime_agent_env_{uuid.uuid4().hex[:16]}"
+        )
         body = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
         result = await self._sandbox.write_text_file(remote_path, body, mode="600")
         if result is False:
             with contextlib.suppress(Exception):
-                await self._sandbox.exec(
-                    f"rm -f {shlex.quote(remote_path)}", timeout_sec=30
+                await exec_raw(
+                    self._sandbox.exec,
+                    f"{_kit_rm(self._route)} -f {shlex.quote(remote_path)}",
+                    user="root",
+                    timeout_sec=30,
                 )
             raise RuntimeError("Failed to stage AgentCore agent env file")
         return remote_path
@@ -195,8 +234,21 @@ class AgentCoreProcess(LiveProcess):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> None:
+        # The launch env's loader and start-up values travel under inert
+        # names and become real only after the drop (C8, PT-C8-3).
+        env = inert_task_env(env)
         from bedrock_agentcore.runtime import AgentCoreRuntimeClient
 
+        self._route = await launch_route(self._sandbox)
+        path = launch_path(self._route)
+        stty = f"{KIT_BIN}/stty" if getattr(self._route, "kit", False) else _STTY
+
+        # The provider creates root's terminal with settings BenchFlow cannot
+        # choose: refuse it unless what it reads at start is root's alone.
+        # A root HOME another user can change (a workspace of /root) gets the
+        # protected one first, as on Daytona (PT-C8-R10-3).
+        await protect_root_terminal_home(self._sandbox, "AgentCore's terminal")
+        await require_protected_root_terminal(self._sandbox, "AgentCore's terminal")
         remote_env_path: str | None = None
         client = AgentCoreRuntimeClient(region=self._region)
         shell = client.open_shell(
@@ -215,23 +267,30 @@ class AgentCoreProcess(LiveProcess):
             # Take the terminal out of cooked mode before any ACP traffic.
             # ACP JSON-RPC frames routinely exceed the 4096-byte canonical-mode
             # line limit, and echo would feed the agent's own output back to it.
+            # The terminal's shell is root's: keep and pin before stty, the
+            # first program it starts (PT-C8-4).
             marker = f"__BENCHFLOW_ACP_{uuid.uuid4().hex[:12]}__"
             await self._send(
-                "stty raw -echo 2>/dev/null || "
-                "stty -echo -icanon min 1 time 0 2>/dev/null || true; "
+                f"{typed_root_prelude(path)}; {stty} raw -echo 2>/dev/null || "
+                f"{stty} -echo -icanon min 1 time 0 2>/dev/null || true; "
                 f"echo '{marker}'\n"
             )
             await self._await_marker(marker)
             self._clear_buffered_output()
             if env:
                 remote_env_path = await self._write_env_file(env)
-            launch = self._launch_command(command, remote_env_path, cwd)
+            launch = self._launch_command(
+                command, remote_env_path, cwd, route=self._route
+            )
             await self._send(launch + "\n")
         except BaseException:
             if remote_env_path:
                 with contextlib.suppress(Exception):
-                    await self._sandbox.exec(
-                        f"rm -f {shlex.quote(remote_env_path)}", timeout_sec=30
+                    await exec_raw(
+                        self._sandbox.exec,
+                        f"{_kit_rm(self._route)} -f {shlex.quote(remote_env_path)}",
+                        user="root",
+                        timeout_sec=30,
                     )
             await self.close()
             raise
@@ -239,24 +298,33 @@ class AgentCoreProcess(LiveProcess):
 
     @staticmethod
     def _launch_command(
-        command: str, remote_env_path: str | None, cwd: str | None
+        command: str,
+        remote_env_path: str | None,
+        cwd: str | None,
+        *,
+        route: Any = None,
     ) -> str:
-        """Build a subshell launch that cannot strand a staged env file."""
-        parts: list[str] = []
+        """Build a subshell launch that cannot strand a staged env file.
+
+        The terminal's shell is root's and has the image's environment: the
+        line keeps the task's PATH and start-up variables and pins the system
+        PATH with builtins before anything else, then starts ``/bin/bash``
+        (no profile or rc file) on the shared root bootstrap (C8). If that
+        exec fails, the subshell's trap removes the env file.
+        """
+        path = launch_path(route)
+        rm = f"{KIT_BIN}/rm" if getattr(route, "kit", False) else "/bin/rm"
+        script = root_launch_script(
+            command, env_path=remote_env_path, cwd=cwd, login=True, path=path
+        )
+        parts = [typed_root_prelude(path)]
         if remote_env_path:
-            quoted = shlex.quote(remote_env_path)
-            # The subshell is essential: if ``cd`` or sourcing fails, it exits
-            # and runs the trap. The long-lived PTY shell itself stays alive.
-            parts.append(f"trap 'rm -f {quoted}' EXIT")
-        if cwd:
-            parts.append(f"cd {shlex.quote(cwd)}")
-        if remote_env_path:
-            quoted = shlex.quote(remote_env_path)
-            parts.append(f". {quoted}")
-            parts.append(f"rm -f {quoted}")
-            parts.append("trap - EXIT")
-        parts.append(f"exec bash -lc {shlex.quote(command)}")
-        return "( " + " && ".join(parts) + " )"
+            parts.append(
+                f"trap {shlex.quote(rm + ' -f ' + shlex.quote(remote_env_path))} EXIT"
+            )
+        parts.append("exec " + shlex.join(root_launch_argv(script, launch_bash(route))))
+        # The enclosing PTY exits too, with the launched command's status.
+        return "( " + "; ".join(parts) + " ); exit $?"
 
     async def _await_marker(self, marker: str) -> None:
         from benchflow.diagnostics import (
@@ -339,7 +407,7 @@ class AgentCoreProcess(LiveProcess):
 
         if self._closed:
             raise _closed("AgentCore shell closed", "pty_error")
-        timeout = _readline_timeout_sec()
+        timeout = _agentcore_readline_timeout_sec(self._silence_floor_sec)
         try:
             line = await asyncio.wait_for(self._line_buffer.get(), timeout=timeout)
         except TimeoutError as e:

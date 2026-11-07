@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import click
 import httpx
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
@@ -50,6 +51,11 @@ def _block_identity_inference(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BENCHFLOW_GITHUB_ID", raising=False)
     monkeypatch.delenv("BENCHFLOW_EMAIL", raising=False)
     monkeypatch.setattr("benchflow.cli.traj._command_stdout", lambda *_args: None)
+
+
+def _on_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The prompts below answer from a terminal; CliRunner's stdin is a pipe."""
+    monkeypatch.setattr("benchflow.cli.traj._stdin_is_terminal", lambda: True)
 
 
 def test_stock_cli_has_the_verified_public_broker() -> None:
@@ -394,10 +400,10 @@ def test_broker_put_conflicts_are_cloud_neutral_skips(
 
 def test_help_exposes_setup_upload_and_status() -> None:
     """Guards PR #992 while ignoring Rich's environment-specific ANSI styling."""
-    traj_group = next(group for group in app.registered_groups if group.name == "traj")
-    assert {
-        command.name for command in traj_group.typer_instance.registered_commands
-    } == {"setup", "upload", "status"}
+    # `bench traj` is registered lazily, so read it off the built command tree.
+    traj_group = typer.main.get_command(app).commands["traj"]
+    assert isinstance(traj_group, click.Group)
+    assert set(traj_group.commands) == {"setup", "upload", "status"}
 
     result = runner.invoke(app, ["traj", "--help"])
     assert result.exit_code == 0
@@ -437,6 +443,7 @@ def test_upload_prompts_for_path_github_id_and_email_in_order(
     monkeypatch.setattr(
         "benchflow.publish.broker.upload_capture_via_broker", fake_upload
     )
+    _on_a_terminal(monkeypatch)
     result = runner.invoke(
         app,
         ["traj", "upload"],
@@ -469,6 +476,7 @@ def test_interactive_preview_can_cancel_before_the_upload_handshake(
     monkeypatch.setattr(
         "benchflow.publish.broker.upload_capture_via_broker", fail_upload
     )
+    _on_a_terminal(monkeypatch)
     result = runner.invoke(
         app,
         ["traj", "upload"],
@@ -525,6 +533,7 @@ def test_upload_prompts_only_for_missing_parameters(
     _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
+    _on_a_terminal(monkeypatch)
     result = runner.invoke(
         app,
         [
@@ -554,6 +563,7 @@ def test_interactive_prompts_reask_after_invalid_input(
     _block_identity_inference(monkeypatch)
     trial = _trial(tmp_path)
 
+    _on_a_terminal(monkeypatch)
     result = runner.invoke(
         app,
         ["traj", "upload", "--dry-run"],
@@ -651,7 +661,7 @@ def test_upload_explains_missing_contributor_without_typer_usage(
     _block_identity_inference(monkeypatch)
     result = runner.invoke(app, ["traj", "upload", str(_trial(tmp_path))])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     output = click.unstyle(result.output)
     assert "need a GitHub username and email" in output
     assert "--github-id YOUR_ID --email YOU@example.com" in output
@@ -764,9 +774,8 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     (follow-up to PRs #1013 and #1014): the prompt tells the agent to
     upgrade BenchFlow before reading the skill, the upgrade command appears
     before the skill URL, and the URL sits on one unbroken physical line.
-    README.md renders the prompt as a blockquote (a fenced code block would
-    not soft-wrap on GitHub), so each unwrapped prompt line is asserted to be
-    present in the README instead of the whole string verbatim.
+    The prize page that quoted the prompt (docs/results/eval-prize.md, an
+    event page) has no successor in docs v2.
     """
     from benchflow.cli.traj import (
         CONTRIBUTOR_PROMPT,
@@ -776,8 +785,6 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
     )
 
     result = runner.invoke(app, ["traj", "setup", "--prompt"])
-    readme = Path(__file__).resolve().parents[1] / "README.md"
-    readme_text = readme.read_text(encoding="utf-8")
 
     assert result.exit_code == 0, result.output
     output = click.unstyle(result.output)
@@ -788,10 +795,6 @@ def test_setup_prompt_prints_the_copy_paste_line() -> None:
 
     prompt_lines = [line for line in CONTRIBUTOR_PROMPT.splitlines() if line]
     assert len(prompt_lines) == 3
-    for line in prompt_lines:
-        assert line in readme_text
-    # Wording updated on main in 8cae2a42 ("Send these to your coding agent.").
-    assert "Send these to your coding agent" in readme_text
 
     assert UPGRADE_COMMAND in CONTRIBUTOR_PROMPT
     assert CONTRIBUTOR_PROMPT.index(UPGRADE_COMMAND) < CONTRIBUTOR_PROMPT.index(
@@ -904,8 +907,8 @@ def test_setup_list_prints_path_on_its_own_line(
     from benchflow.trajectories.sessions import SessionHit
 
     long_path = Path(
-        "/Users/someone/.claude/projects/"
-        "-Users-someone-very-long-project-name-that-used-to-wrap/"
+        "/Users/user/.claude/projects/"
+        "-Users-user-very-long-project-name-that-used-to-wrap/"
         "01234567-89ab-cdef-0123-456789abcdef.jsonl"
     )
     monkeypatch.setattr(
@@ -1394,10 +1397,40 @@ def test_traj_status_accepts_bare_hex_and_prompts_when_missing(
     bare = runner.invoke(app, ["traj", "status", VALID_DIGEST])
     assert bare.exit_code == 0, bare.output
 
+    _on_a_terminal(monkeypatch)
     prompted = runner.invoke(app, ["traj", "status"], input=f"sha256:{VALID_DIGEST}\n")
     assert prompted.exit_code == 0, prompted.output
     assert "Digest" in click.unstyle(prompted.output)
     assert calls == [VALID_DIGEST, VALID_DIGEST]
+
+
+def test_traj_commands_never_prompt_without_a_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dogfood p5-3: `bench traj status < /dev/null` waited on a prompt for
+    ever. Without a terminal a missing digest or trajectory is a usage error
+    with its next step, and nothing is fetched."""
+    from benchflow.publish.broker import CaptureStatus
+
+    calls = _patch_status_fetch(monkeypatch, CaptureStatus(status="ingested"))
+    status = runner.invoke(app, ["traj", "status"], input="")
+    assert status.exit_code == 2, status.output
+    output = " ".join(click.unstyle(status.output).split())
+    assert "needs the digest when stdin is not a terminal" in output
+    assert "next: pass it: bench traj status sha256:" in output
+    assert calls == []
+
+    upload = runner.invoke(app, ["traj", "upload", "--dry-run"], input="")
+    assert upload.exit_code == 2, upload.output
+    assert "next: pass it: bench traj upload" in " ".join(upload.output.split())
+
+    _block_identity_inference(monkeypatch)
+    named = runner.invoke(
+        app, ["traj", "upload", str(_trial(tmp_path)), "--dry-run"], input=""
+    )
+    assert named.exit_code == 2, named.output
+    assert "--github-id YOUR_ID --email" in named.output
+    assert "GitHub ID:" not in click.unstyle(named.output)
 
 
 def test_traj_status_rejects_malformed_digest() -> None:

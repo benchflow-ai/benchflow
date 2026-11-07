@@ -188,8 +188,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Plan integration scope (trusted)
@@ -319,6 +323,8 @@ jobs:
       GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
       DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
       CELL_JSON: ${{ toJson(matrix.cell) }}
+      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+      AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -338,8 +344,12 @@ jobs:
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python
@@ -400,12 +410,21 @@ jobs:
           # job) is the authority, so we do not fail the leg here.
           PY
 
+      - name: Archive cell jobs
+        if: always()
+        # The trusted base may predate this helper; never use PR-head infra.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" pack jobs/integration-scope "$RUNNER_TEMP/job-archives/jobs-${{ strategy.job-index }}.tar.gz"
+
       - name: Upload cell jobs
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
         with:
           name: integration-scope-jobs-${{ strategy.job-index }}
-          path: jobs/integration-scope
+          path: ${{ runner.temp }}/job-archives/jobs-${{ strategy.job-index }}.tar.gz
           if-no-files-found: ignore
           retention-days: 14
 
@@ -451,14 +470,26 @@ jobs:
         with:
           pattern: integration-scope-jobs-*
           merge-multiple: true
-          path: jobs/integration-scope
+          path: job-archives
+
+      - name: Restore regular job files
+        # Restore uses the same pinned release as every packing job.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin 1a32bcbee558377912ae01c6d15767ef88d981f5
+          git show 1a32bcbee558377912ae01c6d15767ef88d981f5:.github/scripts/job_artifacts.py > "$RUNNER_TEMP/job_artifacts.py"
+          python -I "$RUNNER_TEMP/job_artifacts.py" unpack job-archives jobs/integration-scope
 
       - name: Select judge provider
         run: python .github/scripts/select_integration_provider.py
 
       - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
           enable-cache: true
 
       - name: Set up Python

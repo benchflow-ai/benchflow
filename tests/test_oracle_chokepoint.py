@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -79,7 +79,7 @@ class TestEvalCreateRouting:
         ],
     )
     def test_sandbox_help_matches_registered_backends(self, command):
-        """Guards ENG-92 CLI help against drifting from the sandbox registry."""
+        """Guards CLI help against drifting from the sandbox registry."""
         from benchflow.cli.main import app
         from benchflow.sandbox.providers import providers_phrase
 
@@ -97,7 +97,7 @@ class TestEvalCreateRouting:
         assert "k8s" not in result.stdout.lower()
 
     def test_tasks_generate_help_resolves(self):
-        """Guards ENG-65: `bench tasks generate` is registered on live CLI."""
+        """`bench tasks generate` is registered on live CLI."""
         from benchflow.cli.main import app
 
         result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
@@ -205,7 +205,7 @@ class TestEvalCreateRouting:
         assert not (task_dir / "task.md").exists()
 
     def test_eval_create_normalizes_agent_alias(self, tmp_path: Path):
-        """Guards ENG-86: eval run normalizes aliases before launch."""
+        """Eval run normalizes aliases before launch."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -247,7 +247,7 @@ class TestEvalCreateRouting:
         assert captured["agent"] == "codex-acp"
 
     def test_eval_create_normalizes_sandbox_user_none(self, tmp_path: Path):
-        """Guards ENG-91 P0 dogfood sandbox-user CLI regression."""
+        """Guards the dogfood sandbox-user CLI regression."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -291,7 +291,7 @@ class TestEvalCreateRouting:
     def test_eval_create_config_rejects_unsupported_agent_protocol(
         self, tmp_path: Path
     ):
-        """Guards the ENG-86 fix from commit b69bdf4 against config bypass."""
+        """Guards the fix from commit b69bdf4 against config bypass."""
         from benchflow.cli.main import app
 
         tasks = tmp_path / "tasks"
@@ -307,7 +307,7 @@ class TestEvalCreateRouting:
     def test_eval_create_config_recomputes_model_after_agent_normalization(
         self, tmp_path: Path
     ):
-        """Guards the ENG-86 fix from commit b69bdf4 for config-file agents."""
+        """Guards the fix from commit b69bdf4 for config-file agents."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -332,7 +332,7 @@ class TestEvalCreateRouting:
     def test_eval_create_inherits_host_provider_key_without_agent_env(
         self, tmp_path: Path, monkeypatch
     ):
-        """Guards ENG-78: CLI runs inherit provider keys without --agent-env."""
+        """CLI runs inherit provider keys without --agent-env."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -387,6 +387,10 @@ class TestEvalCreateRouting:
         self, tmp_path: Path, monkeypatch
     ):
         """Guards release smokes: .env sandbox credentials reach provider SDKs."""
+        # --sandbox daytona; stay independent of the optional SDK.
+        monkeypatch.setattr(
+            "benchflow.eval_plan.sandbox_sdk_missing", lambda name: False
+        )
         import os
         from types import SimpleNamespace
 
@@ -445,7 +449,7 @@ class TestEvalCreateRouting:
         }
 
     def test_eval_create_exits_nonzero_when_single_task_errors(self, tmp_path: Path):
-        """Guards ENG-93 release smoke evidence against false-green CLI exits."""
+        """Guards release smoke evidence against false-green CLI exits."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import app
@@ -491,7 +495,7 @@ class TestEvalCreateRouting:
     def test_eval_create_exits_nonzero_when_single_task_verifier_errors(
         self, tmp_path: Path
     ):
-        """Guards ENG-93 release smoke evidence against hidden verifier errors."""
+        """Guards release smoke evidence against hidden verifier errors."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import app
@@ -534,7 +538,7 @@ class TestEvalCreateRouting:
     def test_eval_create_exits_nonzero_when_batch_has_harness_errors(
         self, tmp_path: Path
     ):
-        """Guards ENG-93 release smoke evidence against false-green batch runs."""
+        """Guards release smoke evidence against false-green batch runs."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import app
@@ -573,7 +577,7 @@ class TestEvalCreateRouting:
         assert "Score: 0/1" in result.stdout
 
     def test_eval_list_reads_root_summary(self, tmp_path: Path):
-        """Guards ENG-83: root summary.json is treated as the eval summary."""
+        """Root summary.json is treated as the eval summary."""
         import json
 
         from benchflow.cli.main import app
@@ -593,10 +597,10 @@ class TestEvalCreateRouting:
 
 
 class TestEvalCreateIncludeExclude:
-    """Guards ENG-159: --include and --exclude flags wire through to EvaluationConfig."""
+    """--include and --exclude flags wire through to EvaluationConfig."""
 
     def test_eval_create_include_via_tasks_dir(self, tmp_path: Path):
-        """Guards ENG-159: --include reaches EvaluationConfig for --tasks-dir batch runs."""
+        """--include reaches EvaluationConfig for --tasks-dir batch runs."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -642,7 +646,7 @@ class TestEvalCreateIncludeExclude:
         assert captured["exclude"] == {"task-b"}
 
     def test_eval_create_include_overrides_yaml(self, tmp_path: Path):
-        """Guards ENG-159: CLI --include overrides YAML include list."""
+        """CLI --include overrides YAML include list."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -666,7 +670,7 @@ class TestEvalCreateIncludeExclude:
         assert captured["include"] == {"cli-task"}
 
     def test_eval_create_no_include_preserves_yaml(self, tmp_path: Path):
-        """Guards ENG-159: without CLI --include, YAML include list is preserved."""
+        """Without CLI --include, YAML include list is preserved."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import eval_run
@@ -690,7 +694,7 @@ class TestEvalCreateIncludeExclude:
         assert captured["include"] == {"yaml-task"}
 
     def test_eval_create_cli_runner_include_flag(self, tmp_path: Path):
-        """Guards ENG-159: --include flag works via CliRunner end-to-end."""
+        """--include flag works via CliRunner end-to-end."""
         from types import SimpleNamespace
 
         from benchflow.cli.main import app
@@ -728,14 +732,14 @@ class TestEvalCreateIncludeExclude:
 
 
 class TestVerifierNonzeroExitRewardAcceptance:
-    """Guards ENG-150: verifiers exiting nonzero after reward 0 must be
+    """Verifiers exiting nonzero after reward 0 must be
     classified as 'failed' (honest model failure), not 'verifier_errored'."""
 
     @pytest.mark.asyncio
     async def test_nonzero_exit_with_reward_zero_classified_as_failed(
         self, tmp_path: Path
     ):
-        """Guards ENG-150: rc!=0 + reward=0.0 → 'failed', not 'verifier_errored'."""
+        """rc!=0 + reward=0.0 → 'failed', not 'verifier_errored'."""
         from benchflow._utils.scoring import classify_result
 
         outcome = classify_result(reward=0.0, error=None, verifier_error=None)
@@ -781,6 +785,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
             source_dir=verifier_dir,
             target_dir="/verifier",
             service="main",
+            admission=ANY,
         )
         # test.sh runs at the native /verifier mount. The first exec may be the
         # /tests->/verifier compat symlink (#686), and the command is passed
@@ -793,7 +798,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
 
     @pytest.mark.asyncio
     async def test_nonzero_exit_reward_zero_accepted_by_verifier(self, tmp_path: Path):
-        """Guards ENG-150: Verifier accepts reward file when script exits nonzero."""
+        """Verifier accepts reward file when script exits nonzero."""
         from unittest.mock import AsyncMock, MagicMock
 
         from benchflow.task import RolloutPaths, Verifier
@@ -834,7 +839,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
 
     @pytest.mark.asyncio
     async def test_nonzero_exit_reward_json_zero_accepted(self, tmp_path: Path):
-        """Guards ENG-150: reward.json with reward=0 accepted despite rc!=0."""
+        """reward.json with reward=0 accepted despite rc!=0."""
         import json
         from unittest.mock import AsyncMock, MagicMock
 
@@ -875,7 +880,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
         assert result.rewards["reward"] == 0.0
 
     def test_end_to_end_scoring_nonzero_verifier_reward_zero(self):
-        """Guards ENG-150: full classify_score_outcome pipeline gives 'failed'."""
+        """Full classify_score_outcome pipeline gives 'failed'."""
         from benchflow._utils.scoring import classify_score_outcome
 
         result = {
@@ -886,7 +891,7 @@ class TestVerifierNonzeroExitRewardAcceptance:
         assert classify_score_outcome(result) == "failed"
 
     def test_nonzero_exit_no_reward_still_verifier_error(self, tmp_path: Path):
-        """Guards ENG-150 doesn't regress: rc!=0 with NO reward file is still an error."""
+        """The fix doesn't regress: rc!=0 with NO reward file is still an error."""
         from benchflow._utils.scoring import classify_result
 
         outcome = classify_result(
@@ -1069,15 +1074,15 @@ class TestEvalCreateOracleCLI:
         assert "BENCHFLOW_PROVIDER_MODEL" not in captured["agent_env"]
 
 
-# ENG-149: idle timeout diagnostics in result.json
+# Idle timeout diagnostics in result.json
 
 
 class TestIdleTimeoutResultDiagnostics:
-    """Guards ENG-149: result.json must record structured idle timeout diagnostics
+    """result.json must record structured idle timeout diagnostics
     so check_results/dashboard can identify invalidated measurements."""
 
     def test_error_category_persisted_for_idle_timeout(self, tmp_path):
-        """Guards ENG-149: result.json contains error_category='idle_timeout'."""
+        """result.json contains error_category='idle_timeout'."""
         from benchflow._utils.scoring import classify_error
         from benchflow.diagnostics import IdleTimeoutDiagnostic, RolloutDiagnostics
         from benchflow.rollout import _build_rollout_result
@@ -1124,7 +1129,7 @@ class TestIdleTimeoutResultDiagnostics:
         assert classify_error(error) == "idle_timeout"
 
     def test_error_category_persisted_for_non_idle_errors(self, tmp_path):
-        """Guards ENG-149: error_category is set for all error types."""
+        """error_category is set for all error types."""
         from datetime import datetime
 
         from benchflow.rollout import _build_rollout_result
@@ -1151,7 +1156,7 @@ class TestIdleTimeoutResultDiagnostics:
         assert result_json["idle_timeout_info"] is None
 
     def test_error_category_null_on_success(self, tmp_path):
-        """Guards ENG-149: error_category is null when no error."""
+        """error_category is null when no error."""
         from datetime import datetime
 
         from benchflow.rollout import _build_rollout_result
@@ -1178,7 +1183,7 @@ class TestIdleTimeoutResultDiagnostics:
         assert result_json["idle_timeout_info"] is None
 
     def test_classify_error_categories_comprehensive(self):
-        """Guards ENG-149: all expected error categories are classified."""
+        """All expected error categories are classified."""
         from benchflow._utils.scoring import classify_error
 
         assert (

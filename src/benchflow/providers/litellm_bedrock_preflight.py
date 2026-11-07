@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from benchflow._root_only import root_only_tree_check
 from benchflow.providers.litellm_config import LiteLLMRoute
+from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
 
 class BedrockPatchPreflightError(RuntimeError):
@@ -37,7 +39,7 @@ try:
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
     for probe in PROBES:
-        if not AnthropicConfig._is_adaptive_thinking_model(probe):
+        if not AnthropicConfig._is_adaptive_thinking_model(probe, "bedrock"):
             failures.append(
                 "adaptive-thinking gate inactive: "
                 f"_is_adaptive_thinking_model({probe!r}) is False"
@@ -52,6 +54,32 @@ try:
         failures.append("reasoning-effort override inactive")
 except Exception as exc:  # noqa: BLE001 - report any import/shape drift
     failures.append(f"bedrock converse transform unavailable: {exc}")
+try:
+    from litellm.llms.bedrock.messages.invoke_transformations.anthropic_claude3_transformation import (
+        AmazonAnthropicClaudeMessagesConfig,
+    )
+
+    normalize = AmazonAnthropicClaudeMessagesConfig._normalize_system_role_messages
+    if not getattr(normalize, "__benchflow_bedrock_patch__", False):
+        # Without it every turn re-bills the transcript uncached (#1135).
+        failures.append("system-message cache override inactive")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"bedrock invoke messages transform unavailable: {exc}")
+# Upstream models passed as arguments must keep ``output_config.effort``:
+# LiteLLM drops it for Claude ids its model map does not know, unless
+# sitecustomize registered their effort capabilities.
+try:
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+    for model in sys.argv[1:]:
+        # The provider as the transforms pass it (LiteLLM 1.103 needs it).
+        provider, _, bare = model.partition("/")
+        if not bare:
+            provider, bare = "anthropic", model
+        if not AnthropicConfig._model_supports_effort_param(bare, provider):
+            failures.append(f"effort capability missing for {model!r}")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"effort capability check unavailable: {exc}")
 if failures:
     print("; ".join(failures))
     sys.exit(1)
@@ -124,14 +152,19 @@ def preflight_host_bedrock_patch(
     *,
     env: dict[str, str],
     litellm_executable: str,
+    effort_models: tuple[str, ...] = (),
 ) -> None:
-    """Fail closed if the Bedrock 4.8+ patch is not active for the host proxy."""
+    """Fail closed if the Bedrock 4.8+ patch is not active for the host proxy.
+
+    ``effort_models`` are upstream ids that must keep ``output_config.effort``.
+    """
     try:
         result = subprocess.run(
             [
                 _host_python_for_litellm(litellm_executable, env=env),
                 "-c",
                 BEDROCK_PATCH_PREFLIGHT_SOURCE,
+                *effort_models,
             ],
             env=env,
             capture_output=True,
@@ -153,14 +186,23 @@ async def preflight_sandbox_bedrock_patch(
     python: str,
     runtime_dir: str,
     preflight_path: str,
+    effort_models: tuple[str, ...] = (),
 ) -> None:
     """Fail closed if the Bedrock 4.8+ patch is not active in a sandbox proxy."""
+    # Root runs the proxy's Python on the plumbing route (a root-only PATH,
+    # every PYTHON* unset), with only the runtime folder (FF-install-C14).
     command = (
-        f"PYTHONPATH={shlex.quote(runtime_dir)} "
-        f"{shlex.quote(python)} {shlex.quote(preflight_path)}"
+        # From the checked runtime folder, its only Python path (C8,
+        # PT-C8-R3-7): the patches load from there and nowhere else.
+        f"cd {shlex.quote(runtime_dir)} && "
+        + root_only_tree_check(runtime_dir, "the proxy runtime folder")
+        + f" && PYTHONPATH={shlex.quote(runtime_dir)} "
+        f"{shlex.quote(python)} -s {shlex.quote(preflight_path)}"
     )
+    if effort_models:
+        command += " " + " ".join(shlex.quote(model) for model in effort_models)
     try:
-        result = await sandbox.exec(command, timeout_sec=120)
+        result = await exec_raw(sandbox.exec, command, timeout_sec=120)
     except Exception as exc:
         raise BedrockPatchPreflightError(
             _failure_message("sandbox", f"preflight execution failed: {exc}")
@@ -175,8 +217,8 @@ async def preflight_sandbox_bedrock_patch(
 
 
 def _exec_details(label: str, result: Any) -> str:
-    stdout = (getattr(result, "stdout", "") or "").strip()
-    stderr = (getattr(result, "stderr", "") or "").strip()
+    stdout = (diagnostic_result(result).stdout.render() or "").strip()
+    stderr = (diagnostic_result(result).stderr.render() or "").strip()
     details = [f"{label} failed with exit code {getattr(result, 'return_code', '?')}"]
     if stdout:
         details.append(f"stdout: {stdout[:2000]}")

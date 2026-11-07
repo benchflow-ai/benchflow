@@ -1,0 +1,57 @@
+    async def _start(self) -> DaytonaChannel | None:
+        channel: DaytonaChannel | None = None
+        try:
+            read = await self._control(f"{KIT_BIN}/cat {KIT_PYTHON}")
+            python = (
+                helper_python_argv(read.stdout or "") if read.return_code == 0 else None
+            )
+            if python is None or not self.current():
+                return None
+            channel = DaytonaChannel(self.provider, self.sandbox._exec_counts())
+            self.channels.append(channel)
+            source = (
+                f"BF_READY_MARK = {channel.marker!r}\n" + _PTY_PRELUDE + HELPER_SOURCE
+            )
+            path = await self._stage_source(source.encode())
+            if not self.current():
+                return None
+            assert self.route.pin is not None
+            proof = _transport.stage_proof(
+                [path], shell=self.route.shell, path=self.route.pin
+            )
+            capture = (
+                f"{proof} || exit 126; set -C; "
+                f"{KIT_BIN}/env -0 > {path}.env && "
+                f"pwd -P > {path}.cwd && umask > {path}.mask"
+            )
+            captured = await self._control(capture)
+            if captured.return_code != 0 or not self.current():
+                return None
+            channel.journal = path + ".started"
+
+            async def verdict(journal: str, pid: int) -> ExecResult:
+                return await self._control(
+                    shlex.join([*python, "-c", VERDICT_SOURCE, journal, str(pid)])
+                )
+
+            channel.verdict = verdict
+            launch = shlex.join([*python, path, channel.journal, path])
+            assert self.route.pin is not None
+            command = typed_root_prelude(self.route.pin) + "; exec " + launch
+            await asyncio.wait_for(channel.connect(command, self.route), START_TIMEOUT)
+            if not self.current():
+                return None
+            self.sandbox._exec_counts().channel_starts += 1
+            return channel
+        except Exception as exc:
+            self.sandbox.logger.debug("Daytona command channel did not start: %s", exc)
+            if channel is not None and self.current():
+                await channel.close()
+            return None
+        finally:
+            if self.finalized and channel is not None and channel.pty is not None:
+                # A late accepted create still belongs to this startup task.
+                if channel.disconnecting is None:
+                    await channel._disconnect()
+                else:
+                    await asyncio.shield(channel.disconnecting)

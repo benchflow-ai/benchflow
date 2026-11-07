@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -34,7 +35,8 @@ class TestEnvMappingField:
         assert cfg.supports_acp_set_model is False
         assert cfg.acp_model_config_id == "model"
         assert cfg.acp_effort_config_id == "effort"
-        assert "@agentclientprotocol/claude-agent-acp@0.73.0" in cfg.install_cmd
+        assert "@agentclientprotocol/claude-agent-acp@0.81.2" in cfg.install_cmd
+        assert "@anthropic-ai/claude-code@2.1.316" in cfg.install_cmd
 
     def test_pi_acp_no_static_mapping(self):
         """pi-acp is multi-protocol — launch wrapper handles env translation."""
@@ -53,7 +55,7 @@ class TestEnvMappingField:
         """Same @agentclientprotocol family as claude — pin so a floating latest
         can't silently break activation when upstream drops session/set_model."""
         cfg = AGENTS["codex-acp"]
-        assert "@agentclientprotocol/codex-acp@1.6.0" in cfg.install_cmd
+        assert "@agentclientprotocol/codex-acp@2.0.1" in cfg.install_cmd
 
     def test_gemini_has_mapping(self):
         cfg = AGENTS["gemini"]
@@ -146,11 +148,11 @@ class TestOpenHandsConfig:
             in cfg.install_cmd
         )
         assert (
-            "uv tool install --force --refresh "
-            "--overrides /tmp/oh-sdk-overrides.txt "
+            "uv tool install --force "
+            "--overrides /opt/runtime/agents/oh-sdk-overrides.txt "
             "--from "
             "'git+https://github.com/OpenHands/OpenHands-CLI.git@"
-            "2df8a2835d3f1bd2f2eadf5a7a2e1ad0dfb0d271' "
+            "283c6ac3610f4299f405f7389f65766dcb83e12a' "
             "openhands --python 3.12" in cfg.install_cmd
         )
         assert "OpenHands/OpenHands-CLI.git@main" not in cfg.install_cmd
@@ -165,7 +167,7 @@ class TestOpenHandsConfig:
         assert "openhands-sdk==1.28.1" in cfg.install_cmd
         assert "openhands-tools==1.28.1" in cfg.install_cmd
         assert "openhands-sdk>=1.22.0" not in cfg.install_cmd
-        assert "--overrides /tmp/oh-sdk-overrides.txt" in cfg.install_cmd
+        assert "--overrides /opt/runtime/agents/oh-sdk-overrides.txt" in cfg.install_cmd
 
     def test_openhands_install_cmd_does_not_deploy_bedrock_shim(self):
         """Guards the LiteLLM runtime refactor: Bedrock patches live with LiteLLM."""
@@ -282,7 +284,23 @@ class TestOpenHandsConfig:
         cfg = AGENTS["openhands"]
         settings_cmd = cfg.launch_cmd.split(" && openhands acp", 1)[0]
         tool_root = tmp_path / "tools"
-        package_root = tool_root / "openhands" / "site-packages"
+        tool_env = tool_root / "openhands"
+        subprocess.run(
+            [sys.executable, "-I", "-m", "venv", "--without-pip", str(tool_env)],
+            check=True,
+        )
+        bin_dir = tool_env / "bin"
+        package_root = Path(
+            subprocess.check_output(
+                [
+                    str(bin_dir / "python"),
+                    "-I",
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_path('purelib'))",
+                ],
+                text=True,
+            ).strip()
+        )
         package_dir = package_root / "openhands_cli"
         package_dir.mkdir(parents=True)
         (package_dir / "__init__.py").write_text("")
@@ -293,13 +311,6 @@ class TestOpenHandsConfig:
             "        Tool(name=task_tool_name),\n"
             "    ]\n"
         )
-        bin_dir = tool_root / "openhands" / "bin"
-        bin_dir.mkdir(parents=True)
-        python_wrapper = bin_dir / "python"
-        python_wrapper.write_text(
-            f'#!/bin/sh\nPYTHONPATH={package_root} exec {sys.executable} "$@"\n'
-        )
-        python_wrapper.chmod(0o755)
         openhands = bin_dir / "openhands"
         openhands.write_text("#!/bin/sh\nexit 0\n")
         openhands.chmod(0o755)
@@ -344,15 +355,18 @@ class TestOpenHandsConfig:
     def test_harvey_lab_installs_python_deps_in_venv(self):
         """Guards the v0.5 stress failure where pip hit PEP 668 in Ubuntu."""
         cfg = AGENTS["harvey-lab-harness"]
-        assert "python3 -m venv /opt/benchflow/harvey-lab-venv" in cfg.install_cmd
         assert (
-            "/opt/benchflow/harvey-lab-venv/bin/python -m pip install"
+            "uv venv -q --clear --python 3.12.15 /opt/runtime/agents/harvey-lab-venv"
+            in cfg.install_cmd
+        )
+        assert (
+            "uv pip install -q --require-hashes --python /opt/runtime/agents/harvey-lab-venv/bin/python"
             in cfg.install_cmd
         )
         assert "pip3 install -q anthropic" not in cfg.install_cmd
         assert cfg.launch_cmd.startswith(
-            "HARVEY_LABS_ROOT=/opt/harvey-labs "
-            "/opt/benchflow/harvey-lab-venv/bin/python "
+            "HARVEY_LABS_ROOT=/opt/runtime/agents/harvey-labs "
+            "/opt/runtime/agents/harvey-lab-venv/bin/python "
         )
 
 
@@ -413,6 +427,8 @@ class TestRegisterAgent:
         assert cfg.session_factory == ""
         assert cfg.disallow_web_tools_setup_cmd == ""
         assert cfg.disallow_web_tools_launch_suffix == ""
+        assert cfg.disallow_hosted_search_setup_cmd == ""
+        assert cfg.disallow_hosted_search_launch_suffix == ""
 
     def test_passes_through_new_fields(self, cleanup_agent):
         cleanup_agent.append("rt-full-agent")
@@ -426,6 +442,8 @@ class TestRegisterAgent:
             api_protocol="openai-completions",
             disallow_web_tools_setup_cmd="printf 'no web' > /tmp/policy",
             disallow_web_tools_launch_suffix=" --no-web",
+            disallow_hosted_search_setup_cmd="printf 'no search' > /tmp/policy",
+            disallow_hosted_search_launch_suffix=" --no-search",
         )
         assert cfg.protocol == "session-factory"
         assert cfg.session_factory == "my_agent.factory:create_agent"
@@ -433,6 +451,10 @@ class TestRegisterAgent:
         assert cfg.api_protocol == "openai-completions"
         assert cfg.disallow_web_tools_setup_cmd == "printf 'no web' > /tmp/policy"
         assert cfg.disallow_web_tools_launch_suffix == " --no-web"
+        assert (
+            cfg.disallow_hosted_search_setup_cmd == "printf 'no search' > /tmp/policy"
+        )
+        assert cfg.disallow_hosted_search_launch_suffix == " --no-search"
 
         # And the registered entry reflects them.
         registered = AGENTS["rt-full-agent"]
@@ -441,3 +463,91 @@ class TestRegisterAgent:
         assert registered.default_model == "rt-model-1"
         assert registered.api_protocol == "openai-completions"
         assert registered.disallow_web_tools_launch_suffix == " --no-web"
+        assert registered.disallow_hosted_search_launch_suffix == " --no-search"
+
+
+class TestModelRoute:
+    """``model_route = "agent"``: an agent that calls its own model
+    endpoint, registered at runtime or through a manifest."""
+
+    @pytest.fixture
+    def cleanup_agent(self):
+        registered: list[str] = []
+        yield registered
+        for name in registered:
+            AGENTS.pop(name, None)
+            AGENT_INSTALLERS.pop(name, None)
+            AGENT_LAUNCH.pop(name, None)
+
+    def test_register_agent_defaults_to_the_proxy_route(self, cleanup_agent):
+        """Every agent keeps the metered proxy route unless it
+        says otherwise."""
+        from benchflow.agents.registry import agent_routes_own_model
+
+        cleanup_agent.append("rt-proxy-route")
+        cfg = register_agent(
+            name="rt-proxy-route", install_cmd="install", launch_cmd="launch"
+        )
+        assert cfg.model_route == "proxy"
+        assert agent_routes_own_model("rt-proxy-route") is False
+
+    def test_register_agent_takes_the_agent_route(self, cleanup_agent):
+        """The SDK can register an agent that routes its own
+        model calls, as a contract 1.1 manifest can."""
+        from benchflow.agents.registry import agent_routes_own_model, routed_model
+
+        cleanup_agent.append("rt-own-route")
+        cfg = register_agent(
+            name="rt-own-route",
+            install_cmd="install",
+            launch_cmd="launch",
+            model_route="agent",
+        )
+        assert cfg.model_route == "agent"
+        assert agent_routes_own_model("rt-own-route") is True
+        # Its model is a label: nothing routes it.
+        assert routed_model("rt-own-route", "deepseek-v4-flash") is None
+        assert routed_model("claude-agent-acp", "claude-haiku-4-5") == (
+            "claude-haiku-4-5"
+        )
+
+    def test_register_agent_refuses_an_unknown_route(self, cleanup_agent):
+        """A misspelt route never silently becomes the proxy."""
+        cleanup_agent.append("rt-bad-route")
+        with pytest.raises(ValueError, match="model_route must be one of"):
+            register_agent(
+                name="rt-bad-route",
+                install_cmd="install",
+                launch_cmd="launch",
+                model_route="direct",
+            )
+        assert "rt-bad-route" not in AGENTS
+
+    def test_the_route_survives_acpx_and_alias_lookups(self, cleanup_agent):
+        """The acpx wrapper copies every field, and the route is
+        found under an alias, an acpx spec and an acpx runtime key."""
+        from benchflow.agents.registry import (
+            AGENT_ALIASES,
+            _acpx_wrap,
+            agent_routes_own_model,
+        )
+
+        cleanup_agent.append("rt-own-alias")
+        cfg = register_agent(
+            name="rt-own-alias",
+            install_cmd="install",
+            launch_cmd="launch",
+            model_route="agent",
+        )
+        assert _acpx_wrap(cfg).model_route == "agent"
+        AGENT_ALIASES["rt-own"] = "rt-own-alias"
+        try:
+            assert agent_routes_own_model("rt-own") is True
+            assert agent_routes_own_model("acpx/rt-own-alias") is True
+            assert agent_routes_own_model("acpx:rt-own-alias") is True
+        finally:
+            AGENT_ALIASES.pop("rt-own", None)
+        # A raw command or a scripted agent is never on its own route.
+        assert agent_routes_own_model("rt-own-alias --acp") is False
+        assert agent_routes_own_model("oracle") is False
+        assert agent_routes_own_model(None) is False

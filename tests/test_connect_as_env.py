@@ -40,11 +40,9 @@ class TestConnectAsEnvMerge:
         cfg = _make_config(
             agent_env={"BENCHFLOW_PROVIDER_BASE_URL": "http://localhost:8080/v1"},
         )
-        trial = Rollout.__new__(Rollout)
-        trial._config = cfg
+        trial = Rollout(cfg)
         trial._env = {}
         trial._rollout_dir = tmp_path
-        trial._timing = {}
         trial._agent_cwd = None
         trial._agent_cfg = MagicMock(credential_files=[])
         trial._phase = "idle"
@@ -58,6 +56,7 @@ class TestConnectAsEnvMerge:
         planes.write_credential_files = AsyncMock()
         planes.upload_subscription_auth = AsyncMock()
         planes.apply_web_tool_policy = AsyncMock()
+        planes.quiesce_agent = AsyncMock()
         planes.connect_acp = AsyncMock(
             return_value=(AsyncMock(), AsyncMock(), AsyncMock(), "agent")
         )
@@ -170,7 +169,7 @@ class TestConnectAsEnvMerge:
 
     @pytest.mark.asyncio
     async def test_same_agent_different_model_refreshes_credentials(self, _mock_trial):
-        """Guards ENG-91 P0 same-agent role credential refresh regression."""
+        """Same-agent role credential refresh regression."""
         from benchflow.rollout import Role
 
         primary = Role(name="primary", agent="claude-agent-acp", model="test-model")

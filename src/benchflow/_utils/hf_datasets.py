@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,16 +24,51 @@ class HfDatasetSnapshot:
     provenance: dict[str, Any]
 
 
+@contextmanager
+def _staged_output(source: Path, output: Path, *, overwrite: bool):
+    # A destination inside the source can recursively copy itself; an ancestor
+    # can destroy the download cache. Resolve aliases before either operation.
+    src, dst = source.resolve(), output.resolve()
+    if src == dst or src in dst.parents or dst in src.parents:
+        raise ValueError("HF snapshot source and output trees must not overlap")
+    if output.is_symlink():
+        raise ValueError("HF snapshot output must not be a symlink")
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"Output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Stage on the destination filesystem, keeping the previous snapshot until
+    # every copy/write succeeds. A failed publish restores the previous entry.
+    with tempfile.TemporaryDirectory(prefix=".benchflow-hf-", dir=output.parent) as tmp:
+        stage, backup = Path(tmp) / "snapshot", Path(tmp) / "previous"
+        yield stage
+        try:
+            if output.exists():
+                output.rename(backup)
+            stage.rename(output)
+        except BaseException:
+            # Cancellation must not let TemporaryDirectory delete the old
+            # snapshot while its public name is still absent.
+            if backup.exists() and not output.exists():
+                backup.rename(output)
+            raise
+
+
 def _copy_tree(src: Path, dst: Path, *, overwrite: bool) -> None:
-    if dst.exists():
-        if not overwrite:
-            raise FileExistsError(f"Output already exists: {dst}")
-        if dst.is_dir():
-            shutil.rmtree(dst)
-        else:
-            dst.unlink()
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git"))
+    with _staged_output(src, dst, overwrite=overwrite) as stage:
+        _populate_snapshot(src, stage, ())
+
+
+def _populate_snapshot(source: Path, output: Path, task_ids: Sequence[str]) -> None:
+    if not task_ids:
+        shutil.copytree(source, output, ignore=shutil.ignore_patterns(".git"))
+        return
+    output.mkdir()
+    for task_id in task_ids:
+        shutil.copytree(
+            source / task_id,
+            output / task_id,
+            ignore=shutil.ignore_patterns(".git"),
+        )
 
 
 def _copy_selected_tasks(
@@ -41,20 +78,8 @@ def _copy_selected_tasks(
     *,
     overwrite: bool,
 ) -> None:
-    if output_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"Output already exists: {output_dir}")
-        if output_dir.is_dir():
-            shutil.rmtree(output_dir)
-        else:
-            output_dir.unlink()
-    output_dir.mkdir(parents=True)
-    for task_id in task_ids:
-        shutil.copytree(
-            source_root / task_id,
-            output_dir / task_id,
-            ignore=shutil.ignore_patterns(".git"),
-        )
+    with _staged_output(source_root, output_dir, overwrite=overwrite) as stage:
+        _populate_snapshot(source_root, stage, task_ids)
 
 
 def _read_hf_revision(repo_id: str, revision: str | None) -> str:
@@ -68,7 +93,9 @@ def _read_hf_revision(repo_id: str, revision: str | None) -> str:
 
     info = HfApi().repo_info(repo_id, repo_type="dataset", revision=revision)
     sha = getattr(info, "sha", None)
-    return str(sha or revision or "main")
+    if not sha:
+        raise ValueError(f"Could not resolve HF dataset revision for {repo_id!r}")
+    return str(sha)
 
 
 def _download_snapshot(
@@ -182,7 +209,7 @@ def snapshot_hf_dataset(
     )
     snapshot_root = _download_snapshot(
         repo_id,
-        revision=revision,
+        revision=resolved_revision,
         cache_dir=cache_dir,
         allow_patterns=allow_patterns,
     )
@@ -201,24 +228,18 @@ def snapshot_hf_dataset(
             f"{repo_id!r}: {', '.join(missing_tasks)}"
         )
 
-    if selected_tasks:
-        _copy_selected_tasks(
-            source_root,
-            output_dir,
-            selected_tasks,
-            overwrite=overwrite,
+    with _staged_output(source_root, output_dir, overwrite=overwrite) as stage:
+        _populate_snapshot(source_root, stage, selected_tasks)
+        provenance = hf_dataset_provenance(
+            repo_id=repo_id,
+            requested_revision=revision,
+            resolved_revision=resolved_revision,
+            source_path=source_path,
+            local_path=stage,
+            include_tasks=selected_tasks,
         )
-    else:
-        _copy_tree(source_root, output_dir, overwrite=overwrite)
-    provenance = hf_dataset_provenance(
-        repo_id=repo_id,
-        requested_revision=revision,
-        resolved_revision=resolved_revision,
-        source_path=source_path,
-        local_path=output_dir,
-        include_tasks=selected_tasks,
-    )
-    write_source_sidecar(output_dir, provenance)
+        provenance["local_path"] = str(output_dir)
+        write_source_sidecar(stage, provenance)
     return HfDatasetSnapshot(path=output_dir, provenance=provenance)
 
 

@@ -10,6 +10,8 @@ vars injected by the SDK, then execs ``pi-acp``.
 See https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/models.md
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -19,8 +21,8 @@ from pathlib import Path
 # overrides supply values. Conservative — most modern models exceed these.
 _DEFAULT_CONTEXT_WINDOW = 128000
 _DEFAULT_MAX_TOKENS_CAP = 4096
-_BENCHFLOW_BIN_DIR = "/opt/benchflow/bin"
-_PI_ACP_BIN = "/opt/benchflow/bin/pi-acp"
+_BENCHFLOW_BIN_DIR = "/opt/runtime/bin"
+_PI_ACP_BIN = "/opt/runtime/bin/pi-acp"
 
 
 def _lookup_model_metadata(model: str) -> dict:
@@ -41,8 +43,8 @@ def _lookup_model_metadata(model: str) -> dict:
 def _derive_provider_name(model: str) -> str:
     """Derive a unique provider key so concurrent runs don't collide on "custom"."""
     if "/" in model:
-        return f"benchflow-{model.split('/')[0]}"
-    return f"benchflow-{model}" if model else "benchflow-custom"
+        return f"runtime-{model.split('/')[0]}"
+    return f"runtime-{model}" if model else "runtime-custom"
 
 
 def _positive_int(value: object) -> int | None:
@@ -54,7 +56,7 @@ def _positive_int(value: object) -> int | None:
         if not value.is_integer():
             return None
         parsed = int(value)
-    elif isinstance(value, str | bytes | bytearray):
+    elif isinstance(value, (str, bytes, bytearray)):
         try:
             parsed = int(value)
         except ValueError:
@@ -128,7 +130,11 @@ def setup_provider() -> None:
                     f"Warning: could not parse {models_path}, overwriting.",
                     file=sys.stderr,
                 )
-        models_path.write_text(json.dumps(config, indent=2))
+        # The controller detached this ledgered path from any old aliases.
+        # A first launch must also create its new inode privately.
+        fd = os.open(models_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(config, indent=2))
     else:
         # Anthropic mode — set native env vars that Pi reads directly.
         # DO NOT change setdefault to assignment. Users route through proxies

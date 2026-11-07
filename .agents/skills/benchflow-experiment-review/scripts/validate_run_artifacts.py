@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed BenchFlow run-artifact health validator.
+"""Fail-closed validator for the structured BenchFlow training-artifact contract.
 
 This script is intentionally self-contained so it can travel with the
 benchflow-experiment-review skill. It checks completed rollout folders for the
-minimum artifact contract required before a trial can be treated as a healthy
-BenchFlow model result:
+structured artifact contract described below. This is not a general verdict on
+all evaluation purposes or historical layouts; see SKILL.md for claim-specific
+review. Its strict checks and exit behavior are intentionally unchanged:
 
 - result.json parses.
 - trajectory/acp_trajectory.jsonl exists, is non-empty, parses as JSONL, and

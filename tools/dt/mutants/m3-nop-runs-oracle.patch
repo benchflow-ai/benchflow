@@ -1,0 +1,15 @@
+diff --git a/src/benchflow/rollout/__init__.py b/src/benchflow/rollout/__init__.py
+index 05e650c..9430264 100644
+--- a/src/benchflow/rollout/__init__.py
++++ b/src/benchflow/rollout/__init__.py
+@@ -2863,6 +2863,10 @@ class Rollout:
+                 # The empty control: nothing runs, the verifier scores the
+                 # untouched workspace.
+                 await self.install_agent()
++                # mutant m3: the empty control runs the oracle's solution.
++                await _run_oracle(
++                    self._env, cfg.task_path, self._timeout, sandbox_user=None
++                )
+                 self._trajectory, self._agent_name = _nop_trajectory()
+                 from benchflow.rollout._verifier_recovery import mark_solver_complete
+ 

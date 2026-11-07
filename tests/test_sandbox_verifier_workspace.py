@@ -4,16 +4,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._receipt_fakes import inner_command, receipt_aware, receipt_mock
+
 
 def _make_env():
     env = MagicMock()
-    env.exec = AsyncMock(return_value=MagicMock(stdout="", stderr="", exit_code=0))
+    env.exec = receipt_mock(MagicMock(stdout="", stderr="", exit_code=0))
     return env
 
 
 def _cmds(env):
     """Return list of (command_string, call_object) pairs from env.exec calls."""
-    return [(c.args[0], c) for c in env.exec.call_args_list]
+    return [(inner_command(c.args[0]), c) for c in env.exec.call_args_list]
 
 
 @pytest.mark.asyncio
@@ -111,7 +113,25 @@ async def test_harden_restore_fallback_uses_shutil():
 
     env = _make_env()
     task = MagicMock()
+    env._benchflow_path_inspectors = {"main": "/etc/fake-inspector"}
+    task.config.verifier.service = "main"
     task.config.verifier.env = {}
+    task.config.verifier.pytest_plugins = []
+
+    def execute(command, **kwargs):
+        # Plugin discovery requires a structured trust receipt (GH1116).
+        stdout = (
+            '{"plugins": [], "rejected": []}'
+            if "from importlib.metadata import entry_points" in command
+            else ""
+        )
+        if "/proc/self/mountinfo" in command:
+            from tests.sandbox_mounts import ROOT_MOUNTINFO
+
+            stdout = ROOT_MOUNTINFO
+        return MagicMock(stdout=stdout, stderr="", exit_code=0)
+
+    env.exec.side_effect = receipt_aware(execute)
     with (
         patch("benchflow.sandbox.lockdown._restore_build_config", AsyncMock()),
         patch("benchflow.sandbox.lockdown._refresh_verifier_workspace", AsyncMock()),
@@ -153,7 +173,10 @@ def test_oracle_branch_setup_calls():
 
     source = inspect.getsource(rollout_mod.Rollout.install_agent)
     cwd_source = inspect.getsource(rollout_mod._resolve_agent_cwd)
-    oracle_pos = source.find('primary_agent == "oracle"')
+    # The oracle and nop share this branch (is_scripted_agent).
+    oracle_pos = source.find("is_scripted_agent(cfg.primary_agent)")
+    if oracle_pos == -1:
+        oracle_pos = source.find('primary_agent == "oracle"')
     assert oracle_pos != -1, "oracle branch not found in Rollout.install_agent"
     oracle_block = source[oracle_pos:]
 

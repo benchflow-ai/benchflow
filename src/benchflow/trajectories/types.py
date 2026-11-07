@@ -1,11 +1,16 @@
 """Trajectory types — raw LLM API request/response pairs captured from providers."""
 
 import re
+import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 _USAGE_KEYS = {
     "input_tokens",
@@ -236,22 +241,26 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # BenchFlow proxy master key (sk-benchflow-<token_urlsafe(24)>), OpenAI service
-    # account (sk-svcacct-), OpenRouter (sk-or-v1-): rare labels that won't appear
-    # in a normal kebab slug, so the hyphen-permitting entropy class is safe here.
+    # BenchFlow proxy master key as older releases made it
+    # (sk-benchflow-<token_urlsafe(24)>), OpenAI service account (sk-svcacct-),
+    # OpenRouter (sk-or-v1-): rare labels that won't appear in a normal kebab
+    # slug, so the hyphen-permitting entropy class is safe here.
     (
         re.compile(r"sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"),
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # OpenAI org-scoped sk-proj-/sk-admin-: `proj`/`admin` ARE common identifier
-    # words, so a bare hyphen class would redact kebab slugs like
-    # `sk-proj-refactor-auth`. Real keys are high-entropy base64url and always
-    # carry an uppercase char; gate on a lookahead for one so lowercase slugs
-    # survive (#830). Before generic sk- so it wins.
+    # OpenAI org-scoped sk-proj-/sk-admin- and the BenchFlow proxy master key
+    # (sk-runtime-<token_urlsafe(24)>): `proj`/`admin`/`runtime` ARE common
+    # identifier words, so a bare hyphen class would redact kebab slugs like
+    # `sk-proj-refactor-auth` or `task-runtime-configuration`. Real keys are
+    # high-entropy base64url and always carry an uppercase char; gate on a
+    # lookahead for one so lowercase slugs survive (#830). Before generic sk- so
+    # it wins.
     (
         re.compile(
-            r"sk-(?:proj|admin)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
+            r"sk-(?:proj|admin|runtime)-(?=[A-Za-z0-9_-]{0,200}[A-Z])"
+            r"[A-Za-z0-9_-]{12,}"
         ),
         "***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
@@ -299,8 +308,8 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     # Other provider key families with distinctive prefixes — caught here for the
     # bare-token-in-prose form that no NAME=value carrier sees (a provider
-    # exception that echoes the key). Groq gsk_, xAI xai-, Replicate r8_,
-    # HuggingFace hf_, Fireworks fw_. ≥20-char anchors avoid short ids (#830).
+    # exception that echoes the key): gsk_ (Groq), xai-, r8_ (Replicate),
+    # hf_ (HuggingFace), fw_ (Fireworks). ≥20-char anchors avoid short ids (#830).
     (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     (re.compile(r"xai-[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
     (re.compile(r"r8_[A-Za-z0-9]{20,}"), "***REDACTED***", REDACTION_CATEGORY_API_KEY),
@@ -389,12 +398,13 @@ _REDACTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         r"\1***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
     ),
-    # Underscore form `api_key`. No leading boundary: namespaced env dumps like
+    # Underscore/camel-case forms `api_key` and `apiKey`. No leading boundary:
+    # inline harness JSON and namespaced env dumps like
     # `GEMINI_API_KEY=secret` / JSON keys such as `"openai_api_key"` must redact
     # too (#585). The `\1` capture preserves the matched name+separator.
     (
         re.compile(
-            rf"({_ESCQ}api_key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
+            rf"({_ESCQ}api[_-]?key{_ESCQ}\s*[:=]\s*{_ESCQ}){_SECVAL}", re.IGNORECASE
         ),
         r"\1***REDACTED***",
         REDACTION_CATEGORY_API_KEY,
@@ -495,12 +505,80 @@ def redact_trajectory_text_with_categories(text: str) -> tuple[str, dict[str, in
     detection that does not exist. The total replacement count is the sum of
     the returned values.
     """
+    memo = _redaction_memo.get()
+    cached = memo.get(text) if memo is not None else None
+    if cached is not None:
+        return cached[0], dict(cached[1])
+    original = text
     categories: dict[str, int] = {}
     for pattern, replacement, category in _REDACTION_PATTERNS:
         text, count = pattern.subn(replacement, text)
         if count:
             categories[category] = categories.get(category, 0) + count
+    if memo is not None:
+        memo.remember(original, text, categories)
     return text, categories
+
+
+# Repeated conversation strings dominate redaction time. Cache only within a
+# trial, including its child tasks / asyncio.to_thread calls. Outside a trial
+# there is no memo. Charge Python object bytes (including wide Unicode), with
+# a conservative allowance for each dict slot, rather than counting characters.
+_REDACTED_MAX_BYTES = 4 << 20
+
+
+class _RedactionMemo:
+    def __init__(self) -> None:
+        self.entries: dict[str, tuple[str, dict[str, int]]] = {}
+        self.size = 0
+        self.closed = False
+        self.lock = threading.Lock()
+
+    def get(self, text: str) -> tuple[str, dict[str, int]] | None:
+        with self.lock:
+            return self.entries.get(text)
+
+    def remember(self, text: str, redacted: str, categories: dict[str, int]) -> None:
+        value = (redacted, dict(categories))
+        size = (
+            sys.getsizeof(text)
+            + sys.getsizeof(redacted)
+            + sys.getsizeof(value)
+            + sys.getsizeof(value[1])
+            + sum(sys.getsizeof(k) + sys.getsizeof(v) for k, v in categories.items())
+            + 256  # dict allocation / slot overhead, including the empty dict
+        )
+        with self.lock:
+            if self.closed or text in self.entries or size > _REDACTED_MAX_BYTES:
+                return
+            if self.size + size > _REDACTED_MAX_BYTES:
+                self.entries.clear()
+                self.size = 0
+            self.entries[text] = value
+            self.size += size
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+            self.entries.clear()
+            self.size = 0
+
+
+_redaction_memo: ContextVar[_RedactionMemo | None] = ContextVar(
+    "redaction_memo", default=None
+)
+
+
+@contextmanager
+def trial_redaction_memo() -> Iterator[_RedactionMemo]:
+    """Discard cached texts on every trial exit, even in inherited contexts."""
+    memo = _RedactionMemo()
+    token = _redaction_memo.set(memo)
+    try:
+        yield memo
+    finally:
+        memo.close()
+        _redaction_memo.reset(token)
 
 
 def redact_trajectory_obj(obj: Any) -> Any:
@@ -555,6 +633,43 @@ def _redact_field(key: Any, value: Any) -> Any:
             if isinstance(restored, dict) and isinstance(restored.get(key), str):
                 return restored[key]
     return redact_trajectory_text(value)
+
+
+OBSERVATION_ID_KEY = "observation_id"
+
+
+def stamp_observation_ids(trajectory: list[dict[str, Any]] | None) -> None:
+    """Give every tool call an opaque, unique identity, in place, before any
+    redaction.
+
+    The identity is random (``obs-`` and 32 hex digits), so it carries nothing
+    from the call and redaction leaves it as it is. Every sighting of one call
+    (the events sharing its ``tool_call_id`` in this list) shares it; an event
+    that already has one keeps it, so a trajectory stamped once keeps the same
+    identities through every later write and every copy. Integrity keys what
+    it stores about each observation on this identity (never on a value
+    redaction can change, nor on an ID that can collide).
+    """
+    import uuid
+
+    if not trajectory:
+        return
+    by_call: dict[str, str] = {}
+    for event in trajectory:
+        if not isinstance(event, dict) or event.get("type") != "tool_call":
+            continue
+        call = event.get("tool_call_id")
+        existing = event.get(OBSERVATION_ID_KEY)
+        if isinstance(existing, str) and existing:
+            if isinstance(call, str) and call:
+                by_call.setdefault(call, existing)
+            continue
+        identity = by_call.get(call) if isinstance(call, str) and call else None
+        if identity is None:
+            identity = f"obs-{uuid.uuid4().hex}"
+            if isinstance(call, str) and call:
+                by_call[call] = identity
+        event[OBSERVATION_ID_KEY] = identity
 
 
 def redact_acp_trajectory_jsonl(trajectory: list[dict[str, Any]]) -> str:
@@ -613,6 +728,10 @@ class Trajectory(BaseModel):
     finished_at: datetime | None = None
     exchanges: list[LLMExchange] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # The provider tool evidence a stopped proxy's import read from each
+    # exchange before it shed its request body (the full records are in
+    # llm_trajectory.jsonl); None while the exchanges are whole.
+    _tool_evidence: list[dict[str, Any]] | None = PrivateAttr(default=None)
 
     @property
     def has_provider_usage(self) -> bool:
@@ -630,24 +749,29 @@ class Trajectory(BaseModel):
 
     @property
     def total_input_tokens(self) -> int:
+        """Input tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).input_tokens for ex in self.exchanges)
 
     @property
     def total_output_tokens(self) -> int:
+        """Output tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).output_tokens for ex in self.exchanges)
 
     @property
     def total_cache_read_tokens(self) -> int:
+        """Prompt-cache read tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).cache_read_tokens for ex in self.exchanges)
 
     @property
     def total_cache_creation_tokens(self) -> int:
+        """Prompt-cache write tokens over the captured exchanges."""
         return sum(
             _exchange_token_usage(ex).cache_creation_tokens for ex in self.exchanges
         )
 
     @property
     def total_provider_tokens(self) -> int:
+        """All tokens over the captured exchanges."""
         return sum(_exchange_token_usage(ex).total_tokens for ex in self.exchanges)
 
     @property

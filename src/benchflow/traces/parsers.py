@@ -209,16 +209,23 @@ def _parse_claude_entries(
                 outcome = "failure"
             break
 
-    total_input = 0
-    total_output = 0
-    for entry in entries:
+    responses: dict[tuple[str | int, str], dict] = {}
+    for index, entry in enumerate(entries):
         if entry.get("type") == "assistant":
             msg = entry.get("message", {})
             if isinstance(msg, dict):
-                usage = msg.get("usage", {})
+                usage = msg.get("usage")
                 if isinstance(usage, dict):
-                    total_input += int(usage.get("input_tokens", 0))
-                    total_output += int(usage.get("output_tokens", 0))
+                    # Claude repeats usage on each content block. Retain the
+                    # final record, just as session_cost does; missing IDs are
+                    # independent responses and never collapse together.
+                    response = str(msg["id"]) if msg.get("id") else index
+                    responses[(response, str(entry.get("requestId")))] = usage
+
+    total_input = sum(int(usage.get("input_tokens", 0)) for usage in responses.values())
+    total_output = sum(
+        int(usage.get("output_tokens", 0)) for usage in responses.values()
+    )
 
     deterministic_id = hashlib.sha256(f"{sid}:{source_name}".encode()).hexdigest()[:16]
 

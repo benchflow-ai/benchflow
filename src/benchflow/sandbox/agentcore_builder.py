@@ -135,8 +135,6 @@ def docker_available() -> bool:
     stopped daemon is the common laptop case, and discovering that only at
     build time would waste the whole image push.
     """
-    import shutil
-
     if not shutil.which("docker"):
         return False
     try:
@@ -319,6 +317,7 @@ class CodeBuildBuilder:
                     Bucket=self._bucket,
                     Key=key,
                     Body=archive,
+                    Tagging="benchflow-build-context=1",
                 )
             )
             try:
@@ -428,7 +427,14 @@ class CodeBuildBuilder:
         lifecycle_rule = {
             "ID": "benchflow-expire-build-contexts",
             "Status": "Enabled",
-            "Filter": {"Prefix": "contexts/"},
+            # A custom bucket can contain unrelated objects under contexts/.
+            # Only uploads carrying our ownership receipt may expire.
+            "Filter": {
+                "And": {
+                    "Prefix": "contexts/",
+                    "Tags": [{"Key": "benchflow-build-context", "Value": "1"}],
+                }
+            },
             "Expiration": {"Days": 1},
         }
         try:

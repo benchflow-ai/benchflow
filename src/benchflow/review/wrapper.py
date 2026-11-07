@@ -20,13 +20,17 @@ synthetic task built here on the host:
 The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
 schema, and non-prompt contract metadata inside ``tests/criteria.json``. Task
-evidence is sanitized: skills and any shipped ``rubric.json`` are excluded,
-and symlinks anywhere in the evidence are dropped rather than dereferenced.
+definitions are sanitized: skills and any shipped ``rubric.json`` are excluded.
+Generic run/task copies drop symlinks. Automatic workspace bundles preserve
+manifest-validated internal links through an archive and verify every file after
+upload, before the reviewer starts. Available provider traces cross the canonical
+redaction boundary before inclusion.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import stat
 from pathlib import Path
@@ -36,20 +40,21 @@ from benchflow.review.config import (
     Rubric,
     build_review_response_model,
 )
+from benchflow.review.options import (
+    REVIEWER_AGENT_TIMEOUT_SEC,
+    REVIEWER_IMAGE,
+    REVIEWER_MEMORY_MB,
+    REVIEWER_STORAGE_MB,
+)
 from benchflow.review.prompts import (
     TASK_MOUNT,
     TRIAL_MOUNT,
+    WORKSPACE_MOUNT,
     render_review_instruction,
 )
 
-#: Pinned by digest: ``python:3.13-slim`` is a mutable tag, so a bare tag
-#: would silently change the reviewer environment between runs. Override
-#: with ``--image`` (e.g. to an internal mirror or a newer digest).
-REVIEWER_IMAGE = (
-    "python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91"
-)
-REVIEWER_AGENT_TIMEOUT_SEC = 1800
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
+REVIEWER_ARTIFACT_PACKAGES = ("numpy==2.2.6", "pypdf==5.9.0")
 
 #: Rollout-side entries never copied into the evidence snapshot.  Excluding
 #: prior review output means a re-review can never read an earlier verdict.
@@ -57,6 +62,8 @@ _EVIDENCE_EXCLUDES = (
     ".git",
     "llm_trajectory.jsonl",
     "review",
+    "reviews",
+    "scoring",
     REVIEW_RESULT_FILENAME,
     "review_report.json",
 )
@@ -120,7 +127,10 @@ def main() -> int:
     for name in sorted(expected_top_level - data.keys()):
         problems.append(f"result is missing key: {name}")
     if weighted:
-        for name in sorted(data.keys() - expected_top_level):
+        # A reviewer that copies the schema it was given can copy its
+        # definitions too ($defs, $schema); they carry no verdict.
+        schema_keys = {"$defs", "$schema"}
+        for name in sorted(data.keys() - expected_top_level - schema_keys):
             problems.append(f"result has unexpected key: {name}")
     expected_trial = Path(sys.argv[3]).read_text(encoding="utf-8")
     if data.get("trial_name") != expected_trial:
@@ -195,11 +205,31 @@ sandbox:
   docker_image: {image}
   workdir: /app{network_line}
   cpus: 1
-  memory_mb: 2048
-  storage_mb: 4096
+  memory_mb: {memory_mb}
+  storage_mb: {storage_mb}{setup_commands}
 ---
 
 """
+
+#: The reviewer sandbox's disk beyond its evidence: the image, the reviewer
+#: agent, the model proxy and the artifact packages.
+REVIEWER_DISK_MARGIN_MB = 2048
+
+
+def reviewer_storage_mb(evidence_bytes: int, environment: str) -> int:
+    """The reviewer sandbox's disk for *evidence_bytes* of evidence: that plus
+    :data:`REVIEWER_DISK_MARGIN_MB`, never below :data:`REVIEWER_STORAGE_MB`,
+    at most what the backend gives one sandbox (Daytona's ceiling)."""
+    wanted = max(
+        REVIEWER_STORAGE_MB,
+        math.ceil(evidence_bytes / 1024**2) + REVIEWER_DISK_MARGIN_MB,
+    )
+    if environment == "daytona":
+        from benchflow.sandbox.setup import _DAYTONA_MAX_STORAGE_MB
+
+        return min(wanted, _DAYTONA_MAX_STORAGE_MB)
+    return wanted
+
 
 #: Default network posture: the wrapper declares no-internet, which engages
 #: the no-web pipeline (web tools disabled, sandbox-local model proxy,
@@ -247,6 +277,42 @@ def copy_evidence(
     _strip_write_bits(destination)
 
 
+def _copy_provider_trace(source: Path, destination: Path) -> None:
+    """Include canonical provider capture only after its established redactor."""
+    from benchflow.trajectories.types import redact_trajectory_obj
+
+    relative = Path("trajectory") / "llm_trajectory.jsonl"
+    original = source / relative
+    if original.is_symlink() or original.parent.is_symlink():
+        raise ValueError("provider trajectory must be a regular captured file")
+    if not original.exists():
+        return
+    target = destination / relative
+    target.parent.chmod(target.parent.stat().st_mode | stat.S_IWUSR)
+    try:
+        with (
+            original.open(encoding="utf-8") as reader,
+            target.open("w", encoding="utf-8") as writer,
+        ):
+            for line in reader:
+                if line.strip():
+                    writer.write(
+                        json.dumps(redact_trajectory_obj(json.loads(line))) + "\n"
+                    )
+    finally:
+        _strip_write_bits(target.parent)
+
+
+def remove_review_task(root: Path) -> None:
+    """Remove read-only upload copies without following evidence symlinks."""
+    if not root.exists():
+        return
+    for path in [root, *root.rglob("*")]:
+        if not path.is_symlink():
+            path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+    shutil.rmtree(root)
+
+
 def _strip_write_bits(root: Path) -> None:
     """Clear every write bit under *root*.
 
@@ -275,21 +341,48 @@ def assemble_review_task(
     image: str = REVIEWER_IMAGE,
     agent_timeout_sec: int = REVIEWER_AGENT_TIMEOUT_SEC,
     open_network: bool = False,
-    net_admin_overlay: bool = False,
+    workspace_bundle: Path | None = None,
+    memory_mb: int = REVIEWER_MEMORY_MB,
+    storage_mb: int | None = None,
+    environment: str = "docker",
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
     Returns the wrapper path plus the upload map (host evidence directory →
-    absolute sandbox path) to pass through ``RolloutConfig.uploads``.
+    absolute sandbox path) to pass through ``RolloutConfig.uploads``. Without
+    *storage_mb* the reviewer sandbox's disk is sized for the evidence it
+    holds (:func:`reviewer_storage_mb` on *environment*): the uploads, and
+    each workspace unpacked beside its archive.
     """
 
     if dest.exists():
-        shutil.rmtree(dest)
+        remove_review_task(dest)
     dest.mkdir(parents=True)
 
     evidence = dest / "evidence"
-    copy_evidence(rollout_dir, evidence / "trial")
+    copy_evidence(rollout_dir, evidence / "trial", extra_excludes=("evidence",))
     uploads = {str(evidence / "trial"): TRIAL_MOUNT}
+    if workspace_bundle is not None:
+        from benchflow.review.evidence import EvidenceManifest, prepare_workspace_upload
+
+        manifest = EvidenceManifest.model_validate_json(
+            (workspace_bundle / "manifest.json").read_text()
+        )
+        bundles = [(workspace_bundle, "workspace")]
+        bundles.extend(
+            (workspace_bundle / artifact.bundle_path, artifact.bundle_path)
+            for artifact in manifest.artifacts
+            if artifact.status == "captured" and artifact.bundle_path is not None
+        )
+        for bundle, relative in bundles:
+            archive = evidence / f"{relative}.tar"
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            prepare_workspace_upload(bundle, archive)
+            manifest_copy = evidence / f"{relative}-manifest.json"
+            shutil.copyfile(bundle / "manifest.json", manifest_copy)
+            uploads[str(archive)] = f"/evidence/{relative}.tar"
+            uploads[str(manifest_copy)] = f"/evidence/{relative}-manifest.json"
+        _copy_provider_trace(rollout_dir, evidence / "trial")
     task_mount: str | None = None
     if task_dir is not None and task_dir.is_dir():
         copy_evidence(
@@ -299,6 +392,15 @@ def assemble_review_task(
         )
         uploads[str(evidence / "task")] = TASK_MOUNT
         task_mount = TASK_MOUNT
+    if storage_mb is None:
+        held = sum(
+            path.stat().st_size for path in evidence.rglob("*") if path.is_file()
+        )
+        if workspace_bundle is not None:
+            from benchflow.review.evidence import evidence_bytes
+
+            held += evidence_bytes(workspace_bundle)
+        storage_mb = reviewer_storage_mb(held, environment)
 
     response_model = build_review_response_model(rubric)
     instruction = render_review_instruction(
@@ -309,26 +411,29 @@ def assemble_review_task(
         result_path=f"/app/{REVIEW_RESULT_FILENAME}",
         trial_name=rollout_dir.name,
         output_schema=response_model.model_json_schema(),
+        workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
     )
     frontmatter = _TASK_FRONTMATTER.format(
         verifier_timeout=float(REVIEWER_VERIFIER_TIMEOUT_SEC),
         agent_timeout=float(agent_timeout_sec),
         image=image,
         network_line=_NETWORK_LINE_OPEN if open_network else _NETWORK_LINE_ISOLATED,
+        memory_mb=memory_mb,
+        storage_mb=storage_mb,
+        setup_commands=(
+            "\n  setup_commands:"
+            "\n    - command: python3 -m pip install --disable-pip-version-check --no-cache-dir "
+            + " ".join(REVIEWER_ARTIFACT_PACKAGES)
+            + "\n      user: root\n      timeout_sec: 600\n      cwd: /tmp"
+            if image == REVIEWER_IMAGE
+            else ""
+        ),
     )
     (dest / "task.md").write_text(frontmatter + instruction, encoding="utf-8")
 
-    if net_admin_overlay:
-        # Docker only: the agent-UID egress firewall programs iptables inside
-        # the container, which needs NET_ADMIN. The docker backend stacks
-        # this overlay on top of its generated compose files; other backends
-        # must not receive it (a task compose file changes their strategy).
-        environment_dir = dest / "environment"
-        environment_dir.mkdir()
-        (environment_dir / "docker-compose.yaml").write_text(
-            "services:\n  main:\n    cap_add:\n      - NET_ADMIN\n",
-            encoding="utf-8",
-        )
+    # No task compose file: it would flip Daytona and other backends into
+    # compose strategies. The agent-UID egress firewall's NET_ADMIN comes from
+    # the backend's no-web rule (``compose_needs_net_admin`` on Docker).
 
     tests_dir = dest / "tests"
     tests_dir.mkdir()

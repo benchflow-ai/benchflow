@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -112,6 +113,130 @@ def test_callback_record_preserves_logprob_request_fields():
     assert record["request"]["body"]["top_logprobs"] == 1
 
 
+def test_callback_record_keeps_a_responses_requests_reasoning():
+    """Guards faa585c12: model-calls.jsonl reads a Responses
+    request's effort from ``reasoning``, which the proxy's record left out,
+    so every Codex call's effort read None."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": "hi"}],
+            "call_type": "aresponses",
+            "optional_params": {"reasoning": {"effort": "xhigh", "summary": "auto"}},
+        },
+        now,
+        now,
+    )
+
+    assert record["request"]["body"]["reasoning"] == {
+        "effort": "xhigh",
+        "summary": "auto",
+    }
+
+
+def test_a_gemini_requests_own_thinking_level_reaches_the_record(tmp_path):
+    """Guards the run checks merged at 47a52fdf7: the gemini and antigravity
+    agents send Gemini's own generateContent, which LiteLLM passes through
+    unparsed (the logged messages are its placeholder), so the record kept
+    no generationConfig. Every main call then read as carrying no effort, and
+    a run at --reasoning-effort high warned that the provider's default
+    applied while each request asked for thinkingLevel HIGH."""
+    from benchflow.run_checks import settings_sent
+    from benchflow.trajectories.model_calls import model_calls
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": "task"}]}],
+        "generationConfig": {
+            "temperature": 1,
+            "topP": 0.95,
+            "maxOutputTokens": 65536,
+            "thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True},
+            "responseMimeType": "text/plain",
+        },
+    }
+    record = logger._base_record(
+        {
+            "model": "gemini-3.8-flash",
+            "messages": [
+                {"role": "user", "content": "no-message-pass-through-endpoint"}
+            ],
+            "optional_params": {},
+            "call_type": "pass_through_endpoint",
+            "passthrough_logging_payload": {"request_body": body},
+            "litellm_params": {"proxy_server_request": {"body": body}},
+        },
+        now,
+        now,
+    )
+    assert record["request"]["body"]["generationConfig"] == {
+        "thinkingConfig": {"thinkingLevel": "HIGH", "includeThoughts": True},
+        "temperature": 1,
+        "topP": 0.95,
+        "maxOutputTokens": 65536,
+    }
+    row = {
+        "metadata": {"call_purpose": "agent", "request_model": "gemini-3.8-flash"},
+        "request": record["request"],
+        "response": {"status_code": 200, "body": {"model": "gemini-3.8-flash"}},
+    }
+    trial = tmp_path / "trial"
+    (trial / "trajectory").mkdir(parents=True)
+    (trial / "trajectory" / "llm_trajectory.jsonl").write_text(json.dumps(row) + "\n")
+    [call] = model_calls(trial)
+    assert (call["effort"], call["thinking"]) == ("high", True)
+    assert (call["temperature"], call["top_p"], call["max_output_tokens"]) == (
+        1.0,
+        0.95,
+        65536,
+    )
+    sent = settings_sent([call], "gemini/gemini-3.8-flash")
+    assert (sent["effort"], sent["without"]["effort"]) == ({"high": 1}, 0)
+    budget = {"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}
+    off = {**row, "request": {"body": budget}}
+    (trial / "trajectory" / "llm_trajectory.jsonl").write_text(json.dumps(off) + "\n")
+    [call] = model_calls(trial)
+    assert (call["effort"], call["thinking"]) == (None, False)
+
+
+def test_callback_record_keeps_the_sampling_each_request_carried():
+    """The report and the run card's Vendor line read what the agent sent."""
+
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+
+    record = logger._base_record(
+        {
+            "model": "hosted_vllm/Qwen/Qwen3.8-27B",
+            "messages": [{"role": "user", "content": "hi"}],
+            "optional_params": {
+                "temperature": 1.0,
+                "max_tokens": 4096,
+                "extra_body": {
+                    "top_k": 20,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+            },
+            "top_p": 0.95,
+        },
+        now,
+        now,
+    )
+
+    body = record["request"]["body"]
+    assert body["temperature"] == 1.0
+    assert body["top_p"] == 0.95
+    assert body["top_k"] == 20
+    assert body["max_tokens"] == 4096
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "min_p" not in body and "presence_penalty" not in body
+
+
 def test_callback_module_source_exposes_proxy_handler_instance():
     source = callback_module_source()
 
@@ -121,7 +246,7 @@ def test_callback_module_source_exposes_proxy_handler_instance():
 
 @pytest.mark.asyncio
 async def test_callback_pre_call_hook_strips_chat_input_compat_field():
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
 
@@ -142,7 +267,7 @@ async def test_callback_pre_call_hook_strips_chat_input_compat_field():
 
 @pytest.mark.asyncio
 async def test_callback_pre_call_hook_preserves_input_only_requests():
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
 
@@ -160,7 +285,7 @@ async def test_callback_rejects_missing_required_opencode_skill_before_provider(
     monkeypatch.setenv(
         "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
     )
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
     data = {
@@ -193,7 +318,7 @@ async def test_callback_accepts_matching_opencode_catalog_once(
     monkeypatch.setenv(
         "BENCHFLOW_REQUIRED_SKILL_NAMES_JSON", json.dumps(["mesh-analysis"])
     )
-    namespace: dict[str, object] = {}
+    namespace: dict[str, Any] = {}
     exec(callback_module_source(), namespace)
     logger = namespace["proxy_handler_instance"]
     first = {
@@ -678,7 +803,7 @@ def test_pre_call_hook_lifts_deepseek_reasoning_effort_into_extra_body():
     what the agent sent — matching a native, gateway-less run."""
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {
-        "model": "benchflow-deepseek-deepseek-v4-flash",
+        "model": "runtime-deepseek-deepseek-v4-flash",
         "messages": [{"role": "user", "content": "hi"}],
         "reasoning_effort": "high",
         "thinking": {"type": "enabled"},
@@ -695,10 +820,37 @@ def test_pre_call_hook_lifts_deepseek_reasoning_effort_into_extra_body():
 def test_pre_call_hook_leaves_non_deepseek_reasoning_effort_alone():
     logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
     data = {
-        "model": "benchflow-openai-gpt-5.2",
+        "model": "runtime-openai-gpt-5.2",
         "messages": [{"role": "user", "content": "hi"}],
         "reasoning_effort": "high",
     }
     assert (
         asyncio.run(logger.async_pre_call_hook(None, None, data, "completion")) is None
     )
+
+
+@pytest.mark.parametrize("call_type", ["responses", "aresponses"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_responses_record_retains_api_and_reasoning(call_type, nested):
+    """Guards PR #55 / issue #1159: retain the Responses request for replay."""
+    logger = _callback_namespace()["BenchFlowLiteLLMLogger"]()
+    now = datetime.now()
+    fields = {
+        "instructions": "Solve carefully",
+        "reasoning": {"effort": "xhigh"},
+        "previous_response_id": "resp_previous",
+        "max_output_tokens": 2048,
+    }
+    kwargs = {
+        "model": "gpt-6",
+        "input": [{"type": "reasoning", "id": "rs_1"}],
+        "litellm_params": {"call_type": call_type} if nested else {},
+        "optional_params": fields,
+    }
+    if not nested:
+        kwargs["call_type"] = call_type
+    record = logger._base_record(kwargs, now, now)
+    assert record["request"]["path"] == "/v1/responses"
+    assert record["request"]["body"]["input"] == kwargs["input"]
+    for key, value in fields.items():
+        assert record["request"]["body"][key] == value

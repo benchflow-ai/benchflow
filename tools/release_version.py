@@ -53,25 +53,36 @@ def compute_internal_preview_version(
             publish=True,
             version=f"{current.base_version}.dev{normalized_run_number}",
         )
-    if not current.is_prerelease and current.local is None:
+    if _is_public_release(current):
         return InternalPreviewDecision(publish=False)
     raise ReleaseVersionError(
         "Internal preview releases must be based on a plain .dev version "
-        f"or a final public-release staging version, got {current}."
+        f"or a public-release staging version (final or a/b/rc), got {current}."
     )
 
 
+def _is_public_release(version: Version) -> bool:
+    """A final release, or an a/b/rc pre-release of one: never .dev or local."""
+    return not version.is_devrelease and version.local is None
+
+
 def validate_public_release_version(tag_name: str, version_text: str) -> str:
-    """Validate that a public release tag matches a final project version."""
+    """Validate that a public release tag matches a final or a/b/rc project version.
+
+    A pre-release (``0.10.0rc2``) publishes like a final one; PyPI and pip treat
+    it as a pre-release, and the GitHub release is marked as one. ``.dev`` and
+    local versions never publish publicly.
+    """
     version = _parse_version(version_text)
 
     if tag_name != f"v{version_text}":
         raise ReleaseVersionError(
             f"Tag {tag_name!r} does not match pyproject.toml version 'v{version_text}'."
         )
-    if version.is_prerelease or version.local is not None:
+    if not _is_public_release(version):
         raise ReleaseVersionError(
-            f"Public releases must use a final PEP 440 version, got {version_text!r}."
+            "Public releases must use a final or a/b/rc PEP 440 version, "
+            f"got {version_text!r}."
         )
     return version_text
 
@@ -136,7 +147,8 @@ def _cmd_public_release(args: argparse.Namespace) -> int:
         tag_name,
         read_project_version(args.pyproject),
     )
-    write_github_output({"version": version})
+    prerelease = "true" if Version(version).is_prerelease else "false"
+    write_github_output({"version": version, "prerelease": prerelease})
     return 0
 
 

@@ -144,11 +144,9 @@ def _make_verifier(tmp_path, *, stdout_text):
     verifier_dir = tmp_path / "verifier"
     verifier_dir.mkdir(parents=True, exist_ok=True)
 
-    rollout_paths = MagicMock()
-    rollout_paths.verifier_dir = verifier_dir
-    rollout_paths.test_stdout_path = verifier_dir / "test-stdout.txt"
-    rollout_paths.reward_text_path = verifier_dir / "reward.txt"
-    rollout_paths.reward_json_path = verifier_dir / "reward.json"
+    from benchflow.task.paths import RolloutPaths
+
+    rollout_paths = RolloutPaths(tmp_path)
 
     task = MagicMock()
     task.config.verifier.type = "test-script"
@@ -222,7 +220,7 @@ async def test_verify_test_script_non_dep_failure_is_not_dep_install(tmp_path):
 
 @pytest.mark.asyncio
 async def test_verify_test_script_recovers_reward_when_dir_download_fails(tmp_path):
-    """Guards private PR #1's paratransit Daytona verifier export regression."""
+    """Guards the paratransit Daytona verifier export regression."""
     rollout_paths = RolloutPaths(tmp_path / "rollout")
     rollout_paths.mkdir()
     tests_dir = tmp_path / "tests"
@@ -283,11 +281,9 @@ def _make_script_verifier(tmp_path, *, uses_native_verifier_dir):
     verifier_dir = tmp_path / "verifier"
     verifier_dir.mkdir(parents=True, exist_ok=True)
 
-    rollout_paths = MagicMock()
-    rollout_paths.verifier_dir = verifier_dir
-    rollout_paths.test_stdout_path = verifier_dir / "test-stdout.txt"
-    rollout_paths.reward_text_path = verifier_dir / "reward.txt"
-    rollout_paths.reward_json_path = verifier_dir / "reward.json"
+    from benchflow.task.paths import RolloutPaths
+
+    rollout_paths = RolloutPaths(tmp_path)
 
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir(exist_ok=True)

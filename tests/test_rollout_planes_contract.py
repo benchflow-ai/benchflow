@@ -10,7 +10,9 @@ adapter owns (``agent_launch`` web-tool suffixing, registry delegation) behaves.
 
 from __future__ import annotations
 
-from benchflow.agents.registry import AGENT_LAUNCH, AGENTS
+import pytest
+
+from benchflow.agents.registry import AGENT_LAUNCH, AGENTS, AgentConfig
 from benchflow.contracts.planes import RolloutPlanes, default_rollout_planes
 from benchflow.rollout_planes import DefaultRolloutPlanes
 
@@ -30,6 +32,7 @@ _REQUIRED_METHODS = (
     "setup_sandbox_user",
     "snapshot_build_config",
     "seed_verifier_workspace",
+    "prepare_verifier_runtime",
     "deploy_skills",
     "lockdown_paths",
     "install_agent",
@@ -39,8 +42,11 @@ _REQUIRED_METHODS = (
     "link_skill_paths",
     "ensure_litellm_runtime",
     "stop_provider_runtime",
+    "start_egress_denylist",
+    "stop_egress_denylist",
     "extract_usage",
     "connect_acp",
+    "connect_native",
     "execute_prompts",
     "harden_before_verify",
     "verifier",
@@ -71,9 +77,23 @@ def test_agent_launch_passthrough_without_web_policy() -> None:
     assert planes.agent_launch(agent, disallow_web_tools=False) == expected
 
 
-def test_agent_launch_appends_web_tool_suffix_when_disallowed() -> None:
+def test_agent_launch_appends_web_tool_suffix_when_disallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards PR #1118: custom suffixes work after Codex moved to native config."""
     planes = DefaultRolloutPlanes()
-    agent = "codex-acp"
+    agent = "web-policy-fixture"
+    monkeypatch.setitem(
+        AGENTS,
+        agent,
+        AgentConfig(
+            name=agent,
+            install_cmd="true",
+            launch_cmd="probe --acp",
+            disallow_web_tools_launch_suffix=" --no-web",
+        ),
+    )
+    monkeypatch.setitem(AGENT_LAUNCH, agent, "probe --acp")
     cfg = AGENTS[agent]
     suffix = cfg.disallow_web_tools_launch_suffix
     assert suffix, "fixture agent must carry a web-tool suffix to exercise the branch"
@@ -85,16 +105,20 @@ def test_agent_launch_appends_web_tool_suffix_when_disallowed() -> None:
     )
 
 
-def test_agent_launch_unknown_agent_falls_back_to_name() -> None:
+def test_agent_launch_unknown_bare_agent_fails_closed() -> None:
+    """Guards PR #1090 rollout-plane launch bypass."""
+    import pytest
+
     planes = DefaultRolloutPlanes()
-    # An unknown agent has no launch mapping and no config: returns the name,
-    # and the disallow flag is a no-op (no config -> no suffix).
-    assert planes.agent_launch("not-a-real-agent", disallow_web_tools=False) == (
-        "not-a-real-agent"
-    )
-    assert planes.agent_launch("not-a-real-agent", disallow_web_tools=True) == (
-        "not-a-real-agent"
-    )
+    with pytest.raises(KeyError, match="Unknown agent"):
+        planes.agent_launch("not-a-real-agent", disallow_web_tools=False)
+
+
+def test_agent_launch_explicit_raw_command_passes_through() -> None:
+    """Guards PR #1090 explicit rollout-plane command compatibility."""
+    planes = DefaultRolloutPlanes()
+    command = "agent --flag"
+    assert planes.agent_launch(command, disallow_web_tools=True) == command
 
 
 def test_agent_config_delegates_to_registry() -> None:

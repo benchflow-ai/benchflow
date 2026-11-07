@@ -26,6 +26,11 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .wordmark { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .wordmark svg { width: 18px; height: 18px; flex: none; color: var(--foreground); }
 .wordmark .brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; color: var(--foreground); }
+#theme-toggle {
+  margin-left: auto; font: 12px var(--font-sans); padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground); cursor: pointer;
+}
+#theme-toggle:hover { color: var(--foreground); }
 .wordmark .app { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--ink-secondary); background: var(--secondary); border: 1px solid var(--border); border-radius: 9999px; padding: 3px 10px; }
 
 #content { flex: 1; min-width: 0; padding-bottom: 90px; }
@@ -151,6 +156,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .card.k-tool.failed { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-timeout { border-left-color: var(--bad-strip); background: var(--bad-bg); border-color: var(--bad-line); }
 .card.k-unknown { border-left-color: var(--rule-strong); border-style: dashed; box-shadow: none; }
+.card.k-notice { border-left-color: var(--rule-strong); box-shadow: none; }
+.card.k-notice.sev-warning, .card.k-notice.sev-error { border-left-color: var(--warn-strip); background: var(--warn-bg); border-color: var(--warn-line); }
 .card.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { 0% { outline: 2px solid var(--foreground); } 100% { outline: 2px solid transparent; } }
 @media (prefers-reduced-motion: reduce) { .card.flash { animation: none; outline: 2px solid var(--foreground); } }
@@ -170,6 +177,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 .k-thought .klabel { color: var(--kind-agent-ink); }
 .k-timeout .klabel { color: var(--bad-ink); }
 .k-unknown .klabel { color: var(--muted-foreground); }
+.k-notice .klabel { color: var(--muted-foreground); }
+.k-notice.sev-warning .klabel, .k-notice.sev-error .klabel { color: var(--warn-ink); }
 .kindbadge {
   display: inline-flex; align-items: center; font-family: var(--font-mono);
   font-size: 11px; font-weight: 600;
@@ -196,6 +205,23 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 /* dark treatment reserved for terminal (execute) output, matching the
    site-styled renderer's .step.output.term rule */
 .tout.term { background: var(--code-bg); border-color: var(--code-bg); color: var(--code-ink); }
+.tout.term {
+  --hl-fg: #e6edf3; --hl-kw: #ff7b72; --hl-str: #a5d6ff; --hl-num: #79c0ff; --hl-cmt: #8b949e;
+  --hl-fn: #d2a8ff; --hl-var: #ffa657; --hl-add: #7ee787; --hl-add-bg: #12261e;
+  --hl-del: #ffa198; --hl-del-bg: #3a1618;
+}
+/* highlight.js token classes, colored from the theme tokens */
+.hljs { color: var(--hl-fg); }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link, .hljs-doctag { color: var(--hl-kw); }
+.hljs-string, .hljs-regexp, .hljs-template-tag { color: var(--hl-str); }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-attr, .hljs-attribute { color: var(--hl-num); }
+.hljs-comment, .hljs-quote, .hljs-meta { color: var(--hl-cmt); font-style: italic; }
+.hljs-title, .hljs-built_in, .hljs-type { color: var(--hl-fn); }
+.hljs-variable, .hljs-template-variable, .hljs-params, .hljs-name, .hljs-subst { color: var(--hl-var); }
+.hljs-addition { color: var(--hl-add); background: var(--hl-add-bg); }
+.hljs-deletion { color: var(--hl-del); background: var(--hl-del-bg); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
 .redacted {
   background: var(--warn-bg); color: var(--warn-ink); border: 1px solid var(--warn-line);
   border-radius: 4px; padding: 0 5px; font-family: var(--font-mono); font-size: 10px; font-weight: 600;
@@ -207,6 +233,8 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
 }
 .expander:hover { color: var(--foreground); text-decoration: underline; }
 .expander:focus-visible { outline: 2px solid var(--foreground); outline-offset: 1px; }
+/* subagent steps nest inside the spawning tool card as ordinary cards */
+.subtrace { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .hidden { display: none !important; }
 #empty { color: var(--faint); padding: 48px 0; text-align: center; font-size: 13px; }
 
@@ -220,11 +248,14 @@ button, .chip, .run { transition: background-color .12s ease, border-color .12s 
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; color: var(--faint);
   text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px;
 }
+.panelblock .note { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); }
 .bigreward { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.1; }
 table.plain { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
 table.plain th, table.plain td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-table.plain tr:last-child td { border-bottom: none; }
+table.plain tr:last-child th, table.plain tr:last-child td { border-bottom: none; }
 table.plain th { font-family: var(--font-mono); color: var(--faint); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+table.plain a { color: inherit; text-underline-offset: 2px; }
+table.plain a:hover { color: var(--foreground); }
 .bar { height: 6px; border-radius: 3px; background: var(--rule-strong); min-width: 2px; }
 .barrow { display: grid; grid-template-columns: 160px 1fr 90px; gap: 12px; align-items: center; margin-bottom: 9px; font-size: 12.5px; color: var(--muted-foreground); }
 .barrow .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--foreground); font-weight: 600; font-size: 12px; font-family: var(--font-mono); }

@@ -1,0 +1,42 @@
+# Mutant (b): the reward range check is skipped
+# (src/benchflow/rewards/validation.py:52-69, is_valid_reward_number).
+# reward-out-of-range (1.5) and reward-negative (-1) become scored rewards:
+# unscored -> failed, reward None -> 1.5 / -1.0.
+#
+# Revised after the first round of the mutant run (GOALS predicted the two
+# tasks above, as reward_change + outcome_flip):
+# - reward-json-bad-metric moves too: the same function checks every other
+#   top-level number of reward.json (validate_reward_map, "every other
+#   top-level number must be in [0, 1] too"), so {"reward": 0.5,
+#   "tests_passed": 3} is now scored 0.5.
+# - on a nop cell whose verifier now gives a reward above 0 (1.5, 0.5) the
+#   class is nop_above_zero, which stands alone on its cell; reward-negative's
+#   nop gets -1, not above 0, so it shows outcome_flip + reward_change.
+# The mutant run's record keeps the original prediction beside the result.
+
+[[change]]
+id = "b-outcome"
+target = "DT1"
+item = "mutant:b"
+cells = [
+    "reward-out-of-range/oracle", "reward-negative/oracle", "reward-negative/nop",
+    "reward-json-bad-metric/oracle",
+]
+class = "outcome_flip"
+
+[[change]]
+id = "b-reward"
+target = "DT1"
+item = "mutant:b"
+cells = [
+    "reward-out-of-range/oracle", "reward-negative/oracle", "reward-negative/nop",
+    "reward-json-bad-metric/oracle",
+]
+class = "reward_change"
+
+[[change]]
+id = "b-nop"
+target = "DT1"
+item = "mutant:b"
+cells = ["reward-out-of-range/nop", "reward-json-bad-metric/nop"]
+class = "nop_above_zero"

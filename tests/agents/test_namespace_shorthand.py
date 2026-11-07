@@ -1,6 +1,6 @@
 """Namespace-shorthand agent specs — "<ns>:<id>" (design: #876).
 
-Harbor-style colon prefixes over the existing flat names: the native/ACP path
+Colon prefixes over the existing flat names: the native/ACP path
 owns bare names, other paths use their "<path>-" prefix, and the shorthand is a
 deterministic candidate mapping onto those names (no new config fields).
 Exact registered names and aliases always win — including ``acpx:`` runtime

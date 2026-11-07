@@ -1,28 +1,48 @@
-"""Gated live guard for the pinned claude-agent-acp config-option contract.
+"""Gated live guards for the pinned ``@agentclientprotocol`` adapters.
 
 Skipped by default. Run with ``RUN_ACP_DEP_GUARD=1`` (needs ``npm`` + ``node`` +
-network):
+network for the install):
 
     RUN_ACP_DEP_GUARD=1 uv run --extra dev python -m pytest \
         tests/test_acp_pinned_protocol_guard.py -q
 
-It installs the exact package selected by ``benchflow.agents.registry``, starts
-it over ACP stdio, and proves the complete Fable model + effort path works:
-``initialize``, ``session/new``, and both ``session/set_config_option`` calls.
-The adapter exposes and accepts these options without auth, so no credentials
-are needed. Re-run when bumping the ``@agentclientprotocol`` pin.
+Each guard installs the exact pins selected by ``benchflow.agents.registry``
+and starts the adapter over ACP stdio. Neither needs credentials. Re-run when
+bumping a pin.
+
+claude-agent-acp: the CLI is handed over through ``CLAUDE_CODE_EXECUTABLE`` as
+the sandbox launcher does, and the guard proves the complete Fable model +
+effort path works: ``initialize``, ``session/new``, and both
+``session/set_config_option`` calls, then that ``claude-opus-5-5`` (#1137)
+resolves in the model option. On Linux it also checks that the Claude Code
+process the adapter started is the pinned CLI, not the one its SDK bundles.
+Claude Code 2.1.280 validates a full model id with a one-token
+``POST /v1/messages`` before switching to it, so the CLI talks to a local stub
+endpoint with a fake key: no model traffic leaves the host.
+
+codex-acp: the bundled Codex catalog lists the current model, so
+``session/new`` advertises its ``model[effort]`` ids and ``session/set_model``
+accepts the one BenchFlow selects.
 """
 
 import asyncio
 import contextlib
+import json
 import os
 import shutil
 import subprocess
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
-from benchflow.agents.registry import _CLAUDE_AGENT_ACP_PACKAGE
+from benchflow.agents.registry import (
+    _CLAUDE_AGENT_ACP_PACKAGE,
+    _CLAUDE_CODE_PACKAGE,
+    _CODEX_ACP_PACKAGE,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_ACP_DEP_GUARD") != "1",
@@ -32,6 +52,13 @@ pytestmark = pytest.mark.skipif(
 EXPECTED_OPTION_IDS = {"model", "effort"}
 FABLE_MODEL = "claude-fable-5-1"
 FABLE_EFFORT = "xhigh"
+OPUS_MODEL = "claude-opus-5-5"
+# The current Sonnet and Haiku (the judge and agent defaults): Claude Code
+# 2.1.280 knew neither, so claude-agent-acp 0.81.2 refused them at connect.
+SONNET_MODEL = "claude-sonnet-5-5"
+HAIKU_MODEL = "claude-haiku-5-5"
+CODEX_MODEL = "gpt-6.1-sol"
+CODEX_EFFORT = "max"
 
 
 def _tool_or_skip(name: str) -> str:
@@ -41,21 +68,117 @@ def _tool_or_skip(name: str) -> str:
     return path
 
 
-async def _exercise_config_options(entry: Path) -> tuple[set[str], dict[str, str]]:
+@contextlib.contextmanager
+def _stub_anthropic() -> Iterator[tuple[str, list[tuple[str, str, str | None]]]]:
+    """A local Anthropic API stand-in; yields its URL and the requests it saw."""
+    seen: list[tuple[str, str, str | None]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _answer(self, body: dict) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def do_HEAD(self) -> None:
+            seen.append(("HEAD", self.path, None))
+            self._answer({})
+
+        def do_GET(self) -> None:
+            seen.append(("GET", self.path, None))
+            self._answer({})
+
+        def do_POST(self) -> None:
+            raw = self.rfile.read(int(self.headers.get("content-length") or 0))
+            model = None
+            with contextlib.suppress(ValueError, AttributeError):
+                model = json.loads(raw).get("model")
+            seen.append(("POST", self.path, model))
+            self._answer(
+                {
+                    "id": "msg_stub",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _executables_under(prefix: Path) -> set[str]:
+    """Resolved executables of this user's processes installed under ``prefix``."""
+    root = os.path.realpath(prefix)
+    found = set()
+    for proc in Path("/proc").glob("[0-9]*"):
+        with contextlib.suppress(OSError):
+            exe = os.readlink(proc / "exe")
+            if exe.startswith(root + os.sep):
+                found.add(exe)
+    return found
+
+
+def _current(client) -> dict[str, str]:
+    return {
+        o["id"]: o["currentValue"]
+        for o in client.session.config_options or []
+        if isinstance(o, dict)
+        and o.get("id") in EXPECTED_OPTION_IDS
+        and isinstance(o.get("currentValue"), str)
+    }
+
+
+async def _exercise_config_options(
+    entry: Path, cli: Path, endpoint: str
+) -> tuple[set[str], dict[str, str], dict[str, str], set[str]]:
     from benchflow.acp.client import ACPClient
     from benchflow.acp.transport import StdioTransport
 
-    client = ACPClient(StdioTransport("node", [str(entry)], env={}, cwd="/tmp"))
+    client = ACPClient(
+        StdioTransport(
+            "node",
+            [str(entry)],
+            env={
+                "CLAUDE_CODE_EXECUTABLE": str(cli),
+                "ANTHROPIC_BASE_URL": endpoint,
+                "ANTHROPIC_API_KEY": "fake-key",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "DISABLE_AUTOUPDATER": "1",
+            },
+            cwd="/tmp",
+        )
+    )
     try:
         await client.connect()
         await asyncio.wait_for(client.initialize(), timeout=60)
         await asyncio.wait_for(client.session_new(cwd="/tmp"), timeout=90)
+        # session/new starts the CLI (the model list comes from it).
+        running = _executables_under(cli.parent.parent)
         opts = client.session.config_options or []
         ids = {
             o["id"]
             for o in opts
             if isinstance(o, dict) and isinstance(o.get("id"), str)
         }
+        current: dict[str, str] = {}
+        chosen: dict[str, str] = {}
         if ids >= EXPECTED_OPTION_IDS:
             await asyncio.wait_for(
                 client.set_config_option("model", FABLE_MODEL), timeout=60
@@ -63,14 +186,13 @@ async def _exercise_config_options(entry: Path) -> tuple[set[str], dict[str, str
             await asyncio.wait_for(
                 client.set_config_option("effort", FABLE_EFFORT), timeout=60
             )
-        current = {
-            o["id"]: o["currentValue"]
-            for o in client.session.config_options or []
-            if isinstance(o, dict)
-            and o.get("id") in EXPECTED_OPTION_IDS
-            and isinstance(o.get("currentValue"), str)
-        }
-        return ids, current
+            current = _current(client)
+            for model in (OPUS_MODEL, SONNET_MODEL, HAIKU_MODEL):
+                await asyncio.wait_for(
+                    client.set_config_option("model", model), timeout=60
+                )
+                chosen[model] = _current(client).get("model", "")
+        return ids, current, chosen, running
     finally:
         with contextlib.suppress(Exception):
             await client.close()
@@ -82,13 +204,20 @@ def test_pinned_claude_acp_supports_fable_model_and_effort(tmp_path):
     _tool_or_skip("node")
     prefix = tmp_path / "claude"
     prefix.mkdir()
-    subprocess.run(
-        [npm, "install", "--prefix", str(prefix), _CLAUDE_AGENT_ACP_PACKAGE],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    for spec in (_CLAUDE_AGENT_ACP_PACKAGE, _CLAUDE_CODE_PACKAGE):
+        subprocess.run(
+            [npm, "install", "--prefix", str(prefix), spec],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    cli = prefix / "node_modules" / ".bin" / "claude"
+    version = _CLAUDE_CODE_PACKAGE.rpartition("@")[2]
+    reported = subprocess.run(
+        [str(cli), "--version"], capture_output=True, text=True, timeout=60
+    ).stdout.strip()
+    assert reported == f"{version} (Claude Code)", reported
     entry = (
         prefix
         / "node_modules"
@@ -99,7 +228,13 @@ def test_pinned_claude_acp_supports_fable_model_and_effort(tmp_path):
     )
     assert entry.is_file(), f"pinned agent entry not found: {entry}"
 
-    ids, current = asyncio.run(_exercise_config_options(entry))
+    with _stub_anthropic() as (endpoint, seen):
+        ids, current, chosen, running = asyncio.run(
+            _exercise_config_options(entry, cli, endpoint)
+        )
+    if Path("/proc/self/exe").exists():
+        # The pinned CLI, not the binary the adapter's SDK bundles.
+        assert running == {os.path.realpath(cli)}, running
     missing = EXPECTED_OPTION_IDS - ids
     assert not missing, (
         f"pinned {_CLAUDE_AGENT_ACP_PACKAGE} no longer advertises config option(s) "
@@ -107,5 +242,93 @@ def test_pinned_claude_acp_supports_fable_model_and_effort(tmp_path):
         f"model/effort wiring is stale — re-verify acp_model_config_id / "
         f"acp_effort_config_id"
     )
-    assert current.get("model", "").split("[", 1)[0] == FABLE_MODEL, current
+    # The adapter reports a model's alias when the CLI has one for it:
+    # "opus" for Opus 5.5, and since Claude Code 2.1.316 "fable" for Fable 5.1.
+    assert current.get("model", "").split("[", 1)[0] in {FABLE_MODEL, "fable"}, current
     assert current.get("effort") == FABLE_EFFORT, current
+    # The CLI validated the Fable id through the (stub) Messages API.
+    assert ("POST", "/v1/messages?beta=true", FABLE_MODEL) in seen, seen
+    for model, family in (
+        (OPUS_MODEL, "opus"),
+        (SONNET_MODEL, "sonnet"),
+        (HAIKU_MODEL, "haiku"),
+    ):
+        reported_model = chosen.get(model, "").split("[", 1)[0]
+        assert reported_model in {model, family}, (model, chosen)
+    # An alias says only the family; the request the CLI then sent names the
+    # model itself, so "haiku" is Haiku 5.5, not the legacy Haiku 4.5.
+    for model in (SONNET_MODEL, HAIKU_MODEL):
+        assert ("POST", "/v1/messages?beta=true", model) in seen, (model, seen)
+
+
+async def _exercise_codex_model_selection(
+    entry: Path, work: Path
+) -> tuple[list[str], str]:
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.runtime import _select_acp_model_id
+    from benchflow.acp.transport import StdioTransport
+    from benchflow.agents.codex_config import apply_codex_provider_config
+
+    home = work / "codex-home"
+    home.mkdir()
+    # The LiteLLM provider shape BenchFlow launches Codex with. Nothing listens
+    # on the base URL: session/new and set_model read only the bundled catalog.
+    env = {"OPENAI_API_KEY": "guard-placeholder", "CODEX_HOME": str(home)}
+    apply_codex_provider_config(
+        env,
+        base_url="http://127.0.0.1:9/v1",
+        model=CODEX_MODEL,
+        provider_name="litellm",
+    )
+    client = ACPClient(StdioTransport("node", [str(entry)], env=env, cwd=str(work)))
+    try:
+        await client.connect()
+        await asyncio.wait_for(client.initialize(), timeout=60)
+        session = await asyncio.wait_for(client.session_new(cwd=str(work)), timeout=120)
+        available = (session.model_state or {}).get("availableModels") or []
+        ids = [
+            m["modelId"]
+            for m in available
+            if isinstance(m, dict) and isinstance(m.get("modelId"), str)
+        ]
+        model_id = _select_acp_model_id(CODEX_MODEL, "codex-acp", session, CODEX_EFFORT)
+        if model_id in ids:
+            # An id the catalog lacks is rejected (-32603); the caller reports it.
+            await asyncio.wait_for(client.set_model(model_id), timeout=60)
+        return ids, model_id
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close()
+
+
+def test_pinned_codex_acp_knows_the_current_model(tmp_path):
+    """Guards the codex-acp 2.0.1 pin: codex 0.156.1 (1.13.1) has no gpt-6.1-sol,
+    so it ran on fallback metadata and set_model rejected gpt-6.1-sol[max]."""
+    npm = _tool_or_skip("npm")
+    _tool_or_skip("node")
+    prefix = tmp_path / "codex"
+    prefix.mkdir()
+    subprocess.run(
+        [npm, "install", "--prefix", str(prefix), _CODEX_ACP_PACKAGE],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    entry = (
+        prefix
+        / "node_modules"
+        / "@agentclientprotocol"
+        / "codex-acp"
+        / "dist"
+        / "index.js"
+    )
+    assert entry.is_file(), f"pinned agent entry not found: {entry}"
+
+    ids, model_id = asyncio.run(_exercise_codex_model_selection(entry, tmp_path))
+    wanted = f"{CODEX_MODEL}[{CODEX_EFFORT}]"
+    assert wanted in ids, (
+        f"pinned {_CODEX_ACP_PACKAGE} does not advertise {wanted!r}; its Codex "
+        f"catalog lacks {CODEX_MODEL} (advertised: {sorted(ids)!r})"
+    )
+    assert model_id == wanted

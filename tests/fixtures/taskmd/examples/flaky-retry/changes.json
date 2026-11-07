@@ -1,0 +1,33 @@
+[
+  {
+    "version": "3.1.0",
+    "bump": "minor",
+    "date": "2026-09-29",
+    "reason": "The rubric no longer writes scoring.gates, a key with one value that the checker now rejects: every gate must pass, as before."
+  },
+  {
+    "version": "3.0.1",
+    "bump": "patch",
+    "date": "2026-09-28",
+    "reason": "The oracle script's comment no longer says it is the reference, so a judge that reads it cannot tell it from a solver."
+  },
+  {
+    "version": "3.0.0",
+    "bump": "major",
+    "date": "2026-09-27",
+    "reason": "The package now ships the repository, the hidden tests the rubric names, and the reference fix, so it runs end to end. The sandbox is built from sandbox/Dockerfile."
+  },
+  {
+    "version": "2.1.0",
+    "bump": "minor",
+    "date": "2026-09-27",
+    "reason": "Declared the rules a scored run must follow, and sampled model judges three times per criterion."
+  },
+  {
+    "version": "2.0.0",
+    "bump": "major",
+    "date": "2026-09-27",
+    "ref": "170fe92",
+    "reason": "The instruction now says not to add dependencies, which the no-new-dependency penalty already graded."
+  }
+]

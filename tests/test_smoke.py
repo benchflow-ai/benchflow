@@ -18,7 +18,7 @@ actually authenticate via two env vars (proven combo: openhands + deepseek):
 
 The skip reason is always specific (which credential is missing for the chosen
 model) so a release gate can grep the pytest summary and refuse to call a
-skipped live smoke "green" — see ``docs/release.md`` and the launch-prep skill.
+skipped live smoke "green" — see ``docs/contributing/release.md`` and the launch-prep skill.
 
 Importing ``benchflow.sdk`` triggers ``_patch_dind()`` at sdk.py:135.
 That patch is gated on ``/.dockerenv`` and runs ``docker info`` with a 5s
@@ -158,7 +158,7 @@ def smoke_prereqs() -> bool:
     ``@pytest.mark.skipif(_smoke_skip_reason() is not None, ...)`` pattern,
     which evaluates at decorator (collection) time on every pytest invocation.
 
-    A skip here is intentionally loud at the gate level: ``docs/release.md`` and
+    A skip here is intentionally loud at the gate level: ``docs/contributing/release.md`` and
     the launch-prep skill run the live smoke with ``-ra`` and fail the gate if
     the summary reports this test as skipped, so a missing credential cannot
     false-green the e2e step on a run that never executed.

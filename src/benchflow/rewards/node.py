@@ -1,7 +1,7 @@
 """Node-scoped scoring — the Reward plane's ``score(node)`` path.
 
 The architecture's ``Reward`` contract is ``score(node) -> VerifyResult``
-(``docs/architecture.md`` § "The four contracts"). :func:`score_node` is the
+(``docs/start/how-it-works.md`` § "The four contracts"). :func:`score_node` is the
 contract-shaped entry point: it runs a set of per-dimension scorers over a
 ``RolloutNode`` and aggregates their tagged events into a ``VerifyResult``.
 
@@ -123,6 +123,7 @@ class PathReward:
         self.source = source or type(func).__name__
 
     async def score(self, node: RolloutNode) -> VerifyResult:
+        """Adapt a path-based RewardFunc: score the rollout folder the node records."""
         rollout_dir = node.state.get(PATH_STATE_KEY)
         if rollout_dir is None:
             return VerifyResult(

@@ -1,0 +1,58 @@
+# Changes a merge is meant to make, for the before/after diff of that merge
+# (DT3: one diff per merge on integ/py-0.8). Each entry names:
+#
+#   id      a short name
+#   target  the target whose branch makes the change (a PY8 target id)
+#   item    the score-changing item it belongs to (P4, K2, K1, S1, S2,
+#           S3, R3 B10, R3 B11, U1, V1-V6, J1, P78, U4, AG, PT; or "DT1",
+#           GOALS DT1's records change), never a whole item: the entry
+#           lists exact cells
+#   cells   exact "<corpus name>/<agent>" cells, no globs
+#   class   the class each cell must show (fields: optional detail filter)
+#   mode    optional: before-after or cross-engine (default any); an entry is
+#           neither matched nor required in the other mode
+#   merge   optional, for the reader: the merge commit whose diff it is
+#
+# An entry missing any of these is rejected; one that matches nothing, or a
+# cell it names that does not show the class, fails the run. Entries belong
+# to one merge's diff: the integrator applies DT3's proposals for a merge on
+# py8/diff-harness-ledger and removes them once that merge is the "before".
+#
+# Example (DT1's own change, proposed for its merge):
+#
+# [[change]]
+# id = "dt1-refusal-category"
+# target = "DT1"
+# item = "DT1"
+# cells = ["snapshot-hook/oracle", "snapshot-hook/nop"]
+# class = "raw_value_change"
+# fields = ["result.json:error_category"]
+
+# R3's merge c3d593f5 (first parent 8cc6ecd8), accepted
+# (DT3-MJ1): the oracle's egress setup
+# installs iptables, so the allowlist tasks' verifier can now go offline and
+# scores the oracle (unscored, verifier_failure -> passed, reward 1, as Rust
+# 0.8.2 and spec rows E54/E68). The nop controls stay unscored. A score change
+# for REL (R3 B10). Removed once c3d593f5 is the "before".
+[[change]]
+id = "r3-allowlist-oracle-scored"
+target = "R3"
+item = "R3 B10"
+mode = "before-after"
+merge = "c3d593f5"
+cells = ["net-allowlist/oracle", "net-ip-allowlist/oracle"]
+class = "fix"
+fields = ["unscored -> passed"]
+
+[[change]]
+id = "r3-allowlist-oracle-reward"
+target = "R3"
+item = "R3 B10"
+mode = "before-after"
+merge = "c3d593f5"
+cells = ["net-allowlist/oracle", "net-ip-allowlist/oracle"]
+class = "reward_change"
+fields = ["None -> 1.0"]
+
+# Other merges keep their entries in expected-changes/<target>-<merge>.toml;
+# select one with --expected rather than requiring it in this R3 proof.

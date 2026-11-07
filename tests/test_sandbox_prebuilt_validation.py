@@ -18,6 +18,7 @@ import pytest
 
 from benchflow.sandbox.daytona import DaytonaSandbox
 from benchflow.sandbox.docker import DockerSandbox
+from tests._trust_admission import admitted
 
 
 def _bare(cls, environment_dir: Path, docker_image: str | None):
@@ -122,19 +123,18 @@ class TestUploadFileProtocolConformance:
         from benchflow.sandbox.modal_impl import ModalSandbox
 
         sandbox = object.__new__(ModalSandbox)
-        handle = MagicMock()
-        handle.__aenter__ = AsyncMock(return_value=handle)
-        handle.__aexit__ = AsyncMock(return_value=False)
-        handle.write.aio = AsyncMock()
         sandbox._sandbox = MagicMock()
-        sandbox._sandbox.open.aio = AsyncMock(return_value=handle)
+        # Sandbox.filesystem: Modal refuses the legacy Sandbox.open.
+        sandbox._sandbox.filesystem.copy_from_local.aio = AsyncMock()
         source = tmp_path / "s.bin"
         source.write_bytes(b"data")
 
         with patch.object(
             ModalSandbox, "_apply_upload_mode", new_callable=AsyncMock
         ) as applied:
-            await sandbox.upload_file(source, "/x/y.bin", mode="600")
+            await sandbox.upload_file(
+                source, "/x/y.bin", mode="600", admission=admitted(sandbox)
+            )
         applied.assert_awaited_once_with("/x/y.bin", "600")
 
     @pytest.mark.asyncio

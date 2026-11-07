@@ -10,13 +10,15 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
-import httpx
-
 from benchflow.environment.protocol import ReadinessProbe
 
 
 async def _default_http_check(url: str) -> bool:
     """True if the URL returns a 2xx status."""
+    # Here, not at the top: httpx loads its command-line tool (pygments,
+    # about 25 ms) and every run imports this module, probes or not.
+    import httpx
+
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(url)

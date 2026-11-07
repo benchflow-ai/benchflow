@@ -10,13 +10,16 @@ from benchflow.rollout import Role, Rollout, RolloutConfig
 
 
 @pytest.mark.asyncio
-async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        agent="codex-acp",
-        model="aws-bedrock/us.anthropic.claude-opus-4-8",
-        environment="docker",
+async def test_trial_connect_starts_litellm_before_connect_acp(
+    tmp_path: Path, monkeypatch
+):
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            agent="codex-acp",
+            model="aws-bedrock/us.anthropic.claude-opus-4-8",
+            environment="docker",
+        )
     )
     rollout._rollout_dir = tmp_path
     rollout._rollout_name = "rollout"
@@ -26,10 +29,11 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
     }
     rollout._agent_launch = "codex-acp"
     rollout._agent_cwd = "/workspace"
-    rollout._env = SimpleNamespace()
-    rollout._usage_runtime = None
+    # C33 prepares the managed launcher file before the existing ACP boundary.
+    rollout._env = SimpleNamespace(
+        exec=AsyncMock(return_value=SimpleNamespace(return_code=0))
+    )
     rollout._required_skill_names = ("mesh-analysis",)
-    rollout._timing = {}
     rollout._reapply_ask_user_handler = lambda: None
     rollout._attach_trajectory_writer = lambda _rollout_dir: None
     calls: list[str] = []
@@ -42,6 +46,20 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
         env["OPENAI_BASE_URL"] = "http://host.docker.internal:4000/v1"
         return env, SimpleNamespace(kind="litellm")
 
+    async def fake_apps_policy(env, **kwargs):
+        # Fake runtime wiring does not execute native policy probes. Admission
+        # must receive the routed provider environment before ACP starts.
+        calls.append("apps")
+        assert env is rollout._env
+        assert kwargs["agent"] == "codex-acp"
+        assert kwargs["policy"] == "disabled"
+        assert kwargs["agent_env"]["OPENAI_BASE_URL"] == (
+            "http://host.docker.internal:4000/v1"
+        )
+        return kwargs["agent_env"]
+
+    monkeypatch.setattr("benchflow.rollout.enforce_codex_apps_policy", fake_apps_policy)
+
     async def fake_connect_acp(**kwargs):
         calls.append("acp")
         assert kwargs["agent_env"]["OPENAI_BASE_URL"] == (
@@ -52,30 +70,34 @@ async def test_trial_connect_starts_litellm_before_connect_acp(tmp_path: Path):
     rollout._planes = SimpleNamespace(
         ensure_litellm_runtime=fake_litellm,
         connect_acp=fake_connect_acp,
+        # connect() stages the connection's credential files (C23/C24).
+        write_credential_files=AsyncMock(return_value=[]),
+        upload_subscription_auth=AsyncMock(return_value=[]),
+        # ...and runs the web-tool policy setup after them (C30).
+        apply_web_tool_policy=AsyncMock(),
+        quiesce_agent=AsyncMock(),
     )
 
     await rollout.connect()
 
-    assert calls == ["litellm", "acp"]
+    assert calls == ["litellm", "apps", "acp"]
 
 
 @pytest.mark.asyncio
 async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        agent="codex-acp",
-        model="openai/gpt-4.1-mini",
-        environment="docker",
-        agent_env={"OPENAI_API_KEY": "sk-openai"},
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            agent="codex-acp",
+            model="openai/gpt-4.1-mini",
+            environment="docker",
+            agent_env={"OPENAI_API_KEY": "sk-openai"},
+        )
     )
     rollout._rollout_dir = tmp_path
     rollout._rollout_name = "rollout"
     rollout._agent_cwd = "/workspace"
     rollout._env = SimpleNamespace()
-    rollout._usage_runtime = None
-    rollout._timing = {}
-    rollout._disallow_web_tools = False
     rollout._agent_cfg = SimpleNamespace()
     rollout._reapply_ask_user_handler = lambda: None
     rollout._attach_trajectory_writer = lambda _rollout_dir: None
@@ -102,7 +124,9 @@ async def test_trial_connect_as_starts_litellm_for_role(tmp_path: Path):
         return (AsyncMock(), AsyncMock(), AsyncMock(), "claude-agent-acp")
 
     rollout._planes = SimpleNamespace(
-        agent_launch=lambda agent, disallow_web_tools: agent,
+        agent_launch=lambda agent, disallow_web_tools, disallow_hosted_search=False: (
+            agent
+        ),
         resolve_agent_env=lambda agent, model, env: dict(env or {}),
         ensure_litellm_runtime=fake_litellm,
         install_agent=AsyncMock(return_value=SimpleNamespace()),

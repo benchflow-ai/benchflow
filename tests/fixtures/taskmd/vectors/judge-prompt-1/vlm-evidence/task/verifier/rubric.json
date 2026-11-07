@@ -1,0 +1,29 @@
+{
+  "$schema": "https://task.md/schema/rubric-1.json",
+  "version": "1.0.0",
+  "scoring": {
+    "method": "points",
+    "headline": "partial",
+    "pass_threshold": 1.0
+  },
+  "criteria": [
+    {
+      "id": "packet-consistent",
+      "points": 1,
+      "judge": "vlm",
+      "evidence": [
+        "CHANGES.md",
+        "notes.txt",
+        "./notes.txt",
+        "logs/#errors",
+        "report.pdf",
+        "chart.png",
+        "demo.mp4",
+        "data.bin",
+        "appendix.md"
+      ],
+      "text": "The report, the chart, the notes, and the logs agree on the release's revenue and its errors.",
+      "stated": "the report as `report.pdf`, its revenue chart as `chart.png`"
+    }
+  ]
+}

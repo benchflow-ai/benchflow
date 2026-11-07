@@ -1,0 +1,63 @@
+# The builds the harness runs cells through. A Python arm is `git archive`
+# of `commit` (with `patch` applied, for a mutant) installed with
+# `uv sync --locked` into its own venv; a Rust arm is `git archive` of
+# `commit` built with `cargo build --release --locked -p benchflow-cli`.
+# run.py builds each arm once under its --arms-dir and never reuses a
+# folder whose recorded commit or patch differ.
+
+[arm.base]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"  # BASE_T0
+
+# A second, separate install of the same commit: the A/A null runs base
+# against base-b.
+[arm.base-b]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+
+[arm."rust-0.8.2"]
+kind = "rust"
+commit = "518009b0e645528001574ac8faa385abeedeae90"  # integ/p1, "Version 0.8.2"
+
+# The mutants of BASE_T0 the judge is proven on (GOALS DT1, "Mutants");
+# each one's predicted cells and classes are in mutants/expected-<name>.toml.
+[arm.mut-a]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/a-pass-at-half.patch"
+
+[arm.mut-b]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/b-no-range-check.patch"
+
+[arm.mut-c]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/c-no-instruction-strip.patch"
+
+[arm.mut-d]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/d-verifier-sleep.patch"
+
+# Mutant e needs the script-agent implementation, not BASE_T0. The two
+# arms differ only by the exact three-clear patch (CONF-DT1-5).
+[arm.base-e]
+kind = "python"
+commit = "90d0c606fb00e7c30ed61cce42494a7260aaed38"  # DT2 script-agent tip
+
+[arm.mut-e]
+kind = "python"
+commit = "90d0c606fb00e7c30ed61cce42494a7260aaed38"
+patch = "mutants/e-keep-verifier-logs.patch"
+
+[arm.mut-m2]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/m2-accept-every-feature.patch"
+
+[arm.mut-m3]
+kind = "python"
+commit = "fc2b9e9a47dfd6be6ac8af60927dbc86f30b181d"
+patch = "mutants/m3-nop-runs-oracle.patch"

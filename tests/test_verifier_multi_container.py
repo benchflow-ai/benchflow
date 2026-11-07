@@ -23,9 +23,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from benchflow._utils.trusted_path import PATH_QUERY_CMD
 from benchflow.sandbox._base import ExecResult
 from benchflow.task import RolloutPaths, Verifier
 from benchflow.task.config import TaskConfig
+from tests._receipt_fakes import receipt_aware
 
 # Item 5 — [verifier].service task-schema convention
 
@@ -102,7 +104,9 @@ class _RecordingSandbox:
         self.download_calls: list[dict] = []
         self.exec_calls: list[dict] = []
 
-    async def upload_dir(self, source_dir, target_dir, service: str = "main") -> None:
+    async def upload_dir(
+        self, source_dir, target_dir, service: str = "main", **_kwargs
+    ) -> None:
         self.upload_calls.append(
             {"source": source_dir, "target": target_dir, "service": service}
         )
@@ -118,6 +122,7 @@ class _RecordingSandbox:
         if self._reward_details is not None:
             (dest / "reward-details.json").write_text(self._reward_details)
 
+    @receipt_aware
     async def exec(self, command, service: str = "main", **kwargs) -> ExecResult:
         self.exec_calls.append({"command": command, "service": service, **kwargs})
         if self.is_mounted and service == "main" and "test-stdout.txt" in command:
@@ -298,6 +303,17 @@ class TestTargetSideTestScriptVerification:
 # Item 3 — cross-container hardening policy
 
 
+def _policy_stdout(command: str) -> str:
+    """A plain image for the hardening fakes: system folders on PATH."""
+    if "entry_points" in command:
+        return '{"plugins": [], "rejected": []}'
+    if command == PATH_QUERY_CMD:
+        return "/usr/local/bin:/usr/bin:/bin\n"
+    if "printf 'complete\\n'" in command:
+        return "complete\n"
+    return "[]"
+
+
 class TestCrossContainerHardeningPolicy:
     """#248 item 3: anti-tamper hardening applies to ``main`` only.
 
@@ -306,26 +322,115 @@ class TestCrossContainerHardeningPolicy:
     config) inside it would be wrong — and pointless, since the agent never
     has a shell there. The verifier hardening therefore only touches
     ``main``; ``[verifier].service`` selects where ``test.sh`` *runs*, not
-    where hardening happens.
+    where hardening happens. The target gets test.sh's own PATH and refusal
+    stubs (V3-CONFIRM-5), plus its explicit runner stub (FIX-49 r4).
     """
 
     @pytest.mark.asyncio
     async def test_harden_before_verify_only_touches_main(self, tmp_path: Path) -> None:
-        """#248: harden_before_verify never execs into a non-main service."""
+        """#248 / FIX-49 r4: only PATH checks and runner setup reach the target."""
         from benchflow.sandbox.lockdown import harden_before_verify
 
         task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\nservice = "target"\n')
         env = MagicMock()
+        env._benchflow_path_inspectors = {
+            "main": "/etc/fake-main",
+            "target": "/etc/fake-target",
+        }
         services_seen: list[str] = []
+        target_commands: list[str] = []
+        target_users: list[str | None] = []
 
         async def fake_exec(command, service: str = "main", **kwargs) -> ExecResult:
             services_seen.append(service)
-            return ExecResult(stdout="[]", stderr="", return_code=0)
+            if service != "main":
+                target_commands.append(command)
+                target_users.append(kwargs.get("user"))
+            stdout = _policy_stdout(command)
+            if "BF killed" in command:
+                stdout = "BF killed 0 end\n"
+            if "/proc/self/mountinfo" in command:
+                from tests.sandbox_mounts import ROOT_MOUNTINFO
 
-        env.exec = AsyncMock(side_effect=fake_exec)
+                stdout = ROOT_MOUNTINFO
+            return ExecResult(stdout=stdout, stderr="", return_code=0)
+
+        env.exec = AsyncMock(side_effect=receipt_aware(fake_exec))
 
         await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
 
-        # Every hardening command stayed in the agent container.
+        # The target gets its PATH checks and one root-owned explanatory stub.
         assert services_seen, "hardening should issue at least one exec"
-        assert set(services_seen) == {"main"}
+        assert set(services_seen) <= {"main", "target"}
+        stub = task.config.verifier.env["BENCHFLOW_PYTEST"]
+        stub_commands = [c for c in target_commands if stub in c]
+        assert len(stub_commands) == 1
+        stub_command = stub_commands[0]
+        assert "no protected test runner was prepared" in stub_command
+        assert "exit 4" in stub_command
+        assert "chmod 755" in stub_command
+        assert target_users[target_commands.index(stub_command)] == "root"
+        assert all(
+            c
+            in (
+                PATH_QUERY_CMD,
+                "command printf '%s\\n' \"${BASH_ENV-}\"",
+                stub_command,
+            )
+            or "bash-env-check" in c
+            or "/proc/self/mountinfo" in c
+            or "printf 'complete\\n'" in c
+            or "bf-trusted-path" in c
+            for c in target_commands
+        ), target_commands
+
+    @pytest.mark.asyncio
+    async def test_non_main_verifier_service_is_not_given_the_main_only_guard(
+        self, tmp_path: Path
+    ) -> None:
+        """Guards the fix for the reward-0 regression the pytest plugin guard caused in #248 tasks.
+
+        The pytest plugin guard is installed in ``main`` only, because that is
+        the only container hardening touches. Passing ``-p <guard>`` to a
+        test.sh running in a target service made its pytest abort on the
+        missing module, so every target-side verification scored 0.
+        Hardening stays in ``main``, and the target's pytest gets main's
+        plugin flags without the guard, as before. FIX-49 r4 still gives it
+        the explicit runner stub, in a folder whose name shares the prefix.
+        """
+        from benchflow.sandbox.lockdown import harden_before_verify
+
+        toml = 'version = "1.0"\n[verifier]\nservice = "target"\n'
+        task = _make_task(tmp_path, toml)
+        env = MagicMock()
+        env._benchflow_path_inspectors = {
+            "main": "/etc/fake-main",
+            "target": "/etc/fake-target",
+        }
+        commands: list[str] = []
+
+        async def fake_exec(command, service: str = "main", **kwargs) -> ExecResult:
+            commands.append(command)
+            stdout = _policy_stdout(command)
+            if "BF killed" in command:
+                stdout = "BF killed 0 end\n"
+            if "/proc/self/mountinfo" in command:
+                from tests.sandbox_mounts import ROOT_MOUNTINFO
+
+                stdout = ROOT_MOUNTINFO
+            return ExecResult(stdout=stdout, stderr="", return_code=0)
+
+        env.exec = AsyncMock(side_effect=receipt_aware(fake_exec))
+
+        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+
+        injected = task.config.verifier.env
+        assert "_runtime_guard_" not in injected["PYTEST_ADDOPTS"]
+        assert "_runtime_guard_" not in injected["PYTHONPATH"]
+        assert "-p no:cacheprovider" in injected["PYTEST_ADDOPTS"]
+        stub = injected["BENCHFLOW_PYTEST"]
+        guard_commands = [c for c in commands if "_runtime_guard_" in c]
+        assert len(guard_commands) == 1
+        assert stub in guard_commands[0]
+        assert "no protected test runner was prepared" in guard_commands[0]
+        assert "exit 4" in guard_commands[0]

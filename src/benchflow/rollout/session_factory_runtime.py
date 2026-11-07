@@ -22,12 +22,15 @@ per-call stream — so captured tokens are load-bearing).
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.launch_env import agent_launch_env
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
@@ -43,14 +46,79 @@ class SessionFactorySandbox:
     Session-factory agents still receive the declared ``Agent.connect(sandbox,
     role)`` shape. The wrapper delegates the sandbox API while exposing the
     kernel-resolved environment that an in-process agent may need during connect.
+
+    This is not a trust boundary. A session-factory agent is in-process host
+    code: it can reach the wrapped sandbox (``.sandbox``) and every method the
+    wrapper passes through, root execs included. What holds is the state:
+    ``connect_session_factory`` admits ``SESSION_FACTORY`` before the agent
+    connects, so the sandbox is TAINTED for every service from then on, and
+    the transfer primitives named here are admitted again per call.
     """
 
     sandbox: Any
     agent_env: dict[str, str]
     agent_cwd: str | None = None
+    # The trial's agent user: what an exec that names no user runs as.
+    exec_user: str | None = None
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.sandbox, name)
+        from benchflow.trust.state import TRANSFER_PRIMITIVES
+
+        attr = getattr(self.sandbox, name)
+        if name in TRANSFER_PRIMITIVES and callable(attr):
+            # The in-process agent's transfers are its own ingress: each is
+            # admitted here, and the sandbox's primitive gets the admission.
+            return functools.partial(_agent_transfer, self.sandbox, name, attr)
+        return attr
+
+    # Keep the container barrier or select the native backend's account
+    # before applying the exec barrier (sandbox/agent_exec.py).
+    async def exec(self, command: str, *args: Any, **kwargs: Any) -> Any:
+        # exec(command, cwd, env, timeout_sec, user, service)
+        command, args, kwargs = self._agent_call(command, args, kwargs, 3)
+        return await self.sandbox.exec(command, *args, **kwargs)
+
+    async def exec_in_service(
+        self, service: str, command: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        # exec_in_service(service, command, cwd, env, timeout_sec, user)
+        command, args, kwargs = self._agent_call(command, args, kwargs, 3)
+        return await self.sandbox.exec_in_service(service, command, *args, **kwargs)
+
+    def _agent_call(
+        self, command: str, args: tuple[Any, ...], kwargs: dict[str, Any], at: int
+    ) -> tuple[str, tuple[Any, ...], dict[str, Any]]:
+        from benchflow.sandbox.agent_exec import agent_exec_call
+
+        positional = len(args) > at
+        user = args[at] if positional else kwargs.get("user")
+        command, user = agent_exec_call(
+            command,
+            user,
+            sandbox_user=self.exec_user,
+            identity_switch=getattr(self.sandbox, "agent_identity_switch", ()) or (),
+            sandbox=self.sandbox,
+        )
+        if positional:
+            args = (*args[:at], user, *args[at + 1 :])
+        elif user is not None:
+            kwargs = {**kwargs, "user": user}
+        return command, args, kwargs
+
+
+async def _agent_transfer(
+    sandbox: Any, name: str, method: Any, *args: Any, **kwargs: Any
+) -> Any:
+    """A session-factory agent's ``upload_file``/``upload_dir``/... on the
+    sandbox, admitted as its ingress first."""
+    from benchflow.trust.state import IngressKind, admit
+
+    service = "main"
+    if name == "upload_dir":
+        service = kwargs.get("service", args[2] if len(args) > 2 else "main")
+    kwargs.pop("admission", None)
+    admission = admit(sandbox, str(service), IngressKind.SESSION_FACTORY)
+    return await method(*args, admission=admission, **kwargs)
 
 
 def _load_session_factory(dotted: str) -> Any:
@@ -96,6 +164,9 @@ async def connect_session_factory(
     subprocess env injection), and it is what makes the agent's LLM traffic flow
     through the proxy → captured.
     """
+    from benchflow.trust.state import IngressKind, admit
+
+    admit(env, "main", IngressKind.SESSION_FACTORY)
     factory = _load_session_factory(session_factory)
     kwargs: dict[str, Any] = {}
     if sandbox_user:
@@ -104,10 +175,11 @@ async def connect_session_factory(
     # Inject the kernel-resolved workspace (the same cwd ACP agents + the verifier
     # use) under BENCHFLOW_AGENT_CWD so the agent runs where the verifier reads,
     # rather than a hardcoded path.
-    connect_env = dict(agent_env)
+    # Only the selected route's credentials, as for an ACP process.
+    connect_env = agent_launch_env(agent, model, agent_env)
     if agent_cwd:
         connect_env["BENCHFLOW_AGENT_CWD"] = agent_cwd
-    connect_sandbox = SessionFactorySandbox(env, connect_env, agent_cwd)
+    connect_sandbox = SessionFactorySandbox(env, connect_env, agent_cwd, sandbox_user)
     connect_coro = agent_obj.connect(connect_sandbox, "agent")
     try:
         if timeout > 0:
@@ -148,6 +220,11 @@ async def execute_prompts_session_factory(
             stop_reason = await asyncio.wait_for(
                 session.prompt(prompt), timeout=timeout
             )
+        except UsageLimitError:
+            # A spent login is not the agent's failure: raised as is, it is an
+            # unscored usage_limit; wrapped below it would be a scored timeout.
+            # The steps so far are kept by the rollout's disconnect capture.
+            raise
         except TimeoutError as exc:
             # One-shot agent: on budget exhaustion there is no pending tool-call
             # stream, so the snapshot is terminal-complete with 0 tool calls.

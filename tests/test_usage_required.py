@@ -39,17 +39,13 @@ async def test_required_usage_tracking_fails_when_provider_usage_missing(tmp_pat
         async def stop(self):
             return None
 
-    rollout = Rollout.__new__(Rollout)
-    rollout._config = RolloutConfig(
-        task_path=tmp_path / "task",
-        usage_tracking=UsageTrackingConfig(mode="required"),
+    rollout = Rollout(
+        RolloutConfig(
+            task_path=tmp_path / "task",
+            usage_tracking=UsageTrackingConfig(mode="required"),
+        )
     )
-    rollout._error = None
-    rollout._trajectory = []
-    rollout._acp_client = None
-    rollout._agent_launch = ""
     rollout._env = SimpleNamespace(stop=AsyncMock())
-    rollout._environment = None
     rollout._usage_runtime = ProviderRuntime(
         kind="litellm",
         agent_base_url="http://host.docker.internal:32124",

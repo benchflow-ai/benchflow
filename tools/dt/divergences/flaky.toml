@@ -1,0 +1,56 @@
+# Cells whose result flips between runs of the same build. Each row names
+# the cells, the classes the flip shows as, the flip, the reason, and its
+# evidence with at least 3 repeats. A flaky row explains a finding in any run;
+# it is not stale when the flip does not happen (it is intermittent).
+
+[[row]]
+id = "r2r-mpc-control-oracle"
+mode = "any"
+cells = ["r2r-mpc-control/oracle", "r2r-mpc-control/nop"]
+class = ["regression", "fix", "reward_change", "verifier_output_change", "nop_above_zero", "score_disagree", "spec_mismatch"]
+flip = "the oracle passes (reward 1) or fails (reward 0) on the same build; with mutant m3 the nop runs that oracle and flips with it"
+reason = "the task's own reference controller meets its tolerance only some of the time (a task problem, not an engine one: left out as a flaky oracle)"
+repeats = 9
+cite = "Recorded runs: the BASE_T0 oracle on r2r-mpc-control passed 7 of 9 runs (A/A 3 rounds x 2 installs: 4 of 6; the combined run's base arm: 3 of 3), the seven patched arms 13 of 21, Rust 0.8.2 2 of 3"
+
+# DT3-CU1: exact binary scoring consequences of the same flaky oracle.
+[[row]]
+id = "r2r-mpc-control-oracle-summary-exports"
+mode = "before-after"
+cells = ["r2r-mpc-control/oracle"]
+class = "summary_change"
+fields = [
+    'mean_reward 0.0 -> 1.0',
+    'mean_reward 1.0 -> 0.0',
+    'mean_reward_scored_only 0.0 -> 1.0',
+    'mean_reward_scored_only 1.0 -> 0.0',
+    'score "0.0%" -> "100.0%"',
+    'score "100.0%" -> "0.0%"',
+    'score_excl_errors "0.0%" -> "100.0%"',
+    'score_excl_errors "100.0%" -> "0.0%"',
+    'score_excl_errors_ratio 0.0 -> 1.0',
+    'score_excl_errors_ratio 1.0 -> 0.0',
+    'score_ratio 0.0 -> 1.0',
+    'score_ratio 1.0 -> 0.0',
+    'solve_rates.pass_at_k.1 0.0 -> 1.0',
+    'solve_rates.pass_at_k.1 1.0 -> 0.0',
+    'solve_rates.pass_at_k_scored_only.1 0.0 -> 1.0',
+    'solve_rates.pass_at_k_scored_only.1 1.0 -> 0.0',
+    'solve_rates.pass_hat_k.1 0.0 -> 1.0',
+    'solve_rates.pass_hat_k.1 1.0 -> 0.0',
+    'solve_rates.pass_hat_k_scored_only.1 0.0 -> 1.0',
+    'solve_rates.pass_hat_k_scored_only.1 1.0 -> 0.0',
+    'solve_rates.solve_rate 0.0 -> 1.0',
+    'solve_rates.solve_rate 1.0 -> 0.0',
+    'solve_rates.solve_rate_interval [0.0, 0.7934567085261071] -> [0.20654329147389294, 1.0]',
+    'solve_rates.solve_rate_interval [0.20654329147389294, 1.0] -> [0.0, 0.7934567085261071]',
+    'solve_rates.solve_rate_scored_only 0.0 -> 1.0',
+    'solve_rates.solve_rate_scored_only 1.0 -> 0.0',
+    'solve_rates.solve_rate_scored_only_interval [0.0, 0.7934567085261071] -> [0.20654329147389294, 1.0]',
+    'solve_rates.solve_rate_scored_only_interval [0.20654329147389294, 1.0] -> [0.0, 0.7934567085261071]',
+]
+exact_fields = true
+flip = "The listed binary oracle reward flip changes its one-trial scoring exports in the same direction."
+reason = "The task controller is flaky; these 14 fields, including both Wilson intervals, were independently checked against each recorded binary reward."
+repeats = 9
+cite = "Recorded runs: 9 same-build repeats; the recorded catch-up audit at 7b4907c8: exact arithmetic for the nine catch-up cells (no new same-build repeats claimed)."

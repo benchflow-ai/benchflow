@@ -303,6 +303,95 @@ class TestEvalCreateDatasetCli:
         assert result.exit_code == 0, result.stdout
         assert captured["include_tasks"] == {"task-a"}
 
+    def _run_dataset(self, tmp_path, snapshot, monkeypatch, *flags):
+        """Run `-d skillsbench@1.1 <flags>` with Evaluation.run stubbed.
+
+        The checkout also holds a folder the dataset does not pin, as a real
+        dataset checkout (a superset) does.
+        """
+        registry = _write_registry(tmp_path, snapshot.tasks_parent)
+        _make_task(snapshot.tasks_parent, "not-in-dataset")
+        captured = {}
+
+        async def fake_eval_run(self):
+            captured["include_tasks"] = self._config.include_tasks
+            captured["exclude_tasks"] = self._config.exclude_tasks
+            return SimpleNamespace(passed=1, total=1, score=1.0, errored=0)
+
+        monkeypatch.setattr("benchflow.evaluation.Evaluation.run", fake_eval_run)
+        result = CliRunner().invoke(
+            app,
+            [
+                "eval",
+                "create",
+                "--dataset",
+                "skillsbench@1.1",
+                "--registry",
+                str(registry),
+                *flags,
+                "--agent",
+                "oracle",
+                "--jobs-dir",
+                str(tmp_path / "jobs"),
+            ],
+        )
+        return result, captured
+
+    def test_include_matching_nothing_refuses(self, tmp_path, snapshot, monkeypatch):
+        """DF-p3-eval-runner-1: `-d terminal-bench@2.0 --include fix-gitt`
+        queued all 89 tasks (the empty include set meant "no filter" and the
+        whole checkout ran). It must refuse as --tasks-dir does, and say
+        which name was meant."""
+        result, captured = self._run_dataset(
+            tmp_path, snapshot, monkeypatch, "--include", "task-aa"
+        )
+        assert result.exit_code == 2, result.output
+        assert not captured, "nothing may run on an empty selection"
+        err = " ".join(result.stderr.split())
+        assert (
+            "No tasks selected after include/exclude filtering "
+            "(dataset=skillsbench@1.1, include=['task-aa'])." in err
+        )
+        assert "--include 'task-aa' matches no task (did you mean 'task-a'?)" in err
+        assert "next: `bench check " in err
+        assert "Traceback" not in result.output
+
+    def test_exclude_of_every_task_refuses(self, tmp_path, snapshot, monkeypatch):
+        """DF-p3-eval-runner-1, the --exclude side of the same rule."""
+        result, captured = self._run_dataset(
+            tmp_path,
+            snapshot,
+            monkeypatch,
+            "--exclude",
+            "task-*",
+        )
+        assert result.exit_code == 2, result.output
+        assert not captured
+        assert "No tasks selected after include/exclude filtering" in result.stderr
+
+    def test_typo_beside_a_valid_name_warns(self, tmp_path, snapshot, monkeypatch):
+        """DF-p3-eval-runner-1: `--include fix-gitt --include regex-log` ran
+        one task and never said fix-gitt matched nothing."""
+        result, captured = self._run_dataset(
+            tmp_path,
+            snapshot,
+            monkeypatch,
+            "--include",
+            "task-a",
+            "--include",
+            "task-bb",
+            "--exclude",
+            "taks-a",
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["include_tasks"] == {"task-a"}
+        err = " ".join(result.stderr.split())
+        assert (
+            "warning: --include 'task-bb' matches no task (did you mean "
+            "'task-b'?) in skillsbench@1.1" in err
+        )
+        assert "warning: --exclude 'taks-a' matches no task" in err
+
     def test_dataset_is_exclusive_with_tasks_dir(self, tmp_path):
         result = CliRunner().invoke(
             app,
@@ -315,7 +404,7 @@ class TestEvalCreateDatasetCli:
                 str(tmp_path),
             ],
         )
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "only one source" in result.stderr
 
     def test_registry_requires_dataset(self, tmp_path):
@@ -323,7 +412,7 @@ class TestEvalCreateDatasetCli:
             app,
             ["eval", "create", "--registry", str(tmp_path / "r.json")],
         )
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "--registry requires --dataset" in result.stderr
 
     def test_out_of_range_bench_version_blocks(self, tmp_path, snapshot, monkeypatch):
@@ -397,7 +486,7 @@ class TestEvalCreateDatasetCli:
             app,
             ["eval", "create", "--ignore-bench-version", "--tasks-dir", str(tmp_path)],
         )
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "--ignore-bench-version requires --dataset" in result.stderr
 
     def test_resolution_error_exits_cleanly(self, tmp_path, snapshot):
@@ -413,7 +502,7 @@ class TestEvalCreateDatasetCli:
                 str(registry),
             ],
         )
-        assert result.exit_code == 1
+        assert result.exit_code == 2
         assert "not found in registry" in result.stderr
 
 

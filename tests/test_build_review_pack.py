@@ -39,20 +39,8 @@ class SkipTest(Exception):
     """Raised to skip a test under the stdlib runner / signal pytest.skip."""
 
 
-def test_pinned_baseline_parity_fail_demotes_to_quarantine() -> None:
-    # Regression: the pinned-baseline reward-band gate currently false-fails
-    # (a native HF leaderboard baseline run through the Harbor-schema + git-pinned
-    # checker), so a pinned-baseline FAIL must DEMOTE to a quarantine — visible but
-    # non-blocking — not a hard 'not mergeable'.
-    pinned_fail = pack_mod.ParityResult(
-        "pinned-baseline", "pinned-baseline", "fail", "missing Harbor field(s)"
-    )
-    v = pack_mod.compute_verdict([], [pinned_fail])
-    assert v.verdict == pack_mod.VERDICT_QUARANTINES
-    assert not v.blockers
-    assert v.quarantines
-
-    # ...but a REAL within-PR docker/daytona parity FAIL still hard-blocks.
+def test_within_pr_parity_fail_blocks() -> None:
+    # A within-PR docker/daytona parity FAIL hard-blocks.
     within_fail = pack_mod.ParityResult(
         "sandbox-parity(x)", "within-pr", "fail", "incomplete parity pair"
     )
@@ -207,7 +195,7 @@ def test_review_pack_missing_slot_is_not_mergeable() -> None:
             skill_mode="no-skill",
             head_sha=_HEAD,
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         verdict = review["verdict"]
         assert verdict.verdict == pack_mod.VERDICT_NOT_MERGEABLE
         assert any("missing slot" in b for b in verdict.blockers)
@@ -229,7 +217,7 @@ def test_review_pack_full_coverage_is_mergeable() -> None:
             skill_mode="no-skill",
             head_sha=_HEAD,
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         verdict = review["verdict"]
         assert verdict.verdict in pack_mod._OK_VERDICTS
         assert verdict.blockers == []
@@ -273,7 +261,7 @@ def test_network_allowlist_variant_does_not_collide_with_default_cell() -> None:
                 skill_mode="no-skill",
                 head_sha=_HEAD,
             )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         statuses = {s.cell_id: s.status for s in review["slots"]}
         assert statuses[plain_id] == "healthy"
         assert statuses[allow_id] == "healthy"
@@ -306,7 +294,7 @@ def test_retried_cell_collapses_to_single_rollout() -> None:
                 head_sha=_HEAD,
                 started_at=started,
             )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         slot = review["slots"][0]
         assert slot.status == "healthy", slot.detail
         assert len(slot.rollouts) == 1
@@ -327,7 +315,7 @@ def test_retried_cell_collapses_to_single_rollout() -> None:
                 head_sha=_HEAD,
                 started_at=ts,
             )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         assert review["slots"][0].status == "duplicate"
         assert any("duplicate slot" in b for b in review["verdict"].blockers)
 
@@ -347,7 +335,7 @@ def test_review_pack_stale_sha_is_flagged_not_mergeable() -> None:
             skill_mode="no-skill",
             head_sha="OLDSOURCE1111111",  # rollout task-source sha != pinned
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         assert review["slots"][0].status == "stale"
         assert review["verdict"].verdict == pack_mod.VERDICT_NOT_MERGEABLE
         assert any("stale slot" in b for b in review["verdict"].blockers)
@@ -370,7 +358,7 @@ def test_review_pack_task_source_sha_not_compared_to_benchflow_head() -> None:
             skill_mode="no-skill",
             head_sha="SKILLSBENCHSRC123",  # task-source sha != benchflow head
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         assert review["slots"][0].status != "stale"
         assert not any("stale" in b for b in review["verdict"].blockers)
 
@@ -396,7 +384,7 @@ def test_review_pack_infra_timeout_is_capability_attributed_quarantine() -> None
             error="Missing REQUIRED_TASK_API_KEY prevented task execution.",
             required_env=["REQUIRED_TASK_API_KEY"],
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         slot = review["slots"][0]
         assert slot.status == "unhealthy"
         assert review["verdict"].verdict == pack_mod.VERDICT_NOT_MERGEABLE
@@ -556,8 +544,8 @@ def test_write_pack_emits_full_layout() -> None:
             head_sha=_HEAD,
         )
         out = tmp / "review-pack"
-        review = pack_mod.build_review(plan, arts, None)
-        pack_mod.write_pack(out, plan, arts, None, review)
+        review = pack_mod.build_review(plan, arts)
+        pack_mod.write_pack(out, plan, arts, review)
         expected_files = {
             "manifest.json",
             "matrix_expected.json",
@@ -717,7 +705,7 @@ def test_review_pack_over_synth_production_rollout() -> None:
                 }
             )
         )
-        review = pack_mod.build_review(plan, arts, None)
+        review = pack_mod.build_review(plan, arts)
         assert review["slots"][0].status == "healthy", review["slots"][0].detail
         assert review["verdict"].verdict in pack_mod._OK_VERDICTS
 

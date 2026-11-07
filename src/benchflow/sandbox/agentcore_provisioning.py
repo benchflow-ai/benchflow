@@ -30,11 +30,11 @@ import os
 import posixpath
 import re
 import stat
+import threading
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
-
-from pathspec import GitIgnoreSpec
 
 logger = logging.getLogger("benchflow").getChild("agentcore")
 
@@ -65,6 +65,51 @@ _RESULTS: dict[str, Any] = {}
 #: runtime ARN -> monotonic time of the last lease refresh by this process.
 _LEASE_RENEWED: dict[str, float] = {}
 _LEASE_LOCKS: dict[str, asyncio.Lock] = {}
+# Contexts are trusted task inputs. Cache only an observed immutable file
+# version, including ctime/inode, never a path or mtime alone. This bounds warm
+# trials' reads without hiding edits between runs or allocating a whole file.
+_FILE_DIGESTS: OrderedDict[tuple[int, ...], bytes] = OrderedDict()
+_FILE_DIGEST_LOCK = threading.Lock()
+_FILE_DIGEST_CACHE_SIZE = 4096
+
+
+def _file_version(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mode,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _context_file_digest(path: Path) -> bytes:
+    # Serialize misses as well as cache access: a fan-out of publishers must
+    # not each read the same multi-GB file while the first hash is in flight.
+    with _FILE_DIGEST_LOCK:
+        fd = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(fd, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("Build context entry must remain a regular file")
+            key = _file_version(before)
+            if key in _FILE_DIGESTS:
+                _FILE_DIGESTS.move_to_end(key)
+                return _FILE_DIGESTS[key]
+            digest = hashlib.sha256()
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+            if key != _file_version(os.fstat(source.fileno())):
+                raise ValueError("Build context changed while hashing")
+            value = digest.digest()
+            _FILE_DIGESTS[key] = value
+            if len(_FILE_DIGESTS) > _FILE_DIGEST_CACHE_SIZE:
+                _FILE_DIGESTS.popitem(last=False)
+            return value
 
 
 async def once[T](key: str, factory: Callable[[], Awaitable[T]]) -> T:
@@ -95,6 +140,8 @@ def reset_cache() -> None:
     _KEY_LOCKS.clear()
     _LEASE_RENEWED.clear()
     _LEASE_LOCKS.clear()
+    with _FILE_DIGEST_LOCK:
+        _FILE_DIGESTS.clear()
 
 
 def lease_renewal_interval(window_seconds: float) -> float:
@@ -197,16 +244,18 @@ def _active_ignore_file(context_dir: Path) -> Path | None:
 
 
 def _clean_dockerignore_lines(text: str) -> list[str]:
-    """Apply Docker's path-cleaning pass before wildcard matching."""
+    """Docker ignores comments in column one, strips a BOM, then cleans paths."""
     cleaned: list[str] = []
-    for raw in text.splitlines():
+    for raw in text.removeprefix("\ufeff").splitlines():
+        if raw.startswith("#"):
+            continue
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
         negated = line.startswith("!")
-        body = line[1:] if negated else line
-        # Backslash-escaped leading ``!``/``#`` are literals, not control
-        # markers; PathSpec understands those escapes after cleaning.
+        body = line[1:].strip() if negated else line
+        if not body:
+            raise ValueError("Invalid empty Docker ignore exclusion")
         normalized = posixpath.normpath(body).strip("/")
         if normalized in {"", "."}:
             continue
@@ -214,22 +263,108 @@ def _clean_dockerignore_lines(text: str) -> list[str]:
     return cleaned
 
 
-def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
-    """Compile Docker-compatible ignore rules for the generated Dockerfile.
+def _docker_pattern(pattern: str) -> re.Pattern[str]:
+    """Compile Linux Docker globs, anchored at the context root.
 
-    ``GitIgnoreSpec`` supplies the mature ``**``, character-class, escaped
-    leading ``!``/``#``, directory, and last-match-wins semantics. Docker's
-    own preprocessing difference is handled above by cleaning ``.``/``..`` and
-    leading/trailing separators first. A Dockerfile-specific ignore file takes
-    precedence over the root ``.dockerignore``, just like ``docker build -f``.
+    Docker's *, ?, classes and escapes follow filepath.Match; ** crosses
+    separators. The caller carries each rule's parent-match state down the
+    tree. Git's implicit **/ and directory priority do not
+    apply. Invalid patterns fail before either builder stages any files.
     """
+    # Moby's leading-** literal form is a suffix match, even when ** is
+    # adjacent to a filename rather than a separator (e.g. **.log).
+    if pattern.startswith("**") and not any(c in pattern[2:] for c in "*?[]\\"):
+        suffix = pattern[2:]
+        if suffix.startswith("/"):
+            return re.compile(
+                "^(?:.*" + re.escape(suffix) + "|" + re.escape(suffix[1:]) + ")$"
+            )
+        return re.compile("^.*" + re.escape(suffix) + "$")
+    parts = ["^"]
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        i += 1
+        if char == "*":
+            if i < len(pattern) and pattern[i] == "*":
+                i += 1
+                if i < len(pattern) and pattern[i] == "/":
+                    i += 1
+                parts.append(".*" if i == len(pattern) else "(?:.*/)?")
+            else:
+                parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        elif char == "\\":
+            if i == len(pattern):
+                raise ValueError("Invalid trailing escape in Docker ignore pattern")
+            parts.append(re.escape(pattern[i]))
+            i += 1
+        elif char == "[":
+            end = i
+            if end < len(pattern) and pattern[end] == "^":
+                end += 1
+            start = end
+            while end < len(pattern) and pattern[end] != "]":
+                if pattern[end] == "\\":
+                    end += 1
+                end += 1
+            if end >= len(pattern) or end == start:
+                raise ValueError("Invalid character class in Docker ignore pattern")
+            # Go uses ^ for negation; ! is an ordinary class member.
+            body = pattern[i:end]
+            body = (
+                body.replace("[", "\\[")
+                .replace("&&", "\\&\\&")
+                .replace("~~", "\\~\\~")
+                .replace("||", "\\|\\|")
+            )
+            parts.append("[" + body + "]")
+            i = end + 1
+        else:
+            parts.append(re.escape(char))
+    parts.append("$")
+    try:
+        return re.compile("".join(parts))
+    except re.error as exc:
+        raise ValueError("Invalid Docker ignore pattern") from exc
+
+
+def _dockerignore_matcher(context_dir: Path) -> Callable[[str], bool]:
+    """One Docker matcher for hashing, local staging and CodeBuild uploads."""
     ignore_file = _active_ignore_file(context_dir)
     if ignore_file is None:
         return lambda _relative: False
-    spec = GitIgnoreSpec.from_lines(
-        _clean_dockerignore_lines(read_regular_text(ignore_file))
-    )
-    return spec.match_file
+    rules = []
+    for line in _clean_dockerignore_lines(read_regular_text(ignore_file)):
+        excluded = line.startswith("!")
+        rules.append((_docker_pattern(line[1:] if excluded else line), excluded))
+
+    def ignored(relative: str) -> bool:
+        parts = relative.rstrip("/").split("/")
+        parent_matches = [False] * len(rules)
+        matched = False
+        # Match directories in traversal order, retaining the result of EACH
+        # rule, as Docker's MatchesUsingParentResults does. A rule skipped at
+        # a parent must not be retroactively applied to a child: in particular,
+        # `config/private; !config` must keep the private subtree excluded.
+        for depth in range(1, len(parts) + 1):
+            path = "/".join(parts[:depth])
+            matched = False
+            current_matches = [False] * len(rules)
+            for index, (pattern, excluded) in enumerate(rules):
+                match = parent_matches[index]
+                if not match:
+                    if excluded != matched:
+                        continue
+                    match = pattern.fullmatch(path) is not None
+                current_matches[index] = match
+                if match:
+                    matched = not excluded
+            parent_matches = current_matches
+        return matched
+
+    return ignored
 
 
 def iter_context_entries(context_dir: Path) -> Iterator[tuple[Path, str]]:
@@ -303,7 +438,7 @@ def build_context_digest(
         # Full permission bits, not just the executable flag.
         field(b"mode", format(path.stat().st_mode & 0o7777, "04o").encode())
         if path.is_file():
-            field(b"blob", hashlib.sha256(path.read_bytes()).digest())
+            field(b"blob", _context_file_digest(path))
     return digest.hexdigest()
 
 

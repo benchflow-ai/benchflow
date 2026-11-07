@@ -133,6 +133,59 @@ def test_first_delegation_key_request_does_not_underflow() -> None:
     assert backend._user_delegation_key(datetime.now(UTC)) == "delegation-key"
 
 
+class _ScriptedDelegationKeys:
+    """A blob service whose key refreshes return or raise in order."""
+
+    def __init__(self, *results: object) -> None:
+        self.results = list(results)
+        self.expiries: list[datetime] = []
+
+    def get_user_delegation_key(self, *, key_start_time, key_expiry_time):
+        self.expiries.append(key_expiry_time)
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def _key_broker(blob_service: object, sas_minutes: int = 15) -> AzureUploadBroker:
+    return AzureUploadBroker(
+        account_name="account",
+        container="bronze",
+        table=SimpleNamespace(),
+        blob_service=blob_service,
+        ip_hash_key=b"test",
+        sas_minutes=sas_minutes,
+    )
+
+
+def test_a_failed_delegation_key_refresh_is_retried_not_served_stale() -> None:
+    """A refresh that raises leaves the old key's expiry, so the next grant
+    refreshes again instead of signing with the old key for the new key's
+    hour."""
+    keys = _ScriptedDelegationKeys("key-1", RuntimeError("refresh failed"), "key-2")
+    backend = _key_broker(keys)
+    start = datetime.now(UTC)
+
+    assert backend._user_delegation_key(start) == "key-1"
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        backend._user_delegation_key(start + timedelta(minutes=50))
+    assert backend._user_delegation_key(start + timedelta(minutes=51)) == "key-2"
+    assert len(keys.expiries) == 3
+
+
+def test_a_delegation_key_is_refreshed_before_it_would_outlive_a_grant() -> None:
+    """A grant's SAS lasts sas_minutes; its signing key is reused only while
+    it lives longer than that."""
+    keys = _ScriptedDelegationKeys("key-1", "key-2")
+    backend = _key_broker(keys, sas_minutes=15)
+    start = datetime.now(UTC)
+
+    assert backend._user_delegation_key(start) == "key-1"
+    assert backend._user_delegation_key(start + timedelta(minutes=44)) == "key-1"
+    assert backend._user_delegation_key(start + timedelta(minutes=46)) == "key-2"
+
+
 def test_broker_sas_permission_is_service_enforced_create_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,7 +229,7 @@ def test_upload_contract_recomputes_digest_and_rejects_object_injection(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
         request = UploadRequest.model_validate(body)
@@ -190,7 +243,7 @@ def test_upload_contract_recomputes_digest_and_rejects_object_injection(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
         body["traj_digest"] = "sha256:" + "0" * 64
@@ -207,7 +260,7 @@ def test_contributor_contract_is_validated_at_broker_and_manifest_boundaries(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         manifest = validate_manifest_bytes(staged.files[-1].local_path.read_bytes())
@@ -215,7 +268,7 @@ def test_contributor_contract_is_validated_at_broker_and_manifest_boundaries(
     assert request.contributor is not None
     assert request.schema_version == "1.1.0"
     assert request.contributor.github_id == "benchflow-ai"
-    assert request.contributor.email == "contributor@benchflow.ai"
+    assert request.contributor.email == "contributor@example.com"
     assert manifest.contributor == request.contributor
 
     invalid = _request_from_manifest(staged.manifest)
@@ -250,7 +303,7 @@ def test_schema_12_handshake_requires_exact_manifest_digest(tmp_path: Path) -> N
         _trial(tmp_path),
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
     body["schema_version"] = "1.2.0"
@@ -290,7 +343,7 @@ def test_broker_http_surface_returns_scoped_grants_and_protocol_statuses(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
         grant = UploadGrant(
@@ -362,7 +415,7 @@ def test_broker_validation_errors_are_fail_closed_and_json_safe(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
 
@@ -538,6 +591,44 @@ def test_validator_rejects_prefixless_secret_in_argv_sequence(tmp_path: Path) ->
         _validate_and_scan_jsonl(artifact, "trajectory/command.jsonl")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl --api-key opaque-prefixless-value 'https://example.com/v1",
+        'deploy --password opaque-prefixless-value --note "half done',
+        "tool --token opaque-prefixless-value \\",
+        "tool --access-key=opaque-prefixless-value --msg 'unclosed",
+    ],
+    ids=["single-quote", "double-quote", "trailing-backslash", "equals"],
+)
+def test_validator_rejects_secret_in_command_text_shlex_cannot_split(
+    tmp_path: Path, command: str
+) -> None:
+    """A sensitive option's value is found in text with an unbalanced quote or
+    a trailing backslash, which shlex refuses to split."""
+    artifact = tmp_path / "command.jsonl"
+    artifact.write_text(json.dumps({"command": command}) + "\n", encoding="utf-8")
+
+    with pytest.raises(CaptureRejected, match="secret-like"):
+        _validate_and_scan_jsonl(artifact, "trajectory/command.jsonl")
+
+
+def test_client_masks_unsplittable_command_text_and_the_gate_accepts_it(
+    tmp_path: Path,
+) -> None:
+    command = "curl --api-key opaque-prefixless-value 'https://example.com/v1"
+    trial = _trial(tmp_path, command)
+    with stage_trajectory_capture(trial, source_id="demo") as staged:
+        paths = {item.relname: item.local_path for item in staged.files[:-1]}
+        staged_text = "".join(path.read_text() for path in paths.values())
+        assert "opaque-prefixless-value" not in staged_text
+        masked = json.loads(staged_text.splitlines()[0])["text"]
+        assert masked == (
+            "curl --api-key <XXX-benchflow-key-values-XXX> 'https://example.com/v1"
+        )
+        validate_local_capture(staged.files[-1].local_path.read_bytes(), paths)
+
+
 def test_validator_bounds_record_bytes_and_complexity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -689,7 +780,7 @@ def test_broker_regrant_does_not_downgrade_ledger_state(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
@@ -733,7 +824,7 @@ def test_broker_persists_declared_artifact_sizes(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         expected = {item.name: item.bytes for item in request.artifacts}
@@ -767,7 +858,7 @@ def test_broker_rejects_manifest_change_during_validation(
         _trial(tmp_path),
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
         body["schema_version"] = "1.2.0"
@@ -809,7 +900,7 @@ def test_broker_supersedes_conflicting_incomplete_attempt(
         _trial(tmp_path),
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         body = _request_from_manifest(staged.manifest)
         body["schema_version"] = "1.2.0"
@@ -858,7 +949,7 @@ def test_broker_reopens_rejected_digest_in_isolated_attempt(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
@@ -904,7 +995,7 @@ def test_terminal_digest_handshakes_consume_rate_limit(
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         request = UploadRequest.model_validate(_request_from_manifest(staged.manifest))
         digest = staged.traj_digest
@@ -1040,7 +1131,7 @@ def _quarantine_capture(tmp_path: Path) -> tuple[str, dict[str, bytes]]:
         trial,
         source_id="demo",
         github_id="benchflow-ai",
-        email="contributor@benchflow.ai",
+        email="contributor@example.com",
     ) as staged:
         digest = staged.traj_digest
         prefix = f"inbox/{digest}/"
@@ -1065,7 +1156,7 @@ def _quarantine_report_capture(
         staged = finalize_trajectory_capture(
             artifacts,
             github_id="benchflow-ai",
-            email="contributor@benchflow.ai",
+            email="contributor@example.com",
             trajectory_report=report.as_manifest_metadata(),
         )
         digest = staged.traj_digest
@@ -1175,7 +1266,7 @@ def test_queue_validator_promotes_manifest_last_and_cleans_quarantine(
     )
     assert promoted_manifest["contributor"] == {
         "github_id": "benchflow-ai",
-        "email": "contributor@benchflow.ai",
+        "email": "contributor@example.com",
     }
     assert not any(name.startswith(f"inbox/{digest}/") for name in container.blobs)
     assert table.entities[-1]["status"] == "ingested"

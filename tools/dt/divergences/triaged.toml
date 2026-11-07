@@ -1,0 +1,56 @@
+# Known differences an owner is deciding or fixing. Same fields as
+# accepted.toml; `owner` is the PY8 target (or a maintainer) who owns the fix.
+# A row that still matches after its owner landed (an integrator line in
+# results/status.md) fails the run: the fix did not take, or the row is stale.
+
+[[row]]
+id = "instruction-trailing-newline"
+mode = "cross-engine"
+cells = ["*"]
+class = "field_change"
+fields = ["prompt.raw_sha256"]
+spec_side = "n/a"
+owner = "PT"
+cite = "src/benchflow/rollout/_setup.py:82,86,92 (Python records the instruction stripped) and :370-376 (the /instruction.md uploaded to the sandbox: the raw file for split layouts, the stripped text plus \\n for task.md); Rust records the instruction as written"
+reason = "the maintainers' call, raised through PT: which of the two the recorded prompt should be (the stripped hashes agree)"
+
+[[row]]
+id = "agent-timeout-scored"
+mode = "cross-engine"
+cells = ["agent-timeout/oracle"]
+class = ["score_disagree", "spec_mismatch"]
+spec_side = "rust"
+owner = "V4"
+cite = "V4 (scored timeouts); integ/p1:examples/README.md:67 (E23: scored, reward 0). BASE_T0 records the oracle's timeout as 'RuntimeError: Command timed out after 10 seconds', infra_failure, retried 3 times, unscored"
+reason = "Python 0.8 does not score an oracle that outlives its timeout; V4 scores timeouts"
+
+[[row]]
+id = "image-failure-category"
+mode = "cross-engine"
+cells = ["broken-image/*", "ready-never/*"]
+class = ["field_change", "summary_change", "spec_mismatch"]
+fields = ["family", "families", "python: family"]
+spec_side = "rust"
+owner = "PT"
+cite = "src/benchflow/_utils/scoring.py classify_error: a failed image build (broken-image, 'Docker compose command failed') and a readiness check that never passes (ready-never) fall to 'other'; Rust records R101 and R105 (sandbox_startup), integ/p1:examples/README.md:70-71"
+reason = "Python records both as category other; the shared family is sandbox"
+
+[[row]]
+id = "verifier-offline-needs-iptables"
+mode = "cross-engine"
+cells = ["net-allowlist/*", "net-ip-allowlist/*"]
+class = ["score_disagree", "spec_mismatch"]
+spec_side = "rust"
+owner = "PT"
+cite = "src/benchflow/taskmd/verify.py:86 ('[verifier] network is \"none\", and BenchFlow could not take the verifier offline: ... iptables is not available', on python:3.12-slim); integ/p1:examples/README.md:83,85 (reward 1)"
+reason = "Python needs iptables in the task image to take the verifier offline and records the trial unscored without it; Rust takes it offline from outside the image"
+
+[[row]]
+id = "agent-network-none-binds-the-agent-uid"
+mode = "cross-engine"
+cells = ["net-ip-none/oracle"]
+class = ["score_disagree", "spec_mismatch"]
+spec_side = "rust"
+owner = "PT"
+cite = "src/benchflow/taskmd/plan.py:910-920 (the agent's phase runs offline through a firewall that binds the agent's uid); integ/p1:examples/README.md:85 (E68: the oracle, which runs as root, reaches neither address)"
+reason = "Python's per-phase network none binds the agent user, so the oracle (root) still reaches the addresses and the probe scores 0; Rust's policy holds for root too"

@@ -1,0 +1,5 @@
+{
+ "message": "Command timed out after 2 seconds",
+ "preview_ran": false,
+ "raised": "RuntimeError"
+}

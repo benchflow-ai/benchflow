@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "version": "0.9.2",
+  "status": "accepted",
+  "source_commit": "b7ed000bb032d8236ea8ce0b800695f4bd6b74cd",
+  "acceptance_receipt_sha256": "bab580f89e1d69fb5d60efbc61eea674ffeac91e672e19a180f5d75a93137a77",
+  "artifacts": {
+    "benchflow-0.9.2-py3-none-any.whl": "0ede69cab59e8c397c58e80d3c68d60240ede0722c03e495dbd2400329d9cf9e",
+    "benchflow-0.9.2.tar.gz": "60023d35f9337bb6b0e540115b5d8629ed470b25ade7e654e6a5c1d2d9bff401"
+  }
+}

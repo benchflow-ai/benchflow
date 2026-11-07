@@ -21,6 +21,9 @@ from benchflow.sandbox.user import (
     RoundResult,
 )
 from benchflow.task.verifier import VerifierResult
+from tests._receipt_fakes import receipt_aware
+from tests.reachable_fixture import directory
+from tests.sandbox_mounts import ROOT_MOUNTINFO
 
 # Unit tests for User types
 
@@ -186,11 +189,19 @@ class FakeExecResult:
 class FakeEnv:
     """Minimal sandbox mock for user loop tests."""
 
+    supports_system_shell = True
+
     def __init__(self) -> None:
         self._exec_log: list[str] = []
+        self._exec_kwargs: list[dict] = []
 
+    @receipt_aware
     async def exec(self, cmd: str, **kwargs) -> FakeExecResult:
         self._exec_log.append(cmd)
+        self._exec_kwargs.append(kwargs)
+        # CONFIRM-lockdown-3 (96db2034): soft cleanup requires mount provenance.
+        if "/proc/self/mountinfo" in cmd:
+            return FakeExecResult(stdout=ROOT_MOUNTINFO)
         if "cat /solution" in cmd:
             return FakeExecResult(stdout="gold answer here")
         if "rm -rf /solution" in cmd:
@@ -202,6 +213,9 @@ class FakeEnv:
         return FakeExecResult()
 
     async def stop(self, **kwargs):
+        pass
+
+    async def upload_file(self, source, target, **_kwargs):
         pass
 
 
@@ -226,7 +240,11 @@ def _make_user_trial(
     trial._rollout_dir = rollout_dir
     verifier_dir = rollout_dir / "verifier"
     verifier_dir.mkdir(parents=True, exist_ok=True)
-    trial._rollout_paths = type("P", (), {"verifier_dir": verifier_dir})()
+    trial._rollout_paths = type(
+        "P",
+        (),
+        {"verifier_dir": verifier_dir, "agent_dir": directory(rollout_dir / "agent")},
+    )()
     trial._task = type(
         "T",
         (),
@@ -545,9 +563,16 @@ class TestUserLoop:
         assert call_count == 3
 
     @pytest.mark.asyncio
-    async def test_oracle_access(self):
-        user = RecordingUser(max_rounds=0)
-        trial = _make_user_trial(user, oracle=True)
+    async def test_oracle_access(self, tmp_path: Path):
+        """The user gets the task's solve.sh read on the host; the loop never
+        touches a solution path in the sandbox (no cat, no move to
+        /oracle_backup), since none is there (GAP-ORACLE-READABLE)."""
+        user = RecordingUser(max_rounds=1)
+        trial = _make_user_trial(user, oracle=True, tmp_path=tmp_path)
+        solve = tmp_path / "oracle" / "solve.sh"
+        solve.parent.mkdir()
+        solve.write_text("echo host gold\n")
+        trial._task.paths = type("Paths", (), {"solve_path": solve})()
 
         with (
             patch.object(trial, "connect_as", new_callable=AsyncMock),
@@ -564,7 +589,9 @@ class TestUserLoop:
         ):
             await trial._run_user_loop()
 
-        assert user.setup_calls[0][1] == "gold answer here"
+        assert user.setup_calls[0][1] == "echo host gold"
+        touched = [c for c in trial._env._exec_log if "oracle" in c or "solution" in c]
+        assert touched == []
 
     @pytest.mark.asyncio
     async def test_multi_role_raises(self):
@@ -980,7 +1007,7 @@ class TestLoopStrategyEngine:
             except TimeoutError as e:
                 timed_out = True
                 # What Rollout.run()'s except TimeoutError handler does.
-                trial._record_agent_timeout(e)
+                trial._record_agent_timeout(e, agent_phase=True)
         assert timed_out
 
         result = trial._build_result()
@@ -1063,11 +1090,6 @@ class TestRoundTokens:
         )()
         assert _round_tokens(rollout) is None
 
-    def test_returns_none_when_metrics_missing(self):
-        from benchflow.rollout._user_loop import _round_tokens
-
-        assert _round_tokens(type("R", (), {})()) is None
-
     def test_returns_total_when_usage_trusted(self):
         from benchflow.rollout._user_loop import _round_tokens
         from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
@@ -1140,6 +1162,18 @@ class TestSoftVerify:
 
         assert rewards == {"reward": 1.0, "exact_match": 1.0}
         assert error is None
+        # The log read runs as root while the agent is alive: on the system
+        # shell, never a cat the image's PATH picks (C8).
+        reads = [
+            kw
+            for cmd, kw in zip(
+                trial._env._exec_log, trial._env._exec_kwargs, strict=True
+            )
+            if cmd.startswith("cat /logs/verifier/")
+        ]
+        assert reads and all(
+            kw.get("system_shell") is True and kw.get("user") == "root" for kw in reads
+        )
 
     @pytest.mark.asyncio
     async def test_soft_verify_returning_no_rewards_is_verifier_error(self):
@@ -1184,7 +1218,7 @@ class TestSoftVerify:
         mock_result = type("VR", (), {"rewards": {"reward": 0.0}})()
 
         with (
-            patch("benchflow.task.verifier.Verifier") as MockVerifier,
+            patch("benchflow.task.Verifier") as MockVerifier,
             patch(
                 "benchflow.sandbox.lockdown._build_cleanup_cmd",
                 return_value="echo cleanup_sentinel",
@@ -1195,18 +1229,26 @@ class TestSoftVerify:
 
             await trial.soft_verify()
 
+        MockVerifier.assert_called_once()
         # Verify cleanup command was executed
         exec_log = trial._env._exec_log
         assert any("cleanup_sentinel" in cmd for cmd in exec_log)
         assert any("find /logs/verifier -mindepth 1" in cmd for cmd in exec_log)
-        assert any(cmd == "mkdir -p /app" for cmd in exec_log)
+        # Root setup commands find their programs on a trusted PATH:
+        # on PT's route every root exec pins it, so the command goes as written.
+        assert any(cmd.endswith("mkdir -p /app") for cmd in exec_log)
 
     @pytest.mark.asyncio
     async def test_soft_verify_reports_cleanup_failure(self):
         trial = _make_user_trial(PassthroughUser())
-        trial._env.exec = AsyncMock(
-            return_value=FakeExecResult(stderr="Device or resource busy", return_code=1)
-        )
+        original_exec = trial._env.exec
+
+        async def fail_cleanup(cmd, **kwargs):
+            if "find /logs/verifier -mindepth 1" in cmd:
+                return FakeExecResult(stderr="Device or resource busy", return_code=1)
+            return await original_exec(cmd, **kwargs)
+
+        trial._env.exec = AsyncMock(side_effect=fail_cleanup)
 
         rewards, output, error = await trial.soft_verify()
 

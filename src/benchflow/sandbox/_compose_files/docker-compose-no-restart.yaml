@@ -1,0 +1,12 @@
+# Stacked whenever the cloud metadata block applies to main. Its
+# rules live in main's network namespace, and a restarted container gets a
+# new one without them, while the record would still say the block is on.
+# So main never restarts: a task's own restart policy (restart, or
+# deploy.restart_policy, which Compose reads after it) is turned off.
+services:
+  main:
+    restart: "no"
+    deploy:
+      restart_policy:
+        condition: none
+        max_attempts: 0

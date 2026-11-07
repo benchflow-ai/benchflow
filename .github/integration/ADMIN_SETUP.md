@@ -9,13 +9,13 @@ UI / API. Workflows:
 | L0 | `.github/workflows/test.yml` | push / PR / merge_group | yes (every PR) |
 | L1 | `.github/workflows/integration-light.yml` | PR + dispatch + successful `test` run on `main` | yes (every PR; also gates previews) |
 | L2 | `.github/workflows/integration-scope.yml` | PR (labeled `integration:medium`, …) + dispatch | yes (real work only on label) |
-| L3 | `.github/workflows/integration-final-review.yml` | `workflow_dispatch` only | gated by protected env approval |
+| L3 | `.github/workflows/integration-final-review.yml` | manual `workflow_dispatch` or the `ready-to-merge` label | not required; runs in `pypi-internal-preview`, which has no required reviewers |
 
 ## 1. Branch protection (required status checks)
 
 On the protected `main` branch, mark these checks **required**:
 
-- `test` (L0 unit/lint/type lane)
+- `test` (L0 unit/lint/type lane). It is one job in `test.yml` that passes only when every `unit (<python>)` leg passed, so the per-Python checks need not be required one by one, and adding a Python to the matrix needs no protection change.
 - L1 job check from `integration-light` — the `detect-scope` + `rollout-smoke`
   jobs. Because `detect-scope` reports a **green no-op** (`should_run=false`)
   when a diff needs no rollout, this check can be required **unconditionally**
@@ -29,24 +29,22 @@ On the protected `main` branch, mark these checks **required**:
 > starts. That is why every level's first job is the secret-free `detect-scope`
 > no-op rather than a path filter.
 
-L3 is **not** a required status check. It is enforced by the protected
-environment approval below, plus the `integration-final-review` check-run that
-the L3 review job publishes on the PR head SHA.
+L3 is **not** a required status check. Its gate is the `integration-final-review`
+check-run that the L3 review job publishes on the PR head SHA.
 
 ## 2. Protected environments
 
 Use the existing **`pypi-internal-preview`** environment for L1/L2/L3 — **no
-separate protected environment is created** (per the agreed simplification, L3's
-golden truth is the HuggingFace leaderboard `main` runs vs the latest benchflow
-main, not a human approval gate).
+separate protected environment is created** (L3 compares the PR's own Docker
+and Daytona runs; it is not a human approval gate).
 
 ### `pypi-internal-preview` (L1 + L2 + L3)
 
 - Holds the provider/Daytona/reviewer secrets (see §3).
-- No required reviewers — L1/L2 run automatically on internal PRs; L3 is a manual
-  `workflow_dispatch`.
-- L1 attaches **only low-value** provider keys (DEEPSEEK / GEMINI /
-  GITHUB_MODELS). L2/L3 attach **all** keys per the agreed Q6 residual. The L3
+- No required reviewers — L1/L2 run automatically on internal PRs; L3 runs by
+  manual `workflow_dispatch` or when the `ready-to-merge` label is added.
+- L1 attaches **only low-value** provider keys (DEEPSEEK / GEMINI / GLM /
+  GITHUB_MODELS). L2/L3 attach **all** keys. The L3
   codex reviewer authenticates with the **existing repo `OPENAI_API_KEY`** — no
   separate secret to create.
 - *Optional, later:* to add a hard human gate, create a protected environment
@@ -64,7 +62,7 @@ Provider (rollout + judge):
 `LITELLM_API_KEY` (or `BF_TOKEN`), `LITELLM_BASE_URL`, `GITHUB_MODELS_TOKEN`.
 
 Per the agent model policy (see
-[`../../docs/integration-tiers.md`](../../docs/integration-tiers.md) §3.3), these
+[Models](./README.md#models) in README.md), these
 specific keys are load-bearing:
 
 - **`DEEPSEEK_API_KEY` — gates rollout AND grading; `DEEPSEEK_BASE_URL` is an

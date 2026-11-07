@@ -1,0 +1,16 @@
+version = "1.0"
+multi_step_reward_strategy = "final"
+
+[agent]
+timeout_sec = 300
+
+[verifier]
+timeout_sec = 60
+
+
+[[steps]]
+name = "write"
+min_reward = 1.0
+
+[[steps]]
+name = "append"

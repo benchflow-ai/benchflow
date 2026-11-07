@@ -1,19 +1,19 @@
-"""Compatibility helpers for third-party benchmark frameworks."""
+"""Registry task inventory and checks (`bench hub check`)."""
 
-from benchflow.hub.harbor_registry import (
-    DEFAULT_HARBOR_REGISTRY_URL,
-    HarborTaskRef,
-    check_harbor_registry,
-    load_harbor_registry,
+from benchflow.hub.registry import (
+    BENCHFLOW_REGISTRY,
+    RegistryTaskRef,
+    check_registry_tasks,
+    load_hub_registry,
     records_from_jsonl,
-    select_harbor_tasks,
+    select_registry_tasks,
 )
 
 __all__ = [
-    "DEFAULT_HARBOR_REGISTRY_URL",
-    "HarborTaskRef",
-    "check_harbor_registry",
-    "load_harbor_registry",
+    "BENCHFLOW_REGISTRY",
+    "RegistryTaskRef",
+    "check_registry_tasks",
+    "load_hub_registry",
     "records_from_jsonl",
-    "select_harbor_tasks",
+    "select_registry_tasks",
 ]

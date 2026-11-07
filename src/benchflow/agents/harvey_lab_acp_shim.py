@@ -26,6 +26,14 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import TypedDict
+
+
+class _Session(TypedDict):
+    cwd: str
+    model: str
+    state: dict
+
 
 _DIAG_TRUNCATE = 2000
 _TOOL_RESULT_TRUNCATE = 1000
@@ -345,12 +353,16 @@ def _patch_sandbox_module() -> None:
 def _install_parse_doc_helper() -> None:
     """Install Harvey's in-sandbox document parser for the read tool."""
     helper_dir = Path(
-        os.environ.get("BENCHFLOW_HARVEY_TOOLS_DIR", "/tmp/benchflow-harvey-tools")
+        os.environ.get("BENCHFLOW_HARVEY_TOOLS_DIR", "/tmp/runtime-tools")
     )
     helper_dir.mkdir(parents=True, exist_ok=True)
     helper = helper_dir / "parse-doc"
-    if not helper.exists() or helper.read_text(encoding="utf-8") != _PARSE_DOC_SCRIPT:
-        helper.write_text(_PARSE_DOC_SCRIPT, encoding="utf-8")
+    # The shim is launched by the pinned venv's absolute Python, without
+    # activating it on PATH. Its parser must use that interpreter too, not
+    # whatever python3 the task image supplies to /usr/bin/env.
+    script = f"#!{sys.executable}\n" + _PARSE_DOC_SCRIPT.split("\n", 1)[1]
+    if not helper.exists() or helper.read_text(encoding="utf-8") != script:
+        helper.write_text(script, encoding="utf-8")
         helper.chmod(0o755)
     path = os.environ.get("PATH", "")
     helper_str = str(helper_dir)
@@ -400,6 +412,7 @@ def _run_harvey_lab_agent(
     max_turns: int = 200,
     temperature: float = 0.0,
     reasoning_effort: str | None = None,
+    session_state: dict | None = None,
 ) -> dict:
     """Run the Harvey LAB agent loop and emit ACP updates for trajectory.
 
@@ -454,10 +467,12 @@ def _run_harvey_lab_agent(
     system_prompt = _load_system_prompt()
 
     # Run the agent loop with ACP update emission
-    messages = [
-        adapter.make_system_message(system_prompt),
-        adapter.make_user_message(instruction),
-    ]
+    if session_state is None:
+        session_state = {}
+    if "messages" not in session_state:
+        session_state["messages"] = [adapter.make_system_message(system_prompt)]
+    messages = session_state["messages"]
+    messages.append(adapter.make_user_message(instruction))
 
     total_input_tokens = 0
     total_output_tokens = 0
@@ -468,14 +483,8 @@ def _run_harvey_lab_agent(
     for turn in range(max_turns):
         turn_count = turn + 1
 
-        try:
-            response = adapter.chat(messages, tools)
-        except Exception as e:
-            err_msg = str(e)
-            if "prompt is too long" in err_msg or "context_length_exceeded" in err_msg:
-                _emit_text(session_id, f"[Context overflow on turn {turn_count}]")
-                break
-            raise
+        # Context overflow is also a failed request, not a completed answer.
+        response = adapter.chat(messages, tools)
 
         messages.append(response.message)
         total_input_tokens += response.input_tokens
@@ -557,20 +566,42 @@ def _mirror_workspace_outputs(workspace_dir: Path, output_dir: Path) -> int:
 
 
 def _emit_text(session_id: str, text: str):
-    """Emit agent text as ACP agent_message_chunk."""
-    send(
-        {
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": text[:_DIAG_TRUNCATE]},
-                },
+    """Emit contiguous text chunks bounded by their complete serialized size."""
+    # This file is installed standalone, without benchflow. Keep the parsing
+    # semantics aligned with sandbox.process._acp_lines.line_limit; the host
+    # transport supplies its effective value in the process environment.
+    raw = os.environ.get("BENCHFLOW_ACP_LINE_LIMIT", "").strip().lower()
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 0 if raw in ("off", "none", "false") else 1024 * 1024
+    # Even with filtering off, bounded messages avoid transport buffer limits.
+    limit = min(limit, 64 * 1024) if limit > 0 else 64 * 1024
+    message = {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": ""},
             },
-        }
-    )
+        },
+    }
+    budget = limit - len(json.dumps(message)) - 1  # Include the newline.
+    if budget < 0 or (text and budget < 1):
+        raise ValueError("ACP line limit cannot carry the text envelope")
+    # json.dumps defaults to ASCII: a supplementary code point needs at most
+    # twelve bytes (two escaped surrogates); controls, quotes and slashes fit.
+    width = max(1, budget // 12)
+    content = message["params"]["update"]["content"]
+    for offset in range(0, max(1, len(text)), width):
+        content["text"] = text[offset : offset + width]
+        if len(json.dumps(message)) + 1 > limit:
+            raise ValueError("ACP line limit cannot carry a text character")
+        # A fresh content object lets asynchronous or recording senders retain
+        # each chunk without a later iteration modifying it.
+        send(json.loads(json.dumps(message)))
 
 
 def _emit_tool_call(session_id: str, tool_call_id: str, name: str, arguments: str):
@@ -637,6 +668,9 @@ def main():
     session_id = "harvey-lab-shim"
     cwd = "/app"
     model = ""
+    sessions: dict[str, _Session] = {
+        session_id: {"cwd": cwd, "model": model, "state": {}}
+    }
 
     while True:
         try:
@@ -647,6 +681,21 @@ def main():
         method = msg.get("method", "")
         req_id = msg.get("id")
         params = msg.get("params", {})
+
+        if method in ("session/prompt", "session/set_model"):
+            requested = params.get("sessionId", session_id)
+            if requested not in sessions:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": "Unknown session"},
+                    }
+                )
+                continue
+            session_id = requested
+            cwd = sessions[session_id]["cwd"]
+            model = sessions[session_id]["model"]
 
         if method == "initialize":
             send(
@@ -670,6 +719,7 @@ def main():
         elif method == "session/new":
             cwd = params.get("cwd", "/app")
             session_id = f"harvey-lab-{uuid.uuid4().hex[:8]}"
+            sessions[session_id] = {"cwd": cwd, "model": "", "state": {}}
             send(
                 {
                     "jsonrpc": "2.0",
@@ -680,6 +730,7 @@ def main():
 
         elif method == "session/set_model":
             model = params.get("modelId", "")
+            sessions[session_id]["model"] = model
             send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "session/prompt":
@@ -716,17 +767,27 @@ def main():
                     output_dir=output_dir,
                     workspace_dir=workspace_dir,
                     session_id=session_id,
+                    session_state=sessions[session_id]["state"],
                 )
-                _emit_text(
-                    session_id,
+                print(
                     f"[Harvey LAB agent completed: {result['turn_count']} turns, "
                     f"{result['tool_call_count']} tool calls, "
                     f"{result['wall_clock_seconds']}s, "
                     f"{result['mirrored_output_count']} mirrored output(s)]",
+                    file=sys.stderr,
                 )
             except Exception as e:
-                _emit_text(session_id, f"[Harvey LAB agent error: {e}]")
-                stop_reason = "end_turn"
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {
+                            "code": -32603,
+                            "message": f"{type(e).__name__}: {e}",
+                        },
+                    }
+                )
+                continue
 
             send(
                 {

@@ -1,0 +1,5 @@
+{
+ "return_code": 125,
+ "stderr": "/usr/bin/timeout: invalid option -- '1'\nTry '/usr/bin/timeout --help' for more information.\n",
+ "stdout": ""
+}

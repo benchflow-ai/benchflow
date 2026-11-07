@@ -18,7 +18,18 @@ from typing import Annotated
 
 import typer
 
-from benchflow.cli._shared import _apply_dotenv_to_process_env
+from benchflow.cli._errors import expected_error_parts
+from benchflow.cli._shared import (
+    _apply_dotenv_to_process_env,
+    exit_if_missing,
+    print_error,
+)
+
+# What a continue command reads, for an error about the folder it was given.
+_RUN_FOLDER_NEXT = (
+    "pass a timed-out run's folder (it holds config.json and "
+    "trajectory/llm_trajectory.jsonl)"
+)
 
 
 def register_continue(
@@ -53,7 +64,7 @@ def register_continue(
             typer.Option(
                 "--model",
                 help="Override the live-continuation model (default: the "
-                "original run's model). Tests use gemini-3.1-flash-lite-preview.",
+                "original run's model).",
             ),
         ] = None,
         timeout: Annotated[
@@ -106,10 +117,11 @@ def register_continue(
             ),
         ] = "auto",
     ) -> None:
-        """Resume a previous unfinished (timed-out) openhands run to completion."""
+        """Resume a previous unfinished (timed-out) OpenHands run to completion."""
         from benchflow.continue_run.orchestrator import continue_run
         from benchflow.continue_run.run_folder import RunFolderError
 
+        exit_if_missing(folder, next_step=_RUN_FOLDER_NEXT)
         _apply_dotenv_to_process_env()
 
         try:
@@ -127,9 +139,10 @@ def register_continue(
                 )
             )
         except RunFolderError as exc:
-            # Command-agnostic prefix: the same callback backs both the canonical
+            # No command name in it: the same callback backs both the canonical
             # `bench eval continue` and the deprecated top-level `bench continue`.
-            typer.secho(f"benchflow: {exc}", fg=typer.colors.RED, err=True)
+            message, hint = expected_error_parts(exc)
+            print_error(message, next_step=hint or _RUN_FOLDER_NEXT)
             raise typer.Exit(1) from exc
 
         typer.secho(
@@ -142,7 +155,7 @@ def register_continue(
         if result.rewards is not None:
             typer.echo(f"  rewards: {result.rewards}")
         if result.error:
-            typer.secho(f"  agent error: {result.error}", fg=typer.colors.YELLOW)
+            print_error(f"agent error: {result.error}")
             # A failed continuation must report failure to $? — matches
             # `eval continue-batch` (exits 1 if any continuation failed) and the
             # `eval run` run-error contract. Without this a scripted caller
@@ -220,22 +233,19 @@ def register_continue(
         _apply_dotenv_to_process_env()
         # Fail fast on a bad ROOT instead of treating a typo'd/nonexistent path as
         # an empty-but-valid tree — otherwise scripted callers read the exit-0
-        # "No timeout run folders found." as success. Matches `bench eval continue`,
-        # which exits 1 on a non-directory folder.
+        # "No timeout run folders found." as success. A usage mistake: exit 2.
         if not root.exists():
-            typer.secho(
-                f"benchflow: path does not exist: {root}",
-                fg=typer.colors.RED,
-                err=True,
+            print_error(
+                f"path does not exist: {root}",
+                next_step=f"{_RUN_FOLDER_NEXT}, or a folder of them",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         if not root.is_dir():
-            typer.secho(
-                f"benchflow: not a directory: {root}",
-                fg=typer.colors.RED,
-                err=True,
+            print_error(
+                f"not a directory: {root}",
+                next_step=f"{_RUN_FOLDER_NEXT}, or a folder of them",
             )
-            raise typer.Exit(1)
+            raise typer.Exit(2)
         folders = discover_timeout_run_folders(root, limit=limit)
         if not folders:
             typer.secho("No timeout run folders found.", fg=typer.colors.YELLOW)

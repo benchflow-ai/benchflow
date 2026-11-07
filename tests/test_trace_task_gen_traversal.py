@@ -64,7 +64,7 @@ def _trace_with_paths(paths: list[str]) -> ParsedTrace:
     "unsafe",
     [
         # ``..`` segments survive _relativize_path and would escape /app.
-        "../../tmp/benchflow_escape_marker.txt",
+        "../../tmp/runtime_escape_marker.txt",
         # Mid-path ``..`` that ends up relative but still has parent refs.
         "src/../../../etc/passwd",
         # Pure ``..`` parent reference.

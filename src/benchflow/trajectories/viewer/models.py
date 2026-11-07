@@ -26,6 +26,13 @@ VerifierStatus = Literal["passed", "failed", "skipped", "pending", "unknown"]
 _KNOWN_HUES: frozenset[str] = frozenset(
     {"read", "edit", "execute", "fetch", "search", "think", "skill"}
 )
+# Viewer-assigned kinds that are not ACP kinds, with their fixed hue.
+_KIND_HUES: dict[str, ToolHue] = {"agent": "skill"}
+# Harnesses report the tool that spawns a subagent with ACP kind "think":
+# claude-agent-acp's Task/Agent (title "Task" before the input arrives, the
+# description after) and opencode's task. Its first title word, or a
+# Task-shaped input, identifies it.
+_SPAWN_TOOL_NAMES: frozenset[str] = frozenset({"task", "agent"})
 _HUE_INFER: tuple[tuple[ToolHue, tuple[str, ...]], ...] = (
     ("search", ("web", "search", "fetch", "grep", "glob", "browser")),
     ("execute", ("bash", "shell", "exec", "terminal", "command")),
@@ -46,11 +53,31 @@ def tool_hue(kind: str, title: str = "") -> ToolHue:
     normalized_kind = kind.strip().lower()
     if normalized_kind in _KNOWN_HUES:
         return cast(ToolHue, normalized_kind)
+    if normalized_kind in _KIND_HUES:
+        return _KIND_HUES[normalized_kind]
     haystack = f"{kind} {title}".lower()
     for hue, needles in _HUE_INFER:
         if any(needle in haystack for needle in needles):
             return hue
     return "other"
+
+
+def tool_kind(kind: str, title: str = "", raw_input: object = None) -> str:
+    """The kind the badge shows: ``agent`` for a subagent spawn, else ``kind``.
+
+    The ACP kind of a spawning call is ``think`` (internal reasoning), which
+    names the wrong thing; every other kind passes through unchanged.
+    """
+    if kind.strip().lower() != "think":
+        return kind
+    words = title.split(None, 1)
+    named_spawn = bool(words) and words[0].lower() in _SPAWN_TOOL_NAMES
+    task_input = (
+        isinstance(raw_input, dict)
+        and "prompt" in raw_input
+        and ("description" in raw_input or "subagent_type" in raw_input)
+    )
+    return "agent" if named_spawn or task_input else kind
 
 
 def normalize_tool_status(value: object) -> ToolStatus:
@@ -155,11 +182,36 @@ class ThoughtStep:
 
 
 @dataclass(frozen=True)
+class SubagentTrace:
+    """Events a subagent emitted, attributed through ``parent_tool_call_id``.
+
+    ``depth`` counts levels below the main agent (1 = spawned by the main
+    agent), capped at the ATIF export's ``MAX_SUBAGENT_DEPTH``.
+    """
+
+    parent_tool_call_id: str
+    depth: int
+    steps: list[Step]
+    subagent_type: str | None = None
+    description: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "parent_tool_call_id": self.parent_tool_call_id,
+            "depth": self.depth,
+            "subagent_type": self.subagent_type,
+            "description": self.description,
+            "steps": [step.to_payload() for step in self.steps],
+        }
+
+
+@dataclass(frozen=True)
 class ToolStep:
     i: int
     tool: ToolCall
     t: float | None = None
     dur: float | None = None
+    subagent: SubagentTrace | None = None
     kind: Literal["tool"] = field(default="tool", init=False)
 
     def to_payload(self) -> dict[str, Any]:
@@ -167,6 +219,8 @@ class ToolStep:
         payload["tool"] = self.tool.to_payload()
         if self.dur is not None:
             payload["dur"] = self.dur
+        if self.subagent is not None:
+            payload["subagent"] = self.subagent.to_payload()
         return payload
 
 
@@ -184,6 +238,27 @@ class TimeoutStep:
 
 
 @dataclass(frozen=True)
+class NoticeStep:
+    """An ACP session notice: what the adapter composed (a Codex warning, a
+    model fallback), shown apart from what the agent said."""
+
+    i: int
+    severity: str
+    title: str
+    description: str | None = None
+    t: float | None = None
+    kind: Literal["notice"] = field(default="notice", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = _step_payload(self.i, self.kind, t=self.t)
+        payload.update(severity=self.severity, title=self.title)
+        payload["text"] = (
+            f"{self.title}\n\n{self.description}" if self.description else self.title
+        )
+        return payload
+
+
+@dataclass(frozen=True)
 class UnknownStep:
     i: int
     type: str
@@ -197,9 +272,63 @@ class UnknownStep:
         return payload
 
 
+SubagentGroupReason = Literal["parent_not_captured", "too_deep", "cyclic"]
+
+
+@dataclass(frozen=True)
+class SubagentGroupStep:
+    """A labelled group for subagent events with no spawning tool card.
+
+    ``parent_not_captured``: the attributed tool call never appears in the
+    capture (the ATIF export embeds these at the root without a reference).
+    ``too_deep`` / ``cyclic``: the spawning call exists but is not reachable
+    from the main agent within ``MAX_SUBAGENT_DEPTH`` levels; the ATIF export
+    leaves these out, the viewer still shows every recorded event.
+    """
+
+    gid: str
+    reason: SubagentGroupReason
+    subagent: SubagentTrace
+    kind: Literal["subagent"] = field(default="subagent", init=False)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "gid": self.gid,
+            "reason": self.reason,
+            "subagent": self.subagent.to_payload(),
+        }
+
+
 type Step = (
-    PromptStep | MessageStep | ThoughtStep | ToolStep | TimeoutStep | UnknownStep
+    PromptStep
+    | MessageStep
+    | ThoughtStep
+    | ToolStep
+    | TimeoutStep
+    | NoticeStep
+    | UnknownStep
+    | SubagentGroupStep
 )
+
+
+def iter_event_steps(steps: list[Step]) -> list[Step]:
+    """Every event step, nested subagent steps included, in capture order.
+
+    Group containers are not events and are skipped; ``i`` is the capture
+    order, so sorting by it restores the flat sequence.
+    """
+    found: list[Step] = []
+    pending: list[list[Step]] = [steps]
+    while pending:
+        for step in pending.pop():
+            if isinstance(step, SubagentGroupStep):
+                pending.append(step.subagent.steps)
+                continue
+            found.append(step)
+            if isinstance(step, ToolStep) and step.subagent is not None:
+                pending.append(step.subagent.steps)
+    return sorted(found, key=lambda step: getattr(step, "i", 0))
 
 
 @dataclass(frozen=True)
@@ -221,14 +350,22 @@ class StepCounts:
     messages: int = 0
     thoughts: int = 0
     tools: int = 0
+    # Subagent traces and the events inside them (already included in the
+    # per-kind counts above); omitted from the wire when there are none.
+    subagents: int = 0
+    subagent_events: int = 0
 
     def to_payload(self) -> dict[str, int]:
-        return {
+        payload = {
             "prompts": self.prompts,
             "messages": self.messages,
             "thoughts": self.thoughts,
             "tools": self.tools,
         }
+        if self.subagents:
+            payload["subagents"] = self.subagents
+            payload["subagent_events"] = self.subagent_events
+        return payload
 
 
 @dataclass(frozen=True)
@@ -263,6 +400,65 @@ class Timing:
         return dict(self.values)
 
 
+ExecutionStatus = Literal["completed", "errored", "timed_out"]
+AssessmentStatus = Literal["scored", "unscored"]
+NotCounted = Literal["superseded", "unfinished", "reviewer"]
+
+
+@dataclass(frozen=True)
+class RunStatus:
+    """Execution and assessment, reported separately.
+
+    Execution answers "did the solver run finish?" (the agent ``error``);
+    assessment answers "was a verdict recorded?" (reward, integrated
+    ``scoring`` block, ``verifier_error``). A verifier failure after a clean
+    run is therefore "completed but unscored", never an agent failure.
+    """
+
+    execution: ExecutionStatus
+    execution_detail: str | None
+    assessment: AssessmentStatus
+    assessment_detail: str | None
+    summary: str
+    scoring: JsonObject | None = None
+    score_outcome: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "execution": self.execution,
+            "execution_detail": self.execution_detail,
+            "assessment": self.assessment,
+            "assessment_detail": self.assessment_detail,
+            "summary": self.summary,
+            "scoring": dict(self.scoring) if self.scoring is not None else None,
+            "score_outcome": self.score_outcome,
+        }
+
+
+@dataclass(frozen=True)
+class BranchOrigin:
+    """Where a branch-child trajectory sits in its parent's ``tree.json``."""
+
+    parent_rollout: str
+    fork_id: str
+    node_id: str
+    index: int | None
+    parent_node: str | None
+    status: str | None
+    intervention: str | None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "parent_rollout": self.parent_rollout,
+            "fork_id": self.fork_id,
+            "node_id": self.node_id,
+            "index": self.index,
+            "parent_node": self.parent_node,
+            "status": self.status,
+            "intervention": self.intervention,
+        }
+
+
 @dataclass(frozen=True)
 class RolloutMetadata:
     """Canonical normalized projection of result.json and timing.json."""
@@ -281,6 +477,7 @@ class RolloutMetadata:
     partial_trajectory: bool | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    status: RunStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +496,8 @@ class Meta:
     partial_trajectory: bool | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    status: RunStatus | None = None
+    branch: BranchOrigin | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -316,6 +515,8 @@ class Meta:
             "partial_trajectory": self.partial_trajectory,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "status": self.status.to_payload() if self.status is not None else None,
+            "branch": self.branch.to_payload() if self.branch is not None else None,
         }
 
 
@@ -334,11 +535,66 @@ class VerifierTest:
 
 
 @dataclass(frozen=True)
+class RecoveryAttempt:
+    """One ``verifier-recovery/<id>/recovery.json`` receipt."""
+
+    attempt: str
+    admitted: bool
+    status: str | None = None
+    original_error: str | None = None
+    error: str | None = None
+    evidence: str | None = None
+    solver_replayed: bool | None = None
+    publication_error: str | None = None
+    cleanup_error: str | None = None
+    admission: str | None = None
+    reward: float | None = None
+    verifier_sec: float | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "attempt": self.attempt,
+            "admitted": self.admitted,
+            "status": self.status,
+            "original_error": self.original_error,
+            "error": self.error,
+            "evidence": self.evidence,
+            "solver_replayed": self.solver_replayed,
+            "publication_error": self.publication_error,
+            "cleanup_error": self.cleanup_error,
+            "admission": self.admission,
+            "reward": self.reward,
+            "verifier_sec": self.verifier_sec,
+        }
+
+
+@dataclass(frozen=True)
+class VerifierRecovery:
+    """Verifier-only recovery evidence (docs/tasks/verifiers.md).
+
+    ``pointer`` is ``verification.json``'s admitted attempt; ``attempts``
+    lists the admitted receipt first, then any other receipts.
+    """
+
+    pointer: str | None
+    pointer_error: str | None
+    attempts: list[RecoveryAttempt]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "pointer": self.pointer,
+            "pointer_error": self.pointer_error,
+            "attempts": [attempt.to_payload() for attempt in self.attempts],
+        }
+
+
+@dataclass(frozen=True)
 class VerifierArtifacts:
     reward: str | None = None
     stdout: str | None = None
     stderr: str | None = None
     ctrf: list[VerifierTest] | None = None
+    recovery: VerifierRecovery | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -348,6 +604,142 @@ class VerifierArtifacts:
             "ctrf": [test.to_payload() for test in self.ctrf]
             if self.ctrf is not None
             else None,
+            "recovery": self.recovery.to_payload()
+            if self.recovery is not None
+            else None,
+        }
+
+
+@dataclass(frozen=True)
+class RubricCriterion:
+    """One rubric criterion as the reviewer judged it."""
+
+    name: str
+    # True for a v0.2 blocker, False for a v0.2 scored criterion, None for a
+    # legacy v0.1 criterion, which only carries an outcome.
+    blocker: bool | None
+    weight: int | None
+    outcome: str | None
+    score: int | None
+    explanation: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "blocker": self.blocker,
+            "weight": self.weight,
+            "outcome": self.outcome,
+            "score": self.score,
+            "explanation": self.explanation,
+        }
+
+
+@dataclass(frozen=True)
+class RubricReview:
+    """The ``bench review`` verdict for one rollout, from ``review_report.json``."""
+
+    reviewer_model: str | None
+    review_valid: bool
+    scoring: JsonObject
+    summary: str
+    criteria: list[RubricCriterion]
+    source: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "reviewer_model": self.reviewer_model,
+            "review_valid": self.review_valid,
+            "scoring": dict(self.scoring),
+            "summary": self.summary,
+            "criteria": [criterion.to_payload() for criterion in self.criteria],
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class BranchChild:
+    """One child row of a fork in ``tree.json`` (branch_lineage.ForkRecord).
+
+    ``ref`` (``<fork id>/<node id>``) is set only when the child's evidence
+    was published (``artifacts.status == "available"``) and its
+    ``observation.json`` is present, so the viewer can open its trajectory.
+    """
+
+    index: int | None
+    node_id: str | None
+    status: str | None
+    reward: float | None
+    reward_source: str | None
+    error: str | None
+    cleanup_error: str | None
+    intervention: dict[str, str | None]
+    artifacts_status: str | None
+    artifacts_path: str | None
+    ref: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "node_id": self.node_id,
+            "status": self.status,
+            "reward": self.reward,
+            "reward_source": self.reward_source,
+            "error": self.error,
+            "cleanup_error": self.cleanup_error,
+            "intervention": dict(self.intervention),
+            "artifacts_status": self.artifacts_status,
+            "artifacts_path": self.artifacts_path,
+            "ref": self.ref,
+        }
+
+
+@dataclass(frozen=True)
+class BranchFork:
+    id: str
+    parent_node: str | None
+    status: str | None
+    value: float | None
+    requested_children: int | None
+    requested_layers: list[str]
+    captured_layers: list[str]
+    parent_restore: str | None
+    error: str | None
+    parent_restore_error: str | None
+    artifact_error: str | None
+    children: list[BranchChild]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "parent_node": self.parent_node,
+            "status": self.status,
+            "value": self.value,
+            "requested_children": self.requested_children,
+            "requested_layers": list(self.requested_layers),
+            "captured_layers": list(self.captured_layers),
+            "parent_restore": self.parent_restore,
+            "error": self.error,
+            "parent_restore_error": self.parent_restore_error,
+            "artifact_error": self.artifact_error,
+            "children": [child.to_payload() for child in self.children],
+        }
+
+
+@dataclass(frozen=True)
+class Lineage:
+    """Rollout-branch lineage read from the run's ``tree.json``."""
+
+    nodes: int
+    forks: list[BranchFork]
+    error: str | None = None
+    source: str = "tree.json"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "nodes": self.nodes,
+            "forks": [fork.to_payload() for fork in self.forks],
+            "error": self.error,
         }
 
 
@@ -357,6 +749,8 @@ class ViewerPayload:
     meta: Meta
     steps: list[Step]
     verifier: VerifierArtifacts
+    rubric: RubricReview | None = None
+    lineage: Lineage | None = None
     schema_version: int = 1
 
     def to_payload(self) -> dict[str, Any]:
@@ -366,6 +760,8 @@ class ViewerPayload:
             "meta": self.meta.to_payload(),
             "steps": [step.to_payload() for step in self.steps],
             "verifier": self.verifier.to_payload(),
+            "rubric": self.rubric.to_payload() if self.rubric is not None else None,
+            "lineage": self.lineage.to_payload() if self.lineage is not None else None,
         }
 
 
@@ -383,6 +779,16 @@ class RunSummary:
     cost_usd: float | None = None
     total_tokens: int | None = None
     n_tool_calls: int | None = None
+    status: RunStatus | None = None
+    # Forks and children recorded in the run's tree.json; None when the run
+    # has no tree.json (it never branched).
+    branch_forks: int | None = None
+    branch_children: int | None = None
+    # Why the job does not count this run as a trial, or None when it does
+    # (the trials bf.load_job keeps): "superseded" (an earlier attempt of a
+    # retried task), "unfinished" (no result.json: still going, or killed) or
+    # "reviewer" (a reviewer run).
+    not_counted: NotCounted | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -398,4 +804,13 @@ class RunSummary:
             "cost_usd": self.cost_usd,
             "total_tokens": self.total_tokens,
             "n_tool_calls": self.n_tool_calls,
+            "execution": self.status.execution if self.status else None,
+            "execution_detail": self.status.execution_detail if self.status else None,
+            "assessment": self.status.assessment if self.status else None,
+            "assessment_detail": self.status.assessment_detail if self.status else None,
+            "status_summary": self.status.summary if self.status else None,
+            "score_outcome": self.status.score_outcome if self.status else None,
+            "branch_forks": self.branch_forks,
+            "branch_children": self.branch_children,
+            "not_counted": self.not_counted,
         }

@@ -27,7 +27,7 @@ export BENCHFLOW_ENV_REGISTRY=src/benchflow/environment/_registry
 
 Resolution stays content-addressed (`env_hash = sha256(manifest bytes)`) so
 every run records exactly which environment it bound. See
-[`docs/environment-plane.md`](../../docs/environment-plane.md#registry-nameversion)
+[`docs/tasks/task-format.md#services-the-agent-works-with`](../../docs/tasks/task-format.md#services-the-agent-works-with)
 for the full registry contract and
 [`src/benchflow/_utils/env_registry.py`](../../src/benchflow/_utils/env_registry.py)
 for the resolver.

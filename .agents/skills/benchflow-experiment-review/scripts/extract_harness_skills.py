@@ -326,7 +326,12 @@ def first_text_block(body: dict[str, Any]) -> str:
     for key in ("messages", "input", "contents"):
         seq = body.get(key)
         if isinstance(seq, list):
-            parts.extend(textify(item) for item in seq if isinstance(item, dict))
+            parts.extend(
+                textify(item.get("content", item.get("parts")))
+                for item in seq
+                if isinstance(item, dict)
+                and item.get("role") in {"system", "developer"}
+            )
     return "\n\n".join(part for part in parts if part)
 
 
@@ -341,7 +346,9 @@ def result_with_source(
 
 
 def extract_codex(body: dict[str, Any]) -> dict[str, Any] | None:
-    if "instructions" not in body or "input" not in body:
+    if "input" not in body or (
+        "instructions" not in body and not isinstance(body["input"], list)
+    ):
         return None
     developer_parts: list[str] = []
     for message in body.get("input", []):
@@ -354,6 +361,10 @@ def extract_codex(body: dict[str, Any]) -> dict[str, Any] | None:
         re.S,
     )
     if not block_match:
+        # Responses instructions are optional; only a developer catalog identifies
+        # Codex without them. Leave unrelated normalized bodies to other extractors.
+        if "instructions" not in body:
+            return None
         return result_with_source(
             {
                 "harness": "codex",
@@ -534,20 +545,21 @@ def bodies_from_text(text: str) -> list[dict[str, Any]]:
 
 def system_prompt_candidates(events: list[dict[str, Any]]) -> list[tuple[int, str]]:
     candidates: list[tuple[int, str]] = []
-    anchors = (
-        "System Prompt:",
-        "<skills_instructions>",
-        "<SKILLS>",
-        "# Available Agent Skills",
-        "The following skills are available for use with the Skill tool:",
-    )
     for idx, event in enumerate(events):
-        for text in iter_strings(event):
-            if not any(anchor in text for anchor in anchors):
-                continue
-            if "System Prompt:" in text:
-                text = text.split("System Prompt:", 1)[1].strip()
-            candidates.append((idx, text))
+        if isinstance(event.get("request"), dict) or isinstance(
+            event.get("response"), dict
+        ):
+            # Provider exchanges already passed request-body extraction. Neither
+            # user text nor generated/echoed responses are ACP startup prompts.
+            continue
+        # The ACP fallback is the documented startup-prompt thought, not an
+        # arbitrary catalog-looking string in user messages or tool output.
+        text = event.get("text")
+        if event.get("type") != "agent_thought" or not isinstance(text, str):
+            continue
+        text = text.lstrip()
+        if text.startswith("System Prompt:"):
+            candidates.append((idx, text.removeprefix("System Prompt:").strip()))
     return candidates
 
 

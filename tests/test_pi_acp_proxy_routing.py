@@ -13,7 +13,7 @@ registered-provider-qualified id `litellm/<alias>`.
 from benchflow.acp.runtime import _resolve_acp_model_input, _select_acp_model_id
 
 _PROXY = {
-    "BENCHFLOW_LITELLM_MODEL_ALIAS": "benchflow-deepseek-deepseek-v4-flash",
+    "BENCHFLOW_LITELLM_MODEL_ALIAS": "runtime-deepseek-deepseek-v4-flash",
     "BENCHFLOW_PROVIDER_NAME": "litellm",
 }
 
@@ -27,7 +27,7 @@ def _final_id(agent, model, env):
 def test_pi_acp_proxy_alias_is_litellm_provider_qualified():
     assert (
         _final_id("pi-acp", "deepseek/deepseek-v4-flash", _PROXY)
-        == "litellm/benchflow-deepseek-deepseek-v4-flash"
+        == "litellm/runtime-deepseek-deepseek-v4-flash"
     )
 
 
@@ -41,6 +41,6 @@ def test_provider_model_agents_unaffected_by_pi_acp_fix():
     # opencode (provider/model) routes via the dedicated OpenCode gateway
     # provider id, NOT litellm/ (pi-acp) and NOT openai/ (Responses-API crash).
     out = _final_id("opencode", "deepseek/deepseek-v4-flash", _PROXY)
-    assert out == "benchflow/benchflow-deepseek-deepseek-v4-flash"
+    assert out == "runtime/runtime-deepseek-deepseek-v4-flash"
     assert not out.startswith("litellm/")
     assert not out.startswith("openai/")

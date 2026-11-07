@@ -21,16 +21,16 @@ from benchflow.cli._hosted_env import (
     hosted_env_list,
     hosted_env_show,
 )
-from benchflow.cli._shared import console, print_error
-from benchflow.hub.harbor_registry import DEFAULT_HARBOR_REGISTRY_URL
+from benchflow.cli._shared import console, exit_if_missing, print_error
 
 
 def register_hub(app: typer.Typer) -> None:
     """Attach the ``hub`` command group to the top-level benchflow app."""
     hub_app = typer.Typer(
         help=(
-            "External environment hubs: browse a hub's environments "
-            "(list/show/inspect) and check Harbor compatibility (check)."
+            "Environment hubs: browse a hub's environments (list/show/inspect), "
+            "check registry tasks (check), and publish datasets and push runs "
+            "to a BenchFlow Hub (publish/push)."
         )
     )
     app.add_typer(hub_app, name="hub", rich_help_panel="Environments")
@@ -47,15 +47,113 @@ def register_hub(app: typer.Typer) -> None:
     hub_app.add_typer(env_alias, name="env", hidden=True)
     _register_env_verbs(env_alias)
 
+    @hub_app.command("publish")
+    def hub_publish(
+        tasks_dir: Annotated[
+            Path, typer.Argument(help="Folder holding one folder per task")
+        ],
+        name: Annotated[
+            str,
+            typer.Option(
+                "--name",
+                help="The version to publish, as org/name@version (e.g. robouse/metaworld-sample@0.6.1)",
+            ),
+        ],
+        hub: Annotated[
+            str | None,
+            typer.Option("--hub", help="Hub address (default: $BENCHFLOW_HUB_URL)"),
+        ] = None,
+        description: Annotated[
+            str | None, typer.Option("--description", help="One line on what it is")
+        ] = None,
+        license: Annotated[
+            str | None,
+            typer.Option(
+                "--license",
+                help="The tasks' license, as an SPDX expression (e.g. Apache-2.0 AND MIT)",
+            ),
+        ] = None,
+        kind: Annotated[
+            str | None,
+            typer.Option("--kind", help="What its tasks are, e.g. embodied"),
+        ] = None,
+        source_repo: Annotated[
+            str | None,
+            typer.Option(
+                "--source-repo", help="Where the tasks came from (a repository URL)"
+            ),
+        ] = None,
+        source_commit: Annotated[
+            str | None,
+            typer.Option("--source-commit", help="The commit they came from"),
+        ] = None,
+        exporter: Annotated[
+            str | None,
+            typer.Option(
+                "--exporter",
+                help="What wrote the packages, e.g. 'robouse-export@d05027fb' (the tool and its commit)",
+            ),
+        ] = None,
+    ) -> None:
+        """Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub."""
+        from benchflow.cli import _hub_client
+
+        exit_if_missing(
+            tasks_dir, next_step="pass a folder that holds one folder per task"
+        )
+        _hub_client.publish(
+            tasks_dir,
+            name,
+            hub,
+            description=description,
+            license=license,
+            kind=kind,
+            source_repo=source_repo,
+            source_commit=source_commit,
+            exporter=exporter,
+        )
+
+    @hub_app.command("push")
+    def hub_push(
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="A job folder (jobs/<job>) holding one finished run, or the run (jobs/<job>/<time>)"
+            ),
+        ],
+        hub: Annotated[
+            str | None,
+            typer.Option("--hub", help="Hub address (default: $BENCHFLOW_HUB_URL)"),
+        ] = None,
+        dataset: Annotated[
+            str | None,
+            typer.Option(
+                "--dataset",
+                help="The dataset version the job ran, org/name@version (default: what the job recorded)",
+            ),
+        ] = None,
+        label: Annotated[
+            str | None, typer.Option("--label", help="A label for the run on the Hub")
+        ] = None,
+    ) -> None:
+        """Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub."""
+        from benchflow.cli import _hub_client
+
+        exit_if_missing(
+            job_dir,
+            next_step="pass a job folder under ./jobs (or --jobs-dir) that bench run wrote",
+        )
+        _hub_client.push(job_dir, hub, dataset=dataset, label=label)
+
     @hub_app.command("check")
     def hub_check(
         registry: Annotated[
-            str,
+            str | None,
             typer.Option(
                 "--registry",
-                help="Harbor registry JSON URL or local file.",
+                help="Registry JSON URL or local file (default: BenchFlow's registry).",
             ),
-        ] = DEFAULT_HARBOR_REGISTRY_URL,
+        ] = None,
         tasks_per_dataset: Annotated[
             int,
             typer.Option(
@@ -78,20 +176,24 @@ def register_hub(app: typer.Typer) -> None:
         cache_dir: Annotated[
             Path,
             typer.Option("--cache-dir", help="Cache directory for sparse clones."),
-        ] = Path(".cache/hub/harbor"),
+        ] = Path(".cache/hub/registry"),
         limit: Annotated[
             int | None,
             typer.Option("--limit", help="Optional cap on selected task refs.", min=1),
         ] = None,
     ) -> None:
-        """Inventory or structurally check representative Harbor registry tasks."""
-        from benchflow.hub.harbor_registry import (
-            check_harbor_registry,
-            records_summary,
-        )
+        """Inventory or structurally check representative registry tasks."""
+        from benchflow.hub.registry import check_registry_tasks, records_summary
 
+        shown = registry or "BenchFlow's registry"
+        where = f"--registry {registry}" if registry else shown
+        if registry and not registry.startswith(("http://", "https://")):
+            exit_if_missing(
+                Path(registry).expanduser(),
+                next_step="pass an existing registry JSON file or URL to --registry",
+            )
         try:
-            records = check_harbor_registry(
+            records = check_registry_tasks(
                 registry,
                 tasks_per_dataset=tasks_per_dataset,
                 level=level,
@@ -104,18 +206,34 @@ def register_hub(app: typer.Typer) -> None:
         # (JSONDecodeError) or `[Errno 2] ...` (OSError). print_error escapes the
         # path + routes to stderr.
         except json.JSONDecodeError:
-            print_error(f"--registry {registry} is not valid JSON")
+            print_error(
+                f"{where} is not valid JSON",
+                next_step="pass a registry JSON file or URL to --registry",
+            )
             raise typer.Exit(1) from None
         except OSError as exc:
-            print_error(f"--registry {registry}: {exc.strerror or exc}")
+            from urllib.error import HTTPError, URLError
+
+            offline = isinstance(exc, URLError) and not isinstance(exc, HTTPError)
+            print_error(
+                f"{where}: {exc.strerror or exc}",
+                next_step="check this machine's network (or its proxy), then run "
+                "the command again"
+                if offline
+                else "pass a registry JSON file or URL to --registry",
+            )
             raise typer.Exit(1) from None
         except Exception as exc:
-            print_error(f"Harbor compatibility check failed: {exc}")
+            print_error(
+                f"Registry check failed: {exc}",
+                next_step="check --registry and this machine's network, then run "
+                "the check again",
+            )
             raise typer.Exit(1) from exc
 
         summary = records_summary(records)
         console.print(
-            "[bold]Harbor compatibility:[/bold] "
+            f"[bold]Registry check ({escape(shown)}):[/bold] "
             f"{summary['total']} task refs, "
             f"{summary['pass']} pass, {summary['fail']} fail, "
             f"{summary['blocked']} blocked"
@@ -137,10 +255,10 @@ def _register_env_verbs(target: typer.Typer) -> None:
             str,
             typer.Option(
                 "--provider",
-                help="Hub to browse: 'primeintellect' (hosted envs) or "
-                "'harbor' (benchmark registry)",
+                help="Hub to browse: 'benchflow' (BenchFlow's dataset registry) "
+                "or 'primeintellect' (hosted envs; needs the `prime` CLI)",
             ),
-        ] = "primeintellect",
+        ] = "benchflow",
         owner: Annotated[
             str | None,
             typer.Option("--owner", help="Owner/namespace filter (primeintellect)"),
@@ -155,7 +273,7 @@ def _register_env_verbs(target: typer.Typer) -> None:
             bool, typer.Option("--json", help="Emit raw JSON")
         ] = False,
     ) -> None:
-        """List a hub's environments (primeintellect or harbor)."""
+        """List a hub's datasets or environments (benchflow or primeintellect)."""
         hosted_env_list(
             provider=provider,
             owner=owner,
@@ -169,15 +287,73 @@ def _register_env_verbs(target: typer.Typer) -> None:
         source_env: Annotated[
             str,
             typer.Argument(
-                help="Hosted environment (e.g. primeintellect/general-agent)"
+                help=(
+                    "A dataset on a BenchFlow Hub as org/name@version (e.g. "
+                    "robouse/metaworld-sample@0.6.1; read from --hub, or from "
+                    "$BENCHFLOW_HUB_URL when no --provider is given), a dataset of "
+                    "BenchFlow's registry as name@version (e.g. terminal-bench@2.0), "
+                    "or a hosted environment (e.g. primeintellect/general-agent)"
+                )
             ),
         ],
         version: Annotated[
-            str | None, typer.Option("--version", help="Hosted environment version")
+            str | None,
+            typer.Option(
+                "--version", help="Version (of the dataset or hosted environment)"
+            ),
+        ] = None,
+        provider: Annotated[
+            str | None,
+            typer.Option(
+                "--provider",
+                help="Where to read it without a Hub: 'benchflow' (BenchFlow's "
+                "registry; lists the dataset's tasks) or 'primeintellect' (default: "
+                "benchflow for name@version, primeintellect for owner/name)",
+            ),
+        ] = None,
+        output_json: Annotated[
+            bool,
+            typer.Option(
+                "--json",
+                help="Print the dataset's entry as JSON (for a Hub version, the version and its controls)",
+            ),
+        ] = False,
+        hub: Annotated[
+            str | None,
+            typer.Option(
+                "--hub",
+                help="A BenchFlow Hub to read org/name@version from, with its control "
+                "results (default: $BENCHFLOW_HUB_URL when set)",
+            ),
         ] = None,
     ) -> None:
-        """Show a hub environment's metadata."""
-        hosted_env_show(source_env=source_env, version=version)
+        """Show a dataset's tasks, or a hosted environment's metadata."""
+        import os
+
+        from benchflow.hub.client import HUB_URL_ENV
+
+        spec = (
+            f"{source_env}@{version}"
+            if version and "@" not in source_env
+            else source_env
+        )
+        # As `bench run -d`: --hub reads that Hub; $BENCHFLOW_HUB_URL alone serves org/name datasets, never
+        # BenchFlow's own registry names.
+        name = spec.partition("@")[0]
+        on_hub = hub or (
+            provider is None and "/" in name and os.environ.get(HUB_URL_ENV)
+        )
+        if on_hub and "@" in spec:
+            from benchflow.cli import _hub_client
+
+            _hub_client.show(spec, hub, output_json=output_json)
+            return
+        hosted_env_show(
+            source_env=source_env,
+            version=version,
+            provider=provider,
+            output_json=output_json,
+        )
 
     @target.command("inspect")
     def hub_inspect(

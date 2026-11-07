@@ -1,0 +1,12 @@
+diff --git a/src/benchflow/rewards/validation.py b/src/benchflow/rewards/validation.py
+index b3232c1..a62b3f1 100644
+--- a/src/benchflow/rewards/validation.py
++++ b/src/benchflow/rewards/validation.py
+@@ -65,7 +65,6 @@ def is_valid_reward_number(
+         isinstance(value, int | float)
+         and not isinstance(value, bool)
+         and math.isfinite(float(value))
+-        and lo <= float(value) <= hi
+     )
+ 
+ 

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Validate hosted-environment compatibility-board release evidence.
 
-The hosted-env lane is intentionally hub-level: OpenReward, Harbor Hub, and
-PrimeIntellect host environments on their own sites, not BenchFlow benchmark
-task repos. This checker makes that board executable by validating canonical
-``env_uid`` + ``hub_url`` metadata and regenerating Harbor registry inventory
-evidence.
+The hosted-env lane is intentionally hub-level: OpenReward and PrimeIntellect
+host environments on their own sites, not BenchFlow benchmark task repos. This
+checker makes that board executable by validating canonical ``env_uid`` +
+``hub_url`` metadata.
 """
 
 from __future__ import annotations
@@ -15,11 +14,6 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-
-from benchflow.hub.harbor_registry import (
-    check_harbor_registry,
-    records_summary,
-)
 
 try:
     from tests.integration.run_suite import load_suite
@@ -62,7 +56,7 @@ def _validate_hub_metadata(hub: dict[str, Any]) -> Finding:
     env_uid_pattern = str(hub.get("env_uid_pattern") or "")
     selected_envs = hub.get("selected_envs")
 
-    if platform not in {"openreward", "harbor", "primeintellect"}:
+    if platform not in {"openreward", "primeintellect"}:
         return Finding(platform or "<missing>", "fail", "unknown hosted-env platform")
     if not hub_url.startswith("https://"):
         return Finding(platform, "fail", "hub_url must be an https URL")
@@ -85,57 +79,6 @@ def _validate_hub_metadata(hub: dict[str, Any]) -> Finding:
     return Finding(platform, "pass", f"{len(env_uids)} selected env_uid(s) recorded")
 
 
-def _run_harbor_inventory(
-    hub: dict[str, Any],
-    *,
-    evidence_dir: Path,
-    limit: int,
-) -> tuple[Finding, Path | None]:
-    source = hub.get("source")
-    registry = None
-    if isinstance(source, dict):
-        registry = source.get("registry")
-    if not isinstance(registry, str) or not registry:
-        return Finding("harbor", "fail", "missing Harbor registry URL"), None
-
-    out = evidence_dir / "harbor-registry-inventory.jsonl"
-    try:
-        records = check_harbor_registry(
-            registry,
-            level="inventory",
-            limit=limit,
-            out=out,
-        )
-    except Exception as exc:
-        return Finding("harbor", "fail", f"registry inventory failed: {exc}"), out
-
-    summary = records_summary(records)
-    if summary["total"] <= 0:
-        return Finding("harbor", "fail", "registry inventory returned no records"), out
-    if summary["fail"] or summary["blocked"]:
-        return (
-            Finding(
-                "harbor",
-                "fail",
-                f"inventory returned fail={summary['fail']} blocked={summary['blocked']}",
-            ),
-            out,
-        )
-    for record in records:
-        if record.get("framework") != "harbor":
-            return Finding("harbor", "fail", "inventory record missing framework"), out
-        if not str(record.get("env_uid") or "").startswith("harbor:"):
-            return Finding(
-                "harbor", "fail", "inventory record missing harbor env_uid"
-            ), out
-        if record.get("hub_url") != hub.get("hub_url"):
-            return Finding("harbor", "fail", "inventory record hub_url mismatch"), out
-
-    return Finding(
-        "harbor", "pass", f"inventory emitted {summary['total']} records"
-    ), out
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate hosted-env compatibility board evidence."
@@ -151,12 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Directory for hosted-env evidence artifacts.",
     )
-    parser.add_argument(
-        "--harbor-inventory-limit",
-        type=int,
-        default=2,
-        help="Number of Harbor registry task refs to inventory.",
-    )
     return parser
 
 
@@ -168,23 +105,11 @@ def main(argv: list[str] | None = None) -> int:
 
     hubs = _hub_entries(suite)
     findings = [_validate_hub_metadata(hub) for hub in hubs]
-    harbor_artifact = None
-    harbor_hub = next((hub for hub in hubs if hub.get("platform") == "harbor"), None)
-    if isinstance(harbor_hub, dict):
-        harbor_finding, harbor_artifact = _run_harbor_inventory(
-            harbor_hub,
-            evidence_dir=evidence_dir,
-            limit=args.harbor_inventory_limit,
-        )
-        findings.append(harbor_finding)
-    else:
-        findings.append(Finding("harbor", "fail", "missing Harbor hub entry"))
 
     summary = {
         "suite": str(args.suite),
         "evidence_dir": str(evidence_dir),
         "hub_count": len(hubs),
-        "harbor_inventory": str(harbor_artifact) if harbor_artifact else None,
         "findings": [asdict(finding) for finding in findings],
     }
     summary_path = evidence_dir / "hosted-env-evidence.json"
@@ -199,8 +124,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     print("-" * 80)
     print(f"summary: {summary_path}")
-    if harbor_artifact:
-        print(f"harbor_inventory: {harbor_artifact}")
 
     return 1 if any(finding.status != "pass" for finding in findings) else 0
 

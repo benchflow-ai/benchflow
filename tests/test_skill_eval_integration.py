@@ -305,8 +305,8 @@ class TestSkillEvalCLI:
 
         runner = CliRunner()
         result = runner.invoke(app, ["skills", "eval", "/tmp/nonexistent-skill-dir"])
-        assert result.exit_code == 1
-        assert "No evals/evals.json found" in result.output
+        assert result.exit_code == 2
+        assert "No such file or directory" in result.output
 
     def test_skills_eval_valid_dir_shows_info(self, mock_skill):
         from typer.testing import CliRunner
@@ -353,4 +353,4 @@ class TestSkillEvalCLI:
         assert "list" in result.output
         # No "install" assertion: `bench skills` exposes only list + eval — there
         # is no install command, and the misleading "installation" wording was
-        # removed from the group help (sweep finding D10).
+        # removed from the group help.

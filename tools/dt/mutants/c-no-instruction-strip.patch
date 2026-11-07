@@ -1,0 +1,13 @@
+diff --git a/src/benchflow/rollout/_setup.py b/src/benchflow/rollout/_setup.py
+index cfe7b95..3620c28 100644
+--- a/src/benchflow/rollout/_setup.py
++++ b/src/benchflow/rollout/_setup.py
+@@ -83,7 +83,7 @@ def _read_task_instruction(task_path: Path) -> str:
+ 
+     instruction_path = task_path / "instruction.md"
+     if instruction_path.exists():
+-        return instruction_path.read_text().strip()
++        return instruction_path.read_text()
+     from benchflow.task import Task
+ 
+     # Task names the task formats when neither prompt file exists, and loads a

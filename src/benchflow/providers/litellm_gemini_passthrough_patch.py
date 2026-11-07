@@ -1,14 +1,16 @@
-"""Backport Gemini pass-through streaming logging for LiteLLM 1.89/1.91.
+"""Send Google AI Studio pass-through streams to LiteLLM's Gemini logger.
 
-Those releases classify every native ``generateContent`` URL as Vertex AI and
-send its streamed response through the Vertex logger.  That happens to work for
-Gemini model names present in both catalogs, but it rejects Google AI Studio
-Gemma names and drops the entire callback — including token usage and provider
-trajectory evidence.  LiteLLM added a dedicated Gemini endpoint type later.
+LiteLLM's pass-through route classifies every native ``generateContent`` URL as
+Vertex AI and sends its streamed response through the Vertex logger.  That
+happens to work for Gemini model names present in both catalogs, but it rejects
+Google AI Studio Gemma names and drops the entire callback, including token
+usage and provider trajectory evidence.  LiteLLM 1.100 added an
+``EndpointType.GEMINI`` logging branch, yet the pass-through route still
+classifies these URLs as Vertex AI.
 
-The proxy imports this module from ``sitecustomize``.  It patches only the old
-vendor shape (no ``EndpointType.GEMINI``) and only Google AI Studio-style model
-paths, leaving Vertex and every other provider untouched.
+The proxy imports this module from ``sitecustomize``.  It intercepts only Google
+AI Studio-style model paths that LiteLLM classified as Vertex AI, leaving real
+Vertex paths and every other provider untouched.
 """
 
 from __future__ import annotations
@@ -49,11 +51,6 @@ def _apply_patch() -> None:
     except Exception:
         return
 
-    # Newer LiteLLM releases have their own Gemini dispatch branch.  Do not
-    # replace supported vendor behavior after the pinned dependency advances.
-    if hasattr(EndpointType, "GEMINI"):
-        return
-
     original = PassThroughStreamingHandler._build_passthrough_logging_result
     if getattr(original, "__benchflow_gemini_passthrough_patch__", False):
         return
@@ -70,7 +67,10 @@ def _apply_patch() -> None:
         end_time: Any,
         model: str | None,
     ) -> tuple[Any, dict[str, Any]]:
-        if not _is_google_ai_studio_generate_content(url_route):
+        # Keep vendor behavior for anything LiteLLM did not misroute to Vertex.
+        if endpoint_type != EndpointType.VERTEX_AI or not (
+            _is_google_ai_studio_generate_content(url_route)
+        ):
             return original(
                 litellm_logging_obj=litellm_logging_obj,
                 passthrough_success_handler_obj=passthrough_success_handler_obj,
