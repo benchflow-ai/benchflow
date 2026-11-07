@@ -253,8 +253,6 @@ _INSTALL_URL_DOCS = (
     "docs/examples/coder-reviewer-demo.py",
     "docs/examples/scene-patterns.ipynb",
     ".claude/skills/benchflow/SKILL.md",
-    ".claude/skills/benchflow/tasks/benchflow-knowledge/environment/benchflow/SKILL.md",
-    ".claude/skills/benchflow/tasks/create-simple-task/environment/benchflow/SKILL.md",
 )
 _RC_WHEEL_URL_RE = re.compile(
     r"releases/download/\d+\.\d+\.\d+-rc\.\d+/"

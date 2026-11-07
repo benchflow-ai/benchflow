@@ -8,9 +8,9 @@
 #   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
-#   bash examples/test_openclaw.sh              # run all
-#   bash examples/test_openclaw.sh gemini        # run one
-#   bash examples/test_openclaw.sh --daytona    # use Daytona
+#   bash tests/examples/test_openclaw.sh              # run all
+#   bash tests/examples/test_openclaw.sh gemini        # run one
+#   bash tests/examples/test_openclaw.sh --daytona    # use Daytona
 
 set -euo pipefail
 

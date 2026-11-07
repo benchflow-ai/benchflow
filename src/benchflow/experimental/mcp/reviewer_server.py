@@ -4,9 +4,9 @@ Runs as a sidecar in the same sandbox. The coder agent calls the
 `review_code` tool via MCP; the reviewer LLM analyzes the code and
 returns structured feedback.
 
-This replaces the filesystem-based outbox pattern from followup-bench
-with a clean tool-call interface that prevents reward hacking (reviewer
-never has write access to /app/).
+This replaces a filesystem outbox (the reviewer writing feedback under
+/app/.outbox/) with a tool call, which prevents reward hacking: the
+reviewer never has write access to /app/.
 
 Usage in task.toml:
     [[sandbox.mcp_servers]]

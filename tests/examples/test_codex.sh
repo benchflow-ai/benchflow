@@ -6,11 +6,11 @@
 #   - Docker running, or DAYTONA_API_KEY + DAYTONA_API_URL set for --daytona
 #
 # Usage:
-#   bash examples/test_codex.sh                  # run all
-#   bash examples/test_codex.sh subscription     # subscription auth / API-key fallback
-#   bash examples/test_codex.sh apikey           # API key, full model
-#   bash examples/test_codex.sh apikey-mini      # API key, mini model
-#   bash examples/test_codex.sh --daytona        # use Daytona
+#   bash tests/examples/test_codex.sh                  # run all
+#   bash tests/examples/test_codex.sh subscription     # subscription auth / API-key fallback
+#   bash tests/examples/test_codex.sh apikey           # API key, full model
+#   bash tests/examples/test_codex.sh apikey-mini      # API key, mini model
+#   bash tests/examples/test_codex.sh --daytona        # use Daytona
 
 set -euo pipefail
 

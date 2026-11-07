@@ -13,8 +13,8 @@ copies, so the pins cannot drift. The move fixes the pip-install gap: a bare
 resolve with **no env vars and no checkout**:
 
 ```bash
-bench eval create --tasks-dir <tasks> --environment-manifest env0@prod  --sandbox daytona ...
-bench eval create --tasks-dir <tasks> --environment-manifest env0@outage --sandbox daytona ...
+bench eval run --tasks-dir <tasks> --environment-manifest env0@prod  --sandbox daytona ...
+bench eval run --tasks-dir <tasks> --environment-manifest env0@outage --sandbox daytona ...
 ```
 
 `$BENCHFLOW_ENV_REGISTRY` still works and, when set, wins entirely: point it at
@@ -50,7 +50,7 @@ env0 tasks author their Dockerfiles with a repo-root build context
 ```bash
 git clone https://github.com/benchflow-ai/env0
 python -m benchflow._utils.build_context_stage env0/tasks /tmp/env0-staged
-bench eval create --tasks-dir /tmp/env0-staged --environment-manifest env0@prod --sandbox daytona ...
+bench eval run --tasks-dir /tmp/env0-staged --environment-manifest env0@prod --sandbox daytona ...
 ```
 
 env0's `task.md` frontmatter also pins a manifest

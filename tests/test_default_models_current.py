@@ -72,7 +72,6 @@ EXAMPLE_CONFIGS = [
 ]
 # Scripts a user runs, whose model defaults are quoted ids.
 EXAMPLE_SCRIPTS = [
-    "benchmarks/followup-bench/runner.py",
     "benchmarks/harvey-lab/parity_test.py",
 ]
 
