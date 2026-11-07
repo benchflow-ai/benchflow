@@ -4,11 +4,14 @@ Multi-turn agent benchmarking with ACP. Docs live in [`docs/`](./docs/).
 
 ## Setup + test
 
+The checks `test.yml`'s unit job runs:
+
 ```bash
 uv sync --extra dev --locked
-uv run python -m pytest tests/
-uv run ty check src/
-uv run ruff check .
+uv run ruff check src tests tools
+uv run ruff format --check src tests tools
+uv run ty check
+uv run python -m pytest tests/ -n auto
 ```
 
 ### Suite temporary folders on build VMs
