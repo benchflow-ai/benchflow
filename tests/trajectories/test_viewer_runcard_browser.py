@@ -214,3 +214,21 @@ def test_focus_folds_completed_tool_output_and_the_head_opens_it(page, tmp_path)
     assert done.is_hidden() and failed.is_visible()
     page.locator("#e1 .chead").click()
     assert done.is_visible()
+
+
+def test_rail_lists_the_runs_landmarks(page, tmp_path):
+    html = _page(
+        tmp_path,
+        "marks__00000001",
+        [
+            {"type": "user_message", "text": "go"},
+            _tool("c1", "make", "completed"),
+            _tool("c2", "make test", "failed"),
+        ],
+        {"task_name": "marks", "rewards": {"reward": 0.0}},
+    )
+    page.goto(html.as_uri())
+    rows = page.locator("#rail-list .rail-row.sub")
+    assert rows.all_inner_texts() == ["Prompt 1\n#1", "make test\n#3"]
+    rows.nth(1).click()
+    assert "flash" in page.locator("#e3").get_attribute("class")

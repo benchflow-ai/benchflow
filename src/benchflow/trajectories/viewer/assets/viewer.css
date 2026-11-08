@@ -124,6 +124,13 @@ div.rail-row { cursor: default; }
 .rail-row:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
 .rail-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
 .rail-meta { font-family: var(--mono); font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rail-row.sub { min-height: 28px; padding-left: 20px; }
+.rail-row.sub .rail-name { font-size: 13px; color: var(--muted); }
+.rail-row.sub:hover .rail-name { color: var(--ink); }
+.tick { width: 6px; height: 6px; background: var(--faint); }
+.tick.bad { background: var(--fail); }
+.tick.warn { background: var(--wait); }
+.rail-more { padding: 4px 8px 0 20px; font-size: 12px; color: var(--muted); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--done); }
 .dot.pass { background: var(--run); }
 .dot.fail { background: var(--fail); }
@@ -155,6 +162,9 @@ div.rail-row { cursor: default; }
 .tl-mark.warn { background: var(--wait); top: 0; bottom: 0; }
 .tl-mark.named { box-shadow: 0 0 0 2px var(--wait); z-index: 1; }
 .tl-mark:hover { filter: brightness(1.25); top: 0; bottom: 0; }
+/* many events: hairline marks so neighbours stay apart */
+.tl-grid.dense .tl-mark { width: 1px; min-width: 1px; margin-left: 0; opacity: 0.85; }
+.tl-grid.dense .tl-mark.bad, .tl-grid.dense .tl-mark.warn, .tl-grid.dense .tl-mark.named { width: 2px; opacity: 1; }
 .tl-axis { position: relative; height: 14px; }
 .tl-axis span { position: absolute; transform: translateX(-50%); font-family: var(--mono); font-size: 10.5px; color: var(--faint); white-space: nowrap; }
 .tl-axis span:first-child { transform: none; }

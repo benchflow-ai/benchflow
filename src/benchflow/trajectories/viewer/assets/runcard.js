@@ -343,7 +343,7 @@ BF.runcard = (() => {
       ["Model", (step) => step.kind === "message" || step.kind === "thought"],
       ["Tools", (step) => step.kind === "tool" || step.kind === "timeout"],
     ];
-    const grid = el("div", "tl-grid");
+    const grid = el("div", "tl-grid" + (events.length > 160 ? " dense" : ""));
     lanes.forEach(([label, keep]) => {
       grid.appendChild(el("span", "tl-label", label));
       const lane = el("div", "tl-lane");
@@ -578,11 +578,46 @@ BF.runcard = (() => {
 
   // ── rail: the runs in this view ─────────────────────────────────────────
 
-  function renderRail(items, currentId, onOpen) {
+  function renderRail(items, currentId, onOpen, outline = null) {
     const rail = document.getElementById("rail-list");
     if (!rail) return;
     rail.textContent = "";
     if (!items.length) return;
+    renderRuns(rail, items, currentId, onOpen);
+    if (outline) renderOutline(rail, outline);
+  }
+
+  // The open run's landmarks: its prompts, and the calls that failed or were
+  // cut off. Each opens its event in the transcript.
+  function renderOutline(rail, outline) {
+    const steps = eventSteps(outline.payload.steps);
+    const verdictStep = asRecord(outline.payload.verdict).step;
+    const marks = steps.filter((step) => {
+      const status = asRecord(step.tool).status;
+      return step.kind === "prompt" || step.kind === "timeout" || status === "failed" || status === "cancelled" || step.i === verdictStep;
+    });
+    if (!marks.length) return;
+    const head = el("div", "rail-h");
+    head.appendChild(lab("Landmarks"));
+    rail.appendChild(head);
+    marks.slice(0, 60).forEach((step) => {
+      const tool = asRecord(step.tool);
+      const row = el("button", "rail-row sub");
+      row.type = "button";
+      const tone = step.kind === "prompt" ? "" : step.i === verdictStep || step.kind === "timeout" ? "warn" : "bad";
+      row.appendChild(el("span", "tick " + tone));
+      const name = step.kind === "prompt"
+        ? String(step.label || "Prompt").replace(/^PROMPT\b/, "Prompt")
+        : step.kind === "timeout" ? "Agent timeout" : String(tool.title || tool.kind || "tool call");
+      row.appendChild(el("span", "rail-name", name));
+      row.appendChild(el("span", "rail-meta", "#" + step.i));
+      row.addEventListener("click", () => outline.onStep(step.i));
+      rail.appendChild(row);
+    });
+    if (marks.length > 60) rail.appendChild(el("div", "rail-more", (marks.length - 60) + " more in the transcript"));
+  }
+
+  function renderRuns(rail, items, currentId, onOpen) {
     const head = el("div", "rail-h");
     head.appendChild(lab(plural(items.length, "run")));
     rail.appendChild(head);

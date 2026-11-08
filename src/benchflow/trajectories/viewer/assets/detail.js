@@ -136,8 +136,9 @@ BF.detail = (() => {
 
   // The rail lists the job's runs in browse mode, or this trial alone.
   function renderRail(payload, options) {
+    const outline = { payload, onStep: showStep };
     if (options.rail) {
-      BF.runcard.renderRail(options.rail.items, options.rail.current, options.rail.open);
+      BF.runcard.renderRail(options.rail.items, options.rail.current, options.rail.open, outline);
       return;
     }
     const meta = payload.meta || {};
@@ -147,7 +148,7 @@ BF.detail = (() => {
       name: meta.task_name || payload.rollout_name || "trajectory",
       tone: runState.tone,
       meta: BF.runcard.fmtReward(meta.reward) || "",
-    }], payload.rollout_name || "", null);
+    }], payload.rollout_name || "", null, outline);
   }
 
   function flash(target) {
