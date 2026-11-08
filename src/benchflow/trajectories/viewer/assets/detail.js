@@ -113,8 +113,10 @@ BF.detail = (() => {
   function renderHeader(payload) {
     const meta = payload.meta || {};
     const header = document.getElementById("hdr");
+    const side = document.getElementById("side");
     header.textContent = "";
-    const heading = BF.runcard.render(payload, header, { showStep, showTest });
+    side.textContent = "";
+    const heading = BF.runcard.render(payload, header, side, { showStep, showTest });
 
     const errors = Array.isArray(meta.errors) ? meta.errors : [];
     if (errors.length) {
@@ -127,9 +129,25 @@ BF.detail = (() => {
         collapsibleText(item, record.text || "", "etext", null, ERROR_PREVIEW);
         box.appendChild(item);
       });
-      header.appendChild(box);
+      side.appendChild(box);
     }
     return heading;
+  }
+
+  // The rail lists the job's runs in browse mode, or this trial alone.
+  function renderRail(payload, options) {
+    if (options.rail) {
+      BF.runcard.renderRail(options.rail.items, options.rail.current, options.rail.open);
+      return;
+    }
+    const meta = payload.meta || {};
+    const runState = BF.runcard.stateOf(payload);
+    BF.runcard.renderRail([{
+      id: payload.rollout_name || "",
+      name: meta.task_name || payload.rollout_name || "trajectory",
+      tone: runState.tone,
+      meta: BF.runcard.fmtReward(meta.reward) || "",
+    }], payload.rollout_name || "", null);
   }
 
   function flash(target) {
@@ -245,6 +263,7 @@ BF.detail = (() => {
 
   function setFocus(enabled, focusButton, fullButton) {
     state.focus = enabled;
+    document.getElementById("view-trace").classList.toggle("focus", enabled);
     focusButton.setAttribute("aria-pressed", enabled ? "true" : "false");
     fullButton.setAttribute("aria-pressed", enabled ? "false" : "true");
     if (enabled) {
@@ -527,6 +546,12 @@ BF.detail = (() => {
       const duration = fmtShortDuration(record.dur);
       if (duration) head.appendChild(el("span", "tstamp", duration));
       if (statusClass === "failed" || statusClass === "cancelled") card.classList.add("failed");
+      // Focus mode folds a tool call to its head line; the head opens it.
+      head.classList.add("fold");
+      head.addEventListener("click", (event) => {
+        if (event.target.closest("a")) return;
+        card.classList.toggle("open");
+      });
     }
     card.appendChild(head);
 
@@ -568,6 +593,7 @@ BF.detail = (() => {
 
     const main = document.getElementById("view-trace");
     main.textContent = "";
+    main.classList.toggle("focus", state.focus);
     if (!steps.length) {
       const empty = el("div", null, "No events in this trajectory.");
       empty.id = "empty";
@@ -1070,7 +1096,8 @@ BF.detail = (() => {
   }
 
   function clearDetail() {
-    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric", "view-lineage"].forEach((id) => {
+    BF.runcard.clearTips();
+    ["hdr", "side", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric", "view-lineage"].forEach((id) => {
       document.getElementById(id).textContent = "";
     });
     document.getElementById("toolbar").textContent = "";
@@ -1107,6 +1134,7 @@ BF.detail = (() => {
     currentPayload = payload;
     currentOptions = options;
     const heading = renderHeader(payload);
+    renderRail(payload, options);
     renderTabs(payload);
     renderToolbar();
     renderTrace(payload);

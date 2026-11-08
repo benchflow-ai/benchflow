@@ -112,38 +112,31 @@ def failed_page(tmp_path_factory) -> Path:
     )
 
 
-def test_card_shows_phases_checks_and_why(page, failed_page):
+def test_side_panel_shows_verdict_checks_and_why(page, failed_page):
     page.goto(failed_page.as_uri())
-    card = page.locator(".runcard")
-    card.wait_for()
-    assert page.locator("#hdr .badge.fail").inner_text() == "Failed"
-    rows = page.locator(".rc-graph .rc-row .rc-name").all_inner_texts()
-    assert rows == [
-        "Environment setup",
-        "Agent setup",
-        "Agent",
-        "Verifier",
-        "test_value_magnitudes",
-    ]
-    assert (
-        "1 of 2 tests passed"
-        in page.locator(".rc-row", has_text="Verifier").inner_text()
+    page.locator("#side .score").wait_for()
+    assert page.locator("#hdr .badge.fail").inner_text().lower() == "failed"
+    assert page.locator("#side .score-v").inner_text() == "0.0"
+    assert page.locator("#side .check-row.bad .check-name").inner_text() == (
+        "test_value_magnitudes"
     )
     assert (
-        page.locator("#why")
-        .inner_text()
-        .startswith(
-            "Scored 0.0 because test_value_magnitudes failed: Ystar_base should be in "
-            "thousands, got 78.74 (tests/test_outputs.py:261)."
-        )
+        page.locator("#side .runner").inner_text().endswith("pytest 8.4.1 \u00b7 1.1s")
+    )
+    phases = page.locator("#side .kv-row.num .kv-k").all_inner_texts()
+    assert phases[:4] == ["Environment setup", "Agent setup", "Agent", "Verifier"]
+    assert page.locator("#why").inner_text() == (
+        "Scored 0.0 because test_value_magnitudes failed: Ystar_base should be in "
+        "thousands, got 78.74 (tests/test_outputs.py:261)."
     )
     # one primary action, at most
     assert page.locator(".rc-action").count() == 1
+    assert page.locator(".timeline .tl-mark").count() == 1
 
 
 def test_failed_check_opens_its_assertion_on_hover_and_focus(page, failed_page):
     page.goto(failed_page.as_uri())
-    trigger = page.locator(".rc-check.bad")
+    trigger = page.locator("#side .check-row.bad")
     trigger.hover()
     pop = page.locator(".pop.open")
     pop.wait_for()
@@ -154,14 +147,12 @@ def test_failed_check_opens_its_assertion_on_hover_and_focus(page, failed_page):
     pop.wait_for(state="hidden")
 
     trigger.focus()
-    assert trigger.get_attribute("aria-describedby") == pop_id(page)
     page.locator(".pop.open").wait_for()
+    assert trigger.get_attribute("aria-describedby") == page.locator(
+        ".pop.open"
+    ).get_attribute("id")
     page.keyboard.press("Escape")
     page.locator(".pop.open").wait_for(state="detached")
-
-
-def pop_id(page) -> str:
-    return page.locator(".pop.open").get_attribute("id")
 
 
 def test_action_opens_the_failing_test_in_the_verifier_tab(page, failed_page):
@@ -172,7 +163,7 @@ def test_action_opens_the_failing_test_in_the_verifier_tab(page, failed_page):
     assert "tests/test_outputs.py:261" in failure.inner_text()
 
 
-def test_timeout_card_points_at_the_interrupted_call(page, tmp_path):
+def test_timeout_points_at_the_interrupted_call(page, tmp_path):
     html = _page(
         tmp_path,
         "build__b2d1a2fb",
@@ -193,14 +184,33 @@ def test_timeout_card_points_at_the_interrupted_call(page, tmp_path):
         },
     )
     page.goto(html.as_uri())
-    assert page.locator("#hdr .badge").inner_text() == "Timed out"
-    call = page.locator(".rc-sub.warn")
-    assert "Interrupted: make build" in call.inner_text()
-    # The Agent row's popover must not cover the row names below it.
-    page.locator(".rc-graph .rc-row.tip").first.hover()
-    page.locator(".pop.open").wait_for()
-    call.locator(".rc-name").hover()
+    assert page.locator("#hdr .badge").inner_text().lower() == "timed out"
+    call = page.locator("#side .call-row").first
+    assert "make build" in call.inner_text()
+    call.hover()
     assert "building" in page.locator(".pop.open").inner_text()
+
+    # the timeline names each mark on hover; the named call is marked
+    page.mouse.move(0, 0)
+    page.locator('.tl-mark[data-i="2"]').hover()
+    tip = page.locator(".tl-tip.open")
+    assert "make build" in tip.inner_text()
+    assert "named" in page.locator('.tl-mark[data-i="2"]').get_attribute("class")
+
     page.locator(".rc-action", has_text="Show call #2").click()
     assert page.locator("#e2").is_visible()
     assert "flash" in page.locator("#e2").get_attribute("class")
+
+
+def test_focus_folds_completed_tool_output_and_the_head_opens_it(page, tmp_path):
+    html = _page(
+        tmp_path,
+        "fold__00000001",
+        [_tool("c1", "make", "completed"), _tool("c2", "make test", "failed")],
+        {"task_name": "fold", "rewards": {"reward": 0.0}},
+    )
+    page.goto(html.as_uri())
+    done, failed = page.locator("#e1 .tout"), page.locator("#e2 .tout")
+    assert done.is_hidden() and failed.is_visible()
+    page.locator("#e1 .chead").click()
+    assert done.is_visible()

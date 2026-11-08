@@ -1,7 +1,9 @@
 """Interactive page assembly: payload + packaged assets → one HTML page."""
 
+import base64
 import html
 from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,23 @@ _SCRIPT_ASSETS = (
 )
 # Third-party scripts packaged under assets/vendor (see the LICENSE files there).
 _VENDOR_ASSETS = ("vendor/highlight.min.js",)
+# Geist and Geist Mono (OFL 1.1, assets/fonts/OFL-geist.txt), inlined so a
+# saved page stays self-contained and offline.
+_FONTS_PLACEHOLDER = "/*__BENCHFLOW_FONTS__*/"
+_FONT_FILES = (
+    ("Geist", "fonts/Geist-Variable.woff2"),
+    ("Geist Mono", "fonts/GeistMono-Variable.woff2"),
+)
+
+
+def _font_faces(assets: Traversable) -> str:
+    return "\n".join(
+        f'@font-face {{ font-family: "{family}"; font-weight: 100 900; '
+        "font-style: normal; font-display: swap; src: url(data:font/woff2;base64,"
+        f"{base64.b64encode((assets / name).read_bytes()).decode('ascii')}) "
+        'format("woff2"); }'
+        for family, name in _FONT_FILES
+    )
 
 
 def _theme_css() -> str:
@@ -39,7 +58,9 @@ def _load_template() -> str:
     )
     page = page.replace(
         "/*__BENCHFLOW_VIEWER_CSS__*/",
-        (assets / "viewer.css").read_text(encoding="utf-8"),
+        (assets / "viewer.css")
+        .read_text(encoding="utf-8")
+        .replace(_FONTS_PLACEHOLDER, _font_faces(assets), 1),
         1,
     )
     page = page.replace(

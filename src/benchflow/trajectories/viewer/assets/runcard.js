@@ -1,9 +1,10 @@
-// The run card: one rollout as one object. The phase rows (setup, agent,
-// verifier) carry their durations; the checks under them carry the test
-// counts, reward and total time. Every summary on the card opens its
-// evidence (the failing assertion, the tool call, the verifier output) on
-// hover or keyboard focus; Escape closes it. Popovers are built on first
-// open, so a long run pays nothing for evidence nobody looks at.
+// One rollout as one object, in three panes: the rail lists the runs, the
+// centre header carries the run's meta row and a timeline of its events,
+// and the side panel holds the verdict: reward, the sentence that says why,
+// the checks with their evidence, phase times and usage. A summary opens
+// its proof (the failing assertion, the interrupted call, the verifier's
+// output) on hover or keyboard focus; Escape closes it. Popovers and the
+// timeline tooltip are built on demand, so a long run pays for neither.
 // Extends the BF namespace declared in viewer.js.
 
 BF.runcard = (() => {
@@ -62,10 +63,10 @@ BF.runcard = (() => {
     });
   }
 
-  function toolSteps(steps) {
+  function eventSteps(steps) {
     const found = [];
     walk(steps, (step) => {
-      if (asRecord(step).kind === "tool") found.push(step);
+      if (asRecord(step).kind !== "subagent") found.push(asRecord(step));
     });
     return found;
   }
@@ -75,25 +76,8 @@ BF.runcard = (() => {
     return text.split("::").pop() || text;
   }
 
-  // Line icons (12px, currentColor) for the state marks.
-  const ICONS = {
-    ok: ["M2.5 6.5 5 9l4.5-5.5"],
-    bad: ["M3 3l6 6", "M9 3 3 9"],
-    warn: ["M6 1.8 11 10.2H1z", "M6 5v2.4", "M6 8.8v.1"],
-  };
-
-  function icon(kind) {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 12 12");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("class", "rc-icon " + kind);
-    (ICONS[kind] || []).forEach((d) => {
-      const path = document.createElementNS(ns, "path");
-      path.setAttribute("d", d);
-      svg.appendChild(path);
-    });
-    return svg;
+  function lab(text, cls) {
+    return el("span", "lab" + (cls ? " " + cls : ""), text);
   }
 
   // ── popovers ────────────────────────────────────────────────────────────
@@ -109,24 +93,19 @@ BF.runcard = (() => {
     }
   }
 
+  // Popovers sit in the viewport, beside or under their trigger, so a narrow
+  // side panel does not squeeze the evidence.
   function placeTip(tip) {
-    const card = tip.card;
-    const cardBox = card.getBoundingClientRect();
-    const box = tip.trigger.getBoundingClientRect();
     const pop = tip.pop;
-    pop.style.left = "0px";
-    pop.style.top = "0px";
-    const width = Math.min(pop.offsetWidth, cardBox.width - 16);
-    // A row's popover hangs from the right edge, so the row names to its
-    // left stay reachable when the pointer moves down the graph.
-    let left = tip.align === "end" ? cardBox.width - width - 8 : box.left - cardBox.left;
-    left = Math.max(8, Math.min(left, cardBox.width - width - 8));
-    const below = box.bottom - cardBox.top + 6;
+    const box = tip.trigger.getBoundingClientRect();
+    const width = Math.min(520, window.innerWidth - 16);
+    pop.style.width = width + "px";
+    let left = Math.min(box.right, window.innerWidth - 8) - width;
+    if (left < 8) left = Math.max(8, Math.min(box.left, window.innerWidth - width - 8));
     const roomBelow = window.innerHeight - box.bottom;
-    const above = box.top - cardBox.top - pop.offsetHeight - 6;
     const useAbove = roomBelow < pop.offsetHeight + 12 && box.top > pop.offsetHeight + 12;
     pop.style.left = left + "px";
-    pop.style.top = (useAbove ? above : below) + "px";
+    pop.style.top = (useAbove ? box.top - pop.offsetHeight - 6 : box.bottom + 6) + "px";
     pop.dataset.side = useAbove ? "top" : "bottom";
   }
 
@@ -145,15 +124,15 @@ BF.runcard = (() => {
     placeTip(tip);
   }
 
-  function attachTip(trigger, card, build) {
+  function attachTip(trigger, build) {
     const pop = el("div", "pop");
     pop.id = "pop-" + (++popSequence);
     pop.setAttribute("role", "tooltip");
     trigger.classList.add("tip");
     trigger.tabIndex = 0;
     trigger.setAttribute("aria-describedby", pop.id);
-    card.appendChild(pop);
-    const tip = { trigger, pop, card, build, built: false, timer: 0, align: trigger.tagName === "LI" ? "end" : "start" };
+    document.body.appendChild(pop);
+    const tip = { trigger, pop, build, built: false, timer: 0 };
     const enter = () => {
       clearTimeout(tip.timer);
       showTip(tip);
@@ -179,12 +158,20 @@ BF.runcard = (() => {
     return tip;
   }
 
+  function clearTips() {
+    if (openTip) closeTip(openTip, false);
+    document.querySelectorAll("body > .pop, body > .tl-tip").forEach((node) => node.remove());
+  }
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && openTip) closeTip(openTip, true);
   });
   window.addEventListener("resize", () => {
     if (openTip) placeTip(openTip);
   });
+  document.addEventListener("scroll", () => {
+    if (openTip && document.activeElement !== openTip.trigger) closeTip(openTip, false);
+  }, true);
 
   function popHead(pop, title, meta, mono) {
     const head = el("div", "pop-h");
@@ -201,8 +188,7 @@ BF.runcard = (() => {
     pop.appendChild(row);
   }
 
-  // Code lines with a colored rule: the explanation lines of a failure in
-  // the fail hue, the rest gray.
+  // Code lines on a rule: a failure's explanation lines in the fail hue.
   function popCode(pop, lines, failPattern) {
     const block = el("div", "pop-code");
     lines.forEach((line) => {
@@ -217,8 +203,8 @@ BF.runcard = (() => {
     pop.appendChild(el("p", "pop-note", text));
   }
 
-  function stepLink(step, onStep) {
-    const link = el("a", "pop-link", "#" + step.i);
+  function stepLink(step, onStep, label) {
+    const link = el("a", "step-link", label || "#" + step.i);
     link.href = "#e" + encodeURIComponent(step.i);
     link.addEventListener("click", (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -234,14 +220,14 @@ BF.runcard = (() => {
     const lines = text.replace(/\s+$/, "").split("\n");
     let start = lines.findIndex((line) => /^>\s/.test(line));
     if (start < 0) start = Math.max(0, lines.length - TRACE_LINES);
-    return lines.slice(start, start + TRACE_LINES + 4).filter((line, index, all) => line.trim() || index < all.length - 1);
+    return lines.slice(start, start + TRACE_LINES + 4);
   }
 
   function buildTestPop(test) {
     return (pop) => {
       popHead(pop, String(test.name || "test"), [test.location, fmtSpan(test.seconds)].filter(Boolean).join(" · "), true);
       const lines = traceLines(test);
-      if (lines.length && lines.some((line) => line.trim())) popCode(pop, lines, /^E\s/);
+      if (lines.some((line) => line.trim())) popCode(pop, lines, /^E\s/);
       else popNote(pop, "The test report carries no trace for this failure.");
     };
   }
@@ -265,17 +251,7 @@ BF.runcard = (() => {
     };
   }
 
-  function buildTestListPop(tests, label) {
-    return (pop) => {
-      popHead(pop, plural(tests.length, label + " test", label + " tests"), null, false);
-      tests.slice(0, LIST_LIMIT).forEach((test) => {
-        popRow(pop, shortTest(test.name), [test.location, fmtSpan(test.seconds)].filter(Boolean).join(" · ") || "—");
-      });
-      if (tests.length > LIST_LIMIT) popNote(pop, (tests.length - LIST_LIMIT) + " more in the Verifier tab.");
-    };
-  }
-
-  // ── the card ────────────────────────────────────────────────────────────
+  // ── state ───────────────────────────────────────────────────────────────
 
   function stateOf(payload) {
     const meta = asRecord(payload.meta);
@@ -285,250 +261,352 @@ BF.runcard = (() => {
     let label = tone === "pass" ? "Passed" : tone === "fail" ? "Failed" : "Not scored";
     if (status.execution === "timed_out") label = tone === "unscored" ? "Timed out" : label + " · timed out";
     else if (status.execution === "errored") label = tone === "unscored" ? "Errored" : label + " · errored";
-    return { tone, interrupted, label, status };
+    const word = tone === "pass" ? "ok" : tone === "fail" ? "bad" : "warn";
+    return { tone, word, interrupted, label, status };
   }
 
-  function row(list, name, options = {}) {
-    const item = el("li", "rc-row" + (options.cls ? " " + options.cls : ""));
-    item.appendChild(el("span", "rc-node" + (options.node ? " " + options.node : "")));
-    const main = el("span", "rc-main");
-    main.appendChild(el("span", "rc-name", name));
-    if (options.chip) main.appendChild(el("span", "rc-chip", options.chip));
-    item.appendChild(main);
-    item.appendChild(el("span", "rc-meta", options.meta || ""));
-    list.appendChild(item);
-    return item;
+  // ── centre header: title, meta row, timeline ────────────────────────────
+
+  function renderHeader(payload, header, state, onStep) {
+    const meta = asRecord(payload.meta);
+    const counts = asRecord(meta.counts);
+    const timing = asRecord(meta.timing);
+    const titleRow = el("div", "titlerow");
+    const heading = el("h1", null, meta.task_name || payload.rollout_name || "trajectory");
+    heading.tabIndex = -1;
+    titleRow.appendChild(heading);
+    header.appendChild(titleRow);
+
+    const metaRow = el("div", "metarow");
+    const badge = el("span", "badge st " + state.tone + " " + state.word, state.label);
+    metaRow.appendChild(badge);
+    [
+      meta.agent_name,
+      meta.model,
+      meta.skill_mode,
+      typeof counts.tools === "number" ? plural(counts.tools, "tool call") : null,
+      fmtSpan(finite(timing.total) ?? meta.duration_sec),
+    ].filter(Boolean).forEach((item) => metaRow.appendChild(el("span", "m", item)));
+    header.appendChild(metaRow);
+
+    const sub = el("div", "sub");
+    const parts = [];
+    if (payload.rollout_name) parts.push(payload.rollout_name);
+    if (meta.trajectory_source) parts.push("source: " + meta.trajectory_source);
+    const branch = asRecord(meta.branch);
+    if (branch.node_id) {
+      parts.push(
+        "branch child " + branch.node_id + " of fork " + String(branch.fork_id || "").slice(0, 8)
+          + (branch.parent_node ? " at node " + branch.parent_node : ""),
+      );
+    }
+    if (meta.partial_trajectory) parts.push("partial trajectory");
+    parts.forEach((part) => sub.appendChild(el("span", null, part)));
+    header.appendChild(sub);
+
+    const timeline = renderTimeline(payload, onStep);
+    if (timeline) header.appendChild(timeline);
+    return heading;
   }
 
-  function render(payload, header, actions) {
+  // Lanes of the run's events on one axis: wall-clock time when the capture
+  // has timestamps, event order when it has none. Each mark is a tool call,
+  // a model turn or a prompt; the tooltip names it and its duration.
+  function renderTimeline(payload, onStep) {
+    const events = eventSteps(payload.steps).filter((step) => typeof step.i === "number");
+    if (!events.length) return null;
+    const timed = events.filter((step) => finite(step.t) !== null);
+    const useTime = timed.length >= Math.max(2, events.length * 0.5);
+    let start = 0;
+    let end = events.length;
+    if (useTime) {
+      start = Math.min(...timed.map((step) => step.t));
+      end = Math.max(...timed.map((step) => step.t + (finite(step.dur) || 0)));
+      if (end <= start) end = start + 1;
+    }
+    const position = (step, index) => (useTime
+      ? ((finite(step.t) ?? start) - start) / (end - start)
+      : index / Math.max(1, events.length));
+    const width = (step) => (useTime && finite(step.dur) ? step.dur / (end - start) : 0);
+
+    const verdictStep = asRecord(payload.verdict).step;
+    const box = el("section", "timeline");
+    const head = el("div", "tl-head");
+    head.appendChild(lab("Timeline"));
+    head.appendChild(el("span", "tl-span", useTime
+      ? fmtSpan(end - start) + " · " + plural(events.length, "event")
+      : plural(events.length, "event") + " · by order, no timestamps"));
+    box.appendChild(head);
+
+    const lanes = [
+      ["Prompts", (step) => step.kind === "prompt"],
+      ["Model", (step) => step.kind === "message" || step.kind === "thought"],
+      ["Tools", (step) => step.kind === "tool" || step.kind === "timeout"],
+    ];
+    const grid = el("div", "tl-grid");
+    lanes.forEach(([label, keep]) => {
+      grid.appendChild(el("span", "tl-label", label));
+      const lane = el("div", "tl-lane");
+      events.forEach((step, index) => {
+        if (!keep(step)) return;
+        const tool = asRecord(step.tool);
+        const mark = el("span", "tl-mark k-" + step.kind);
+        if (tool.status === "failed" || tool.status === "cancelled") mark.classList.add("bad");
+        if (tool.status === "pending" || tool.status === "in_progress" || step.kind === "timeout") mark.classList.add("warn");
+        if (step.i === verdictStep) mark.classList.add("named");
+        mark.style.left = (position(step, index) * 100).toFixed(3) + "%";
+        const span = width(step);
+        if (span > 0.002) mark.style.width = (span * 100).toFixed(3) + "%";
+        mark.dataset.i = step.i;
+        lane.appendChild(mark);
+      });
+      grid.appendChild(lane);
+    });
+    grid.appendChild(el("span", "tl-label"));
+    const axis = el("div", "tl-axis");
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const label = useTime ? fmtSpan(((end - start) * tick) / 4) || "0s" : "#" + Math.max(1, Math.round((events.length * tick) / 4));
+      const mark = el("span", null, tick === 0 && useTime ? "0s" : label);
+      mark.style.left = tick * 25 + "%";
+      axis.appendChild(mark);
+    }
+    grid.appendChild(axis);
+    box.appendChild(grid);
+
+    const byIndex = new Map(events.map((step) => [String(step.i), step]));
+    const tooltip = el("div", "tl-tip");
+    tooltip.setAttribute("role", "tooltip");
+    document.body.appendChild(tooltip);
+    grid.addEventListener("mouseover", (event) => {
+      const mark = event.target.closest(".tl-mark");
+      if (!mark) return;
+      const step = byIndex.get(mark.dataset.i);
+      if (!step) return;
+      tooltip.textContent = "";
+      const tool = asRecord(step.tool);
+      const kind = step.kind === "tool" ? (tool.kind || "tool") : step.kind;
+      tooltip.appendChild(el("div", "tl-tip-kind", kind + " · #" + step.i));
+      const text = step.kind === "tool" ? tool.title : step.kind === "timeout" ? "agent timeout" : step.text || step.label;
+      tooltip.appendChild(el("div", "tl-tip-title", String(text || "").split("\n")[0].slice(0, 140)));
+      const facts = [tool.status, fmtSpan(step.dur)].filter(Boolean).join(" · ");
+      if (facts) tooltip.appendChild(el("div", "tl-tip-meta", facts));
+      const rect = mark.getBoundingClientRect();
+      tooltip.classList.add("open");
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 8));
+      tooltip.style.left = left + "px";
+      tooltip.style.top = rect.bottom + 6 + "px";
+    });
+    grid.addEventListener("mouseleave", () => tooltip.classList.remove("open"));
+    grid.addEventListener("click", (event) => {
+      const mark = event.target.closest(".tl-mark");
+      if (mark) onStep(Number(mark.dataset.i));
+    });
+    return box;
+  }
+
+  // ── side panel: the verdict and its evidence ────────────────────────────
+
+  function section(side, title, extra) {
+    const block = el("section", "side-block");
+    const head = el("div", "side-h");
+    head.appendChild(lab(title));
+    if (extra) head.appendChild(el("span", "side-h-meta", extra));
+    block.appendChild(head);
+    side.appendChild(block);
+    return block;
+  }
+
+  function kvRow(parent, label, value, options = {}) {
+    if (value === null || value === undefined || value === "") return null;
+    const row = el("div", "kv-row" + (options.cls ? " " + options.cls : ""));
+    row.appendChild(el("span", "kv-k", label));
+    const cell = el("span", "kv-v" + (options.mono ? " mono" : ""));
+    if (value instanceof Node) cell.appendChild(value);
+    else cell.textContent = value;
+    row.appendChild(cell);
+    parent.appendChild(row);
+    return row;
+  }
+
+  function renderSide(payload, side, state, actions) {
     const meta = asRecord(payload.meta);
     const verifier = asRecord(payload.verifier);
     const verdict = asRecord(payload.verdict);
     const timing = asRecord(meta.timing);
     const usage = asRecord(meta.usage);
-    const counts = asRecord(meta.counts);
-    const steps = Array.isArray(payload.steps) ? payload.steps : [];
-    const state = stateOf(payload);
-    const onStep = actions.showStep;
-
-    const card = el("section", "runcard tone-" + state.tone + (state.interrupted ? " interrupted" : ""));
-    card.setAttribute("aria-label", "Run summary");
-
-    // Title row: task, then the state on the right.
-    const titleRow = el("div", "titlerow");
-    const heading = el("h1", null, meta.task_name || payload.rollout_name || "trajectory");
-    heading.tabIndex = -1;
-    titleRow.appendChild(heading);
-    const badge = el("span", "badge " + state.tone + (state.interrupted ? " interrupted" : ""));
-    badge.appendChild(el("span", "dot"));
-    badge.appendChild(document.createTextNode(state.label));
-    titleRow.appendChild(badge);
-    card.appendChild(titleRow);
-
-    const subtitle = [];
-    if (payload.rollout_name) subtitle.push(payload.rollout_name);
-    if (meta.agent_name) subtitle.push(meta.agent_name);
-    if (meta.skill_mode) subtitle.push(meta.skill_mode);
-    if (meta.trajectory_source) subtitle.push("source: " + meta.trajectory_source);
-    const branch = asRecord(meta.branch);
-    if (branch.node_id) {
-      subtitle.push(
-        "branch child " + branch.node_id + " of fork " + String(branch.fork_id || "").slice(0, 8)
-          + (branch.parent_node ? " at node " + branch.parent_node : ""),
-      );
-    }
-    const sub = el("div", "sub");
-    subtitle.forEach((part) => sub.appendChild(el("span", null, part)));
-    card.appendChild(sub);
-    if (meta.partial_trajectory) card.appendChild(el("div", "rc-partial", "This trajectory is partial: result.json marks the capture incomplete."));
-
-    // Phase rows: the run as a small graph.
-    const graph = el("ol", "rc-graph");
-    const tools = toolSteps(steps);
-    const failedTools = tools.filter((step) => ["failed", "cancelled"].includes(asRecord(step.tool).status));
+    const steps = eventSteps(payload.steps);
+    const tools = steps.filter((step) => step.kind === "tool");
     const tests = Array.isArray(verifier.ctrf) ? verifier.ctrf.map(asRecord) : [];
     const failing = tests.filter((test) => test.status === "failed");
     const passed = tests.filter((test) => test.status === "passed");
-    PHASES.slice(0, 2).forEach(([key, label]) => {
-      const seconds = finite(timing[key]);
-      if (seconds !== null) row(graph, label, { meta: fmtSpan(seconds) });
-    });
+    const onStep = actions.showStep;
 
-    const toolCount = typeof counts.tools === "number" ? counts.tools : tools.length;
-    const agentMeta = [plural(toolCount, "tool call"), fmtSpan(timing.agent_execution)].filter(Boolean).join(" · ");
-    const agentRow = row(graph, "Agent", {
-      chip: meta.model || null,
-      meta: agentMeta,
-      node: state.interrupted ? "warn" : "solid",
-    });
-    attachTip(agentRow, card, (pop) => {
-      const kinds = new Map();
-      tools.forEach((step) => {
-        const kind = String(asRecord(step.tool).kind || "other");
-        kinds.set(kind, (kinds.get(kind) || 0) + 1);
-      });
-      popHead(pop, plural(toolCount, "tool call"), [
-        typeof counts.prompts === "number" ? plural(counts.prompts, "prompt") : null,
-        typeof counts.messages === "number" ? plural(counts.messages, "message") : null,
-      ].filter(Boolean).join(" · "), false);
-      [...kinds.entries()].sort((a, b) => b[1] - a[1]).forEach(([kind, count]) => popRow(pop, kind, String(count)));
-      if (failedTools.length) {
-        popHead(pop, plural(failedTools.length, "failed call"), null, false);
-        failedTools.slice(0, LIST_LIMIT).forEach((step) => {
-          const line = el("div", "pop-row");
-          const label = el("span", "pop-label bad");
-          label.textContent = String(asRecord(step.tool).title || "tool call");
-          line.appendChild(label);
-          const value = el("span", "pop-value");
-          value.appendChild(stepLink(step, onStep));
-          line.appendChild(value);
-          pop.appendChild(line);
-        });
-      }
-    });
-
-    // The call a timeout or error cut off: one hover from its content.
-    const namedStep = typeof verdict.step === "number" ? tools.find((step) => step.i === verdict.step) : null;
-    if (namedStep && state.interrupted) {
-      const tool = asRecord(namedStep.tool);
-      const running = tool.status === "pending" || tool.status === "in_progress";
-      const callRow = row(graph, (running ? "Interrupted: " : "Last call: ") + (tool.title || tool.kind || "tool call"), {
-        cls: "rc-sub warn",
-        meta: "#" + namedStep.i + (tool.status ? " · " + tool.status : ""),
-      });
-      attachTip(callRow, card, buildToolPop(namedStep, onStep));
-    }
-
-    const hasVerifier = finite(timing.verifier) !== null || tests.length || verifier.stdout || verifier.reward !== null && verifier.reward !== undefined;
-    if (hasVerifier) {
-      const verifierNode = state.tone === "pass" ? "ok" : state.tone === "fail" ? "bad" : "";
-      const verifierRow = row(graph, "Verifier", {
-        chip: verifier.ctrf_tool || null,
-        meta: [tests.length ? passed.length + " of " + plural(tests.length, "test") + " passed" : null, fmtSpan(timing.verifier)]
-          .filter(Boolean).join(" · "),
-        node: verifierNode,
-      });
-      attachTip(verifierRow, card, (pop) => {
-        popHead(pop, verifier.ctrf_tool || "verifier", fmtSpan(timing.verifier) ? "phase " + fmtSpan(timing.verifier) : null, Boolean(verifier.ctrf_tool));
-        if (tests.length) {
-          popRow(pop, "tests", plural(tests.length, "test") + (finite(verifier.ctrf_seconds) !== null ? " in " + fmtSpan(verifier.ctrf_seconds) : ""));
-          popRow(pop, "passed", String(passed.length), passed.length ? "ok" : null);
-          popRow(pop, "failed", String(failing.length), failing.length ? "bad" : null);
-        }
-        if (verifier.reward !== null && verifier.reward !== undefined) popRow(pop, "reward.txt", String(verifier.reward));
-        const output = String(verifier.stdout || verifier.stderr || "");
-        const tail = output.split("\n").map((line) => line.replace(/\s+$/, "")).filter(Boolean).slice(-5);
-        if (tail.length) {
-          popNote(pop, verifier.stdout ? "Last lines of test-stdout.txt" : "Last lines of test-stderr.txt");
-          popCode(pop, tail, /\bfailed\b|Error/);
-        }
-      });
-      failing.slice(0, 3).forEach((test) => {
-        const testRow = row(graph, shortTest(test.name), {
-          cls: "rc-sub bad",
-          meta: [test.location, fmtSpan(test.seconds)].filter(Boolean).join(" · "),
-        });
-        attachTip(testRow, card, buildTestPop(test));
-      });
-      if (failing.length > 3) row(graph, (failing.length - 3) + " more failed", { cls: "rc-sub bad" });
-    }
-    card.appendChild(graph);
-
-    // Checks: each summary opens its proof.
-    const checks = el("div", "rc-checks");
-    function check(mark, label, value, tone, build) {
-      const item = el("span", "rc-check" + (tone ? " " + tone : ""));
-      if (mark) item.appendChild(icon(mark));
-      item.appendChild(el("span", "rc-check-label", label));
-      if (value) item.appendChild(el("span", "rc-check-value", value));
-      checks.appendChild(item);
-      if (build) attachTip(item, card, build);
-      return item;
-    }
-    if (passed.length) check("ok", "Tests", passed.length + " passed", "ok", buildTestListPop(passed, "passed"));
-    if (failing.length) {
-      check("bad", "Tests", failing.length + " failed", "bad", (pop) => {
-        failing.slice(0, 4).forEach((test, index) => {
-          if (index) pop.appendChild(el("hr", "pop-rule"));
-          buildTestPop(test)(pop);
-        });
-        if (failing.length > 4) popNote(pop, (failing.length - 4) + " more in the Verifier tab.");
-      });
-    }
+    // Verdict: the reward, the state word and the sentence.
+    const top = section(side, "Verdict");
+    const score = el("div", "score");
     const reward = fmtReward(meta.reward);
-    check(null, "Reward", reward === null ? "none" : reward, null, (pop) => {
+    const value = el("span", "score-v " + state.word, reward === null ? "—" : reward);
+    score.appendChild(value);
+    const scoreMeta = el("span", "score-m");
+    scoreMeta.appendChild(el("span", "lab plain", "Reward"));
+    scoreMeta.appendChild(el("span", "st " + state.word, state.label));
+    score.appendChild(scoreMeta);
+    top.appendChild(score);
+    attachTip(value, (pop) => {
       const status = state.status;
       popHead(pop, "Reward " + (reward === null ? "not recorded" : reward), status.summary || null, false);
       popRow(pop, "execution", [status.execution ? String(status.execution).replace("_", " ") : null, status.execution_detail].filter(Boolean).join(", "));
       popRow(pop, "assessment", [status.assessment, status.assessment_detail].filter(Boolean).join(", "));
       if (verifier.reward !== null && verifier.reward !== undefined) popRow(pop, "verifier/reward.txt", String(verifier.reward));
     });
-    const total = fmtSpan(finite(timing.total) ?? meta.duration_sec);
-    if (total) {
-      check(null, "Total", total, null, (pop) => {
-        popHead(pop, "Time and usage", null, false);
-        Object.entries(timing).forEach(([key, value]) => {
-          if (key !== "total" && finite(value) !== null) popRow(pop, key.replace(/_/g, " "), fmtSpan(value));
-        });
-        popRow(pop, "total", total);
-        if (finite(usage.cost_usd) === null) popNote(pop, "This run recorded no cost.");
-      });
-    }
-    const tokens = fmtCount(usage.total_tokens);
-    if (tokens) {
-      check(null, "Tokens", tokens, null, (pop) => {
-        popHead(pop, "Tokens", usage.usage_source || null, false);
-        popRow(pop, "input", fmtCount(usage.n_input_tokens));
-        popRow(pop, "output", fmtCount(usage.n_output_tokens));
-        popRow(pop, "cache read", fmtCount(usage.n_cache_read_tokens));
-        popRow(pop, "cache write", fmtCount(usage.n_cache_creation_tokens));
-        popRow(pop, "total", tokens);
-        if (finite(usage.cost_usd) !== null) popRow(pop, "cost", "$" + usage.cost_usd.toFixed(4));
-      });
-    }
-    if (finite(usage.cost_usd) !== null) check(null, "Cost", "$" + usage.cost_usd.toFixed(2), null, null);
-    card.appendChild(checks);
-
-    // Footer: where the run ended, and the one next action, beside it.
-    const foot = el("div", "rc-foot");
-    const status = el("span", "rc-status");
-    let action = null;
-    if (failing.length) {
-      status.appendChild(icon("bad"));
-      status.append(plural(failing.length, "test") + " failed");
-      action = ["Show failing test", () => actions.showTest(failing[0].name)];
-    } else if (namedStep && state.interrupted) {
-      status.appendChild(icon("warn"));
-      status.append(state.status.execution === "timed_out" ? "Stopped by the time limit" : "Stopped by an error");
-      action = ["Show call #" + namedStep.i, () => onStep(namedStep.i)];
-    } else if (state.tone === "pass") {
-      status.appendChild(icon("ok"));
-      status.append(tests.length ? "All tests passed" : "Scored " + reward);
-    } else if (state.tone === "fail") {
-      status.appendChild(icon("bad"));
-      status.append("Scored " + reward);
-    } else {
-      status.appendChild(icon("warn"));
-      status.append("Not scored");
-    }
-    foot.appendChild(status);
-    if (action) {
-      const button = el("button", "rc-action", action[0]);
-      button.type = "button";
-      button.addEventListener("click", action[1]);
-      foot.appendChild(button);
-    }
-    card.appendChild(foot);
-    header.appendChild(card);
-
     if (verdict.sentence) {
       const why = el("p", "why");
       why.id = "why";
       BF.core.textWithRedaction(why, verdict.sentence);
-      header.appendChild(why);
+      top.appendChild(why);
     }
+    const namedStep = typeof verdict.step === "number" ? tools.find((step) => step.i === verdict.step) : null;
+    let action = null;
+    if (failing.length) action = ["Show failing test", () => actions.showTest(failing[0].name)];
+    else if (namedStep && state.interrupted) action = ["Show call #" + namedStep.i, () => onStep(namedStep.i)];
+    if (action) {
+      const button = el("button", "btn rc-action", action[0]);
+      button.type = "button";
+      button.addEventListener("click", action[1]);
+      top.appendChild(button);
+    }
+
+    // The call a timeout or error cut off.
+    if (namedStep && state.interrupted) {
+      const tool = asRecord(namedStep.tool);
+      const running = tool.status === "pending" || tool.status === "in_progress";
+      const block = section(side, running ? "Interrupted call" : "Last call");
+      const row = el("div", "call-row");
+      row.appendChild(el("span", "call-title", tool.title || tool.kind || "tool call"));
+      row.appendChild(el("span", "call-meta", "#" + namedStep.i + (tool.status ? " · " + tool.status : "")));
+      block.appendChild(row);
+      attachTip(row, buildToolPop(namedStep, onStep));
+    }
+
+    // Checks: one row per test, failures first, each failure one hover
+    // from its assertion.
+    if (tests.length || verifier.ctrf_tool || finite(timing.verifier) !== null) {
+      const runner = [verifier.ctrf_tool, finite(verifier.ctrf_seconds) !== null ? fmtSpan(verifier.ctrf_seconds) : null]
+        .filter(Boolean).join(" · ");
+      const block = section(side, "Checks", tests.length ? passed.length + " of " + tests.length + " passed" : null);
+      const table = el("div", "checks");
+      failing.concat(tests.filter((test) => test.status !== "failed")).slice(0, LIST_LIMIT).forEach((test) => {
+        const row = el("div", "check-row " + (test.status === "failed" ? "bad" : test.status === "passed" ? "ok" : ""));
+        row.appendChild(el("span", "flag " + (test.status === "failed" ? "bad" : test.status === "passed" ? "ok" : ""), test.status || "unknown"));
+        row.appendChild(el("span", "check-name", shortTest(test.name)));
+        row.appendChild(el("span", "check-t", fmtSpan(test.seconds) || ""));
+        table.appendChild(row);
+        if (test.status === "failed") attachTip(row, buildTestPop(test));
+      });
+      if (tests.length > LIST_LIMIT) table.appendChild(el("div", "check-more", (tests.length - LIST_LIMIT) + " more in the Verifier tab"));
+      if (tests.length) block.appendChild(table);
+      const runnerRow = kvRow(block, "Runner", runner || "not recorded", { mono: true, cls: "runner" });
+      if (runnerRow) {
+        attachTip(runnerRow, (pop) => {
+          popHead(pop, verifier.ctrf_tool || "verifier", fmtSpan(timing.verifier) ? "phase " + fmtSpan(timing.verifier) : null, true);
+          if (tests.length) {
+            popRow(pop, "tests", plural(tests.length, "test") + (runner ? " in " + fmtSpan(verifier.ctrf_seconds) : ""));
+            popRow(pop, "passed", String(passed.length), passed.length ? "ok" : null);
+            popRow(pop, "failed", String(failing.length), failing.length ? "bad" : null);
+          }
+          if (verifier.reward !== null && verifier.reward !== undefined) popRow(pop, "reward.txt", String(verifier.reward));
+          const output = String(verifier.stdout || verifier.stderr || "");
+          const tail = output.split("\n").map((line) => line.replace(/\s+$/, "")).filter(Boolean).slice(-6);
+          if (tail.length) {
+            popNote(pop, verifier.stdout ? "Last lines of test-stdout.txt" : "Last lines of test-stderr.txt");
+            popCode(pop, tail, /\bfailed\b|Error/);
+          } else {
+            popNote(pop, "The verifier wrote no output file.");
+          }
+        });
+      }
+    }
+
+    // Phases: where the time went.
+    const phases = PHASES.filter(([key]) => finite(timing[key]) !== null);
+    if (phases.length) {
+      const block = section(side, "Phases", fmtSpan(timing.total));
+      phases.forEach(([key, label]) => kvRow(block, label, fmtSpan(timing[key]), { cls: "num" }));
+    }
+
+    // Agent: the calls by kind, and the ones that failed.
+    if (tools.length) {
+      const kinds = new Map();
+      tools.forEach((step) => {
+        const kind = String(asRecord(step.tool).kind || "other");
+        kinds.set(kind, (kinds.get(kind) || 0) + 1);
+      });
+      const block = section(side, "Tool calls", String(tools.length));
+      const strip = el("div", "kinds");
+      [...kinds.entries()].sort((a, b) => b[1] - a[1]).forEach(([kind, count]) => {
+        const item = el("span", "kind");
+        item.appendChild(el("span", "kind-k", kind));
+        item.appendChild(el("span", "kind-n", String(count)));
+        strip.appendChild(item);
+      });
+      block.appendChild(strip);
+      const failedTools = tools.filter((step) => ["failed", "cancelled"].includes(asRecord(step.tool).status));
+      failedTools.slice(0, 6).forEach((step) => {
+        const row = el("div", "call-row bad");
+        row.appendChild(el("span", "call-title", asRecord(step.tool).title || "tool call"));
+        const link = el("span", "call-meta");
+        link.appendChild(stepLink(step, onStep));
+        row.appendChild(link);
+        block.appendChild(row);
+      });
+      if (failedTools.length > 6) block.appendChild(el("div", "check-more", (failedTools.length - 6) + " more failed calls"));
+    }
+
+    // Usage.
+    const tokenRows = [
+      ["Input", usage.n_input_tokens],
+      ["Output", usage.n_output_tokens],
+      ["Cache read", usage.n_cache_read_tokens],
+      ["Total", usage.total_tokens],
+    ].filter(([, number]) => finite(number) !== null);
+    if (tokenRows.length || finite(usage.cost_usd) !== null) {
+      const block = section(side, "Usage", usage.usage_source || null);
+      tokenRows.forEach(([label, number]) => kvRow(block, label, fmtCount(number), { cls: "num" }));
+      if (finite(usage.cost_usd) !== null) kvRow(block, "Cost", "$" + usage.cost_usd.toFixed(4), { cls: "num" });
+    }
+  }
+
+  // ── rail: the runs in this view ─────────────────────────────────────────
+
+  function renderRail(items, currentId, onOpen) {
+    const rail = document.getElementById("rail-list");
+    if (!rail) return;
+    rail.textContent = "";
+    if (!items.length) return;
+    const head = el("div", "rail-h");
+    head.appendChild(lab(plural(items.length, "run")));
+    rail.appendChild(head);
+    items.forEach((item) => {
+      const row = el(onOpen ? "button" : "div", "rail-row" + (item.id === currentId ? " on" : ""));
+      if (onOpen) {
+        row.type = "button";
+        row.addEventListener("click", () => onOpen(item.id));
+      }
+      if (item.id === currentId) row.setAttribute("aria-current", "page");
+      row.appendChild(el("span", "dot " + item.tone));
+      row.appendChild(el("span", "rail-name", item.name));
+      row.appendChild(el("span", "rail-meta", item.meta || ""));
+      rail.appendChild(row);
+    });
+  }
+
+  function render(payload, header, side, actions) {
+    clearTips();
+    const state = stateOf(payload);
+    const heading = renderHeader(payload, header, state, actions.showStep);
+    renderSide(payload, side, state, actions);
     return heading;
   }
 
-  return { render, fmtSpan, fmtReward };
+  return { clearTips, fmtCount, fmtReward, fmtSpan, render, renderRail, stateOf };
 })();
