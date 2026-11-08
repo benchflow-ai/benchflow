@@ -117,7 +117,9 @@ BF.runcard = (() => {
     pop.style.left = "0px";
     pop.style.top = "0px";
     const width = Math.min(pop.offsetWidth, cardBox.width - 16);
-    let left = box.left - cardBox.left;
+    // A row's popover hangs from the right edge, so the row names to its
+    // left stay reachable when the pointer moves down the graph.
+    let left = tip.align === "end" ? cardBox.width - width - 8 : box.left - cardBox.left;
     left = Math.max(8, Math.min(left, cardBox.width - width - 8));
     const below = box.bottom - cardBox.top + 6;
     const roomBelow = window.innerHeight - box.bottom;
@@ -151,7 +153,7 @@ BF.runcard = (() => {
     trigger.tabIndex = 0;
     trigger.setAttribute("aria-describedby", pop.id);
     card.appendChild(pop);
-    const tip = { trigger, pop, card, build, built: false, timer: 0 };
+    const tip = { trigger, pop, card, build, built: false, timer: 0, align: trigger.tagName === "LI" ? "end" : "start" };
     const enter = () => {
       clearTimeout(tip.timer);
       showTip(tip);

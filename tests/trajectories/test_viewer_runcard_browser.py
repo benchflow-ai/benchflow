@@ -196,7 +196,10 @@ def test_timeout_card_points_at_the_interrupted_call(page, tmp_path):
     assert page.locator("#hdr .badge").inner_text() == "Timed out"
     call = page.locator(".rc-sub.warn")
     assert "Interrupted: make build" in call.inner_text()
-    call.hover()
+    # The Agent row's popover must not cover the row names below it.
+    page.locator(".rc-graph .rc-row.tip").first.hover()
+    page.locator(".pop.open").wait_for()
+    call.locator(".rc-name").hover()
     assert "building" in page.locator(".pop.open").inner_text()
     page.locator(".rc-action", has_text="Show call #2").click()
     assert page.locator("#e2").is_visible()
