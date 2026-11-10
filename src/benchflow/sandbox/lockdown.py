@@ -4958,12 +4958,27 @@ async def _excluded_inodes(
     File contents and permissions are immaterial. Keep every inode, including
     non-executables that become executable later and hard-linked symlinks.
     ``find -H`` follows only the seed; it crosses nested mounts like freeze.
+
+    GNU find prints each identity itself (``-printf``), relative to the folder
+    it walks, so a path longer than PATH_MAX is read too (#1233); a find
+    without ``-printf`` (BusyBox) gives ``stat`` the paths. An entry whose
+    identity cannot be read does not stop the hardening: find's message comes
+    back as an ``unread`` line, and the trial's result.json gets a warning.
     """
     result = await _checked_read(
         env,
-        _path_inspector_prefix(env) + "for p in " + shlex.join(prefixes) + "; do "
+        _path_inspector_prefix(env) + "exec 3>&1; "
+        "if find / -maxdepth 0 -printf '' >/dev/null 2>&1; then "
+        "bf_ids() { find -H \"$1\" ! -type d -printf '%D:%i\\n'; }; "
+        "else bf_ids() { find -H \"$1\" ! -type d -exec stat -c '%d:%i' -- {} +; }; "
+        "fi; for p in " + shlex.join(prefixes) + "; do "
         'if [ -e "$p" ] || [ -L "$p" ]; then '
-        'find -H "$p" ! -type d -exec stat -c "%d:%i" -- {} + || exit 1; '
+        # Identities to the output as they come, the messages kept apart.
+        'bf_err=$(bf_ids "$p" 2>&1 >&3); bf_rc=$?; '
+        '[ "$bf_rc" -le 1 ] || exit 1; '
+        '[ "$bf_rc" -eq 0 ] || [ -n "$bf_err" ] || bf_err="find exited 1 in $p"; '
+        '[ -z "$bf_err" ] || printf \'%s\\n\' "$bf_err" | '
+        "while IFS= read -r bf_l; do printf 'unread %s\\n' \"$bf_l\"; done; "
         "fi; done; "
         'if [ -f "$PATH/before" ]; then cat "$PATH/before" || exit 1; fi; '
         'if [ -d "$PATH/before-links" ]; then '
@@ -4973,15 +4988,35 @@ async def _excluded_inodes(
         user="root",
         timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
     )
-    lines = (result.stdout or "").splitlines()
+    # Newlines only: a message can quote a name holding any other break.
+    lines = (result.stdout or "").removesuffix("\n").split("\n")
+    unread = [line[7:] for line in lines[:-1] if line.startswith("unread ")]
+    identities = [line for line in lines[:-1] if not line.startswith("unread ")]
     if (
         not lines
         or lines[-1] != "complete"
-        or any(not re.fullmatch(r"[0-9]+:[0-9]+", line) for line in lines[:-1])
+        or any(not re.fullmatch(r"[0-9]+:[0-9]+", line) for line in identities)
     ):
         raise RuntimeError("Verifier hardening failed: incomplete inode identities")
+    if unread:
+        # As the hardening's other notes: result.json lists it, DEBUG names
+        # the entries (agent-chosen paths, never a console line).
+        logger.debug(
+            "%d excluded entries kept no inode identity: %s",
+            len(unread),
+            "; ".join(line[:300] for line in unread[:5]),
+        )
+        from benchflow._utils.trial_warnings import report_trial_warning
+
+        report_trial_warning(
+            "the verifier hardening could not read the inode identity of "
+            f"{len(unread)} entries in the folders the agent could write (a "
+            "path longer than PATH_MAX where find has no -printf, or an entry "
+            "that went away), so the verifier's checks do not recognise a hard "
+            "link to one of them elsewhere"
+        )
     return frozenset(
-        (int(dev), int(ino)) for line in lines[:-1] for dev, ino in [line.split(":")]
+        (int(dev), int(ino)) for line in identities for dev, ino in [line.split(":")]
     )
 
 
