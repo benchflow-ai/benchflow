@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -12,6 +15,7 @@ import pytest
 import benchflow
 from benchflow.review.config import load_rubric
 from benchflow.review.evidence import (
+    _UNPACK_SCRIPT,
     ArtifactEvidence,
     EvidenceEntry,
     EvidenceManifest,
@@ -298,3 +302,97 @@ def test_custom_reviewer_image_owns_its_artifact_tools(tmp_path):
         assert Task(wrapper).config.sandbox.setup_commands == []
     finally:
         remove_review_task(wrapper)
+
+
+def _script_reviewer(sandbox: Path, listings: list[list[str]], fake: FakeRun):
+    """A reviewer that lists /evidence as its sandbox holds it: each upload
+    at its path, then the workspace archives unpacked by the pre-agent
+    hook's own script (install_review_evidence)."""
+
+    async def run(config):
+        for host, dest in config.uploads.items():
+            target = sandbox / dest.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if Path(host).is_dir():
+                shutil.copytree(host, target, symlinks=True)
+            else:
+                shutil.copyfile(host, target)
+        evidence = sandbox / "evidence"
+        if any(
+            getattr(hook, "func", None) is install_review_evidence
+            for hook in config.pre_agent_hooks
+        ):
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    _UNPACK_SCRIPT,
+                    str(evidence / "workspace.tar"),
+                    str(evidence / "workspace"),
+                    str(evidence / "workspace-manifest.json"),
+                ],
+                check=True,
+            )
+        listings.append(
+            sorted("/" + p.relative_to(sandbox).as_posix() for p in evidence.rglob("*"))
+        )
+        return await fake(config)
+
+    return run
+
+
+@pytest.mark.asyncio
+async def test_bench_review_gives_the_reviewer_the_captured_workspace(
+    tmp_path, monkeypatch
+):
+    """Guards #1231: ``bench review`` (run_reviews) hands the reviewer the
+    rollout's captured workspace at /evidence/workspace, as the in-run review
+    (finish_review) does. It uploaded only /evidence/trial and /evidence/task."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    make_bundle(tmp_path).rename(source / "evidence")
+    listings: list[list[str]] = []
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(
+        benchflow, "run", _script_reviewer(tmp_path / "sandbox", listings, fake)
+    )
+    report, _ = await run_reviews(
+        source, agent="gemini", tasks_root=tmp_path / "tasks", out_dir=tmp_path / "out"
+    )
+    (listing,) = listings
+    for path in (
+        "/evidence/workspace/paper.txt",
+        "/evidence/workspace/link.txt",
+        "/evidence/workspace/empty",
+        "/evidence/workspace-manifest.json",
+        "/evidence/trial/result.json",
+        "/evidence/task/task.md",
+    ):
+        assert path in listing, path
+    assert not any(path.startswith("/evidence/trial/evidence") for path in listing)
+    assert "/evidence/workspace" in fake.task_docs[0]
+    trial = report.trials[0]
+    assert trial.review_valid and trial.error is None
+    assert not any("workspace" in note for note in trial.notes)
+
+
+@pytest.mark.asyncio
+async def test_bench_review_records_a_rollout_without_a_captured_workspace(
+    tmp_path, monkeypatch
+):
+    """Guards #1231: a rollout that captured no workspace is still reviewed,
+    from its records, and its review says why the workspace is missing."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    listings: list[list[str]] = []
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(
+        benchflow, "run", _script_reviewer(tmp_path / "sandbox", listings, fake)
+    )
+    report, _ = await run_reviews(
+        source, agent="gemini", tasks_root=tmp_path / "tasks", out_dir=tmp_path / "out"
+    )
+    assert not any(path.startswith("/evidence/workspace") for path in listings[0])
+    trial = report.trials[0]
+    assert trial.review_valid
+    assert any("workspace evidence skipped" in note for note in trial.notes)
