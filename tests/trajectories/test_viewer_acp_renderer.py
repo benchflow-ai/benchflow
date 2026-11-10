@@ -391,7 +391,16 @@ class TestDegradation:
         payload = _extract_payload(render_rollout(rollout))
 
         assert payload["verifier"]["ctrf"] == [
-            {"name": '{"nested": "name"}', "status": "unknown", "duration": None}
+            {
+                "name": '{"nested": "name"}',
+                "status": "unknown",
+                "duration": None,
+                "seconds": None,
+                "message": None,
+                "trace": None,
+                "location": None,
+                "assertion": None,
+            }
         ]
 
     @pytest.mark.parametrize("depth", [80, 1200])
@@ -940,6 +949,7 @@ class TestTypedContract:
             "verifier",
             "rubric",
             "lineage",
+            "verdict",
         }
         assert wire["steps"][0] == {
             "i": 1,

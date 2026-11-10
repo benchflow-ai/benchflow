@@ -66,6 +66,7 @@ BF.navigation = (() => {
         focusHeading: Boolean(sourceButton),
         branchHref: (ref) => BF.catalog.urlFor(runId, ref),
         openBranch: (ref) => openRun(runId, true, null, ref),
+        rail: { items: BF.catalog.railItems(), current: runId, open: (id) => openRun(id, true) },
       });
       loadedRun = runKey(runId, branch);
       window.scrollTo(0, 0);
