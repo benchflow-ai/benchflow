@@ -462,16 +462,39 @@ def workspace_grant_command(workspace: str, owner: str) -> str:
     entry but the reserved ones is granted: the user may add and change its
     own files there, never rename a reserved folder. A loader folder stays
     root's with the files directly in it; its subfolders other than the
-    loader's own (``*-linux-*``) are granted (PT-C8-R9-4)."""
+    loader's own (``*-linux-*``) are granted (PT-C8-R9-4).
+
+    A provider daemon's folder directly in the workspace
+    (``SANDBOX_RUNTIME_STATE_PATHS``: Daytona's daemon keeps each exec's
+    script, output and exit code in ``.daytona`` in root's home) is reserved
+    too when the sandbox has it as a folder: it stays root's, without group
+    or other write. The daemon runs as root and still writes there; the
+    agent can put nothing there for test.sh to read while the review leaves
+    it out (#1232)."""
+    from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS
+
     ws = "/" + workspace.strip("/")
-    q_ws = shlex.quote(ws)
-    q_owner = shlex.quote(f"{owner}:{owner}")
     reserved = _reserved_in(ws)
-    if not reserved:
-        return f"chown -R {q_owner} {q_ws}"
     if any("/" in r[len(ws.rstrip("/")) + 1 :] for r in reserved):
         raise ValueError(f"the workspace {ws} holds a reserved folder below its top")
-    skip = " ".join(f"! -path {shlex.quote(r)}" for r in reserved)
+    held = [ws.rstrip("/") + "/" + name for name in SANDBOX_RUNTIME_STATE_PATHS]
+    present = " || ".join(
+        f"{{ [ -d {q} ] && [ ! -L {q} ]; }}" for q in map(shlex.quote, held)
+    )
+    return (
+        f"if {present}; then {_grant_command(ws, owner, reserved, held)}; "
+        f"else {_grant_command(ws, owner, reserved, [])}; fi"
+    )
+
+
+def _grant_command(ws: str, owner: str, reserved: list[str], held: list[str]) -> str:
+    """:func:`workspace_grant_command`'s sh for *reserved* folders and the
+    daemon folders *held* (each kept root's when it is a folder)."""
+    q_ws = shlex.quote(ws)
+    q_owner = shlex.quote(f"{owner}:{owner}")
+    if not reserved and not held:
+        return f"chown -R {q_owner} {q_ws}"
+    skip = " ".join(f"! -path {shlex.quote(r)}" for r in (*reserved, *held))
     parts = [
         f"chown 0:0 {q_ws} && chmod 1777 {q_ws} && "
         f"find {q_ws} -mindepth 1 -maxdepth 1 {skip} -exec chown -R {q_owner} {{}} +"
@@ -485,6 +508,11 @@ def workspace_grant_command(workspace: str, owner: str) -> str:
             f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q} && "
             f"find {q} -mindepth 1 -maxdepth 1 -type d ! -name '*-linux-*' "
             f"-exec chown -R {q_owner} {{}} +; fi"
+        )
+    for folder in held:
+        q = shlex.quote(folder)
+        parts.append(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q}; fi"
         )
     return " && ".join(parts)
 
