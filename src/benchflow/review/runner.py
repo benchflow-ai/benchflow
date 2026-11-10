@@ -15,6 +15,7 @@ outcomes live in the report.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -458,6 +459,10 @@ _REVIEWER_TRANSPORT_ATTEMPTS = 2
 # Review orchestration and aggregation
 
 
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 async def _review_one(
     rollout_dir: Path,
     *,
@@ -559,6 +564,7 @@ async def run_review(
             storage_mb=config.storage_mb,
             environment=config.environment,
             pdf_tools=config.pdf_tools,
+            submitted_file_rule=config.submitted_file_rule,
         )
         from benchflow.review.persistence import write_json_atomic
         from benchflow.review.probe import (
@@ -566,6 +572,7 @@ async def run_review(
             local_image_id,
             probe_reviewer_image,
         )
+        from benchflow.review.prompts import review_template
         from benchflow.task import Task
 
         # The reviewed run's setup budget; a detached review, which knows no
@@ -603,7 +610,8 @@ async def run_review(
                     timeout_sec=evidence_timeout,
                 ),
             )
-        sandbox = Task(wrapper_dir).config.sandbox
+        wrapper_task = Task(wrapper_dir)
+        sandbox = wrapper_task.config.sandbox
         digest = image_digest(config.image)
         environment_record: dict[str, Any] = {
             "image": config.image,
@@ -621,6 +629,15 @@ async def run_review(
             if digest is None and config.environment == "docker"
             else None,
             "pdf_tools": config.pdf_tools,
+            "submitted_file_rule": config.submitted_file_rule,
+            # The template (the rule in it or not) and the instruction the
+            # reviewer got, rendered from it for this rollout.
+            "template_sha256": _sha256(
+                review_template(
+                    template, submitted_file_rule=config.submitted_file_rule
+                )
+            ),
+            "instruction_sha256": _sha256(wrapper_task.instruction),
         }
         record_path = runtime_dir / "reviewer-environment.json"
         write_json_atomic(record_path, environment_record)
@@ -846,10 +863,11 @@ async def run_reviews(
     filter_passing: bool | None = None,
     out_dir: Path | None = None,
     pdf_tools: bool = False,
+    submitted_file_rule: bool = False,
 ) -> tuple[ReviewReport, Path]:
     """Review rollout(s) at ``path`` and return the report plus its location.
 
-    *pdf_tools* is :attr:`ReviewerConfig.pdf_tools`.
+    *pdf_tools* and *submitted_file_rule* are those of :class:`ReviewerConfig`.
     """
 
     path = Path(path).resolve()
@@ -890,6 +908,7 @@ async def run_reviews(
         open_network=open_network,
         concurrency=max(1, concurrency),
         pdf_tools=pdf_tools,
+        submitted_file_rule=submitted_file_rule,
     )
     semaphore = asyncio.Semaphore(max(1, concurrency))
 

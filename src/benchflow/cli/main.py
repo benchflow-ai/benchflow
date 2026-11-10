@@ -71,6 +71,7 @@ from benchflow.cli.reviewer_options import (
     ReviewerSandboxOption,
     ReviewerSetupTimeoutOption,
     ReviewerStorageOption,
+    ReviewerSubmittedFileRuleOption,
     ReviewerTimeoutOption,
 )
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
@@ -1791,6 +1792,7 @@ def eval_run(
     reviewer_agent_env: ReviewerEnvOption = None,
     reviewer_open_network: ReviewerNetworkOption = None,
     reviewer_pdf_tools: ReviewerPdfToolsOption = None,
+    reviewer_submitted_file_rule: ReviewerSubmittedFileRuleOption = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
@@ -2149,6 +2151,7 @@ def eval_run(
             ),
             open_network=reviewer_open_network,
             pdf_tools=reviewer_pdf_tools,
+            submitted_file_rule=reviewer_submitted_file_rule,
         ),
         include=include,
         exclude=exclude,

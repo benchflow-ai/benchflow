@@ -340,6 +340,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--reviewer-agent-env` | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
 | `--reviewer-open-network` | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
+| `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 | `--allow-task-env` | `text (repeatable)` |  | Let tasks read this variable of your environment (a $&#123;NAME&#125; env value, or their docker-compose.yaml); repeatable. A task reading an unnamed one is refused; $&#123;NAME:-default&#125; gets the default |
 | `--ignore-bench-version` | flag |  | Run a dataset even when this bench version is outside the range it was validated against. Only valid with --dataset. |
 | `--task-manifest-out` | `path` |  | Write selected task-set manifest JSON |
@@ -489,6 +490,7 @@ bench regrade [OPTIONS] PATH
 | `--reviewer-agent-env` (unreleased) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
 | `--reviewer-open-network` (unreleased) | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
+| `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 
 ## bench export
 
@@ -798,6 +800,7 @@ bench eval run [OPTIONS]
 | `--reviewer-agent-env` | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
 | `--reviewer-open-network` | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
+| `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 | `--agent-env` | `text (repeatable)` |  | Agent env var (KEY=VALUE) |
 | `--allow-task-env` | `text (repeatable)` |  | Let tasks read this variable of your environment (a $&#123;NAME&#125; env value, or their docker-compose.yaml); repeatable. A task reading an unnamed one is refused; $&#123;NAME:-default&#125; gets the default |
 | `--include`, `-i` | `text (repeatable)` |  | Only run these task names; repeatable (e.g. --include jax-computing-basics --include data-to-d3) |
@@ -915,6 +918,7 @@ bench eval score [OPTIONS] PATH
 | `--reviewer-agent-env` | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
 | `--reviewer-open-network` | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
+| `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 
 ## bench eval regrade
 
@@ -955,6 +959,7 @@ bench eval regrade [OPTIONS] PATH
 | `--reviewer-agent-env` (unreleased) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
 | `--reviewer-open-network` (unreleased) | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
+| `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 
 ## bench eval list
 
@@ -1480,6 +1485,7 @@ bench review [OPTIONS] PATH
 | `--allow-open-network` | flag |  | Run reviewers WITHOUT the no-internet declaration. Required on backends that cannot enforce network isolation (e.g. agentcore); reviews there fail closed by default. The report records the relaxed posture. |
 | `--out-dir`, `-o` | `path` |  | Review output directory (default: jobs/review-&lt;ts&gt;) |
 | `--pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in each reviewer sandbox, to read and render a submitted PDF |
+| `--submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources |
 
 ## bench assess (0.10)
 

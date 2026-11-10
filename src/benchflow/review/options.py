@@ -61,6 +61,10 @@ class ReviewerConfig(BaseModel):
     # so the reviewer can extract a submitted PDF's text and render its pages.
     # Off by default: the default reviewer sandbox is unchanged.
     pdf_tools: bool = False
+    # Add prompts.SUBMITTED_FILE_RULE to the reviewer's instruction: for a
+    # written deliverable, judge the submitted file. Off by default: the
+    # default instruction is unchanged.
+    submitted_file_rule: bool = False
 
     @field_validator("agent")
     @classmethod

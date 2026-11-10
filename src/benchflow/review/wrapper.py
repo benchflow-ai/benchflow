@@ -379,6 +379,7 @@ def assemble_review_task(
     storage_mb: int | None = None,
     environment: str = "docker",
     pdf_tools: bool = False,
+    submitted_file_rule: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -387,7 +388,9 @@ def assemble_review_task(
     *storage_mb* the reviewer sandbox's disk is sized for the evidence it
     holds (:func:`reviewer_storage_mb` on *environment*): the uploads, and
     each workspace unpacked beside its archive. The setup installs
-    :func:`reviewer_setup_packages` for *image* and *pdf_tools*.
+    :func:`reviewer_setup_packages` for *image* and *pdf_tools*; the
+    instruction takes the rule with *submitted_file_rule*
+    (:func:`~benchflow.review.prompts.review_template`).
     """
 
     if dest.exists():
@@ -447,6 +450,7 @@ def assemble_review_task(
         trial_name=rollout_dir.name,
         output_schema=response_model.model_json_schema(),
         workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
+        submitted_file_rule=submitted_file_rule,
     )
     packages = reviewer_setup_packages(image, pdf_tools=pdf_tools)
     frontmatter = _TASK_FRONTMATTER.format(

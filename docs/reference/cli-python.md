@@ -85,6 +85,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--reviewer-agent-env` | sdk | `benchflow.ReviewerConfig.agent_env` |  |
 | `--reviewer-open-network` | sdk | `benchflow.ReviewerConfig.open_network` |  |
 | `--reviewer-pdf-tools` (unreleased) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
+| `--reviewer-submitted-file-rule` (unreleased) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
 | `--agent-env` | sdk | `benchflow.EvaluationConfig.agent_env` |  |
 | `--allow-task-env` | module | `benchflow.task.env.allow_task_env(names)` | or BENCHFLOW_ALLOW_TASK_ENV=NAME,NAME in the environment |
 | `--include` | sdk | `benchflow.EvaluationConfig.include_tasks` |  |
@@ -209,6 +210,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--reviewer-agent-env` (unreleased) | sdk | `benchflow.ReviewerConfig.agent_env` |  |
 | `--reviewer-open-network` (unreleased) | sdk | `benchflow.ReviewerConfig.open_network` |  |
 | `--reviewer-pdf-tools` (unreleased) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
+| `--reviewer-submitted-file-rule` (unreleased) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
 
 ## `bench train convert`
 
