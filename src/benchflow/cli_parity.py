@@ -365,6 +365,10 @@ TRAIN_STREAM: dict[str, Equivalent] = {
     "--group-by": _sdk(
         f"{_STREAM}(group_by)", "comma-separated on the CLI, a tuple in Python"
     ),
+    "--withheld": _sdk(
+        f"{_STREAM}(on_withheld)",
+        "the CLI writes each withheld group's records to a file; Python gets the list",
+    ),
 }
 
 TABLES: dict[str, dict[str, Equivalent]] = {

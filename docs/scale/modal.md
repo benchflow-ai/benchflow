@@ -7,12 +7,12 @@ Modal runs each trial in a serverless cloud sandbox, and can give a task GPUs. U
 Install BenchFlow with the extra, and give it your Modal token, either from `modal token new` (which writes `~/.modal.toml`) or as variables:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-modal]==0.9.1' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.1/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-modal]==0.9.2' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
 export MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=...
 ```
 
-The extra installs Modal's own `modal` command inside BenchFlow's tool environment, not on your `PATH`; run `~/.local/share/uv/tools/benchflow/bin/modal token new` if you have no `modal` of your own. `bench doctor` doesn't check Modal: a missing token shows at the first trial.
+The extra installs Modal's own `modal` command inside BenchFlow's tool environment, not on your `PATH`; run `"$(uv tool dir)/benchflow/bin/modal" token new` if you have no `modal` of your own. `bench doctor` doesn't check Modal: a missing token shows at the first trial.
 
 Without a token, a run stops at the first trial with:
 
@@ -41,7 +41,7 @@ Time:      1m 21s
 
 As on Daytona, the model proxy runs inside each sandbox. The verifier runs in the agent's sandbox after the agent's turn (`verifier_isolation: shared` in `result.json`); with `--verifier-sandbox separate`, or a task that asks for it, it runs in a fresh sandbox of its own ([Verifiers](../tasks/verifiers.md#run-the-verifier-in-its-own-sandbox)).
 
-BenchFlow starts every sandbox in one Modal app named `__benchflow__`, which it creates the first time; look for the trial's sandboxes there in Modal's dashboard. `result.json` records no `sandbox_id` for Modal in 0.9.1.
+BenchFlow starts every sandbox in one Modal app named `__benchflow__`, which it creates the first time; look for the trial's sandboxes there in Modal's dashboard. `result.json` records no `sandbox_id` for Modal in 0.9.2.
 
 ## GPUs
 

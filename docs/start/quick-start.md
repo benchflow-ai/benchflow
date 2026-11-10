@@ -7,7 +7,8 @@ BenchFlow runs an AI agent on a task in a sandbox, then scores what the agent le
 The task is `econ-detrending-correlation` from [SkillsBench](https://github.com/benchflow-ai/skillsbench), a public benchmark: the agent detrends two economic time series and reports their correlation, and the task's tests check the number. This run and the next work without a model or a key:
 
 ```bash
-bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation
+TASK=benchflow-ai/skillsbench/tasks/econ-detrending-correlation@f860ecf02ef53412a030f8661c83d644b739ff01
+bench run $TASK --fresh
 ```
 
 ```text
@@ -31,12 +32,12 @@ Summary:   jobs/2026-11-04__16-43-09/summary.json
 View:      bench view ./jobs/2026-11-04__16-43-09
 ```
 
-With no `-a`, `bench run` uses the **oracle**: it runs the task's reference solution (`solve.sh`) in a fresh sandbox, then the task's tests score the result. A reward of 1.0 means the task can be solved in this sandbox. These outputs come from SkillsBench at commit f860ecf0; to run that version, add `@f860ecf02ef53412a030f8661c83d644b739ff01` to the address (the full hash: a short one isn't found). The `Job:` line says how many trials run at once (`concurrency`) and how many sandboxes are prepared ahead of their turn (the warm pool).
+`--fresh` starts a new job even if this folder already holds a run of the task, such as the docs home's first command; without it, `bench run` would print that earlier run's result. With no `-a`, `bench run` uses the **oracle**: it runs the task's reference solution (`solve.sh`) in a fresh sandbox, then the task's tests score the result. A reward of 1.0 means the task can be solved in this sandbox. `TASK` names the task and SkillsBench's commit f860ecf0, the version these outputs came from, and the later steps reuse it; give the full hash, since a short one isn't found. The `Job:` line says how many trials run at once (`concurrency`) and how many sandboxes are prepared ahead of their turn (the warm pool).
 
 ## Check that doing nothing scores 0
 
 ```bash
-bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation -a nop --fresh
+bench run $TASK -a nop --fresh
 ```
 
 ```text
@@ -57,8 +58,7 @@ Claude Code needs a Claude login or an Anthropic API key. With a Claude subscrip
 
 ```bash
 export CLAUDE_CODE_OAUTH_TOKEN=...   # from `claude setup-token`; or export ANTHROPIC_API_KEY=...
-bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation@f860ecf02ef53412a030f8661c83d644b739ff01 \
-  -a claude -m sonnet --fresh --jobs-dir jobs/claude-sonnet
+bench run $TASK -a claude -m sonnet --fresh --jobs-dir jobs/claude-sonnet
 ```
 
 ```text
@@ -83,7 +83,7 @@ Time:      2m 10s
 Artifacts: jobs/claude-sonnet/2026-11-05__02-52-57
 ```
 
-The address ends in the commit these outputs came from; BenchFlow takes a branch, a tag or a full commit hash there, and a short hash isn't found. `-m` takes a name the agent offers. In 0.9.1, Claude Code on a subscription login offers `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`, and any other name stops the trial before a model call:
+After the `@`, BenchFlow takes a branch, a tag or a full commit hash. `-m` takes a name the agent offers. In 0.9.2, Claude Code on a subscription login offers `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`, and any other name stops the trial before a model call:
 
 ```text
 agent integration failure [agent_model]: claude-agent-acp does not offer model 'claude-sonnet-5-5' for this login; it offers: default, sonnet, claude-fable-5-1, opus, haiku
@@ -96,8 +96,7 @@ A model from another provider runs through BenchFlow's model proxy. The runs on 
 ```bash
 export XIAOMI_API_KEY=...      # your MiMo API key
 export XIAOMI_BASE_URL=...     # your MiMo plan's base URL, ending in /v1
-bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
-  -a claude -m xiaomi/mimo-v2.6-flash --fresh
+bench run $TASK -a claude -m xiaomi/mimo-v2.6-flash --fresh
 ```
 
 ```text

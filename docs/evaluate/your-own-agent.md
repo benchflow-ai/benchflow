@@ -80,7 +80,7 @@ The first four are required. BenchFlow ignores a key it doesn't know, so a missp
 
 | Key | What it sets |
 |---|---|
-| `contract_version` | `"1.0"`; 0.10.0rc1 also reads `"1.1"`, which adds `model_route` |
+| `contract_version` | `"1.0"`; 0.10.0rc2 also reads `"1.1"`, which adds `model_route` |
 | `name` | the name `-a` takes; `aliases` lists other names it accepts |
 | `install_cmd` | the shell commands that install the agent, run as root before it starts |
 | `launch_cmd` | the command that starts it; it speaks ACP on its standard input and output |
@@ -97,19 +97,29 @@ The first four are required. BenchFlow ignores a key it doesn't know, so a missp
 
 To ship files with the agent, write them from `install_cmd`, as the minimal agent writes its `agent.py`, or download them there.
 
-Later 0.10 builds give the agent BenchFlow's variables under neutral names inside the sandbox: `RUNTIME_` takes the place of `BENCHFLOW_` (`BENCHFLOW_PROVIDER_MODEL` arrives as `RUNTIME_PROVIDER_MODEL`), in its environment and in its `launch_cmd`. 0.9.1 and 0.10.0rc1 pass the `BENCHFLOW_*` names. A file the install writes isn't renamed: an agent that reads the variables there reads the `RUNTIME_` name first and the `BENCHFLOW_` one after it, or takes the values under its own names through `env_mapping`, which works the same in every release.
+0.10.0rc2 gives the agent BenchFlow's variables under neutral names inside the sandbox: `RUNTIME_` takes the place of `BENCHFLOW_` (`BENCHFLOW_PROVIDER_MODEL` arrives as `RUNTIME_PROVIDER_MODEL`), in its environment and in its `launch_cmd`. 0.9.2 passes the `BENCHFLOW_*` names, as 0.10.0rc1 did. A file the install writes isn't renamed: an agent that reads the variables there reads the `RUNTIME_` name first and the `BENCHFLOW_` one after it, or takes the values under its own names through `env_mapping`, which works the same in every release.
 
-BenchFlow's own folder in the sandbox moves in those builds from `/opt/benchflow` to `/opt/runtime`, and BenchFlow no longer makes `/opt/benchflow`. An install that writes there, or anywhere outside `/opt/runtime`, must leave each folder on the way readable to the agent's user itself; otherwise the agent's user can't run what it installed (`Permission denied`).
+BenchFlow's own folder in the sandbox moves in 0.10.0rc2 from `/opt/benchflow` to `/opt/runtime`, and BenchFlow no longer makes `/opt/benchflow`. An install that writes there, or anywhere outside `/opt/runtime`, must leave each folder on the way readable to the agent's user itself; otherwise the agent's user can't run what it installed (`Permission denied`).
 
 ### An agent that calls no model
 
-0.9.1 runs every agent but `oracle` and `nop` with a model, through its proxy. An agent that calls no model, such as a fixed program you're testing, is refused without one:
+0.9.2 runs every agent but `oracle` and `nop` with a model, through its proxy. The example here is `primes-agent`, a program that counts the primes below 50,000 for the `primes` task and calls no model; both are in BenchFlow's repository:
+
+```bash
+git clone --depth 1 https://github.com/benchflow-ai/benchflow.git
+mkdir -p tasks my-agents
+cp -r benchflow/docs/examples/primes tasks/
+cp -r benchflow/docs/examples/primes-agent my-agents/
+export BENCHFLOW_AGENTS_DIR=$PWD/my-agents
+```
+
+Such an agent is refused without a model:
 
 ```text
 agent 'primes-agent' has no default model; pass --model (refusing to fall back to 'claude-haiku-4-5-20251001' from a different provider)
 ```
 
-and with `-m none`, the proxy then asks for a key: `LiteLLM route for model 'none' requires OPENAI_API_KEY`, which the run lists as "other error (infrastructure problem)". On 0.9.1, give it both; the key is never used:
+and with `-m none`, the proxy then asks for a key: `LiteLLM route for model 'none' requires OPENAI_API_KEY`, which the run lists as "other error (infrastructure problem)". On 0.9.2, give it both; the key is never used:
 
 ```bash
 OPENAI_API_KEY=unused bench run tasks/primes -a primes-agent -m none
@@ -120,7 +130,7 @@ OPENAI_API_KEY=unused bench run tasks/primes -a primes-agent -m none
 Cost:      none: no model tokens were used
 ```
 
-0.10.0rc1 has a manifest setting for it: with `contract_version = "1.1"` and `model_route = "agent"`, BenchFlow starts no proxy for the agent, and the model and key are optional. The same agent, with those two lines, ran with neither:
+0.10.0rc2 has a manifest setting for it: with `contract_version = "1.1"` and `model_route = "agent"`, BenchFlow starts no proxy for the agent, and the model and key are optional. The same agent, with those two lines, ran with neither:
 
 ```bash
 bench run tasks/primes -a primes-agent

@@ -61,9 +61,9 @@ error: Agent prompt exceeded wall-clock budget 900s
 
 An earlier run of the same task finished round 1 in 865 s. Give a multi-round task's agent time for its longest round, and read `error` as well as the reward.
 
-In 0.9.1 and 0.10.0rc1, know this before you write one:
+In 0.9.2, know this before you write one:
 
-- **`rr.verifier_output` is `None`.** The soft check's reward reaches the user function, as `rr.rewards`; the test's output doesn't. Decide from the rewards.
+- **`rr.verifier_output` is `None`.** The soft check's reward reaches the user function, as `rr.rewards`; the test's output doesn't. Decide from the rewards. 0.10.0rc2 passes the test's output.
 - **The soft check is less isolated than the final one.** Between rounds the run warns `Mid-loop verifier isolation skipped at round 0: ... Cannot lock symlink /tests. Final verify() still hardens before scoring`. The reward that counts comes from the hardened final check.
 
 ## Several agents in one sandbox

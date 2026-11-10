@@ -648,12 +648,9 @@ async def start_egress_denylist(
     files = {
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
-        # The Codex gate's body rule is the model gateway's own boundary.
-        **(
-            {_REQUEST_GUARD_NAME: _REQUEST_GUARD_SCRIPT.read_bytes()}
-            if denylist.native_codex_model_only
-            else {}
-        ),
+        # The proxy's body rules load this by path (its _request_guard): the
+        # proxy's Python runs isolated, so BenchFlow's own copy is not importable.
+        _REQUEST_GUARD_NAME: _REQUEST_GUARD_SCRIPT.read_bytes(),
         "ca.crt": material["ca.crt"],
         "ca.key": material["ca.key"],
         **{

@@ -163,6 +163,12 @@
     "--tasks-dir",
     "-m"
   ],
+  "bench bundle": [
+    "--no-workspace",
+    "--out",
+    "--workspace",
+    "-o"
+  ],
   "bench cache": [
     "--json",
     "--older-than",
@@ -243,6 +249,9 @@
     "--json"
   ],
   "bench embodied robo-path": [],
+  "bench embodied verify": [
+    "--json"
+  ],
   "bench environment": [],
   "bench environment cleanup": [
     "--dry-run",
@@ -418,6 +427,7 @@
     "--quiet",
     "--reasoning-effort",
     "--registry",
+    "--restart-changed",
     "--retry-attempts",
     "--retry-concurrency",
     "--retry-from-checkpoint",
@@ -470,7 +480,9 @@
     "--task-manifest-out",
     "--tasks-dir",
     "--timeout-multiplier",
+    "--token-budget",
     "--trials",
+    "--turn-budget",
     "--usage-tracking",
     "--verifier-sandbox",
     "--warm-pool",
@@ -511,12 +523,28 @@
     "--concurrency",
     "--json",
     "--reason",
+    "--review",
+    "--reviewer-agent",
+    "--reviewer-agent-env",
+    "--reviewer-concurrency",
+    "--reviewer-evidence-timeout",
+    "--reviewer-idle-timeout",
+    "--reviewer-image",
+    "--reviewer-memory-mb",
+    "--reviewer-model",
+    "--reviewer-open-network",
+    "--reviewer-reasoning-effort",
+    "--reviewer-sandbox",
+    "--reviewer-setup-timeout",
+    "--reviewer-storage-mb",
+    "--reviewer-timeout-sec",
     "--sandbox",
     "--tasks-dir"
   ],
   "bench eval resume": [
     "--agent-env",
-    "--concurrency"
+    "--concurrency",
+    "--restart-changed"
   ],
   "bench eval run": [
     "--accept-deviations",
@@ -577,6 +605,7 @@
     "--quiet",
     "--reasoning-effort",
     "--registry",
+    "--restart-changed",
     "--retry-attempts",
     "--retry-concurrency",
     "--retry-from-checkpoint",
@@ -629,7 +658,9 @@
     "--task-manifest-out",
     "--tasks-dir",
     "--timeout-multiplier",
+    "--token-budget",
     "--trials",
+    "--turn-budget",
     "--usage-tracking",
     "--verifier-sandbox",
     "--warm-pool",
@@ -704,6 +735,7 @@
     "--search"
   ],
   "bench hub env show": [
+    "--hub",
     "--json",
     "--provider",
     "--version"
@@ -719,7 +751,23 @@
     "--provider",
     "--search"
   ],
+  "bench hub publish": [
+    "--description",
+    "--exporter",
+    "--hub",
+    "--kind",
+    "--license",
+    "--name",
+    "--source-commit",
+    "--source-repo"
+  ],
+  "bench hub push": [
+    "--dataset",
+    "--hub",
+    "--label"
+  ],
   "bench hub show": [
+    "--hub",
     "--json",
     "--provider",
     "--version"
@@ -749,11 +797,17 @@
   ],
   "bench preferences": [],
   "bench preferences import": [
+    "--dry-run",
+    "--skip-unknown",
     "--source",
     "--votes"
   ],
   "bench preferences pairs": [
     "--bundle",
+    "--condition",
+    "--entry",
+    "--golden",
+    "--items",
     "--keep-sides",
     "--out",
     "--output",
@@ -765,8 +819,11 @@
   "bench preferences rank": [
     "--bootstrap",
     "--by",
+    "--cluster",
     "--json",
     "--min-agreement",
+    "--provisional",
+    "--raters",
     "--raters-per-pair",
     "--seed"
   ],
@@ -774,6 +831,21 @@
     "--concurrency",
     "--json",
     "--reason",
+    "--review",
+    "--reviewer-agent",
+    "--reviewer-agent-env",
+    "--reviewer-concurrency",
+    "--reviewer-evidence-timeout",
+    "--reviewer-idle-timeout",
+    "--reviewer-image",
+    "--reviewer-memory-mb",
+    "--reviewer-model",
+    "--reviewer-open-network",
+    "--reviewer-reasoning-effort",
+    "--reviewer-sandbox",
+    "--reviewer-setup-timeout",
+    "--reviewer-storage-mb",
+    "--reviewer-timeout-sec",
     "--sandbox",
     "--tasks-dir"
   ],
@@ -845,6 +917,7 @@
     "--help-all",
     "--hf-prefix",
     "--hf-public-read-check",
+    "--hub",
     "--idle-timeout",
     "--ignore-bench-version",
     "--include",
@@ -869,6 +942,7 @@
     "--quiet",
     "--reasoning-effort",
     "--registry",
+    "--restart-changed",
     "--retry-attempts",
     "--retry-concurrency",
     "--retry-from-checkpoint",
@@ -923,7 +997,9 @@
     "--task-skills",
     "--tasks-dir",
     "--timeout-multiplier",
+    "--token-budget",
     "--trials",
+    "--turn-budget",
     "--usage-tracking",
     "--verifier-sandbox",
     "--warm-pool",
@@ -1113,7 +1189,8 @@
     "--group-size",
     "--no-follow",
     "--poll-interval",
-    "--timeout"
+    "--timeout",
+    "--withheld"
   ],
   "bench train token-coverage": [
     "--json"

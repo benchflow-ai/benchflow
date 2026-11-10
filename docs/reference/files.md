@@ -8,7 +8,7 @@ You write two kinds of file for BenchFlow, a task's `task.md` header and a run c
 
 ### task.md
 
-The header is YAML between two `---` lines at the top of `task.md`; the instruction is below it. Each table below is one key's settings, with the type, default and description the code gives them. A key is optional unless the table says required, and a key the header doesn't know is refused. A key new since 0.9.1 has `(0.10)` after it when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet.
+The header is YAML between two `---` lines at the top of `task.md`; the instruction is below it. Each table below is one key's settings, with the type, default and description the code gives them. A key is optional unless the table says required, and a key the header doesn't know is refused. A key new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -21,8 +21,8 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `oracle` | table ([`oracle`](#oracle)) |  | Also read as `solution`. |
 | `source` | text |  |  |
 | `reward` | mapping | `{}` | Legacy task-level reward expression metadata. |
-| `multi_step_reward_strategy` | `mean` \| `final` |  | How to derive one rollout reward from per-step verifier results. Used only by a task with `steps`, which runs on 0.10.0rc1. |
-| `steps` | list of tables ([`steps[]`](#steps)) |  | 0.9.1 reads this key but refuses to run a task that has it (`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc1. |
+| `multi_step_reward_strategy` | `mean` \| `final` |  | How to derive one rollout reward from per-step verifier results. Used only by a task with `steps`, which runs on 0.10.0rc2. |
+| `steps` | list of tables ([`steps[]`](#steps)) |  | 0.9.2 reads this key but refuses to run a task that has it (`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc2. |
 | `artifacts` | list of text or tables ([`artifacts[]`](#artifacts)) | `[]` |  |
 | `preference` (0.10) | mapping | `{}` | How `bench preferences` pairs and ranks this task's outputs (protocol, randomize_sides, raters_per_pair, min_agreement; other keys are recorded). The run itself is unchanged. See docs/tasks/human-preferences.md. |
 | `agents` | table: `roles`, each role by name ([`agents.roles.*`](#agentsroles)) |  | A multi-turn task's roles: which agent plays each. |
@@ -51,12 +51,12 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | `test-script` \| `llm-judge` | `test-script` | Verification method. |
+| `type` | `test-script` \| `llm-judge` | `test-script` | Verification method. In `task.md`, 0.9.2's `bench check` and `bench run` refuse `llm-judge` (no runnable verifier entrypoint); a verifier document grades with a model instead ([LLM judge](../tasks/llm-judge.md)). |
 | `submission_files` | list of text | `[]` | Explicit verifier-recovery contract (submission-files-v1): the absolute paths of the task's submission files, at most 8, literal (no globs), outside /dev, /logs, /proc, /solution, /sys and /tests. Only these regular files are captured and restored; never a whole directory. |
 | `workspace_recovery` | boolean | `false` | Allow verifier-only recovery from captured workspace after transport failure. The task author guarantees all solver changes needed for scoring are inside the workspace and a fresh task image/setup reproduces all other dependencies; no mutable external state. |
 | `timeout_sec` | number (> 0) | `600.0` | Wall-clock budget in seconds for verifier execution. Omitting the field inherits this default; zero, negative, and non-finite budgets are rejected at validation time. |
 | `env` | mapping of names to text | `{}` |  |
-| `collect` (unreleased) | list of tables ([`verifier.collect[]`](#verifiercollect)) | `[]` | Commands run in compose services after the agent's turn and before artifact collection (task.toml [[verifier.collect]]). |
+| `collect` (0.10) | list of tables ([`verifier.collect[]`](#verifiercollect)) | `[]` | Commands run in compose services after the agent's turn and before artifact collection (task.toml [[verifier.collect]]). |
 | `required_tools` | list of text |  | Complete list of PATH program names whose availability or lookup can affect grading, including subprocesses and later-created helpers. Required when any image PATH entry is omitted by hardening. Every name must already resolve in the trusted verifier PATH; use absolute paths for uploaded/generated helpers. [] declares no required PATH tools. |
 | `optional_tools` | list of text | `[]` | PATH program names used only for optional probes. The task author guarantees that every use tolerates the program being unavailable without changing grading. Refusals of any other program invalidate every reward. |
 | `reward_range` | [number, number] |  | Declared [lo, hi] reward contract for this task. Omitted (None) keeps BenchFlow's strict canonical [0.0, 1.0]. A declared range may only WIDEN the canonical range (lo &lt;= 0.0, hi &gt;= 1.0, lo &lt; hi, both finite) so 0 ('did nothing') and 1 ('solved') stay meaningful for every task; e.g. safety-floor benchmarks declare reward_range = [-1.0, 1.0] to score deliberate violations below doing nothing. Applies to the test-script reward contract (reward.txt / reward.json scalar reward, numeric metrics, aggregate results) and the final reward canonicalization gate; LLM-judge rubric scores stay [0, 1]. |
@@ -66,7 +66,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `sandbox_mode` | `shared` \| `separate` |  | Whether the verifier runs in the agent sandbox ('shared') or a dedicated verifier sandbox ('separate'). |
 | `sandbox` | table, the keys of [`sandbox`](#sandbox) |  | Optional separate verifier sandbox configuration. |
 | `service` | text | `main` | Compose service the test-script verifier runs in. Defaults to 'main' (the agent container). Multi-container (vulhub-style) tasks set this to a target/database service so test.sh can inspect target-side state (RCE markers, DB modifications) rather than only the agent's workspace. The agent's anti-tamper hardening only applies to 'main'; deliberately vulnerable target containers are intentionally not hardened. See #248. |
-| `judge` | table ([`verifier.judge`](#verifierjudge)) |  | LLM-judge configuration (used when type == 'llm-judge'). |
+| `judge` | table ([`verifier.judge`](#verifierjudge)) |  | LLM-judge configuration (used when type == 'llm-judge'). Read only with `type: llm-judge`, which 0.9.2 refuses in `task.md` ([LLM judge](../tasks/llm-judge.md)). |
 | `memory` | table ([`verifier.memory`](#verifiermemory)) |  | Memory-space scoring fixtures. |
 | `hardening` | table ([`verifier.hardening`](#verifierhardening)) |  | Per-task verifier hardening opt-outs. |
 | `pytest_plugins` | list of text | `[]` | pytest11 plugin names to allow under PYTEST_DISABLE_PLUGIN_AUTOLOAD=1. Container-side auto-discovery handles most cases; this is the explicit fallback for plugins that discovery cannot see (e.g. ctrf, playwright). |
@@ -85,7 +85,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `model` | text | `claude-sonnet-5-5` | Judge model identifier. Provider is routed from the prefix (claude-* / gpt-* / gemini-*). |
+| `model` | text | `claude-sonnet-5-5` | Judge model identifier. Provider is routed from the prefix (claude-* / gpt-* / gemini-*). 0.9.2 defaults to `claude-sonnet-4-6`. |
 | `rubric_path` | text | `tests/rubric.toml` | Path to the rubric file, relative to the task directory. Both rubric.toml (native) and rubric.json (Harvey LAB style) are supported. |
 | `input_dir` | text | `/app` | Directory inside the sandbox holding the agent's deliverables. Its contents are downloaded and shown to the judge. |
 | `input_type` | `deliverables` | `deliverables` | What the judge evaluates. Only 'deliverables' (agent output files) is supported; trajectory judging is not available at verify time. |
@@ -102,7 +102,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `cleanup_conftests` | boolean | `true` |  |
-| `cleanup_git` (unreleased) | boolean | `true` |  |
+| `cleanup_git` | boolean | `true` |  |
 
 #### `agent`
 
@@ -110,8 +110,8 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 |---|---|---|---|
 | `prompt_prefix` | text |  | Optional run-specific policy text prepended to each resolved task prompt. Intended for generic harness constraints such as benchmark integrity rules; must not contain task-specific solution content. |
 | `timeout_sec` | number (> 0) |  | Wall-clock budget in seconds for the agent harness. Omitting the field gives the agent no limit of its own: the rollout's whole deadline bounds it (as in 0.7.11) unless the caller passes a timeout; zero, negative, and non-finite budgets are rejected at validation time, matching verifier.timeout_sec. |
-| `token_budget` (unreleased) | integer (> 0) |  | The most tokens a trial's model calls may use, input (cached included) plus output, subagents' calls included. BenchFlow's model proxy refuses the next call once they are spent and the agent is stopped (benchflow.trial_budget). A run's --token-budget replaces it. |
-| `turn_budget` (unreleased) | integer (> 0) |  | The most model calls (turns) a trial may make through BenchFlow's model proxy, subagents' and side calls included; the proxy refuses the next one and the agent is stopped. A run's --turn-budget replaces it. |
+| `token_budget` (0.10) | integer (> 0) |  | The most tokens a trial's model calls may use, input (cached included) plus output, subagents' calls included. BenchFlow's model proxy refuses the next call once they are spent and the agent is stopped (benchflow.trial_budget). A run's --token-budget replaces it. |
+| `turn_budget` (0.10) | integer (> 0) |  | The most model calls (turns) a trial may make through BenchFlow's model proxy, subagents' and side calls included; the proxy refuses the next one and the agent is stopped. A run's --turn-budget replaces it. |
 | `user` | text or integer |  | Account (name or numeric id) the agent's commands run under. |
 | `network_mode` | `no-network` \| `public` \| `allowlist` \| `denylist` |  | Optional agent-specific network policy override. |
 | `allowed_hosts` | list of text |  | Hostnames reachable when network_mode='allowlist'. |
@@ -220,7 +220,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `source` | text | required |  |
 | `destination` | text |  |  |
 | `exclude` | list of text | `[]` |  |
-| `service` (unreleased) | text |  | The compose service to collect this artifact from (the task.toml format's sidecar artifacts): None or 'main' is the agent's own container; any other names a service of the task's compose file, needs a sandbox that runs compose services and an absolute source, and is read from that service's own filesystem. |
+| `service` (0.10) | text |  | The compose service to collect this artifact from (the task.toml format's sidecar artifacts): None or 'main' is the agent's own container; any other names a service of the task's compose file, needs a sandbox that runs compose services and an absolute source, and is read from that service's own filesystem. |
 
 #### `agents.roles.*`
 
@@ -265,7 +265,7 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 
 ### Run config
 
-`bench run --config FILE` reads a whole run from a YAML file of these keys. It needs `tasks_dir` or `source`; a flag given beside it wins over its key; `sandbox` is read as `environment`; and a key not in this table is refused, with the closest one. The flag column names the flag that sets the same thing, and the help is that flag's. A key new since 0.9.1 has `(0.10)` after it when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet.
+`bench run --config FILE` reads a whole run from a YAML file of these keys. It needs `tasks_dir` or `source`; a flag given beside it wins over its key; `sandbox` is read as `environment`; and a key not in this table is refused, with the closest one. The flag column names the flag that sets the same thing, and the help is that flag's. A key new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
 
 | Key | Flag | Default | Help |
 |---|---|---|---|
@@ -327,8 +327,8 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `source_provenance` |  |  |  |
 | `tasks_dir` | `--tasks-dir` |  | Local tasks directory |
 | `timeout_multiplier` | `--timeout-multiplier` |  | Scale every task's agent time budget (task.md agent.timeout_sec), e.g. 2.0 |
-| `token_budget` (unreleased) | `--token-budget` (unreleased) |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
-| `turn_budget` (unreleased) | `--turn-budget` (unreleased) |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
+| `token_budget` (0.10) | `--token-budget` (0.10) |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
+| `turn_budget` (0.10) | `--turn-budget` (0.10) |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
 | `usage_proxy` |  |  | No longer supported: a config with it is refused. Use `usage_tracking`. |
 | `usage_proxy_advertised_base_url` |  |  | No longer supported: a config with it is refused. Use `usage_tracking`. |
 | `usage_proxy_bind_host` |  |  | No longer supported: a config with it is refused. Use `usage_tracking`. |
@@ -354,7 +354,7 @@ A run config with `agents:` and `datasets:` (or a `tasks:` list) is a YAML job c
 
 ## Files BenchFlow writes
 
-The JSON documents BenchFlow writes, one section per schema file in [`schemas/`](./schemas/), with each document's top-level fields. A schema or field new since 0.9.1 has `(0.10)` after it when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet.
+The JSON documents BenchFlow writes, one section per schema file in [`schemas/`](./schemas/), with each document's top-level fields. A schema or field new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
 
 ### benchflow-assessment-event.v1.schema.json (0.10)
 
@@ -519,7 +519,7 @@ Identifier: `https://benchflow.ai/schemas/benchflow-comparison.v2.schema.json`. 
 | `rows` | array of object (ComparisonRowExport) | yes |  |
 | `schema_minor` | integer | no | optional fields added within schema_version; see the changelog |
 | `schema_version` | integer | no |  |
-| `scoring` (unreleased) | object or null | no | the scoring rule's figures for each side on the tasks both ran, the gap b - a with its 95% interval paired by task, its warnings, and each side's mixed settings (2.1) |
+| `scoring` (0.10) | object or null | no | the scoring rule's figures for each side on the tasks both ran, the gap b - a with its 95% interval paired by task, its warnings, and each side's mixed settings (2.1) |
 | `summary` | object (ComparisonSummaryExport) | yes |  |
 | `vary` | array of string | yes |  |
 
@@ -566,13 +566,13 @@ Identifier: `https://benchflow.ai/schemas/benchflow-job.v2.schema.json`. File: [
 | `path` | string | yes |  |
 | `schema_minor` | integer | no | optional fields added within schema_version; see the changelog |
 | `schema_version` | integer | no |  |
-| `scoring` (unreleased) | object or null | no | the scoring rule's figures over every trial and the trials split by setting, as summary.json's scoring block (2.1) |
+| `scoring` (0.10) | object or null | no | the scoring rule's figures over every trial and the trials split by setting, as summary.json's scoring block (2.1) |
 | `solve_rates` | object (SolveRatesExport) or null | no | agent runs (controls left out, unless every trial is one); default ks and success rule |
 | `summary` | object or null | no | the job's summary.json |
 | `timing_totals` | object | no | seconds per timing phase, summed over agent runs (1.1) |
 | `trials` | array of object (TrialExport) | yes |  |
 
-### benchflow-model-call.v1.schema.json (unreleased)
+### benchflow-model-call.v1.schema.json (0.10)
 
 **One model call (trajectory/model-calls.jsonl)**
 
@@ -606,7 +606,7 @@ Identifier: `https://benchflow.ai/schemas/benchflow-model-call.v1.schema.json`. 
 | `top_p` | number or null | yes |  |
 | `truncated` | boolean or null | yes |  |
 
-### benchflow-model-call.v2.schema.json (unreleased)
+### benchflow-model-call.v2.schema.json (0.10)
 
 **One model call (trajectory/model-calls.jsonl)**
 
@@ -642,7 +642,7 @@ Identifier: `https://benchflow.ai/schemas/benchflow-model-call.v2.schema.json`. 
 | `top_p` | number or null | yes |  |
 | `truncated` | boolean or null | yes |  |
 
-### benchflow-model-calls.v1.schema.json (unreleased)
+### benchflow-model-calls.v1.schema.json (0.10)
 
 **A trial's model calls, totalled (model-calls.json)**
 
@@ -707,9 +707,10 @@ Identifier: `https://benchflow.ai/schemas/benchflow-rollout-stream.v1.schema.jso
 | `calls` | array of object | yes |  |
 | `sequences` | array of object | yes | One merged token stream per conversation of the rollout (agent loop, helper calls, subagents), only when the rollout is training-grade; empty otherwise. |
 | `advantage` | number or null | yes | GRPO advantage over the group's scored rollouts (group_size only); null otherwise. |
-| `group_complete` | boolean or null | yes | group_size only: false when the stream ended before the group filled. |
+| `group_complete` | boolean or null | yes | group_size only: true when the group filled; false on a withheld record whose group was still short when the stream ended. |
 | `replaces` | string or null | no | rollout_path of the earlier attempt of the same trial that this rollout replaces (an Evaluation's retry or resume re-run); that attempt is not a sample. |
 | `retried` | boolean | no | group_size only: true when a later attempt replaced this rollout before its group formed; it joins no group. |
+| `withheld` (0.10) | string | no | group_size only, and only on a record the stream withheld: why its group may not reach the trainer (short, unscored, no model calls: a member's run never reached the model, or tokens: some members lack the token sequence the others have). The stream itself never yields such a record. |
 
 ### benchflow-run-summary.v1.schema.json
 

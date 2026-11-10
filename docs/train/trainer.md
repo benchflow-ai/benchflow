@@ -6,7 +6,7 @@ BenchFlow runs the rollouts and scores them; your trainer learns from them. A tr
 |---|---|---|
 | a stream of finished rollouts | `bench train stream` | an RL trainer that consumes rollouts as they finish |
 | rows from finished jobs | `bench train convert` | SFT, or RL from a fixed set of rollouts: [Export training data](./export.md) |
-| a Prime-RL SFT job | `bench train run sft` | supervised fine-tuning on those rows |
+| a Prime-RL SFT job | `bench train run sft`, from a Prime-RL checkout of yours; not run in these docs ([Commands](../reference/commands.md#bench-train-run-sft)) | supervised fine-tuning on those rows |
 
 ## Stream rollouts while a job runs
 
@@ -36,7 +36,7 @@ Status goes to stderr (`bench train stream: 9 rollouts streamed`); each line on 
 }
 ```
 
-The exit code says how the job ended: 0 when it finished, 1 when it was stopped or its process died first, 2 for bad input, 3 when `--timeout` ran out. The record's schema is in [Trajectory and rollout formats](./formats.md#schema-versions).
+The exit code says how the job ended: 0 when it finished, 1 when it was stopped or its process died first, 2 for bad input, 3 when `--timeout` ran out. The record's schema is in [Trajectory and rollout formats](./export.md#schema-versions).
 
 ## Groups and advantages
 
@@ -59,6 +59,14 @@ trial-01/.../crystallographic-wyckoff-position-analysis__6a869c0f   reward 0.0  
 Every advantage is 0: each task scored the same in all three tries, so the group has nothing to learn from. A group is useful for this kind of training only when its rewards differ: some rollouts pass and others fail, or partial credit spreads the rewards out. [BenchFlow as an RL environment](./environment.md#rewards-and-advantages) shows a group whose rewards differ.
 
 `--group-by` takes `task`, `agent`, `model`, `task_digest` and `job`. Leave `job` out for `--trials` repeats, since each repeat is a job of its own.
+
+A group reaches the trainer whole or not at all. The stream withholds a group when a member is unscored, when a member's proxy log has no model calls (its run never reached the model), when some members have a token sequence and the others don't (a prompt that re-tokenized an earlier reply, see [Token ids and logprobs](#token-ids-and-logprobs)), or when the job ends before the group fills. A scored rollout that ended with an error, such as a time-out, stays in its group, and its record carries the error. `bench train convert --group-advantage` keeps the same groups whole. None of its lines reach stdout; `--withheld FILE` writes them, each with a `withheld` field saying why, and the last status line counts them:
+
+```text
+bench train stream: 9 rollouts streamed; 1 group withheld (3 rollouts), written to withheld.jsonl
+```
+
+From Python, `stream_rollouts(..., on_withheld=callback)` gets each withheld group as one list.
 
 ## Token ids and logprobs
 
@@ -205,19 +213,9 @@ training loss: 11.9326
 
 The step trained on 50 tokens: the 29 of the tool call and the 19 of the reply, each with the newline the chat template adds after it. The loss says the step ran and nothing more: the test model guesses almost evenly over its 152,064 tokens, and ln 152,064 is 11.932. The rows hold messages, not token ids, so TRL tokenizes them again; for this model its tokens matched the captured ones exactly.
 
-## The Prime-RL backend
-
-We haven't run this section: it needs a Prime-RL checkout and the GPUs Prime-RL needs. `bench train run sft` launches a Prime-RL supervised fine-tuning job from a Prime-RL checkout of yours, with a Prime-RL SFT config, and records a BenchFlow manifest of the run:
-
-```bash
-bench train run sft --config sft.toml --prime-rl-dir ~/prime-rl --work-dir runs/sft-1 --dry-run
-```
-
-`--data` overrides the config's dataset (Prime-RL's `--data.name`), and `--dry-run` passes through to Prime-RL. SFT is the only training BenchFlow launches; for RL, your trainer drives the loop and reads rollouts from the stream.
-
 ## Other trainers
 
-BenchFlow 0.9.1 and 0.10.0rc1 have no adapter for other trainers. Connect one through the files:
+BenchFlow 0.9.2 has no adapter for other trainers. 0.10.0rc2's `bench train convert` also writes `verl-sft` (parquet for verl's multi-turn SFT trainer), `skyrl-sft` (rows for SkyRL's SFT trainer) and `openenv-episodes` (OpenEnv episode records). On 0.9.2, connect one through the files:
 
 - `bench train convert --format trl-sft` writes rows TRL's SFT trainer reads; `prime-sft` is the default.
 - Each trial's `trainer/verifiers.jsonl` holds one verifiers-style row: prompt, completion, reward.

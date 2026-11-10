@@ -13,7 +13,7 @@ Every trial runs in a fresh sandbox: a container or a cloud machine built from t
 | `agentcore` | Amazon Bedrock AgentCore | `benchflow[sandbox-agentcore]` | no | no | no | no |
 | `apple-container` | Apple's containers, on a Mac | nothing | no | no | no | no |
 
-A task that asks for something its sandbox can't give is refused before the run starts, with code `R401`; it never runs half-set-up. One combination is refused on Daytona in 0.10.0rc1 though each part works: a task with services and an `allowlist`, since only `docker` and `remote-docker` read the services to check them. A no-network task on AgentCore or Apple Container is refused, for example, because neither can cut the network off.
+A task that asks for something its sandbox can't give is refused before the run starts, with code `R401`; it never runs half-set-up. One combination is refused on Daytona in 0.10.0rc2 though each part works: a task with services and an `allowlist`, since only `docker` and `remote-docker` read the services to check them. A no-network task on AgentCore or Apple Container is refused, for example, because neither can cut the network off.
 
 Setup for the cloud sandboxes: [Daytona](./daytona.md), [Modal](./modal.md).
 
@@ -59,7 +59,7 @@ docker  images        benchflow-layer:proxy-161b8ae02041...  litellm-proxy  316.
 ...
 ```
 
-`bench cache clean` prints what it would remove, and `bench cache clean --remove` removes it; anything a run still uses stays, with the reason. On Docker it also keeps every task image a run pulled, in 0.9.1 and 0.10.0rc1 alike, with the reason `Docker cannot atomically remove a checked reference; kept`; remove those yourself with `docker image rm` once no run needs them. `bench daemon start` keeps BenchFlow and its model proxy loaded between commands, for runs started with `BENCHFLOW_DAEMON=auto` in their environment; `bench daemon status` and `bench daemon stop` check and stop it.
+`bench cache clean` prints what it would remove, and `bench cache clean --remove` removes it; anything a run still uses stays, with the reason. On Docker it also keeps every task image a run pulled, in 0.9.2 and 0.10.0rc2 alike, with the reason `Docker cannot atomically remove a checked reference; kept`; remove those yourself with `docker image rm` once no run needs them. `bench daemon start` keeps BenchFlow and its model proxy loaded between commands, for runs started with `BENCHFLOW_DAEMON=auto` in their environment; `bench daemon status` and `bench daemon stop` check and stop it.
 
 ## Clean up
 

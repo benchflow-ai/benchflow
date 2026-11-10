@@ -1,22 +1,17 @@
 # Embodied tasks (Robo Use)
 
-An embodied task gives the agent a simulated robot. The simulator runs in a second container beside the agent's, with no network. The agent controls the robot only through the `robo` command (`robo observe`, `robo act`, `robo done`), and the verifier runs in the simulator's container and scores the robot's final physical state. A seed picks the starting state: in Meta-World's reach task it moves the goal, and the arm starts in the same place each time. The tasks and their simulators come from [Robo Use](https://github.com/benchflow-ai/robouse). Here the reference solution, the `oracle` agent, runs the reach task from three seeds on BenchFlow 0.9.1 with Docker.
+An embodied task gives the agent a simulated robot. The simulator runs in a second container beside the agent's, with no network. The agent controls the robot only through the `robo` command (`robo observe`, `robo act`, `robo done`), and the verifier runs in the simulator's container and scores the robot's final physical state. A seed picks the starting state: in Meta-World's reach task it moves the goal, and the arm starts in the same place each time. The tasks and their simulators come from [Robo Use](https://github.com/benchflow-ai/robouse). Here the reference solution, the `oracle` agent, runs the reach task from three seeds on BenchFlow 0.9.1 with Docker; 0.9.2 runs it the same way.
 
 ## Set it up
 
-BenchFlow reads Robo Use's task folders only when the `robouse` package is installed in the same Python environment as `bench`. For BenchFlow installed with `uv tool install` ([Install](../start/install.md)):
+BenchFlow reads Robo Use's task folders only when the `robouse` package is installed in the same Python environment as `bench`. Install BenchFlow with it, as on [Install](../start/install.md) plus `--with`:
 
 ```bash
-uv pip install --python "$(uv tool dir)/benchflow/bin/python" "robouse==0.6.1"
+uv tool install --python 3.12 'benchflow==0.9.2' --with 'robouse==0.6.1' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
 ```
 
-```text
-Resolved 3 packages in 87ms
-Installed 1 package in 122ms
- + robouse==0.6.1
-```
-
-It adds `robouse` and leaves the release's pinned packages as they were. Without it, `bench run` stops at the first Robo Use setting in the task:
+`--with` keeps Robo Use through later reinstalls of the tool. To add it to an install you already have, `uv pip install --python "$(uv tool dir)/benchflow/bin/python" "robouse==0.6.1"` adds only `robouse` and leaves the release's pinned packages as they were, but the next `uv tool install` of BenchFlow drops it. Without it, `bench run` stops at the first Robo Use setting in the task:
 
 ```text
 .../robouse/tasks/metaworld/metaworld-reach/task.md: task.md parse error: robouse/tasks/metaworld/metaworld-reach/task.md:20: robouse: unknown key
@@ -35,7 +30,7 @@ git -C robouse rev-parse HEAD
 5b2f77cddd7259a80287a216ee898e93021e8811
 ```
 
-You also need Docker, with Compose 2.24.4 or newer as Robo Use asks. In 0.9.1 the simulator's image is built from a folder on the machine that runs `bench`, under `~/.cache/benchflow/task-formats/robouse/`.
+You also need Docker, with Compose 2.24.4 or newer as Robo Use asks. In 0.9.2 the simulator's image is built from a folder on the machine that runs `bench`, under `~/.cache/benchflow/task-formats/robouse/`; 0.10.0rc2 builds it from the task package itself, so embodied tasks also run on Daytona there.
 
 ## Run with seeds
 
@@ -120,4 +115,4 @@ The token warning above is harmless when the agent isn't the oracle, and on task
 
 ## Not covered here
 
-`bench embodied check-spec` and `bench embodied robo-path` are listed in [Commands](../reference/commands.md#commands-hidden-from-bench---help), and each prints its own `--help`. Running a model as the agent, Robo Use's own `robouse` command and real robots are in [Robo Use's documentation](https://github.com/benchflow-ai/robouse/tree/5b2f77cddd7259a80287a216ee898e93021e8811/docs).
+`bench --help` doesn't list `bench embodied` in 0.9.2, and [Commands](../reference/commands.md#commands-hidden-from-bench---help) lists it with the commands that may change, so check `bench embodied report --help` and `export --help` after an upgrade. `bench embodied check-spec` and `bench embodied robo-path` are there too, and each prints its own `--help`. Running a model as the agent, Robo Use's own `robouse` command and real robots are in [Robo Use's documentation](https://github.com/benchflow-ai/robouse/tree/5b2f77cddd7259a80287a216ee898e93021e8811/docs).

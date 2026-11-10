@@ -175,6 +175,9 @@ class StreamedRollout:
     sequences: list[dict[str, Any]]
     advantage: float | None = None
     group_complete: bool | None = None
+    # group_size only: why this record's group is withheld from the trainer
+    # (it goes to ``on_withheld``, never to the stream); None otherwise.
+    withheld: str | None = None
     rollout_dir: Path = field(default=Path(), compare=False, repr=False)
     # The earlier attempt of the same trial (an Evaluation's retry or resume
     # re-run) this rollout replaces, as its rollout_path; None otherwise.
@@ -201,7 +204,7 @@ class StreamedRollout:
 
     def to_json_dict(self) -> dict[str, Any]:
         """The record as a ``benchflow.rollout-stream.v1`` mapping."""
-        return {
+        document: dict[str, Any] = {
             "schema_version": ROLLOUT_STREAM_SCHEMA_VERSION,
             "job": self.job,
             "rollout": self.rollout,
@@ -224,6 +227,9 @@ class StreamedRollout:
             "replaces": self.replaces,
             "retried": self.retried,
         }
+        if self.withheld is not None:
+            document["withheld"] = self.withheld
+        return document
 
     def to_json(self) -> str:
         """The record as one compact JSON line."""
@@ -236,6 +242,15 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _read_result(rollout_dir: Path) -> dict[str, Any] | None:
+    """A rollout's ``result.json`` read as the exports read it: a
+    task.toml-package runner's trial result as BenchFlow's (its reward under
+    ``verifier_result``)."""
+    from benchflow.trajectories.export_prime_sft import load_rollout_result
+
+    return load_rollout_result(Path(rollout_dir))
 
 
 def _exchanges(rollout_dir: Path) -> list[dict[str, Any]] | None:
@@ -385,7 +400,7 @@ def read_rollout(
     """
     root = Path(rollout_dir)
     if result is None:
-        result = _read_json(root / "result.json")
+        result = _read_result(root)
     if result is None:
         return None
     job_root = Path(job_dir) if job_dir is not None else root.parent
@@ -463,6 +478,49 @@ def _with_advantages(
     ]
 
 
+def _no_sequence_reason(record: StreamedRollout) -> str:
+    capture = record.token_capture
+    breaks = (capture.get("prefix") or {}).get("breaks") or []
+    if breaks:
+        return f"prompt of call {breaks[0]} does not extend the previous call's tokens"
+    return str(capture.get("reason") or capture.get("status") or "no token sequence")
+
+
+def _withheld_reason(
+    members: list[StreamedRollout], size: int, complete: bool
+) -> str | None:
+    """Why a group may not reach the trainer, or None when it is whole.
+
+    Whole: ``size`` final rollouts, every one scored and every one with model
+    calls in its proxy log (a run that never reached the model is not a
+    sample), and token sequences on all of them or on none (a text-only
+    group, capture off). A scored rollout that ended with an error is a
+    member like any other; its record carries the error.
+    """
+    if not complete:
+        return (
+            f"short: {len(members)} of {size} rollouts finished before the stream ended"
+        )
+    unscored = [m.rollout for m in members if m.reward is None]
+    if unscored:
+        return "unscored: " + ", ".join(unscored)
+    silent = [m.rollout for m in members if m.token_capture.get("calls") == 0]
+    if silent:
+        return "no model calls: " + ", ".join(silent)
+    with_tokens = [m for m in members if m.sequences]
+    if with_tokens and len(with_tokens) < len(members):
+        return (
+            f"tokens: {len(with_tokens)} of {len(members)} rollouts have a token "
+            "sequence; "
+            + "; ".join(
+                f"{m.rollout} has none ({_no_sequence_reason(m)})"
+                for m in members
+                if not m.sequences
+            )
+        )
+    return None
+
+
 class _Grouper:
     """Holds records until ``size`` final rollouts of a group have finished.
 
@@ -476,6 +534,29 @@ class _Grouper:
         self.size = size
         self.pending: dict[str, list[StreamedRollout]] = {}
         self.waiting: dict[tuple[Any, ...], StreamedRollout] = {}
+        # Groups closed but not whole, one list per group, until drained.
+        self.withheld: list[list[StreamedRollout]] = []
+
+    def _close(
+        self, members: list[StreamedRollout], complete: bool
+    ) -> list[StreamedRollout]:
+        """A whole group with its advantages; a group that is not whole is
+        kept apart in ``withheld`` (each member says why) and yields nothing."""
+        assert self.size is not None
+        reason = _withheld_reason(members, self.size, complete)
+        if reason is None:
+            return _with_advantages(members, True)
+        self.withheld.append(
+            [
+                _replace(m, advantage=None, group_complete=complete, withheld=reason)
+                for m in members
+            ]
+        )
+        return []
+
+    def drain_withheld(self) -> list[list[StreamedRollout]]:
+        groups, self.withheld = self.withheld, []
+        return groups
 
     def add(self, record: StreamedRollout) -> list[StreamedRollout]:
         if self.size is None:
@@ -500,15 +581,17 @@ class _Grouper:
         if len(members) < self.size:
             return []
         del self.pending[record.group_id]
-        return _with_advantages(members, True)
+        return self._close(members, True)
 
     def flush(self) -> list[StreamedRollout]:
+        if self.size is None:  # not grouping: every record went out at once
+            return []
         out: list[StreamedRollout] = []
         waiting, self.waiting = list(self.waiting.values()), {}
         for record in waiting:  # the job ended: each was its trial's last attempt
             out += self._count(record)
         for members in self.pending.values():
-            out += [_replace(m, advantage=None, group_complete=False) for m in members]
+            out += self._close(members, False)
         self.pending.clear()
         return out
 
@@ -569,7 +652,7 @@ class _Scanner:
             root = path.parent
             if root in self.seen:
                 continue
-            result = _read_json(path)
+            result = _read_result(root)
             if result is None:
                 if root not in self.bad:
                     self.bad.add(root)
@@ -680,6 +763,19 @@ class _Stream:
         return records, False, None
 
 
+def _hand_off_withheld(
+    stream: _Stream, on_withheld: Callable[[list[StreamedRollout]], None] | None
+) -> None:
+    for members in stream.grouper.drain_withheld():
+        if on_withheld is not None:
+            on_withheld(members)
+        else:
+            stream.scanner.warn(
+                f"withheld group {members[0].group_id} ({len(members)} "
+                f"rollouts) from the trainer: {members[0].withheld}"
+            )
+
+
 def stream_rollouts(
     job_dir: str | Path,
     *,
@@ -689,6 +785,7 @@ def stream_rollouts(
     group_by: str | Sequence[str] | None = None,
     group_size: int | None = None,
     on_warning: Callable[[str], None] | None = None,
+    on_withheld: Callable[[list[StreamedRollout]], None] | None = None,
 ) -> Iterator[StreamedRollout]:
     """Yield each finished rollout of a job as it finishes.
 
@@ -697,8 +794,11 @@ def stream_rollouts(
     released); rollouts already finished are yielded first. Without it, one
     scan. ``group_size=N`` holds records until N final rollouts of a group
     (``group_by``, default task, agent, model and job) have finished, then
-    yields them with a GRPO advantage; groups still short when the stream
-    ends are yielded with ``advantage=None`` and ``group_complete=False``. In
+    yields them with a GRPO advantage. A group reaches the trainer whole or
+    not at all: a group with an unscored member, with a member whose proxy
+    log has no model calls, with token sequences on some members but not
+    all, or still short when the stream ends is never yielded; its records, each with ``withheld`` saying why, go to
+    ``on_withheld`` as one list (without it, to ``on_warning`` as one line). In
     an Evaluation job a rollout its retry policy would retry is final only
     once the job ends; if a retry replaces it first, it is yielded with
     ``retried=True`` and joins no group. A rollout that replaces an earlier
@@ -720,6 +820,7 @@ def stream_rollouts(
     )
     while True:
         records, stop, error = stream.poll()
+        _hand_off_withheld(stream, on_withheld)
         yield from records
         if error is not None:
             raise error
@@ -737,6 +838,7 @@ async def astream_rollouts(
     group_by: str | Sequence[str] | None = None,
     group_size: int | None = None,
     on_warning: Callable[[str], None] | None = None,
+    on_withheld: Callable[[list[StreamedRollout]], None] | None = None,
 ) -> AsyncIterator[StreamedRollout]:
     """Async form of :func:`stream_rollouts`; folder scans run off the event loop.
 
@@ -757,6 +859,7 @@ async def astream_rollouts(
     )
     while True:
         records, stop, error = await asyncio.to_thread(stream.poll)
+        _hand_off_withheld(stream, on_withheld)
         for record in records:
             yield record
         if error is not None:
@@ -932,8 +1035,9 @@ SCHEMA: dict[str, Any] = {
         },
         "group_complete": {
             "type": ["boolean", "null"],
-            "description": "group_size only: false when the stream ended "
-            "before the group filled.",
+            "description": "group_size only: true when the group filled; false "
+            "on a withheld record whose group was still short when the stream "
+            "ended.",
         },
         "replaces": {
             "type": ["string", "null"],
@@ -945,6 +1049,14 @@ SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "group_size only: true when a later attempt "
             "replaced this rollout before its group formed; it joins no group.",
+        },
+        "withheld": {
+            "type": "string",
+            "description": "group_size only, and only on a record the stream "
+            "withheld: why its group may not reach the trainer (short, "
+            "unscored, no model calls: a member's run never reached the model, "
+            "or tokens: some members lack the token sequence the others have). "
+            "The stream itself never yields such a record.",
         },
     },
 }

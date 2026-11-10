@@ -177,6 +177,7 @@ def main():
         reason = "; ".join(filter(None, [answer["reasons"] and "keys: " + ",".join(answer["reasons"]),
                                          answer["note"] and "note: " + answer["note"]]))
         vote = {"pair_id": pair["pair_id"], "choice": CHOICES[answer["choice"]], "rater": rater,
+                "rater_kind": "model",
                 "rated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                 "source": "judge_model.py"}
         if reason:

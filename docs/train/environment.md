@@ -73,9 +73,9 @@ trial-03/.../crystallographic-wyckoff-position-analysis__6b313a34   reward 0.0  
 
 ## Check the rows before you train
 
-Two things in 0.9.1 and 0.10.0rc1 can leave the rows thinner than the rollouts:
+Two things in 0.9.2 can leave the rows thinner than the rollouts (0.10.0rc2 keeps a Claude Code rollout's tool calls):
 
-- **Rollouts that ended with an error are left out.** Converting the crystallographic group above writes the passing rollout, not the two that hit their time limit, though both were scored 0. `--manifest stats.json` says so: `"skipped_terminal_error": 2`. The advantages still count them.
+- **Rollouts that ended with an error are left out of plain rows, and kept in their group.** Without `--group-advantage`, converting the crystallographic group above writes the passing rollout, not the two that hit their time limit, though both were scored 0; `--manifest stats.json` says `"skipped_terminal_error": 2`. With `--group-advantage`, a scored rollout that ended with an error is a member like the others: its rows are written with the error in their `group` block (`"error": "timeout"`), so a trainer can mask them, and the advantages are the ones `bench train stream` gives. 0.10.0rc2 and earlier wrote only the passing rollout's row, with an advantage that counted the other two. A group is withheld whole when a member has no score (unscored, or a trial whose `result.json` is missing or cut short) or never reached the model (no model calls, or every call failed); the group's `withheld` field in the manifest says why. A rollout under `--min-reward` only loses its own rows: the advantages are computed on the whole group first.
 - **A Claude Code rollout loses its tool calls.** `bench train validate` on the OpenCode group says `{"ok": true, "rows": 4, "rows_with_tool_calls": 4}`; on Claude Code rollouts it says `rows_with_tool_calls: 0`. Add `--require-tool-calls` to make that a failure.
 
 [Export training data](./export.md) shows a whole row; [Known pitfalls](../audit/pitfalls.md#infrastructure-that-fails-quietly) lists both problems.

@@ -1,0 +1,41 @@
+# The bold title of each entry in CHANGELOG.md's [0.10.0rc1] section at 58485b9d, the commit the 0.10.0rc1
+# wheel was built from. tools/docs_reference.py marks the section's other entries on the changelog page.
+The build backend is pinned (`hatchling==1.32.4`).
+Daytona teardown no longer waits 12 s for a model proxy nobody called.
+A trial's setup reads its task folder once.
+Claude Code runs straight against another provider's Anthropic-compatible API again.
+The run card's control hint finds its controls.
+A multi-step task's soft checks leave their output.
+`bench sandbox release` says when Docker kept something.
+Doctor no longer masks plain words from a login file.
+`bench preferences rank` names the trials the pairs left out
+`bench preferences` reads the task's own preference table as documented.
+A failure the verifier forced is counted apart.
+A Docker without buildx runs model trials and rubric reviews again.
+A crashed rubric review is reported as the infrastructure's.
+A review that copied the schema's `$defs` keeps its verdict.
+The no-web refusal names the model id you typed
+Teardown on a busy Docker daemon says what timed out.
+Default models their vendors no longer serve are replaced.
+The cloud metadata block no longer starts the agent when it cannot check the image's file privileges, and stock images still start.
+`bench train run sft --loss-normalization sample_mean` works with prime-rl v0.10.
+A score in `reward.txt` beside a `reward.json` of details is scored (#1192).
+`bench results <job> --json` reads a job 0.9 resumed from 0.7.
+A repository's own unchanged `conftest.py` is kept for grading (#1171, #1177).
+A workspace `pytest.py` no longer replaces pytest.
+The verifier no longer uses the agent's workspace as its home
+`verifier.restore_workspace` is refused with what to do instead.
+openhands runs a model on Daytona again.
+`pi-acp` connects again.
+A run card before every run.
+The run card names the vendor's sampling; a running job says how busy it is; every job writes a report.
+Multi-step tasks run.
+Human preferences, ranked (`bench preferences`).
+Keep a failed trial's sandbox and attach to it.
+Agents that bring their own model endpoint.
+Blind pairwise assessments, beside the outputs.
+The egress proxy logs what it lets out.
+An allowlist can name the task's own Compose services.
+An empty `allowed_hosts` is a policy.
+An allowlist task's services must stay inside the sandbox.
+An allowlist task with a compose file is refused on `daytona`

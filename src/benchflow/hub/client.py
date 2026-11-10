@@ -30,6 +30,11 @@ HUB_URL_ENV = "BENCHFLOW_HUB_URL"
 HUB_TOKEN_ENV = "BENCHFLOW_HUB_TOKEN"
 HUB_REGISTRY_PREFIX = "hub:"
 DATASET_SCHEMA = "benchflow.hub.dataset/1"
+REGISTRY_PATH = "/api/v1/registry"
+# The Hub's own list of its routes, which it serves to anyone: how bench tells a Hub without the dataset
+# registry (every registry route unknown) from a registry that lacks one dataset.
+ROUTE_LIST_PATH = "/api/openapi.json"
+NO_REGISTRY = "no_registry"  # HubError.kind for a Hub without the dataset registry
 _TIMEOUT_S = 60
 _CHUNK = 1 << 20
 
@@ -84,10 +89,16 @@ class HubError(UserError):
     exit_code: int = 1
 
     def __init__(
-        self, message: str, *, status: int | None = None, hint: str | None = None
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        hint: str | None = None,
+        kind: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
+        self.kind = kind
         if hint:
             self.hint = hint
 
@@ -244,11 +255,61 @@ class HubClient:
                     )
                 out.write(chunk)
 
+    # ---- what this Hub serves --------------------------------------------------------------------------
+    def has_registry(self) -> bool | None:
+        """Whether this Hub serves the dataset registry, as its own route list says: True or False, or None when
+        it gives no list bench can read (another kind of server, a proxy's page, an outage)."""
+        try:
+            doc = self.get_json(ROUTE_LIST_PATH)
+        except HubError:
+            return None
+        paths = doc.get("paths") if isinstance(doc, dict) else None
+        if not isinstance(paths, dict):
+            return None
+        return any(str(path).startswith(REGISTRY_PATH) for path in paths)
+
+    def _registry_failure(self, exc: HubError, method: str, path: str) -> HubError:
+        """``exc``, from a registry route, said for what it is. A Hub without the registry answers 404 or 405
+        to every registry request, so "check the name and version" would send the reader the wrong way."""
+        if exc.status not in (404, 405):
+            return exc
+        has = self.has_registry()
+        if has:
+            return exc
+        if has is False:
+            error = HubError(
+                f"{self.url} has no dataset registry: it answered {exc.status} to {method} {path}, "
+                f"and its route list has no {REGISTRY_PATH}",
+                status=exc.status,
+                hint=(
+                    "this Hub can't publish, show or serve datasets by name; run the tasks from a "
+                    "folder (bench run <tasks-dir>), or name a Hub that has the dataset registry"
+                ),
+                kind=NO_REGISTRY,
+            )
+            error.exit_code = 2
+            return error
+        exc.hint = exc.hint or (
+            "check the name and version, or that this Hub has the dataset registry: a Hub "
+            f"without the dataset registry answers {exc.status} here too, and this one gave "
+            "no route list to tell"
+            if method == "GET"
+            else f"this Hub may have no dataset registry: it answered {exc.status} to {method} "
+            f"{path} and gave no route list to tell; name a Hub that has the dataset registry"
+        )
+        return exc
+
     # ---- the registry -------------------------------------------------------------------------------------
+    def _registry_get(self, path: str) -> Any:
+        try:
+            return self.get_json(path)
+        except HubError as exc:
+            raise self._registry_failure(exc, "GET", path) from None
+
     def dataset(self, name: str, version: str) -> dict[str, Any]:
         org, short = split_dataset_name(name)
-        doc = self.get_json(
-            f"/api/v1/registry/{quote(org)}/{quote(short)}/{quote(version)}"
+        doc = self._registry_get(
+            f"{REGISTRY_PATH}/{quote(org)}/{quote(short)}/{quote(version)}"
         )
         if not isinstance(doc, dict) or doc.get("schema") != DATASET_SCHEMA:
             raise HubError(
@@ -258,12 +319,12 @@ class HubClient:
 
     def versions(self, name: str) -> dict[str, Any]:
         org, short = split_dataset_name(name)
-        return self.get_json(f"/api/v1/registry/{quote(org)}/{quote(short)}")
+        return self._registry_get(f"{REGISTRY_PATH}/{quote(org)}/{quote(short)}")
 
     def controls(self, name: str, version: str) -> dict[str, Any]:
         org, short = split_dataset_name(name)
-        return self.get_json(
-            f"/api/v1/registry/{quote(org)}/{quote(short)}/{quote(version)}/controls"
+        return self._registry_get(
+            f"{REGISTRY_PATH}/{quote(org)}/{quote(short)}/{quote(version)}/controls"
         )
 
     def publish(
@@ -271,12 +332,25 @@ class HubClient:
     ) -> tuple[bool, dict[str, Any]]:
         """Publish a version; returns (created, the Hub's document of it). 201 is a new version; 200 means the
         same content was already published and nothing changed."""
-        status, doc = self.post_multipart(
-            "/api/v1/registry",
-            {"manifest": json.dumps(manifest)},
-            [("files", f"{task}.tar.gz", path) for task, path in archives],
-        )
+        try:
+            status, doc = self.post_multipart(
+                REGISTRY_PATH,
+                {"manifest": json.dumps(manifest)},
+                [("files", f"{task}.tar.gz", path) for task, path in archives],
+            )
+        except HubError as exc:
+            raise self._registry_failure(exc, "POST", REGISTRY_PATH) from None
         return status == 201, doc
+
+    def run(self, run_id: str) -> dict[str, Any]:
+        """A stored run as the Hub reports it (needs the ``read`` scope)."""
+        doc = self.get_json(f"/api/v1/runs/{quote(run_id)}")
+        if not isinstance(doc, dict):
+            raise HubError(
+                f"{self.url} answered run {run_id} with something other than a run",
+                hint="check that --hub names a BenchFlow Hub, not a proxy or another server",
+            )
+        return doc
 
     def upload_run(
         self, archive: Path, *, name: str | None = None, dataset: str | None = None

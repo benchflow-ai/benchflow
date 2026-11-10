@@ -2,6 +2,8 @@
 
 A skill is a folder of instructions an agent can read while it works: a `SKILL.md`, often with `references/` and `scripts/`. SkillsBench tasks ship skills in `environment/skills/`, and the benchmark asks whether they help. BenchFlow leaves a task's skills out unless you ask for them. To find out, run an agent with them, check that it read them, and measure the difference.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 ## Give the agent the task's skills
 
 `--task-skills` installs the task's skills where the agent looks for its own; for Claude Code, that's its skills folder, with the files under `/skills`. The same run as in [Run a benchmark](./run-a-benchmark.md), with skills:
@@ -80,7 +82,7 @@ Seven of nine trials passed with skills, six without. That difference is one tri
 
 ## Check a skill before you use it
 
-A skill runs with the agent's permissions, so read it, or check it, before you give it to an agent. `bench skills validate` runs two static checkers on skill folders, NVIDIA's SkillEvaluator and SkillSpector. Install them first; these are the versions 0.9.1 asks for when they're missing (0.10.0rc1 asks for SkillEvaluator v0.6.0):
+A skill runs with the agent's permissions, so read it, or check it, before you give it to an agent. `bench skills validate` runs two static checkers on skill folders, NVIDIA's SkillEvaluator and SkillSpector. Install them first; these are the versions 0.9.2 asks for when they're missing (0.10.0rc2 asks for SkillEvaluator v0.6.0):
 
 ```bash
 uv tool install --python 3.13 "skillevaluator[all] @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.5.0"

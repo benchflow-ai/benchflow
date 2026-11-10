@@ -13,7 +13,7 @@ A task sets its policy with `sandbox.network_mode`:
 | `denylist` | the internet, minus `blocked_urls` and `blocked_hosts` | Docker, remote Docker, Daytona |
 | `allowlist` | only `allowed_hosts`, plus its model | Docker, remote Docker, Daytona |
 
-In 0.9.1, an `allowlist` names a task's own Compose services by their private address range, and one with no hosts is refused when the task loads; 0.10.0rc1 also takes the services' names, and an empty list then admits only the model ([What's in 0.10.0rc1](../versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task)).
+In 0.9.2, an `allowlist` names a task's own Compose services by their private address range, and one with no hosts is refused when the task loads; 0.10.0rc2 also takes the services' names, and an empty list then admits only the model ([What's in 0.10.0rc2](../versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task)).
 
 The policy applies to the agent's own user while it works. The agent's install and start-up have the internet; the verifier, which runs as root after the agent stops, isn't filtered. A task whose policy its sandbox can't enforce is refused before it starts; it never runs with a weaker one.
 

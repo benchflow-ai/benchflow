@@ -288,7 +288,7 @@
         "boolean",
         "null"
       ],
-      "description": "group_size only: false when the stream ended before the group filled."
+      "description": "group_size only: true when the group filled; false on a withheld record whose group was still short when the stream ended."
     },
     "replaces": {
       "type": [
@@ -300,6 +300,10 @@
     "retried": {
       "type": "boolean",
       "description": "group_size only: true when a later attempt replaced this rollout before its group formed; it joins no group."
+    },
+    "withheld": {
+      "type": "string",
+      "description": "group_size only, and only on a record the stream withheld: why its group may not reach the trainer (short, unscored, no model calls: a member's run never reached the model, or tokens: some members lack the token sequence the others have). The stream itself never yields such a record."
     }
   }
 }

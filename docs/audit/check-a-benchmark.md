@@ -50,10 +50,12 @@ All five pass both controls. That's necessary, not enough: one of them can still
 
 | Oracle | nop | What it means |
 |---|---|---|
-| 1 | 0 | The task passes both controls. That is as far as controls can check it. |
-| below 1 | any | The reference solution fails: the task is broken, or the oracle doesn't fit this sandbox. An agent's 0 here means nothing. |
-| any | above 0 | Doing nothing passes: the test checks something already true. Every agent gets this task for free. |
+| passes | 0 | The task passes both controls. That is as far as controls can check it. |
+| fails | any | The reference solution fails: the task is broken, or the oracle doesn't fit this sandbox. An agent's 0 here means nothing. |
+| any | above 0 | Doing nothing earns credit: the test checks something already true. Every agent gets that credit for free, a full pass when the reward is 1. |
 | unscored | any | BenchFlow or the sandbox failed before grading; rerun before you judge the task. |
+
+For a pass-or-fail test, the oracle passes at 1. For a partial-credit test, compare its reward with the score its test calls a full answer, often 1. For a rubric-reviewed task, the oracle passes when its test and every blocker pass, even if the rubric gives it less than 1 ([Rubric review](../tasks/rubric-review.md#write-the-rubric)).
 
 Leave a task that fails its controls out of every comparison, and say so in the report.
 
@@ -93,6 +95,8 @@ nop scored 1 on no task, so doing nothing passes none of them. These tasks fail 
 | `configure-git-webserver` | 1 | unscored | BenchFlow grades only with a root-owned `python3` in the sandbox; the solution installs one, nop doesn't | `Verifier hardening failed: ... the image of this task had no root-owned python3` |
 
 No agent can pass the first four on 0.9.1: their tests can't run, or BenchFlow refuses them. For the next seven the oracle can't show the task is solvable, though an agent that solves them another way might pass. On the last, an agent that doesn't install `python3` ends unscored too.
+
+0.9.2 changes how root's git runs while grading: it removes the hooks and command settings an agent adds to a repository, and turns hooks off. So we ran both controls again on 0.9.2 for the five tasks whose tests use git (`configure-git-webserver`, `fix-git`, `git-leak-recovery`, `git-multibranch` and `sanitize-git-repo`), on 7 November 2026: the oracle scored 1 on all five and nop 0 on four, with `configure-git-webserver`'s nop unscored for the same missing `python3`, as on 0.9.1.
 
 Score a full run over the tasks that pass both controls, and name the rest with their cause. `-x` leaves a task out; this takes the twelve from the run's results file:
 
@@ -161,7 +165,7 @@ pass^3 is the share of tasks that passed all three times. At 100%, no failure wa
 
 ## Check that a verifier accepts other correct answers
 
-A test can be too strict: it fails a right answer written another way. `bench check --level equivalence` runs the oracle, then grades variants of its output, some wrong and some equal in value, and reports which the test got wrong. On the half-life task from these docs' examples, whose test accepts a range on purpose:
+A test can be too strict: it fails a right answer written another way. `bench check --level equivalence` runs the oracle, then grades variants of its output, some wrong and some equal in value, and reports which the test got wrong. On 0.9.1, with the half-life task from these docs' examples, whose test accepts a range on purpose (0.10.0rc1 printed the same, and so did a path such as `../tasks/half-life` given from another folder):
 
 ```bash
 git clone --depth 1 https://github.com/benchflow-ai/benchflow.git

@@ -1,6 +1,6 @@
 # Multi-step tasks
 
-> Needs BenchFlow `0.10.0rc1`, a prerelease: [install it](../start/install.md#install-the-010-prerelease). 0.9.1 refuses multi-step tasks with `UnsupportedTaskFeatureError: ... steps: multi-step tasks are not supported (one prompt per task)`.
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)). 0.9.2 refuses multi-step tasks with `UnsupportedTaskFeatureError: ... steps: multi-step tasks are not supported (one prompt per task)`.
 
 A multi-step task gives the agent its work in steps, in one sandbox. After each step, the step's own tests check the workspace, and a step that falls below its `min_reward` ends the task. Use it when the work has stages whose results the later stages build on, and you want to know which stage an agent failed. For several prompts that aren't graded one by one, use a [multi-turn task](./multi-turn.md).
 
@@ -111,7 +111,7 @@ bench run tasks/two-steps -a opencode -m deepseek/deepseek-v4-flash
 
 The agent starts again for each step, with a new session, in the same sandbox: files carry over from one step to the next, the conversation doesn't. Write each step's instruction so it stands on its own.
 
-Give the agent a workspace it can write to. The task's `Dockerfile` sets `WORKDIR /app`, and BenchFlow makes that folder the agent's. An earlier version of this task used `docker_image = "python:3.12-slim"`, with no `WORKDIR`: the workspace was `/root`, which the agent's user can't write, and the agent spent its 300 seconds on `Permission denied` and `su root`.
+Give the agent a workspace it can write to. The task's `Dockerfile` sets `WORKDIR /app`, and BenchFlow gives that folder to the agent's user ([Task format](./task-format.md#the-environment)).
 
 ## How the reward is made
 

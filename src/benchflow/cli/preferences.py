@@ -35,14 +35,21 @@ def _count(n: int, noun: str) -> str:
 
 
 def _left_out_text(left_out: list[dict[str, Any]]) -> str:
-    """``2 trials: arm: 1 (why); ...`` for the trials pairs left out."""
+    """``2 trials: arm: 1 (why); ...`` for the trials (and listed outputs)
+    pairs left out."""
     from collections import Counter
 
     counts = Counter(
         (f"{row.get('agent') or '-'} / {row.get('model') or '-'}", row["reason"])
         for row in left_out
     )
-    return f"{_count(len(left_out), 'trial')}: " + "; ".join(
+    trials = sum("trial" in row for row in left_out)
+    noun = (
+        _count(trials, "trial")
+        if trials == len(left_out)
+        else _count(len(left_out), "output")
+    )
+    return f"{noun}: " + "; ".join(
         f"{arm}: {n} ({why})" for (arm, why), n in sorted(counts.items())
     )
 
@@ -67,6 +74,7 @@ def _rater_checks(result: dict[str, Any]) -> list[str]:
         + ", ".join(f"{name} {n}" for name, n in result["raters"].items())
         + "."
     ]
+    lines += _kind_lines(result)
     if result.get("left_out"):
         lines.append(
             f"Not in any pair: {_left_out_text(result['left_out'])}. Their arms are "
@@ -126,15 +134,130 @@ def _rater_checks(result: dict[str, Any]) -> list[str]:
             lines.append(
                 f"The {aspect} votes come from {raters} rater: no agreement check for them."
             )
-    if result["coverage"]:
-        c = result["coverage"]
+    c = result.get("coverage")
+    if c and c["raters_per_pair"] > 1:
         lines.append(
             f"{c['covered']} of {c['pairs']} pairs have {c['raters_per_pair']} or more raters."
+        )
+    if c and result.get("ranked") is False:
+        missing = c["pairs"] - result.get("voted_pairs", 0)
+        lines.append(
+            f"Not ranked yet: {missing} of {c['pairs']} pairs "
+            f"{'has' if missing == 1 else 'have'} no vote from {_whose(result)}; until "
+            "every pair has one, the arms are listed by name without ratings "
+            "(--provisional shows them)."
         )
     return lines
 
 
-def _print_ratings(result: dict[str, Any]) -> None:
+_KIND_NOUN = {
+    "person": ("person", "people"),
+    "guest": ("guest", "guests"),
+    "model": ("model judge", "model judges"),
+}
+
+
+def _whose(result: dict[str, Any]) -> str:
+    """Whose votes the ratings are: people, unless no person voted."""
+    kinds = (result.get("headline") or {}).get("kinds") or ["person"]
+    return " or ".join(_KIND_NOUN[k][1] for k in kinds)
+
+
+def _kind_lines(result: dict[str, Any]) -> list[str]:
+    """Whose votes the ratings are, and the votes rated apart from them."""
+    lines = []
+    note = (result.get("headline") or {}).get("note")
+    if note:
+        lines.append(note)
+    for kind, part in (result.get("by_kind") or {}).items():
+        one, many = _KIND_NOUN[kind]
+        lines.append(
+            f"Rated apart: {_count(part['votes'], 'vote')} from {part['raters']} "
+            f"{one if part['raters'] == 1 else many}, in tables of their own below."
+        )
+    return lines
+
+
+_RESAMPLED = {
+    "vote": "resampling these votes as if they were independent, with these outputs "
+    "and raters held fixed",
+    "rater": "resampling whole raters, since one rater's votes share that rater's "
+    "taste, with these outputs held fixed",
+    "task": "resampling whole tasks, since one task's votes share that task, with "
+    "these outputs and raters held fixed",
+    "rater+task": "resampling raters and tasks together, since a vote shares its "
+    "rater's taste and its task, with these outputs held fixed",
+}
+
+
+def _pairwise_tables(
+    console: Any, tables: dict[str, Any], suffix: str, *, ranked: bool
+) -> None:
+    from rich.table import Table
+
+    for name, rows in tables.items():
+        table = Table(title=f"Pairwise ({name}){suffix}", title_justify="left")
+        for column in ("arm", "rating", "95% interval", "wins", "ties", "losses"):
+            table.add_column(column, justify="left" if column == "arm" else "right")
+        # Until every pair has a vote the arms are listed by name, unrated.
+        for row in rows if ranked else sorted(rows, key=lambda r: r["arm"]):
+            interval = row.get("interval")
+            table.add_row(
+                row["arm"],
+                "not yet"
+                if not ranked
+                else "unranked"
+                if row["rating"] is None
+                else f"{row['rating']:.0f}",
+                f"{interval[0]:.0f} to {interval[1]:.0f}"
+                if interval and ranked
+                else "-",
+                str(row["wins"]),
+                str(row["ties"]),
+                str(row["losses"]),
+            )
+        console.print(table)
+        for row in rows:
+            if ranked and row.get("interval") and row.get("resamples") is not None:
+                console.print(
+                    f"{row['arm']}: its interval is from the {row['resamples']} "
+                    "resamples that drew any of its votes; the others drew none.",
+                    highlight=False,
+                    soft_wrap=True,
+                )
+
+
+def _rubric_table(console: Any, title: str, rows: list[dict[str, Any]]) -> None:
+    from rich.table import Table
+
+    table = Table(title=title, title_justify="left")
+    rater = any("rater" in row for row in rows)
+    columns = (("rater",) if rater else ()) + (
+        "arm",
+        "criterion",
+        "mean",
+        "95% interval",
+        "items",
+    )
+    for column in columns:
+        table.add_column(
+            column,
+            justify="left" if column in ("rater", "arm", "criterion") else "right",
+        )
+    for row in rows:
+        interval = row.get("interval")
+        table.add_row(
+            *((row["rater"],) if rater else ()),
+            row["arm"],
+            row["criterion"],
+            f"{row['mean']:.2f}",
+            f"{interval[0]:.2f} to {interval[1]:.2f}" if interval else "-",
+            str(row["items"]),
+        )
+    console.print(table)
+
+
+def _print_ratings(result: dict[str, Any], *, provisional: bool = False) -> None:
     from rich.console import Console
     from rich.table import Table
 
@@ -142,49 +265,109 @@ def _print_ratings(result: dict[str, Any]) -> None:
     # The checks come first: they say whether the tables below can be trusted.
     for line in _rater_checks(result):
         console.print(line, highlight=False, soft_wrap=True)
+    ranked = provisional or result.get("ranked") is not False
     # What the intervals are, before the numbers they qualify.
-    console.print(
+    cluster = result.get("cluster") or "vote"
+    text = (
         "Ratings: Bradley-Terry on the Elo scale (1000 is a fixed reference; 400 "
-        "points means preferred 10 to 1). Intervals: 95%, from resampling these "
-        "votes as if they were independent, with these outputs and raters held "
-        "fixed (pairwise), or the items (rubric, shown from 3 items up). They say "
-        "nothing about other outputs of the same agents.",
-        highlight=False,
-        soft_wrap=True,
+        f"points means preferred 10 to 1). Intervals: 95%, from {_RESAMPLED[cluster]} "
+        "(pairwise), or the items (rubric, shown from 3 items up); none where every "
+        "resample gave the same rating. They say nothing about other outputs of the "
+        "same agents."
     )
+    effect = result.get("design_effect")
+    if effect and effect > 1:
+        text += (
+            f" Here a vote counts for about 1/{effect:.1f} of an independent one "
+            f"(design effect {effect:.1f})."
+        )
+    console.print(text, highlight=False, soft_wrap=True)
+    kinds = (result.get("headline") or {}).get("kinds") or ["person"]
+    suffix = "" if kinds == ["person"] else f", {_whose(result)}"
     if not result["pairwise"]:
         console.print("No pairwise votes: no pairwise ratings.", highlight=False)
-    for name, rows in result["pairwise"].items():
-        table = Table(title=f"Pairwise ({name})", title_justify="left")
-        for column in ("arm", "rating", "95% interval", "wins", "ties", "losses"):
-            table.add_column(column, justify="left" if column == "arm" else "right")
-        for row in rows:
-            interval = row.get("interval")
-            table.add_row(
-                row["arm"],
-                "unranked" if row["rating"] is None else f"{row['rating']:.0f}",
-                f"{interval[0]:.0f} to {interval[1]:.0f}" if interval else "-",
-                str(row["wins"]),
-                str(row["ties"]),
-                str(row["losses"]),
-            )
-        console.print(table)
-    if result["rubric"]:
-        table = Table(title="Rubric", title_justify="left")
-        for column in ("arm", "criterion", "mean", "95% interval", "items"):
+    _pairwise_tables(console, result["pairwise"], suffix, ranked=ranked)
+    if ranked and result.get("head_to_head"):
+        table = Table(title=f"Head to head{suffix}", title_justify="left")
+        for column in (
+            "first",
+            "second",
+            "votes",
+            "first's share",
+            "95% interval",
+            "smallest gap",
+        ):
             table.add_column(
-                column, justify="left" if column in ("arm", "criterion") else "right"
+                column, justify="left" if column in ("first", "second") else "right"
             )
-        for row in result["rubric"]:
+        for row in result["head_to_head"]:
             interval = row.get("interval")
             table.add_row(
-                row["arm"],
-                row["criterion"],
-                f"{row['mean']:.2f}",
-                f"{interval[0]:.2f} to {interval[1]:.2f}" if interval else "-",
-                str(row["items"]),
+                *row["arms"],
+                str(row["votes"]),
+                f"{row['share']:.0%}",
+                f"{interval[0]:.0%} to {interval[1]:.0%}" if interval else "-",
+                f"±{row['smallest_gap']:.0%}" if interval else "-",
             )
         console.print(table)
+        note = result["head_to_head"][0].get("interval_note")
+        console.print(
+            f"No intervals or smallest gaps: {note}."
+            if note
+            else "The smallest gap is how far from an even split the first's share "
+            "must be for these votes to show it 4 times in 5 (a two-sided test at 95%).",
+            highlight=False,
+            soft_wrap=True,
+        )
+    if result["rubric"]:
+        _rubric_table(console, "Rubric", result["rubric"])
+    for kind, part in (result.get("by_kind") or {}).items():
+        _pairwise_tables(
+            console, part["pairwise"], f", {_KIND_NOUN[kind][1]}", ranked=True
+        )
+        if part.get("rubric"):
+            _rubric_table(console, f"Rubric, {_KIND_NOUN[kind][1]}", part["rubric"])
+    if result.get("judges"):
+        base = result.get("people_baseline")
+        if base:
+            low, high = base["interval"]
+            console.print(
+                f"One person against the others: {base['agree']} of {base['votes']} "
+                f"({base['agreement']:.0%}, 95% {low:.0%} to {high:.0%}); a coin would "
+                "agree about half the time.",
+                highlight=False,
+                soft_wrap=True,
+            )
+        table = Table(title="Judges against people", title_justify="left")
+        for column in (
+            "judge",
+            "from",
+            "pairs",
+            "agreement",
+            "95% interval",
+            "both ways round",
+        ):
+            table.add_column(
+                column, justify="left" if column in ("judge", "from") else "right"
+            )
+        for row in result["judges"]:
+            low, high = row["interval"]
+            both = row.get("consistency")
+            table.add_row(
+                row["rater"],
+                "its votes"
+                if row["how"] == "pairwise"
+                else f"its {row['criterion']} scores",
+                str(row["pairs"]),
+                f"{row['agree']} ({row['agreement']:.0%})",
+                f"{low:.0%} to {high:.0%}",
+                f"{both['same']} of {both['pairs']} the same" if both else "-",
+            )
+        console.print(table)
+    if result.get("judge_scores"):
+        _rubric_table(
+            console, "Rubric scores from model judges", result["judge_scores"]
+        )
 
 
 def register_preferences(app: typer.Typer) -> None:
@@ -203,10 +386,6 @@ def register_preferences(app: typer.Typer) -> None:
 
     @group.command("pairs")
     def pairs_cmd(
-        jobs: Annotated[
-            list[Path],
-            typer.Argument(help="Job or trial folders whose outputs to pair."),
-        ],
         store: Annotated[
             Path, typer.Option("--store", help="A new folder for the preference store.")
         ],
@@ -217,6 +396,12 @@ def register_preferences(app: typer.Typer) -> None:
                 help="The file to write the blind pairs to, for the raters' tool.",
             ),
         ],
+        jobs: Annotated[
+            list[Path] | None,
+            typer.Argument(
+                help="Job or trial folders whose outputs to pair (none with only --items)."
+            ),
+        ] = None,
         output: Annotated[
             str,
             typer.Option(
@@ -257,13 +442,46 @@ def register_preferences(app: typer.Typer) -> None:
                 "--keep-sides", help="Do not shuffle which output is shown on the left."
             ),
         ] = False,
+        items: Annotated[
+            Path | None,
+            typer.Option(
+                "--items",
+                help="A JSON-lines file of outputs made outside BenchFlow (a golden, "
+                "a remix), each with its task, output folder and arm labels; they "
+                "pair with the trials of their task's version.",
+            ),
+        ] = None,
+        condition: Annotated[
+            str | None,
+            typer.Option(
+                "--condition",
+                help="A condition to label every trial's output with (one-shot, "
+                "say); --items rows carry their own.",
+            ),
+        ] = None,
+        entry: Annotated[
+            str | None,
+            typer.Option(
+                "--entry",
+                help="The page to open in each output, such as index.html; an "
+                "output without it is left out.",
+            ),
+        ] = None,
+        golden: Annotated[
+            str,
+            typer.Option(
+                "--golden",
+                help="Whether a golden from --items is a side in pairs (side) or "
+                "only the bar a rater's tool shows (bar).",
+            ),
+        ] = "side",
     ) -> None:
         """Make the store and the blind assignment."""
         from benchflow.preferences import PreferenceError, issue
 
         try:
             assignment = issue(
-                jobs,
+                jobs or [],
                 store,
                 output=output,
                 per_task=per_task,
@@ -271,13 +489,25 @@ def register_preferences(app: typer.Typer) -> None:
                 rubric=rubric,
                 bundle=bundle,
                 randomize_sides=False if keep_sides else None,
+                items=items,
+                condition=condition,
+                entry=entry,
+                golden=golden,
             )
         except (PreferenceError, OSError) as exc:
             _refused(exc)
         out.write_text(json.dumps(assignment, indent=1) + "\n")
         manifest = json.loads((store / "store.v1.json").read_text())
+        origins = manifest.get("origins") or {}
+        from_where = (
+            f" ({_count(origins.get('trial', 0), 'trial')}, "
+            f"{origins.get('outside', 0)} from --items)"
+            if items is not None
+            else ""
+        )
         typer.echo(
-            f"{len(assignment['pairs'])} pairs of {len(assignment['items'])} outputs."
+            f"{len(assignment['pairs'])} pairs of {len(assignment['items'])} "
+            f"outputs{from_where}."
         )
         left_out = manifest.get("left_out") or []
         if left_out:
@@ -295,7 +525,8 @@ def register_preferences(app: typer.Typer) -> None:
             Path,
             typer.Option(
                 "--votes",
-                help="Votes as JSON lines or CSV (see the docs for the fields).",
+                help="Votes as JSON lines or CSV, or the FDB vote site's export "
+                "(see the docs for the fields).",
             ),
         ],
         source: Annotated[
@@ -304,19 +535,55 @@ def register_preferences(app: typer.Typer) -> None:
                 "--source", help="The tool that collected them, recorded on each vote."
             ),
         ] = None,
+        skip_unknown: Annotated[
+            bool,
+            typer.Option(
+                "--skip-unknown",
+                help="Leave out votes on outputs the store doesn't have, instead "
+                "of refusing the file.",
+            ),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run",
+                help="Check every vote and say what would change; write nothing.",
+            ),
+        ] = False,
     ) -> None:
         """Check every vote in the file, then add the new ones to the store."""
         from benchflow.preferences import PreferenceError, import_votes
 
         try:
-            counts = import_votes(store, votes, source=source)
+            counts = import_votes(
+                store, votes, source=source, skip_unknown=skip_unknown, dry_run=dry_run
+            )
         except (PreferenceError, OSError, ValueError) as exc:
             _refused(exc)
         added, again = counts["added"], counts["already_recorded"]
-        typer.echo(
-            f"{added} vote{'s' if added != 1 else ''} added, {again} already recorded."
-        )
-        if counts.get("head_sha256"):
+        if dry_run:
+            typer.echo(
+                f"Dry run: {_count(added, 'vote')} would be added, {again} already "
+                "recorded; nothing was written."
+            )
+        else:
+            typer.echo(
+                f"{added} vote{'s' if added != 1 else ''} added, {again} already recorded."
+            )
+        if counts.get("withdrawn"):
+            n = counts["withdrawn"]
+            typer.echo(
+                f"{_count(n, 'vote')} the export no longer has "
+                f"{'would be' if dry_run else 'is' if n == 1 else 'are'} recorded as "
+                "withdrawn (an abstention, so it stops counting)."
+            )
+        if counts.get("skipped_unknown"):
+            n = counts["skipped_unknown"]
+            typer.echo(
+                f"{_count(n, 'vote')} {'names' if n == 1 else 'name'} an output the "
+                "store doesn't have, left out (--skip-unknown)."
+            )
+        if counts.get("head_sha256") and not dry_run:
             typer.echo(
                 f"Log head: {counts['head_sha256']} (keep a copy elsewhere: the log "
                 "alone cannot show that its last lines were cut)."
@@ -326,7 +593,10 @@ def register_preferences(app: typer.Typer) -> None:
     def rank_cmd(
         store: Store,
         by: Annotated[
-            str, typer.Option("--by", help="Rate each agent, model or agent+model.")
+            str,
+            typer.Option(
+                "--by", help="Rate each agent, model, agent+model or condition."
+            ),
         ] = "agent+model",
         bootstrap: Annotated[
             int,
@@ -349,6 +619,30 @@ def register_preferences(app: typer.Typer) -> None:
             int | None,
             typer.Option("--raters-per-pair", help="Raters each pair should have."),
         ] = None,
+        raters: Annotated[
+            str | None,
+            typer.Option(
+                "--raters",
+                help="Whose votes to rate together: person, guest, model, or several "
+                "joined by commas (default: people; the others get tables of their "
+                "own).",
+            ),
+        ] = None,
+        cluster: Annotated[
+            str,
+            typer.Option(
+                "--cluster",
+                help="What the intervals resample: vote, rater, task or rater+task "
+                "(auto: raters and tasks, when there are several of each).",
+            ),
+        ] = "auto",
+        provisional: Annotated[
+            bool,
+            typer.Option(
+                "--provisional",
+                help="Show the ratings before every pair has a vote.",
+            ),
+        ] = False,
         as_json: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
     ) -> None:
         """Ratings from the store's votes (also written to ratings.v1.json)."""
@@ -362,10 +656,14 @@ def register_preferences(app: typer.Typer) -> None:
                 seed=seed,
                 min_agreement=min_agreement,
                 raters_per_pair=raters_per_pair,
+                raters=[k.strip() for k in raters.split(",") if k.strip()]
+                if raters is not None
+                else None,
+                cluster=cluster,
             )
         except (PreferenceError, OSError) as exc:
             _refused(exc)
         if as_json:
             typer.echo(json.dumps(result, indent=1))
         else:
-            _print_ratings(result)
+            _print_ratings(result, provisional=provisional)

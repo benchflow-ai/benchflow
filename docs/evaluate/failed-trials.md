@@ -9,7 +9,7 @@ Outcomes: 0 scored (0 passed, 0 failed), 0 unscored, 1 errored
   `bench explain agent_integration:agent_model` says more
 ```
 
-Here Claude Code was asked for `-m claude-sonnet-5-5`, a name 0.9.1's Claude Code doesn't offer, and the trial's error lists the ones it does ([Agents and models](./agents.md#choose-the-model-and-effort)).
+Here Claude Code was asked for `-m claude-sonnet-5-5`, a name 0.9.2's Claude Code doesn't offer, and the trial's error lists the ones it does ([Agents and models](./agents.md#choose-the-model-and-effort)).
 
 A trial that scored 0 with a warning starting `Verifier scored 0:` in its `result.json` failed because of the task's test, not the agent: see [When the test itself fails](#when-the-test-itself-fails). A trial that scored 0 with no warning means the test ran and didn't pass the agent's work; [read its logs](#read-the-logs) for why. Some causes lie outside the agent, such as an output cap that cut a long answer short ([Known pitfalls](../audit/pitfalls.md#scores-that-count-the-wrong-thing)). If the run stopped before any trial started, `bench doctor` checks this machine's setup.
 
@@ -53,7 +53,7 @@ What the test printed is in the trial's `verifier/test-stdout.txt`. Fix the test
 
 A trial whose [rubric reviewer](../tasks/rubric-review.md) failed is unscored instead: `bench eval score <trial folder> --tasks-root <tasks folder> --force` runs the reviewer again on the saved work, without the agent.
 
-One mismatch to know: `bench explain verifier_failure` and `bench explain R303` (a verifier timeout) describe a crashed or timed-out test as unscored, but 0.9.1 and 0.10.0rc1 score both 0, as the table shows.
+One mismatch to know on 0.9.2: `bench explain verifier_failure` and `bench explain R303` (a verifier timeout) describe a crashed or timed-out test as unscored, but 0.9.2 scores both 0, as the table shows. 0.10.0rc2 files a test that ends without a usable reward under `verifier_no_usable_reward`, a verifier error that still counts as a failure in every score.
 
 ## Read the logs
 
@@ -70,9 +70,9 @@ One mismatch to know: `bench explain verifier_failure` and `bench explain R303` 
 ## Common failures
 
 - **The agent did nothing.** A wrong model id or a dead key often looks like an agent error. Test the key with one direct call to the provider before a large run: `bench doctor` lists the keys it found but doesn't try them.
-- **`Permission denied` in the agent's log.** The agent runs as the non-root `agent` user. A task must make the folders the agent writes writable, and set `WORKDIR` in its Dockerfile.
+- **`Permission denied` in the agent's log.** The agent runs as the non-root `agent` user, which owns the working directory and its own home folder, nothing else. Keep the agent's work there, and install in the task's Dockerfile what it would need root for ([Task format](../tasks/task-format.md#the-environment)).
 - **Out of disk.** Task images and agent installs take space: six Claude Code trials starting at once added about 14 GB on a 16-CPU build machine. A full disk ends trials with `disk_full`.
-- **`Run failed: UnsupportedTaskFeatureError`.** The sandbox can't run what the task asks (`R401`). A multi-step task on 0.9.1, which no sandbox runs until [0.10](../tasks/multi-step.md):
+- **`Run failed: UnsupportedTaskFeatureError`.** The sandbox can't run what the task asks (`R401`). A multi-step task on 0.9.2, which no sandbox runs until [0.10](../tasks/multi-step.md):
 
   ```text
   [two-steps] Run failed: UnsupportedTaskFeatureError: Task uses parsed runtime features that BenchFlow cannot execute on the selected sandbox: - steps: multi-step tasks are not supported (one prompt per task) (sandbox=docker)
@@ -82,7 +82,7 @@ One mismatch to know: `bench explain verifier_failure` and `bench explain R303` 
 
 ## Keep the sandbox and look inside (0.10)
 
-> Needs BenchFlow `0.10.0rc1`, a prerelease: [install it](../start/install.md#install-the-010-prerelease).
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
 
 `tasks/half-life` is the task [Write a task](../tasks/write-a-task.md) builds and shows how to copy.
 

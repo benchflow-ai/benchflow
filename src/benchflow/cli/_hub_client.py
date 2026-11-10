@@ -440,7 +440,7 @@ def publish(
                 else e.hint or "check the Hub address and your key"
             )
             print_error(str(e), next_step=step)
-            raise typer.Exit(1) from None
+            raise typer.Exit(e.exit_code) from None
     verb = "Published" if created else "Already published, unchanged:"
     console.print(
         f"[green]✓[/green] {verb} {escape(name)}@{escape(version)} on the Hub at {escape(client.url)}"
@@ -533,6 +533,13 @@ def push(
         job_dir = runs[0]
     client = _client(hub)
     dataset = dataset or _job_dataset(job_dir)
+    if dataset and client.has_registry() is False:
+        print_error(
+            f"{client.url} has no dataset registry, so it can't link this run to {dataset}; "
+            "nothing was uploaded",
+            next_step="push it to a Hub that has the dataset registry: bench hub push <job> --hub <url>",
+        )
+        raise typer.Exit(2)
     with tempfile.TemporaryDirectory(prefix="bench-hub-push-") as scratch:
         archive = Path(scratch) / f"{job_dir.name}.tar.gz"
         files = _pack_job(job_dir, archive)
@@ -549,30 +556,98 @@ def push(
             )
             raise typer.Exit(1) from None
     imported = answer.get("imported") if isinstance(answer, dict) else None
-    for run in imported or []:
-        if not isinstance(run, dict):
-            continue
-        run_id = run.get("run_id")
-        traces = run.get("n_traces", run.get("traces"))
-        bits = [f"run {run_id}"] + ([f"{traces} traces"] if traces is not None else [])
+    stored = [r for r in imported or [] if isinstance(r, dict) and r.get("run_id")]
+    if not stored:
+        print_error(
+            f"{client.url} answered the upload without a run: {json.dumps(answer)[:300]}",
+            next_step="nothing on the Hub names this job; check the Hub's log, then push again",
+        )
+        raise typer.Exit(1)
+    shown = label or job_dir.parent.name
+    failures = [
+        f for f in [_report_push(client, r, dataset, shown) for r in stored] if f
+    ]
+    if failures:
+        for message, step in failures:
+            print_error(message, next_step=step)
+        raise typer.Exit(1)
+
+
+_NO_READ_SCOPE = (
+    "this key can't read runs back; it needs the read scope as well as upload"
+)
+
+
+def _kept_folders(client: Any, run_id: str) -> tuple[bool | None, str]:
+    """Whether the Hub kept a pushed run's job folder, which its trial pages read (the run's ``job_dir``):
+    True or False, or None with the reason bench couldn't tell."""
+    from benchflow.hub.client import HubError
+
+    try:
+        stored = client.run(run_id)
+    except HubError as e:
+        if e.status in (401, 403):
+            return None, _NO_READ_SCOPE
+        return None, f"reading the run back failed: {e}"
+    return bool(stored.get("job_dir")), ""
+
+
+def _report_push(
+    client: Any, run: dict[str, Any], dataset: str | None, label: str
+) -> tuple[str, str] | None:
+    """Print a pushed run that the Hub linked to the dataset it was sent and whose trial folders it kept, and
+    return None; for anything less, print nothing and return the error and its next step, never a tick."""
+    run_id = str(run["run_id"])
+    where = f"{client.url}/runs/{run_id}"
+    traces = run.get("n_traces", run.get("traces"))
+    bits = [f"run {run_id}"] + ([f"{traces} traces"] if traces is not None else [])
+    linked = run.get("dataset")
+    problems = []
+    if dataset and linked != dataset:
+        note = run.get("dataset_note")
+        problems.append(
+            f"it isn't linked to {dataset}"
+            + (f" ({note})" if note else "")
+            + ", so it doesn't count for that version"
+        )
+    kept, why = _kept_folders(client, run_id)
+    if kept is False:
+        problems.append(
+            "the Hub kept no trial folders for it, so its run card, scoring, verifier output "
+            "and artifacts aren't on the Hub"
+        )
+    elif kept is None:
+        problems.append(
+            f"bench couldn't check that the Hub kept its trial folders: {why}"
+        )
+    if problems:
+        message = (
+            f"the Hub at {client.url} stored {label} as {', '.join(bits)}, but "
+            + "; and ".join(problems)
+        )
+        if why == _NO_READ_SCOPE:
+            return (
+                message,
+                f"give the key the read scope, then look at the run: {where}",
+            )
+        return (
+            message,
+            f"the run is at {where}; push to a Hub that links the dataset and keeps the job folder",
+        )
+    console.print(
+        f"[green]✓[/green] Pushed {escape(label)} to the Hub at {escape(client.url)}: "
+        f"{escape(', '.join(bits))}",
+        soft_wrap=True,
+    )
+    if linked and run.get("dataset_content") == "checked":
         console.print(
-            f"[green]✓[/green] Pushed {escape(label or job_dir.parent.name)} to the Hub at {escape(client.url)}: "
-            f"{escape(', '.join(bits))}",
+            f"  linked to {escape(str(linked))}: its records name this version's digest"
+        )
+    elif linked:
+        console.print(
+            f"  linked to {escape(str(linked))}, [yellow]content not checked[/yellow]: its records don't name "
+            "this version's digest, so it won't count as a control",
             soft_wrap=True,
         )
-        linked = run.get("dataset")
-        if linked and run.get("dataset_content") == "checked":
-            console.print(
-                f"  linked to {escape(str(linked))}: its records name this version's digest"
-            )
-        elif linked:
-            console.print(
-                f"  linked to {escape(str(linked))}, [yellow]content not checked[/yellow]: its records don't name "
-                "this version's digest, so it won't count as a control",
-                soft_wrap=True,
-            )
-        console.print(f"  [dim]{escape(client.url)}/runs/{escape(str(run_id))}[/dim]")
-    if not imported:
-        console.print(
-            f"[yellow]The Hub answered without a run:[/yellow] {escape(json.dumps(answer)[:300])}"
-        )
+    console.print(f"  [dim]{escape(where)}[/dim]")
+    return None

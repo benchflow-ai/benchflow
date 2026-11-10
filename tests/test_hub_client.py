@@ -84,6 +84,25 @@ class FakeHub:
                 self.wfile.write(body)
 
             def do_GET(self) -> None:
+                if (
+                    self.path == "/api/openapi.json"
+                ):  # the route list a registry v1 Hub serves
+                    return self._send(
+                        200,
+                        {
+                            "paths": {
+                                "/api/v1/registry": {"post": {}},
+                                "/api/v1/registry/{org}/{name}/{version}": {"get": {}},
+                                "/api/v1/runs/upload": {"post": {}},
+                                "/api/v1/runs/{run_id}": {"get": {}},
+                            }
+                        },
+                    )
+                m = re.fullmatch(r"/api/v1/runs/([\w-]+)", self.path)
+                if m:  # an upload's job folder stays on the Hub for its trial pages
+                    return self._send(
+                        200, {"id": m[1], "job_dir": f"/hub/uploads/{m[1]}/job"}
+                    )
                 m = re.fullmatch(
                     r"/api/v1/registry/([^/]+)/([^/]+)/([^/]+)(/controls)?", self.path
                 )

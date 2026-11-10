@@ -1801,7 +1801,8 @@
       "workspace_recovery"
     ],
     "verifier.hardening": [
-      "cleanup_conftests"
+      "cleanup_conftests",
+      "cleanup_git"
     ],
     "verifier.judge": [
       "context",

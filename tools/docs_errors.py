@@ -45,6 +45,12 @@ PAGE = ROOT / "docs" / "reference" / "errors.md"
 # The fix for each message whose code gives none: section, key, message (as the page shows it), fix.
 FIXES = ROOT / "tools" / "docs_errors_fixes.tsv"
 REGENERATE = "uv run python tools/docs_errors.py --write"
+# Each release's messages, by section, as --dump-texts writes them from that release's source with that
+# release's interpreter: a message 0.9.2 lacks is labelled (0.10) when 0.10.0rc3 prints it, else (unreleased).
+BASELINES = {
+    "0.9.2": ROOT / "tools" / "errors_baseline_0.9.2.json",
+    "0.10.0rc3": ROOT / "tools" / "errors_baseline_0.10.0rc3.json",
+}
 
 _HOLE = "…"
 
@@ -1007,6 +1013,51 @@ def warnings_logged() -> list[dict[str, str]]:
 
 # ── The page ─────────────────────────────────────────────────────────────
 
+_SECTIONS = (
+    ("causes", "causes", "key"),
+    ("doctor", "doctor_rows", "summary"),
+    ("errors", "error_classes", "message"),
+    ("cli", "cli_errors", "message"),
+    ("files", "file_problems", "message"),
+    ("refusals", "refusals", "reason"),
+    ("verifier", "verifier_messages", "message"),
+    ("warnings", "warnings_logged", "message"),
+)
+
+
+def texts() -> dict[str, list[str] | None]:
+    """Each section's messages for this source tree; None for a section that can't be read here."""
+    out: dict[str, list[str] | None] = {}
+    for section, fn, field in _SECTIONS:
+        try:
+            out[section] = sorted({_norm(r.get(field) or "") for r in globals()[fn]()})
+        except Exception as exc:  # an older tree can lack a module a section reads
+            print(f"{section}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            out[section] = None
+    return out
+
+
+@functools.cache
+def _baselines() -> tuple[dict, dict] | None:
+    import json
+
+    if not all(path.exists() for path in BASELINES.values()):
+        return None
+    return tuple(
+        json.loads(path.read_text(encoding="utf-8")) for path in BASELINES.values()
+    )
+
+
+def _since(section: str, text: str) -> str:
+    """` (0.10)` or ` (unreleased)` for a message 0.9.2 doesn't print; nothing for one it does."""
+    pair = _baselines()
+    if pair is None or pair[0].get(section) is None or pair[1].get(section) is None:
+        return ""
+    t = _norm(text or "")
+    if t in pair[0][section]:
+        return ""
+    return " (0.10)" if t in pair[1][section] else " (unreleased)"
+
 
 def render(fixes: _Fixes | None = None) -> str:
     fixes = fixes if fixes is not None else _Fixes()
@@ -1026,8 +1077,8 @@ def render(fixes: _Fixes | None = None) -> str:
         "filled in at run time. To find out why a trial failed, start with "
         "[When a trial fails](../evaluate/failed-trials.md).",
         "",
-        f"These messages come from the source of BenchFlow {_version()}, so they include some that "
-        "0.9.1 doesn't print, such as those of `bench assess` (0.10), and those aren't marked.",
+        "These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 doesn't print "
+        "has `(0.10)` after it when 0.10.0rc3 prints it, or `(unreleased)` when no release does yet.",
         "",
         "<!-- This page is generated from the code by tools/docs_errors.py, so it lists what this "
         f"version prints. To change it, change the message in the code, then run `{REGENERATE}`. -->",
@@ -1062,7 +1113,7 @@ def render(fixes: _Fixes | None = None) -> str:
     for row in c:
         code = row["code"] if row["code"] != row["key"] else ""
         out.append(
-            f"| `{row['key']}` | {code} | {_cell(row['title'])}. {_cell(row['body'])} "
+            f"| `{row['key']}` | {code} | {_cell(row['title'])}{_since('causes', row['key'])}. {_cell(row['body'])} "
             f"| {_cell(row['owner'])} | {_cell(row['next'])} |"
         )
     out += [
@@ -1077,7 +1128,7 @@ def render(fixes: _Fixes | None = None) -> str:
     ]
     for row in d:
         out.append(
-            f"| {_cell(row['check'])} | {row['status']} | {_code(row['summary'])} | "
+            f"| {_cell(row['check'])} | {row['status']} | {_code(row['summary'])}{_since('doctor', row['summary'])} | "
             f"{_fix(fixes('doctor', _cell(row['check']), row['summary'], row['fix']))} |"
         )
     out += [
@@ -1093,7 +1144,7 @@ def render(fixes: _Fixes | None = None) -> str:
     ]
     for row in e:
         out.append(
-            f"| `{row['name']}` | {_code(row['message']) or '(built at run time)'} | "
+            f"| `{row['name']}` | {_code(row['message']) or '(built at run time)'}{_since('errors', row['message'])} | "
             f"{_fix(fixes('error', row['name'], row['message'], row['fix']))} |"
         )
     out += ["", "| Error class | Where | What it covers |", "|---|---|---|"]
@@ -1114,6 +1165,8 @@ def render(fixes: _Fixes | None = None) -> str:
         message = _code(row["message"]) or _cell(
             row.get("what") or "(built at run time)"
         )
+        if row["message"]:
+            message += _since("cli", row["message"])
         out.append(
             f"| `{row['command']}` | {message} | "
             f"{_cell(fixes('command', row['command'], row['message'] or '', row['next']))} |"
@@ -1133,7 +1186,7 @@ def render(fixes: _Fixes | None = None) -> str:
     ]
     for row in f:
         out.append(
-            f"| {row['file']} | {_code(row['message'])} | {_fix(fixes('file', row['file'], row['message']))} |"
+            f"| {row['file']} | {_code(row['message'])}{_since('files', row['message'])} | {_fix(fixes('file', row['file'], row['message']))} |"
         )
     out += [
         "",
@@ -1149,7 +1202,7 @@ def render(fixes: _Fixes | None = None) -> str:
     ]
     for row in r:
         out.append(
-            f"| {_code(row['path'])} | {_code(row['reason'])} | "
+            f"| {_code(row['path'])} | {_code(row['reason'])}{_since('refusals', row['reason'])} | "
             f"{_fix(fixes('refusal', row['path'], row['reason']))} |"
         )
     out += [
@@ -1166,7 +1219,7 @@ def render(fixes: _Fixes | None = None) -> str:
     ]
     for row in v:
         out.append(
-            f"| `{row['module']}` | {_code(row['message'])} | "
+            f"| `{row['module']}` | {_code(row['message'])}{_since('verifier', row['message'])} | "
             f"{_fix(fixes('verifier', row['module'], row['message']))} |"
         )
     out += [
@@ -1180,7 +1233,9 @@ def render(fixes: _Fixes | None = None) -> str:
         "|---|---|",
     ]
     for row in w:
-        out.append(f"| `{row['module']}` | {_code(row['message'])} |")
+        out.append(
+            f"| `{row['module']}` | {_code(row['message'])}{_since('warnings', row['message'])} |"
+        )
     out.append("")
     return _without_review_tags("\n".join(out))
 
@@ -1204,7 +1259,19 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument(
         "--check", action="store_true", help="exit 1 when the page is stale"
     )
+    mode.add_argument(
+        "--dump-texts",
+        metavar="PATH",
+        help="write each section's messages as JSON (a release baseline)",
+    )
     args = parser.parse_args(argv)
+    if args.dump_texts:
+        import json
+
+        Path(args.dump_texts).write_text(
+            json.dumps(texts(), indent=1, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return 0
     page = render()
     if args.write:
         PAGE.write_text(page, encoding="utf-8")

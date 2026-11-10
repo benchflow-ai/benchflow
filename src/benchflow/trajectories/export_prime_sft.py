@@ -11,7 +11,7 @@ exporters.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +30,8 @@ from benchflow.trajectories.training_signal import (
     GroupAdvantage,
     TrainingSignals,
     compute_training_signals,
+    scored_reward,
+    unfinished_rollout_dirs,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
 
@@ -1439,10 +1441,8 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
 
     from benchflow.trajectories.results import _training_success_exchange_indices
 
-    rollout_dirs = (
-        _iter_selected_rollout_dirs(canonical_selection)
-        if canonical_selection is not None
-        else _iter_rollout_dirs(jobs_dir)
+    rollout_dirs = _rollout_dirs_for_groups(
+        jobs_dir, canonical_selection, group_advantage
     )
     signals = _training_signals(
         rollout_dirs,
@@ -1452,26 +1452,38 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
     )
     if signals.enabled:
         stats.training_signal = signals.manifest()
+    # Each row's rollout, and why a rollout wrote none: a group missing a
+    # member is withheld whole (training_signal.TrainingSignals).
+    row_keys: list[str] = []
+    dropped: dict[str, str] = {}
     for rollout_dir in rollout_dirs:
+        key = str(Path(rollout_dir).resolve())
         stats.rollouts_seen += 1
         result = load_rollout_result(rollout_dir)
         if result is None:
             stats.skipped_no_result += 1
+            dropped[key] = "no_result"
             continue
         if is_control_run(rollout_dir):
             stats.skipped_control += 1
+            dropped[key] = "control"
             continue
-        if _result_training_skip_reason(result) is not None:
+        if _result_training_skip_reason(result) is not None and not _keeps_its_group(
+            signals, result
+        ):
             stats.skipped_terminal_error += 1
+            dropped[key] = "terminal_error"
             continue
         reward = _reward_from_result(result)
         if min_reward is not None and (reward is None or reward < min_reward):
             stats.skipped_reward += 1
+            dropped[key] = "reward"
             continue
 
         exchanges = load_rollout_exchanges(rollout_dir)
         if not exchanges:
             stats.skipped_no_trajectory += 1
+            dropped[key] = "no_trajectory"
             continue
         stats.exchanges_seen += len(exchanges)
         training_indices = _training_success_exchange_indices(exchanges)
@@ -1483,6 +1495,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         if not successful:
             stats.skipped_provider_error += 1
             stats.skipped_exchanges_provider_error += len(exchanges)
+            dropped[key] = "provider_error"
             continue
 
         split = split_rollout_exchanges(
@@ -1529,6 +1542,7 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
                 row.update(tags)
                 row.update(signals.for_rollout(rollout_dir))
                 rows.append(row)
+                row_keys.append(key)
                 stats.rows_written += 1
                 if tags.get("agent_role") == "subagent":
                     subagent_written += 1
@@ -1540,7 +1554,67 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
             split.subagent_exchanges - subagent_written
         )
 
+    rows = _keep_whole_groups(
+        signals,
+        rows,
+        row_keys,
+        dropped,
+        stats,
+        lambda row: _has_tool_calls(row["messages"]),
+    )
     return rows, stats
+
+
+def _rollout_dirs_for_groups(
+    jobs_dir: str | Path,
+    canonical_selection: str | Path | None,
+    group_advantage: str | None,
+) -> list[Path]:
+    """The rollouts to convert. With ``group_advantage``, trial folders that
+    never wrote a ``result.json`` come too: they are members of their group,
+    which they keep from being whole (training_signal.unfinished_rollout_dirs)."""
+    if canonical_selection is not None:
+        return _iter_selected_rollout_dirs(canonical_selection)
+    dirs = _iter_rollout_dirs(jobs_dir)
+    if group_advantage is not None:
+        dirs = [*dirs, *unfinished_rollout_dirs(dirs)]
+    return dirs
+
+
+def _keeps_its_group(signals: TrainingSignals, result: dict[str, Any]) -> bool:
+    """Whether a rollout that ended with an error still writes its rows: with
+    group advantages a scored one is a whole member of its group (its rows'
+    ``group`` block names the error), as in the stream."""
+    return signals.group_advantage is not None and scored_reward(result) is not None
+
+
+def _keep_whole_groups(
+    signals: TrainingSignals,
+    rows: list[dict[str, Any]],
+    row_keys: list[str],
+    dropped: dict[str, str],
+    stats: Any,
+    tool_calls: Callable[[dict[str, Any]], bool],
+) -> list[dict[str, Any]]:
+    """Withhold each group a member is missing from, and recount the rows.
+
+    With ``group_advantage``, a group reaches the trainer whole or not at
+    all (:meth:`TrainingSignals.keep_whole_groups`); ``stats`` (Prime-SFT or
+    TRL) then describes the rows that remain.
+    """
+    if signals.group_advantage is None:
+        return rows
+    kept = signals.keep_whole_groups(rows, row_keys, dropped)
+    if len(kept) != len(rows):
+        subagent = sum(1 for row in rows if row.get("agent_role") == "subagent")
+        subagent -= sum(1 for row in kept if row.get("agent_role") == "subagent")
+        stats.rows_written = len(kept)
+        stats.rows_with_tool_calls = sum(1 for row in kept if tool_calls(row))
+        stats.sources = [row["source_path"] for row in kept]
+        stats.subagents.subagent_rows_written -= subagent
+        stats.subagents.subagent_exchanges_excluded += subagent
+    stats.training_signal = signals.manifest()
+    return kept
 
 
 def _training_signals(
@@ -1551,7 +1625,7 @@ def _training_signals(
     group_by: str | Sequence[str] | None,
 ) -> TrainingSignals:
     return compute_training_signals(
-        ((d, _load_json(d / "result.json")) for d in rollout_dirs)
+        ((d, load_rollout_result(d)) for d in rollout_dirs)
         if reward_vector or group_advantage is not None
         else (),
         reward_vector=reward_vector,

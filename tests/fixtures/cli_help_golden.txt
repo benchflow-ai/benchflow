@@ -3056,12 +3056,12 @@
 
 ==> bench preferences pairs --help <==
                                                                                                     
- Usage: bench preferences pairs [OPTIONS] JOBS...                                                   
+ Usage: bench preferences pairs [OPTIONS] [JOBS]...                                                 
                                                                                                     
  Make the store and the blind assignment.                                                           
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    jobs      JOBS...  Job or trial folders whose outputs to pair. [required]                   │
+│   jobs      [JOBS]...  Job or trial folders whose outputs to pair (none with only --items).      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ *  --store             PATH     A new folder for the preference store. [required]                │
@@ -3077,6 +3077,16 @@
 │    --bundle            PATH     Where to copy the outputs under their opaque ids for the rating  │
 │                                 tool (default: <store>-outputs beside the store).                │
 │    --keep-sides                 Do not shuffle which output is shown on the left.                │
+│    --items             PATH     A JSON-lines file of outputs made outside BenchFlow (a golden, a │
+│                                 remix), each with its task, output folder and arm labels; they   │
+│                                 pair with the trials of their task's version.                    │
+│    --condition         TEXT     A condition to label every trial's output with (one-shot, say);  │
+│                                 --items rows carry their own.                                    │
+│    --entry             TEXT     The page to open in each output, such as index.html; an output   │
+│                                 without it is left out.                                          │
+│    --golden            TEXT     Whether a golden from --items is a side in pairs (side) or only  │
+│                                 the bar a rater's tool shows (bar).                              │
+│                                 [default: side]                                                  │
 │    --help                       Show this message and exit.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -3091,9 +3101,14 @@
 │ *    store      PATH  The preference store `bench preferences pairs` made. [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  --votes         PATH  Votes as JSON lines or CSV (see the docs for the fields). [required]    │
-│    --source        TEXT  The tool that collected them, recorded on each vote.                    │
-│    --help                Show this message and exit.                                             │
+│ *  --votes               PATH  Votes as JSON lines or CSV, or the FDB vote site's export (see    │
+│                                the docs for the fields).                                         │
+│                                [required]                                                        │
+│    --source              TEXT  The tool that collected them, recorded on each vote.              │
+│    --skip-unknown              Leave out votes on outputs the store doesn't have, instead of     │
+│                                refusing the file.                                                │
+│    --dry-run                   Check every vote and say what would change; write nothing.        │
+│    --help                      Show this message and exit.                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -3107,12 +3122,20 @@
 │ *    store      PATH  The preference store `bench preferences pairs` made. [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --by                     TEXT     Rate each agent, model or agent+model. [default: agent+model]  │
+│ --by                     TEXT     Rate each agent, model, agent+model or condition.              │
+│                                   [default: agent+model]                                         │
 │ --bootstrap              INTEGER  Resamples for the 95% intervals (0: none). [default: 1000]     │
 │ --seed                   INTEGER  Seed for the resampling. [default: 0]                          │
 │ --min-agreement          FLOAT    Raw agreement (not kappa) to check the raters against (0 to    │
 │                                   1); rank says whether it is met.                               │
 │ --raters-per-pair        INTEGER  Raters each pair should have.                                  │
+│ --raters                 TEXT     Whose votes to rate together: person, guest, model, or several │
+│                                   joined by commas (default: people; the others get tables of    │
+│                                   their own).                                                    │
+│ --cluster                TEXT     What the intervals resample: vote, rater, task or rater+task   │
+│                                   (auto: raters and tasks, when there are several of each).      │
+│                                   [default: auto]                                                │
+│ --provisional                     Show the ratings before every pair has a vote.                 │
 │ --json                            Print JSON.                                                    │
 │ --help                            Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -3519,6 +3542,10 @@
 │ --group-by                        TEXT     Grouping key, comma-separated from task, agent,       │
 │                                            model, task_digest, job (default                      │
 │                                            task,agent,model,job)                                 │
+│ --withheld                        PATH     --group-size: write the records of groups withheld    │
+│                                            from the trainer (a member unscored or without the    │
+│                                            others' token sequence, or the group still short at   │
+│                                            the end) to this JSONL file, each with its reason     │
 │ --help                                     Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
