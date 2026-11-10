@@ -44,10 +44,10 @@ from benchflow.review.outcome import deterministic_pass as source_deterministic_
 from benchflow.review.scoring import ReviewScoring, score_weighted_review
 from benchflow.review.wrapper import (
     REVIEWER_AGENT_TIMEOUT_SEC,
-    REVIEWER_ARTIFACT_PACKAGES,
     REVIEWER_IMAGE,
     assemble_review_task,
     remove_review_task,
+    reviewer_setup_packages,
 )
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
@@ -85,6 +85,9 @@ class TrialReview:
     # "reviewer_transport" when every reviewer attempt lost its transport
     # before a verdict (#1144); None for any other outcome.
     error_category: Literal["reviewer_transport"] | None = None
+    # reviewer-environment.json: the reviewer image (reference, digest), its
+    # setup's packages, the probe of its tools; None when no reviewer ran.
+    reviewer_environment: dict[str, Any] | None = None
 
     def outcome_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {key: 0 for key in _OUTCOME_KEYS}
@@ -151,6 +154,7 @@ class ReviewReport:
                         else {}
                     ),
                     "notes": trial.notes,
+                    "reviewer_environment": trial.reviewer_environment,
                 }
                 for trial in self.trials
             ],
@@ -554,8 +558,14 @@ async def run_review(
             memory_mb=config.memory_mb,
             storage_mb=config.storage_mb,
             environment=config.environment,
+            pdf_tools=config.pdf_tools,
         )
         from benchflow.review.persistence import write_json_atomic
+        from benchflow.review.probe import (
+            image_digest,
+            local_image_id,
+            probe_reviewer_image,
+        )
         from benchflow.task import Task
 
         # The reviewed run's setup budget; a detached review, which knows no
@@ -594,19 +604,33 @@ async def run_review(
                 ),
             )
         sandbox = Task(wrapper_dir).config.sandbox
-        write_json_atomic(
-            runtime_dir / "reviewer-environment.json",
-            {
-                "image": config.image,
-                "artifact_packages": list(REVIEWER_ARTIFACT_PACKAGES)
-                if config.image == REVIEWER_IMAGE
-                else [],
-                "open_network": config.open_network,
-                "memory_mb": sandbox.memory_mb,
-                "storage_mb": sandbox.storage_mb,
-                "setup_timeout_sec": setup_timeout,
-                "evidence_timeout_sec": evidence_timeout,
-            },
+        digest = image_digest(config.image)
+        environment_record: dict[str, Any] = {
+            "image": config.image,
+            "artifact_packages": list(
+                reviewer_setup_packages(config.image, pdf_tools=config.pdf_tools)
+            ),
+            "open_network": config.open_network,
+            "memory_mb": sandbox.memory_mb,
+            "storage_mb": sandbox.storage_mb,
+            "setup_timeout_sec": setup_timeout,
+            "evidence_timeout_sec": evidence_timeout,
+            "image_digest": digest,
+            # A tag on the Docker backend names a local image: its id.
+            "image_id": await asyncio.to_thread(local_image_id, config.image)
+            if digest is None and config.environment == "docker"
+            else None,
+            "pdf_tools": config.pdf_tools,
+        }
+        record_path = runtime_dir / "reviewer-environment.json"
+        write_json_atomic(record_path, environment_record)
+        trial.reviewer_environment = environment_record
+        hooks.append(
+            partial(
+                probe_reviewer_image,
+                record=environment_record,
+                record_path=record_path,
+            )
         )
         shutil.copyfile(wrapper_dir / "task.md", runtime_dir / "reviewer-task.md")
         attempt_dir = runtime_dir
@@ -821,8 +845,12 @@ async def run_reviews(
     tasks_root: Path | None = None,
     filter_passing: bool | None = None,
     out_dir: Path | None = None,
+    pdf_tools: bool = False,
 ) -> tuple[ReviewReport, Path]:
-    """Review rollout(s) at ``path`` and return the report plus its location."""
+    """Review rollout(s) at ``path`` and return the report plus its location.
+
+    *pdf_tools* is :attr:`ReviewerConfig.pdf_tools`.
+    """
 
     path = Path(path).resolve()
     rollouts = discover_rollouts(path, filter_passing=filter_passing)
@@ -861,6 +889,7 @@ async def run_reviews(
         image=image,
         open_network=open_network,
         concurrency=max(1, concurrency),
+        pdf_tools=pdf_tools,
     )
     semaphore = asyncio.Semaphore(max(1, concurrency))
 

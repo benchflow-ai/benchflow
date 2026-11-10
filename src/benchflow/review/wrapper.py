@@ -55,6 +55,39 @@ from benchflow.review.prompts import (
 
 REVIEWER_VERIFIER_TIMEOUT_SEC = 120
 REVIEWER_ARTIFACT_PACKAGES = ("numpy==2.2.6", "pypdf==5.9.0")
+#: What ``ReviewerConfig.pdf_tools`` adds: PyMuPDF extracts a PDF's text and
+#: renders its pages to images. It installs with pip, so it works on every
+#: sandbox backend; poppler's pdftotext needs an image that holds it
+#: (:data:`REVIEWER_PDF_IMAGE`).
+REVIEWER_PDF_PACKAGES = ("PyMuPDF==2.1",)
+#: The image ``docker/reviewer-pdf/Dockerfile`` builds: :data:`REVIEWER_IMAGE`
+#: plus poppler-utils and the packages above. A local tag, so a backend that
+#: pulls from a registry (Daytona) cannot start it; its suffix is the first 12
+#: hex of the Dockerfile's sha256 (tests/test_reviewer_pdf_tools.py).
+REVIEWER_PDF_IMAGE = "benchflow-reviewer-pdf:1e2f39cd619c"
+#: The reviewer images BenchFlow knows, each with the artifact packages it
+#: already holds; the reviewer's setup installs the ones it lacks
+#: (:func:`reviewer_setup_packages`).
+KNOWN_REVIEWER_IMAGES: dict[str, tuple[str, ...]] = {
+    REVIEWER_IMAGE: (),
+    REVIEWER_PDF_IMAGE: REVIEWER_ARTIFACT_PACKAGES + REVIEWER_PDF_PACKAGES,
+}
+
+
+def reviewer_setup_packages(image: str, *, pdf_tools: bool = False) -> tuple[str, ...]:
+    """The pip pins the reviewer sandbox's setup installs into *image*.
+
+    A known image (:data:`KNOWN_REVIEWER_IMAGES`) gets the artifact packages
+    it lacks, and with *pdf_tools* the PDF packages it lacks. Any other image
+    gets nothing, as before, unless *pdf_tools* asks for both sets; pip leaves
+    a pin the image already satisfies as it is.
+    """
+    wanted = REVIEWER_ARTIFACT_PACKAGES + (REVIEWER_PDF_PACKAGES if pdf_tools else ())
+    held = KNOWN_REVIEWER_IMAGES.get(image)
+    if held is None:
+        return wanted if pdf_tools else ()
+    return tuple(package for package in wanted if package not in held)
+
 
 #: Rollout-side entries never copied into the evidence snapshot.  Excluding
 #: prior review output means a re-review can never read an earlier verdict.
@@ -345,6 +378,7 @@ def assemble_review_task(
     memory_mb: int = REVIEWER_MEMORY_MB,
     storage_mb: int | None = None,
     environment: str = "docker",
+    pdf_tools: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -352,7 +386,8 @@ def assemble_review_task(
     absolute sandbox path) to pass through ``RolloutConfig.uploads``. Without
     *storage_mb* the reviewer sandbox's disk is sized for the evidence it
     holds (:func:`reviewer_storage_mb` on *environment*): the uploads, and
-    each workspace unpacked beside its archive.
+    each workspace unpacked beside its archive. The setup installs
+    :func:`reviewer_setup_packages` for *image* and *pdf_tools*.
     """
 
     if dest.exists():
@@ -413,6 +448,7 @@ def assemble_review_task(
         output_schema=response_model.model_json_schema(),
         workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
     )
+    packages = reviewer_setup_packages(image, pdf_tools=pdf_tools)
     frontmatter = _TASK_FRONTMATTER.format(
         verifier_timeout=float(REVIEWER_VERIFIER_TIMEOUT_SEC),
         agent_timeout=float(agent_timeout_sec),
@@ -423,9 +459,9 @@ def assemble_review_task(
         setup_commands=(
             "\n  setup_commands:"
             "\n    - command: python3 -m pip install --disable-pip-version-check --no-cache-dir "
-            + " ".join(REVIEWER_ARTIFACT_PACKAGES)
+            + " ".join(packages)
             + "\n      user: root\n      timeout_sec: 600\n      cwd: /tmp"
-            if image == REVIEWER_IMAGE
+            if packages
             else ""
         ),
     )

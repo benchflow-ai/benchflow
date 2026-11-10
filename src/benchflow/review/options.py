@@ -57,6 +57,10 @@ class ReviewerConfig(BaseModel):
     image: str = REVIEWER_IMAGE
     agent_env: dict[str, str] = Field(default_factory=dict, repr=False)
     open_network: bool = False
+    # Install PyMuPDF beside numpy and pypdf (wrapper.reviewer_setup_packages),
+    # so the reviewer can extract a submitted PDF's text and render its pages.
+    # Off by default: the default reviewer sandbox is unchanged.
+    pdf_tools: bool = False
 
     @field_validator("agent")
     @classmethod

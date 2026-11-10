@@ -110,6 +110,9 @@ NOT_ROOT_HELPERS = {
     ("review/evidence_runtime.py", "_SETUP_SCRIPT"): "before the kit exists",
     ("review/evidence_runtime.py", "_CAPTURE_TOOLS_PROBE"): "before the kit exists",
     ("review/evidence_runtime.py", "ensure_evidence_python"): "no kit: no sandbox user",
+    # The reviewer image's own python3, read before the reviewer's turn: the
+    # probe records the packages that interpreter holds, so it must be it.
+    ("review/probe.py", "_PROBE_SCRIPT"): "the reviewer image's own Python",
     # The hook clean-up keeps its original search path after PT's protected
     # pass; its startup imports are the U5a-CONF-2 release
     # blocker, not a protected helper.

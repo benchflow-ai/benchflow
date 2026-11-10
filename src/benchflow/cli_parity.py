@@ -151,6 +151,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--reviewer-image": _sdk(f"{_RC}.image"),
     "--reviewer-agent-env": _sdk(f"{_RC}.agent_env"),
     "--reviewer-open-network": _sdk(f"{_RC}.open_network"),
+    "--reviewer-pdf-tools": _sdk(f"{_RC}.pdf_tools"),
     "--agent-env": _sdk(f"{_EC}.agent_env"),
     "--allow-task-env": _mod(
         "benchflow.task.env.allow_task_env(names)",
@@ -311,6 +312,7 @@ EVAL_REGRADE: dict[str, Equivalent] = {
     "--reviewer-image": _sdk(f"{_RC}.image"),
     "--reviewer-agent-env": _sdk(f"{_RC}.agent_env"),
     "--reviewer-open-network": _sdk(f"{_RC}.open_network"),
+    "--reviewer-pdf-tools": _sdk(f"{_RC}.pdf_tools"),
 }
 
 _PRIME = "benchflow.trajectories.export_prime_sft.export_prime_sft_jsonl"

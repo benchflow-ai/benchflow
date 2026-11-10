@@ -4,6 +4,13 @@ What changed in each BenchFlow release.
 
 <!-- This page is generated from the repository's CHANGELOG.md by tools/docs_reference.py; to change it, change that file, then run `uv run python tools/docs_reference.py --write`. -->
 
+## [Unreleased]
+
+### What's new
+
+- **A rubric reviewer can read a submitted PDF, when you ask for it.** The default reviewer sandbox has pypdf but no PyMuPDF and no poppler, so a reviewer could not render a PDF's pages, and some reviews judged a paper by its TeX sources, or by text the agent had extracted before its last edits, instead of by the file it submitted. `--reviewer-pdf-tools` (`ReviewerConfig.pdf_tools`, `--pdf-tools` on `bench review`) installs PyMuPDF 2.1 beside numpy and pypdf with pip, so it works on every sandbox backend. `docker/reviewer-pdf/Dockerfile` builds an image that also holds poppler's `pdftotext`; pass its tag with `--reviewer-image` on the Docker reviewer sandbox, and BenchFlow installs nothing into it. The packages a reviewer's setup installs now follow a table of the images BenchFlow knows and what each already holds, where before only the default image got any; an image the table does not list still gets none unless `--reviewer-pdf-tools` asks. The option is off by default, and a reviewer with no new option gets the same task as before, byte for byte: its instruction, image and setup command (a test holds both review paths to the task the previous code wrote).
+- **Each review records its reviewer image and the PDF tools in it.** `reviewer-environment.json`, and now the review record too (`scoring/<attempt>.json`, and each trial of a detached review's `review_report.json`, under `reviewer_environment`), add the image's digest (from a reference pinned by digest; for a tag on Docker, the local image id in `image_id`), `pdf_tools`, and what a probe found in the image: `pdftotext`, `pdftoppm`, `pdfinfo`, `mutool`, `gs` and `qpdf` with their versions, and the Python packages numpy, pypdf, PyMuPDF, pdfplumber, pdfminer.six and pillow. The probe runs as root before the reviewer's setup commands, so `artifact_packages` lists what the setup adds; it reads package metadata without importing anything, and never fails a review: an error is recorded in its place.
+
 ## [0.10.0rc2] - release candidate
 
 The second 0.10 release candidate: everything here is new since 0.10.0rc1. It includes 0.9.2's five grading-integrity fixes. It is a pre-release on PyPI, so install it by name: `pip install benchflow==0.10.0rc2` (or `pip install --pre benchflow`).

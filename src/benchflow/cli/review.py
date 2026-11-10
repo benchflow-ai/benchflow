@@ -225,6 +225,16 @@ def _review_command(
             help="Review output directory (default: jobs/review-<ts>)",
         ),
     ] = None,
+    pdf_tools: Annotated[
+        bool,
+        typer.Option(
+            "--pdf-tools",
+            help=(
+                "Install PyMuPDF beside numpy and pypdf in each reviewer "
+                "sandbox, to read and render a submitted PDF"
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Grade finished rollouts against a rubric with a reviewer agent.
 
@@ -315,6 +325,7 @@ def _review_command(
                 tasks_root=tasks_root,
                 filter_passing=filter_passing,
                 out_dir=out_dir,
+                pdf_tools=pdf_tools,
             )
         )
     except (ValueError, FileNotFoundError) as exc:

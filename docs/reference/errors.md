@@ -15,7 +15,7 @@ These messages come from the source of BenchFlow 0.10.0rc2, so they include some
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
 | [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 46 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 104 |
-| [Warnings a run logs](#warnings-a-run-logs) | 394 |
+| [Warnings a run logs](#warnings-a-run-logs) | 395 |
 
 ## Causes a run names
 
@@ -1238,6 +1238,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.providers.litellm_runtime` | `Live token counter has stalled: the model-gateway log tail has not advanced past byte … in … polls (… bytes behind). The live token/cost figures now UNDERCOUNT this run; the final totals, imported from the full log, are unaffected.` |
 | `benchflow.report` | `Could not write …: …` |
 | `benchflow.review.evidence` | `Could not remove temporary evidence archive …` |
+| `benchflow.review.probe` | `Could not record the reviewer image's tools` |
 | `benchflow.review.resume` | `Could not resume scoring for …: …; its saved result is kept` |
 | `benchflow.rewards.builtins` | `Judge aggregate reward is invalid (…); returning 0.0` |
 | `benchflow.rewards.builtins` | `Judge error on criterion …: …` |

@@ -67,6 +67,7 @@ from benchflow.cli.reviewer_options import (
     ReviewerMemoryOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
+    ReviewerPdfToolsOption,
     ReviewerSandboxOption,
     ReviewerSetupTimeoutOption,
     ReviewerStorageOption,
@@ -1789,6 +1790,7 @@ def eval_run(
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
     reviewer_open_network: ReviewerNetworkOption = None,
+    reviewer_pdf_tools: ReviewerPdfToolsOption = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
@@ -2146,6 +2148,7 @@ def eval_run(
                 else None
             ),
             open_network=reviewer_open_network,
+            pdf_tools=reviewer_pdf_tools,
         ),
         include=include,
         exclude=exclude,

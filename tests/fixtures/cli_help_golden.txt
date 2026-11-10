@@ -315,7 +315,7 @@
 │ --help                                                            Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
- 85 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
+ 86 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
  run --help-all                                                                                     
                                                                                                     
 
@@ -552,6 +552,9 @@
 │                                                          (KEY=VALUE)                             │
 │ --reviewer-open-network                                  Allow unrestricted reviewer network     │
 │                                                          access                                  │
+│ --reviewer-pdf-tools                                     Install PyMuPDF beside numpy and pypdf  │
+│                                                          in the reviewer sandbox, to read and    │
+│                                                          render a submitted PDF (default: off)   │
 │ --help                                                   Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -1151,6 +1154,10 @@
 │                                                                 (KEY=VALUE)                      │
 │ --reviewer-open-network                                         Allow unrestricted reviewer      │
 │                                                                 network access                   │
+│ --reviewer-pdf-tools                                            Install PyMuPDF beside numpy and │
+│                                                                 pypdf in the reviewer sandbox,   │
+│                                                                 to read and render a submitted   │
+│                                                                 PDF (default: off)               │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1631,6 +1638,10 @@
 │                                                                 (KEY=VALUE)                      │
 │ --reviewer-open-network                                         Allow unrestricted reviewer      │
 │                                                                 network access                   │
+│ --reviewer-pdf-tools                                            Install PyMuPDF beside numpy and │
+│                                                                 pypdf in the reviewer sandbox,   │
+│                                                                 to read and render a submitted   │
+│                                                                 PDF (default: off)               │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1843,6 +1854,10 @@
 │                                                             (KEY=VALUE)                          │
 │    --reviewer-open-network                                  Allow unrestricted reviewer network  │
 │                                                             access                               │
+│    --reviewer-pdf-tools                                     Install PyMuPDF beside numpy and     │
+│                                                             pypdf in the reviewer sandbox, to    │
+│                                                             read and render a submitted PDF      │
+│                                                             (default: off)                       │
 │    --help                                                   Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -1905,6 +1920,9 @@
 │                                                          (KEY=VALUE)                             │
 │ --reviewer-open-network                                  Allow unrestricted reviewer network     │
 │                                                          access                                  │
+│ --reviewer-pdf-tools                                     Install PyMuPDF beside numpy and pypdf  │
+│                                                          in the reviewer sandbox, to read and    │
+│                                                          render a submitted PDF (default: off)   │
 │ --help                                                   Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -2715,6 +2733,8 @@
 │                                        isolation (e.g. agentcore) — reviews there fail closed by │
 │                                        default. The report records the relaxed posture.          │
 │ --out-dir             -o      PATH     Review output directory (default: jobs/review-<ts>)       │
+│ --pdf-tools                            Install PyMuPDF beside numpy and pypdf in each reviewer   │
+│                                        sandbox, to read and render a submitted PDF               │
 │ --help                                 Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
