@@ -10,6 +10,7 @@ import pytest
 
 import benchflow
 from benchflow.review.config import REVIEW_RESULT_FILENAME
+from benchflow.review.probe import probe_reviewer_image
 from benchflow.review.runner import (
     REVIEW_REPORT_FILENAME,
     ReviewRunError,
@@ -440,7 +441,10 @@ class TestRunReviews:
         # pipeline (web policy, sandbox-local proxy, egress firewall).
         assert "allow_internet: false" in fake.task_docs[0]
         assert set(config.uploads.values()) == {"/evidence/trial", "/evidence/task"}
-        assert config.pre_agent_hooks == [_lock_review_evidence]
+        # The evidence lock, then the probe of the reviewer image's tools.
+        assert config.pre_agent_hooks[0] is _lock_review_evidence
+        assert config.pre_agent_hooks[1].func is probe_reviewer_image
+        assert len(config.pre_agent_hooks) == 2
         # The wrapper was assembled with no Dockerfile (prebuilt image only).
         # It is deleted after the run, so assert via the recorded task path
         # name rather than the filesystem.

@@ -327,10 +327,12 @@ Blocking form of `arun_batch`.
 ### `run_reviews`
 
 ```python
-bf.run_reviews(path: 'Path', *, agent: 'str', model: 'str | None' = None, environment: 'str' = 'docker', rubric_path: 'Path | None' = None, prompt_path: 'Path | None' = None, agent_env: 'dict[str, str] | None' = None, concurrency: 'int' = 4, timeout_sec: 'int' = 1800, image: 'str' = 'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91', open_network: 'bool' = False, tasks_root: 'Path | None' = None, filter_passing: 'bool | None' = None, out_dir: 'Path | None' = None) -> 'tuple[ReviewReport, Path]'
+bf.run_reviews(path: 'Path', *, agent: 'str', model: 'str | None' = None, environment: 'str' = 'docker', rubric_path: 'Path | None' = None, prompt_path: 'Path | None' = None, agent_env: 'dict[str, str] | None' = None, concurrency: 'int' = 4, timeout_sec: 'int' = 1800, image: 'str' = 'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91', open_network: 'bool' = False, tasks_root: 'Path | None' = None, filter_passing: 'bool | None' = None, out_dir: 'Path | None' = None, pdf_tools: 'bool' = False, submitted_file_rule: 'bool' = False) -> 'tuple[ReviewReport, Path]'
 ```
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
+
+Arguments in no release yet: `pdf_tools`, `submitted_file_rule`.
 
 Review rollout(s) at ``path`` and return the report plus its location.
 
@@ -1377,6 +1379,8 @@ One reviewer runtime, independent of solver credentials and budgets.
 | `image` | `str` | `'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91'` |
 | `agent_env` | `dict` | `(computed)` |
 | `open_network` | `bool` | `False` |
+| `pdf_tools` (unreleased) | `bool` | `False` |
+| `submitted_file_rule` (unreleased) | `bool` | `False` |
 
 - `.coerce(value: 'object' = None) -> 'Self'`: A ReviewerConfig from itself, a mapping, or None (the defaults).
 - `.normalize_agent(value: 'str') -> 'str'`: Resolve an agent alias to its registry name.

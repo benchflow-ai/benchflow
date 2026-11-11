@@ -24,9 +24,11 @@ from benchflow.cli.reviewer_options import (
     ReviewerMemoryOption,
     ReviewerModelOption,
     ReviewerNetworkOption,
+    ReviewerPdfToolsOption,
     ReviewerSandboxOption,
     ReviewerSetupTimeoutOption,
     ReviewerStorageOption,
+    ReviewerSubmittedFileRuleOption,
     ReviewerTimeoutOption,
     reviewer_from_cli,
     reviewer_idle_timeout,
@@ -112,6 +114,8 @@ def eval_score(
     reviewer_image: ReviewerImageOption = None,
     reviewer_agent_env: ReviewerEnvOption = None,
     reviewer_open_network: ReviewerNetworkOption = None,
+    reviewer_pdf_tools: ReviewerPdfToolsOption = None,
+    reviewer_submitted_file_rule: ReviewerSubmittedFileRuleOption = None,
 ) -> None:
     """Retry a failed reviewer using the saved workspace and trajectory."""
     _apply_dotenv_to_process_env()
@@ -130,6 +134,8 @@ def eval_score(
         image=reviewer_image,
         agent_env=_parse_agent_env(reviewer_agent_env) if reviewer_agent_env else None,
         open_network=reviewer_open_network,
+        pdf_tools=reviewer_pdf_tools,
+        submitted_file_rule=reviewer_submitted_file_rule,
     )
     try:
         result = asyncio.run(

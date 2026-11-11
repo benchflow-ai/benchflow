@@ -315,7 +315,7 @@
 │ --help                                                            Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
- 85 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
+ 87 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
  run --help-all                                                                                     
                                                                                                     
 
@@ -508,51 +508,62 @@
 │ *    path      PATH  A job folder, or one trial folder inside it [required]                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                        PATH                  Folder of task folders (or one task     │
-│                                                          folder) holding the changed verifiers.  │
-│                                                          Default: the task path each trial       │
-│                                                          recorded.                               │
-│ --sandbox                          TEXT                  Backend for the fresh sandboxes         │
-│                                                          (default: as run)                       │
-│ --concurrency                      INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]    │
-│ --reason                           TEXT                  Why the verifier changed; kept in each  │
-│                                                          block                                   │
-│ --json                                                   Print the summary as JSON               │
-│ --review                                                 Also rerun each trial's rubric review   │
-│                                                          on its saved outputs, gated by the new  │
-│                                                          test, and compare the combined score.   │
-│                                                          The reviewer is the one the trial       │
-│                                                          recorded, changed by --reviewer-*       │
-│ --reviewer-agent                   TEXT                  Rubric reviewer harness                 │
-│ --reviewer-model                   TEXT                  Rubric reviewer model                   │
-│ --reviewer-reasoning-effort        TEXT                  Rubric reviewer reasoning effort        │
-│ --reviewer-sandbox                 TEXT                  Rubric reviewer sandbox backend         │
-│ --reviewer-timeout-sec             INTEGER RANGE [x>=1]  Reviewer execution budget in seconds    │
-│ --reviewer-idle-timeout            TEXT                  Abort a reviewer prompt after this many │
-│                                                          idle seconds (default: 600). Pass 0 or  │
-│                                                          'none' to disable the idle watchdog and │
-│                                                          leave --reviewer-timeout-sec in charge. │
-│ --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB (default:   │
-│                                                          the evidence it holds plus 2048, at     │
-│                                                          least 4096, at most the sandbox         │
-│                                                          backend's limit)                        │
-│ --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB (default: │
-│                                                          2048)                                   │
-│ --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's      │
-│                                                          setup, its model proxy install among it │
-│                                                          (default: the run's                     │
-│                                                          --sandbox-setup-timeout)                │
-│ --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to check,  │
-│                                                          the workspace evidence in the reviewer  │
-│                                                          sandbox (default: 1 per MiB, at least   │
-│                                                          600)                                    │
-│ --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers         │
-│ --reviewer-image                   TEXT                  Rubric reviewer container image         │
-│ --reviewer-agent-env               TEXT                  Reviewer environment variable           │
-│                                                          (KEY=VALUE)                             │
-│ --reviewer-open-network                                  Allow unrestricted reviewer network     │
-│                                                          access                                  │
-│ --help                                                   Show this message and exit.             │
+│ --tasks-dir                           PATH                  Folder of task folders (or one task  │
+│                                                             folder) holding the changed          │
+│                                                             verifiers. Default: the task path    │
+│                                                             each trial recorded.                 │
+│ --sandbox                             TEXT                  Backend for the fresh sandboxes      │
+│                                                             (default: as run)                    │
+│ --concurrency                         INTEGER RANGE [x>=1]  Trials regraded at once [default: 4] │
+│ --reason                              TEXT                  Why the verifier changed; kept in    │
+│                                                             each block                           │
+│ --json                                                      Print the summary as JSON            │
+│ --review                                                    Also rerun each trial's rubric       │
+│                                                             review on its saved outputs, gated   │
+│                                                             by the new test, and compare the     │
+│                                                             combined score. The reviewer is the  │
+│                                                             one the trial recorded, changed by   │
+│                                                             --reviewer-*                         │
+│ --reviewer-agent                      TEXT                  Rubric reviewer harness              │
+│ --reviewer-model                      TEXT                  Rubric reviewer model                │
+│ --reviewer-reasoning-effort           TEXT                  Rubric reviewer reasoning effort     │
+│ --reviewer-sandbox                    TEXT                  Rubric reviewer sandbox backend      │
+│ --reviewer-timeout-sec                INTEGER RANGE [x>=1]  Reviewer execution budget in seconds │
+│ --reviewer-idle-timeout               TEXT                  Abort a reviewer prompt after this   │
+│                                                             many idle seconds (default: 600).    │
+│                                                             Pass 0 or 'none' to disable the idle │
+│                                                             watchdog and leave                   │
+│                                                             --reviewer-timeout-sec in charge.    │
+│ --reviewer-storage-mb                 INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB          │
+│                                                             (default: the evidence it holds plus │
+│                                                             2048, at least 4096, at most the     │
+│                                                             sandbox backend's limit)             │
+│ --reviewer-memory-mb                  INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB        │
+│                                                             (default: 2048)                      │
+│ --reviewer-setup-timeout              INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's   │
+│                                                             setup, its model proxy install among │
+│                                                             it (default: the run's               │
+│                                                             --sandbox-setup-timeout)             │
+│ --reviewer-evidence-timeout           INTEGER RANGE [x>=1]  Seconds to unpack, and again to      │
+│                                                             check, the workspace evidence in the │
+│                                                             reviewer sandbox (default: 1 per     │
+│                                                             MiB, at least 600)                   │
+│ --reviewer-concurrency                INTEGER RANGE [x>=1]  Max concurrent rubric reviewers      │
+│ --reviewer-image                      TEXT                  Rubric reviewer container image      │
+│ --reviewer-agent-env                  TEXT                  Reviewer environment variable        │
+│                                                             (KEY=VALUE)                          │
+│ --reviewer-open-network                                     Allow unrestricted reviewer network  │
+│                                                             access                               │
+│ --reviewer-pdf-tools                                        Install PyMuPDF beside numpy and     │
+│                                                             pypdf in the reviewer sandbox, to    │
+│                                                             read and render a submitted PDF      │
+│                                                             (default: off)                       │
+│ --reviewer-submitted-file-rule                              Tell the reviewer to judge a written │
+│                                                             deliverable by the file the agent    │
+│                                                             submitted: read it first, cite       │
+│                                                             pages, and take a compiled PDF over  │
+│                                                             its sources (default: off)           │
+│ --help                                                      Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -1151,6 +1162,16 @@
 │                                                                 (KEY=VALUE)                      │
 │ --reviewer-open-network                                         Allow unrestricted reviewer      │
 │                                                                 network access                   │
+│ --reviewer-pdf-tools                                            Install PyMuPDF beside numpy and │
+│                                                                 pypdf in the reviewer sandbox,   │
+│                                                                 to read and render a submitted   │
+│                                                                 PDF (default: off)               │
+│ --reviewer-submitted-file-rule                                  Tell the reviewer to judge a     │
+│                                                                 written deliverable by the file  │
+│                                                                 the agent submitted: read it     │
+│                                                                 first, cite pages, and take a    │
+│                                                                 compiled PDF over its sources    │
+│                                                                 (default: off)                   │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1631,6 +1652,16 @@
 │                                                                 (KEY=VALUE)                      │
 │ --reviewer-open-network                                         Allow unrestricted reviewer      │
 │                                                                 network access                   │
+│ --reviewer-pdf-tools                                            Install PyMuPDF beside numpy and │
+│                                                                 pypdf in the reviewer sandbox,   │
+│                                                                 to read and render a submitted   │
+│                                                                 PDF (default: off)               │
+│ --reviewer-submitted-file-rule                                  Tell the reviewer to judge a     │
+│                                                                 written deliverable by the file  │
+│                                                                 the agent submitted: read it     │
+│                                                                 first, cite pages, and take a    │
+│                                                                 compiled PDF over its sources    │
+│                                                                 (default: off)                   │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1808,42 +1839,53 @@
 │ *    path      PATH  A saved task rollout directory [required]                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  --tasks-root                       PATH                  Trusted original task directory or   │
-│                                                             collection                           │
-│                                                             [required]                           │
-│    --force                                                  Create a new revision even if        │
-│                                                             scoring already completed            │
-│    --reviewer-agent                   TEXT                  Rubric reviewer harness              │
-│    --reviewer-model                   TEXT                  Rubric reviewer model                │
-│    --reviewer-reasoning-effort        TEXT                  Rubric reviewer reasoning effort     │
-│    --reviewer-sandbox                 TEXT                  Rubric reviewer sandbox backend      │
-│    --reviewer-timeout-sec             INTEGER RANGE [x>=1]  Reviewer execution budget in seconds │
-│    --reviewer-idle-timeout            TEXT                  Abort a reviewer prompt after this   │
-│                                                             many idle seconds (default: 600).    │
-│                                                             Pass 0 or 'none' to disable the idle │
-│                                                             watchdog and leave                   │
-│                                                             --reviewer-timeout-sec in charge.    │
-│    --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB          │
-│                                                             (default: the evidence it holds plus │
-│                                                             2048, at least 4096, at most the     │
-│                                                             sandbox backend's limit)             │
-│    --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB        │
-│                                                             (default: 2048)                      │
-│    --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's   │
-│                                                             setup, its model proxy install among │
-│                                                             it (default: the run's               │
-│                                                             --sandbox-setup-timeout)             │
-│    --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to      │
-│                                                             check, the workspace evidence in the │
-│                                                             reviewer sandbox (default: 1 per     │
-│                                                             MiB, at least 600)                   │
-│    --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers      │
-│    --reviewer-image                   TEXT                  Rubric reviewer container image      │
-│    --reviewer-agent-env               TEXT                  Reviewer environment variable        │
-│                                                             (KEY=VALUE)                          │
-│    --reviewer-open-network                                  Allow unrestricted reviewer network  │
-│                                                             access                               │
-│    --help                                                   Show this message and exit.          │
+│ *  --tasks-root                          PATH                  Trusted original task directory   │
+│                                                                or collection                     │
+│                                                                [required]                        │
+│    --force                                                     Create a new revision even if     │
+│                                                                scoring already completed         │
+│    --reviewer-agent                      TEXT                  Rubric reviewer harness           │
+│    --reviewer-model                      TEXT                  Rubric reviewer model             │
+│    --reviewer-reasoning-effort           TEXT                  Rubric reviewer reasoning effort  │
+│    --reviewer-sandbox                    TEXT                  Rubric reviewer sandbox backend   │
+│    --reviewer-timeout-sec                INTEGER RANGE [x>=1]  Reviewer execution budget in      │
+│                                                                seconds                           │
+│    --reviewer-idle-timeout               TEXT                  Abort a reviewer prompt after     │
+│                                                                this many idle seconds (default:  │
+│                                                                600). Pass 0 or 'none' to disable │
+│                                                                the idle watchdog and leave       │
+│                                                                --reviewer-timeout-sec in charge. │
+│    --reviewer-storage-mb                 INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB       │
+│                                                                (default: the evidence it holds   │
+│                                                                plus 2048, at least 4096, at most │
+│                                                                the sandbox backend's limit)      │
+│    --reviewer-memory-mb                  INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB     │
+│                                                                (default: 2048)                   │
+│    --reviewer-setup-timeout              INTEGER RANGE [x>=1]  Seconds for the reviewer          │
+│                                                                sandbox's setup, its model proxy  │
+│                                                                install among it (default: the    │
+│                                                                run's --sandbox-setup-timeout)    │
+│    --reviewer-evidence-timeout           INTEGER RANGE [x>=1]  Seconds to unpack, and again to   │
+│                                                                check, the workspace evidence in  │
+│                                                                the reviewer sandbox (default: 1  │
+│                                                                per MiB, at least 600)            │
+│    --reviewer-concurrency                INTEGER RANGE [x>=1]  Max concurrent rubric reviewers   │
+│    --reviewer-image                      TEXT                  Rubric reviewer container image   │
+│    --reviewer-agent-env                  TEXT                  Reviewer environment variable     │
+│                                                                (KEY=VALUE)                       │
+│    --reviewer-open-network                                     Allow unrestricted reviewer       │
+│                                                                network access                    │
+│    --reviewer-pdf-tools                                        Install PyMuPDF beside numpy and  │
+│                                                                pypdf in the reviewer sandbox, to │
+│                                                                read and render a submitted PDF   │
+│                                                                (default: off)                    │
+│    --reviewer-submitted-file-rule                              Tell the reviewer to judge a      │
+│                                                                written deliverable by the file   │
+│                                                                the agent submitted: read it      │
+│                                                                first, cite pages, and take a     │
+│                                                                compiled PDF over its sources     │
+│                                                                (default: off)                    │
+│    --help                                                      Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -1861,51 +1903,62 @@
 │ *    path      PATH  A job folder, or one trial folder inside it [required]                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                        PATH                  Folder of task folders (or one task     │
-│                                                          folder) holding the changed verifiers.  │
-│                                                          Default: the task path each trial       │
-│                                                          recorded.                               │
-│ --sandbox                          TEXT                  Backend for the fresh sandboxes         │
-│                                                          (default: as run)                       │
-│ --concurrency                      INTEGER RANGE [x>=1]  Trials regraded at once [default: 4]    │
-│ --reason                           TEXT                  Why the verifier changed; kept in each  │
-│                                                          block                                   │
-│ --json                                                   Print the summary as JSON               │
-│ --review                                                 Also rerun each trial's rubric review   │
-│                                                          on its saved outputs, gated by the new  │
-│                                                          test, and compare the combined score.   │
-│                                                          The reviewer is the one the trial       │
-│                                                          recorded, changed by --reviewer-*       │
-│ --reviewer-agent                   TEXT                  Rubric reviewer harness                 │
-│ --reviewer-model                   TEXT                  Rubric reviewer model                   │
-│ --reviewer-reasoning-effort        TEXT                  Rubric reviewer reasoning effort        │
-│ --reviewer-sandbox                 TEXT                  Rubric reviewer sandbox backend         │
-│ --reviewer-timeout-sec             INTEGER RANGE [x>=1]  Reviewer execution budget in seconds    │
-│ --reviewer-idle-timeout            TEXT                  Abort a reviewer prompt after this many │
-│                                                          idle seconds (default: 600). Pass 0 or  │
-│                                                          'none' to disable the idle watchdog and │
-│                                                          leave --reviewer-timeout-sec in charge. │
-│ --reviewer-storage-mb              INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB (default:   │
-│                                                          the evidence it holds plus 2048, at     │
-│                                                          least 4096, at most the sandbox         │
-│                                                          backend's limit)                        │
-│ --reviewer-memory-mb               INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB (default: │
-│                                                          2048)                                   │
-│ --reviewer-setup-timeout           INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's      │
-│                                                          setup, its model proxy install among it │
-│                                                          (default: the run's                     │
-│                                                          --sandbox-setup-timeout)                │
-│ --reviewer-evidence-timeout        INTEGER RANGE [x>=1]  Seconds to unpack, and again to check,  │
-│                                                          the workspace evidence in the reviewer  │
-│                                                          sandbox (default: 1 per MiB, at least   │
-│                                                          600)                                    │
-│ --reviewer-concurrency             INTEGER RANGE [x>=1]  Max concurrent rubric reviewers         │
-│ --reviewer-image                   TEXT                  Rubric reviewer container image         │
-│ --reviewer-agent-env               TEXT                  Reviewer environment variable           │
-│                                                          (KEY=VALUE)                             │
-│ --reviewer-open-network                                  Allow unrestricted reviewer network     │
-│                                                          access                                  │
-│ --help                                                   Show this message and exit.             │
+│ --tasks-dir                           PATH                  Folder of task folders (or one task  │
+│                                                             folder) holding the changed          │
+│                                                             verifiers. Default: the task path    │
+│                                                             each trial recorded.                 │
+│ --sandbox                             TEXT                  Backend for the fresh sandboxes      │
+│                                                             (default: as run)                    │
+│ --concurrency                         INTEGER RANGE [x>=1]  Trials regraded at once [default: 4] │
+│ --reason                              TEXT                  Why the verifier changed; kept in    │
+│                                                             each block                           │
+│ --json                                                      Print the summary as JSON            │
+│ --review                                                    Also rerun each trial's rubric       │
+│                                                             review on its saved outputs, gated   │
+│                                                             by the new test, and compare the     │
+│                                                             combined score. The reviewer is the  │
+│                                                             one the trial recorded, changed by   │
+│                                                             --reviewer-*                         │
+│ --reviewer-agent                      TEXT                  Rubric reviewer harness              │
+│ --reviewer-model                      TEXT                  Rubric reviewer model                │
+│ --reviewer-reasoning-effort           TEXT                  Rubric reviewer reasoning effort     │
+│ --reviewer-sandbox                    TEXT                  Rubric reviewer sandbox backend      │
+│ --reviewer-timeout-sec                INTEGER RANGE [x>=1]  Reviewer execution budget in seconds │
+│ --reviewer-idle-timeout               TEXT                  Abort a reviewer prompt after this   │
+│                                                             many idle seconds (default: 600).    │
+│                                                             Pass 0 or 'none' to disable the idle │
+│                                                             watchdog and leave                   │
+│                                                             --reviewer-timeout-sec in charge.    │
+│ --reviewer-storage-mb                 INTEGER RANGE [x>=1]  Reviewer sandbox disk in MB          │
+│                                                             (default: the evidence it holds plus │
+│                                                             2048, at least 4096, at most the     │
+│                                                             sandbox backend's limit)             │
+│ --reviewer-memory-mb                  INTEGER RANGE [x>=1]  Reviewer sandbox memory in MB        │
+│                                                             (default: 2048)                      │
+│ --reviewer-setup-timeout              INTEGER RANGE [x>=1]  Seconds for the reviewer sandbox's   │
+│                                                             setup, its model proxy install among │
+│                                                             it (default: the run's               │
+│                                                             --sandbox-setup-timeout)             │
+│ --reviewer-evidence-timeout           INTEGER RANGE [x>=1]  Seconds to unpack, and again to      │
+│                                                             check, the workspace evidence in the │
+│                                                             reviewer sandbox (default: 1 per     │
+│                                                             MiB, at least 600)                   │
+│ --reviewer-concurrency                INTEGER RANGE [x>=1]  Max concurrent rubric reviewers      │
+│ --reviewer-image                      TEXT                  Rubric reviewer container image      │
+│ --reviewer-agent-env                  TEXT                  Reviewer environment variable        │
+│                                                             (KEY=VALUE)                          │
+│ --reviewer-open-network                                     Allow unrestricted reviewer network  │
+│                                                             access                               │
+│ --reviewer-pdf-tools                                        Install PyMuPDF beside numpy and     │
+│                                                             pypdf in the reviewer sandbox, to    │
+│                                                             read and render a submitted PDF      │
+│                                                             (default: off)                       │
+│ --reviewer-submitted-file-rule                              Tell the reviewer to judge a written │
+│                                                             deliverable by the file the agent    │
+│                                                             submitted: read it first, cite       │
+│                                                             pages, and take a compiled PDF over  │
+│                                                             its sources (default: off)           │
+│ --help                                                      Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2688,34 +2741,39 @@
 │ *    path      PATH  A finished rollout directory, or a job directory of rollouts [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --rubric              -r      PATH     Rubric JSON file. Default: an admitted task copy's        │
-│                                        verifier/rubric.json (requires --tasks-root and verified  │
-│                                        digest), else the built-in default rubric.                │
-│ --prompt              -p      PATH     Custom reviewer instruction template (see                 │
-│                                        benchflow.review.prompts)                                 │
-│ --agent               -a      TEXT     Reviewer agent harness [default: opencode]                │
-│ --model               -m      TEXT     Reviewer model (default: gemini/gemini-3.5-flash-lite     │
-│                                        with opencode, else the agent's registry default)         │
-│ --sandbox                     TEXT     Sandbox: docker, remote-docker, daytona, modal,           │
-│                                        apple-container, or agentcore                             │
-│                                        [default: docker]                                         │
-│ --concurrency         -n      INTEGER  Max concurrent reviews [default: 4]                       │
-│ --passing                              Only review passing rollouts (reward 1.0)                 │
-│ --failing                              Only review failing rollouts                              │
-│ --timeout-sec                 INTEGER  Reviewer agent timeout per rollout [default: 1800]        │
-│ --agent-env                   TEXT     KEY=VALUE for the reviewer (repeatable)                   │
-│ --image                       TEXT     Prebuilt sandbox image for reviewer rollouts              │
-│ --tasks-root                  PATH     Trusted directory holding the reviewed tasks. Required to │
-│                                        include task definitions in evidence: a task path         │
-│                                        recorded inside a rollout is untrusted input and is never │
-│                                        read directly. Without this, reviews use run records      │
-│                                        only.                                                     │
-│ --allow-open-network                   Run reviewers WITHOUT the no-internet declaration.        │
-│                                        Required on backends that cannot enforce network          │
-│                                        isolation (e.g. agentcore) — reviews there fail closed by │
-│                                        default. The report records the relaxed posture.          │
-│ --out-dir             -o      PATH     Review output directory (default: jobs/review-<ts>)       │
-│ --help                                 Show this message and exit.                               │
+│ --rubric               -r      PATH     Rubric JSON file. Default: an admitted task copy's       │
+│                                         verifier/rubric.json (requires --tasks-root and verified │
+│                                         digest), else the built-in default rubric.               │
+│ --prompt               -p      PATH     Custom reviewer instruction template (see                │
+│                                         benchflow.review.prompts)                                │
+│ --agent                -a      TEXT     Reviewer agent harness [default: opencode]               │
+│ --model                -m      TEXT     Reviewer model (default: gemini/gemini-3.5-flash-lite    │
+│                                         with opencode, else the agent's registry default)        │
+│ --sandbox                      TEXT     Sandbox: docker, remote-docker, daytona, modal,          │
+│                                         apple-container, or agentcore                            │
+│                                         [default: docker]                                        │
+│ --concurrency          -n      INTEGER  Max concurrent reviews [default: 4]                      │
+│ --passing                               Only review passing rollouts (reward 1.0)                │
+│ --failing                               Only review failing rollouts                             │
+│ --timeout-sec                  INTEGER  Reviewer agent timeout per rollout [default: 1800]       │
+│ --agent-env                    TEXT     KEY=VALUE for the reviewer (repeatable)                  │
+│ --image                        TEXT     Prebuilt sandbox image for reviewer rollouts             │
+│ --tasks-root                   PATH     Trusted directory holding the reviewed tasks. Required   │
+│                                         to include task definitions in evidence: a task path     │
+│                                         recorded inside a rollout is untrusted input and is      │
+│                                         never read directly. Without this, reviews use run       │
+│                                         records only.                                            │
+│ --allow-open-network                    Run reviewers WITHOUT the no-internet declaration.       │
+│                                         Required on backends that cannot enforce network         │
+│                                         isolation (e.g. agentcore) — reviews there fail closed   │
+│                                         by default. The report records the relaxed posture.      │
+│ --out-dir              -o      PATH     Review output directory (default: jobs/review-<ts>)      │
+│ --pdf-tools                             Install PyMuPDF beside numpy and pypdf in each reviewer  │
+│                                         sandbox, to read and render a submitted PDF              │
+│ --submitted-file-rule                   Tell the reviewer to judge a written deliverable by the  │
+│                                         file the agent submitted: read it first, cite pages, and │
+│                                         take a compiled PDF over its sources                     │
+│ --help                                  Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

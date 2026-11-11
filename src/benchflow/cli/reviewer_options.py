@@ -107,6 +107,27 @@ ReviewerNetworkOption = Annotated[
         "--reviewer-open-network", help="Allow unrestricted reviewer network access"
     ),
 ]
+ReviewerPdfToolsOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--reviewer-pdf-tools",
+        help=(
+            "Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to "
+            "read and render a submitted PDF (default: off)"
+        ),
+    ),
+]
+ReviewerSubmittedFileRuleOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--reviewer-submitted-file-rule",
+        help=(
+            "Tell the reviewer to judge a written deliverable by the file the "
+            "agent submitted: read it first, cite pages, and take a compiled "
+            "PDF over its sources (default: off)"
+        ),
+    ),
+]
 
 
 def reviewer_idle_timeout(value: str | None) -> int | None:

@@ -212,6 +212,7 @@ async def finish_review(plan: PreparedReview, rollout_dir: Path) -> ScoringResul
                 "checks": trial.checks,
                 "summary": trial.summary,
                 "review_valid": trial.review_valid,
+                "reviewer_environment": trial.reviewer_environment,
             }
         )
         reviewer_run = (

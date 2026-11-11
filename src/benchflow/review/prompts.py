@@ -12,6 +12,11 @@ Available placeholders:
   copy (or its absence).
 - ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
 - ``{result_path}`` / ``{output_schema}`` — output-contract details.
+
+:data:`SUBMITTED_FILE_RULE` is an opt-in paragraph for tasks whose deliverable
+is a written document (``ReviewerConfig.submitted_file_rule``): it goes into
+the template before its "Work through the criteria" paragraph
+(:func:`review_template`). Without it the template is used as it is.
 """
 
 from __future__ import annotations
@@ -49,6 +54,22 @@ Guidance:
 {criteria_guidance}
 """
 
+#: The opt-in rule for a written deliverable: the file the agent submitted is
+#: what is judged, read before any judgment and cited by page, and a compiled
+#: PDF wins over its sources.
+SUBMITTED_FILE_RULE = (
+    "When the task asks for a written deliverable (a paper, a report or another "
+    "document), judge the file the agent submitted. Read it before you judge "
+    "its content: its text, and its page images for figures and tables. Cite "
+    "the page numbers you rely on. Source files, drafts and text the agent "
+    "extracted earlier may help you find content; where they differ from the "
+    "submitted file, the submitted file wins, so a compiled PDF wins over its "
+    "TeX or Markdown sources. Criteria that also check code, results or the "
+    "trajectory still require those records."
+)
+#: The paragraph of :data:`REVIEW_TEMPLATE` the rule goes before.
+_RULE_ANCHOR = "Work through the criteria one at a time."
+
 TASK_SECTION_TEMPLATE = """The task the agent attempted is at {task_path}. Read its files first so you know what was required:
 - {task_path}/task.md or {task_path}/instruction.md — what the agent was asked to do
 - {task_path}/verifier/ or {task_path}/tests/ — the checks its work was graded by
@@ -80,6 +101,24 @@ WEIGHTED_JUDGMENT_CONTRACT = (
 )
 
 
+def review_template(
+    template: str | None = None, *, submitted_file_rule: bool = False
+) -> str:
+    """The template a reviewer's instruction is rendered from.
+
+    *template* (default :data:`REVIEW_TEMPLATE`) as it is, or with
+    *submitted_file_rule*, :data:`SUBMITTED_FILE_RULE` before its "Work through
+    the criteria" paragraph (at its end when it has none, and not again when
+    it holds the rule already).
+    """
+    body = template or REVIEW_TEMPLATE
+    if not submitted_file_rule or SUBMITTED_FILE_RULE in body:
+        return body
+    if _RULE_ANCHOR in body:
+        return body.replace(_RULE_ANCHOR, f"{SUBMITTED_FILE_RULE}\n\n{_RULE_ANCHOR}", 1)
+    return f"{body.rstrip()}\n\n{SUBMITTED_FILE_RULE}\n"
+
+
 def render_task_section(task_path: str | None) -> str:
     """Render the paragraph pointing the reviewer at the task copy, if any."""
 
@@ -98,10 +137,17 @@ def render_review_instruction(
     trial_name: str = "",
     output_schema: dict[str, Any] | None = None,
     workspace_path: str | None = None,
+    submitted_file_rule: bool = False,
 ) -> str:
-    """Render the full wrapper-task instruction body."""
+    """Render the full wrapper-task instruction body.
 
-    body = (template or REVIEW_TEMPLATE).format_map(
+    The template is :func:`review_template` of *template* and
+    *submitted_file_rule*.
+    """
+
+    body = review_template(
+        template, submitted_file_rule=submitted_file_rule
+    ).format_map(
         {
             "trial_path": trial_path,
             "task_section": render_task_section(task_path),
