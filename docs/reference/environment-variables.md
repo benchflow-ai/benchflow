@@ -29,7 +29,7 @@ What the agent then sees depends on how its calls go out:
 
 Keep sandbox-provider keys such as `DAYTONA_API_KEY` in your shell. Passed with `--agent-env`, they're inside the sandbox, where the agent can read them.
 
-Later 0.10 builds give the agent BenchFlow's variables under neutral names. In its environment `RUNTIME_` takes the place of `BENCHFLOW_` (`BENCHFLOW_PROVIDER_MODEL` arrives as `RUNTIME_PROVIDER_MODEL`), the login's label is left out, and a `BENCHFLOW_` variable the image sets is cleared before the agent starts. On your machine the names stay as they are, and an `--agent-env` name that starts with `RUNTIME_` is read as the `BENCHFLOW_` one.
+0.10.0rc2 gives the agent BenchFlow's variables under neutral names (0.9.2 keeps the `BENCHFLOW_` names). In its environment `RUNTIME_` takes the place of `BENCHFLOW_` (`BENCHFLOW_PROVIDER_MODEL` arrives as `RUNTIME_PROVIDER_MODEL`), the login's label is left out, and a `BENCHFLOW_` variable the image sets is cleared before the agent starts. On your machine the names stay as they are, and an `--agent-env` name that starts with `RUNTIME_` is read as the `BENCHFLOW_` one.
 
 ## Let a task read your variables
 

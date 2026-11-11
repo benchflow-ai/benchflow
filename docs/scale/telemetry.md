@@ -2,6 +2,8 @@
 
 For every trial, BenchFlow records the tokens and cost the agent used, how long each step took, and, for each model call, what was sent and what came back. It reads these numbers at the model boundary, not from the agent's own telemetry, and records where each number came from.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 ## What a trial records
 
 `result.json` sums the trial's usage in its `agent_result` block, with where each number came from. From the quick start's Claude Code trial on MiMo:
@@ -35,7 +37,20 @@ metadata: {"request_model": "mimo-v2.6-flash", "provider_model": "mimo-v2.6-flas
 usage: {"completion_tokens": 169, "prompt_tokens": 15230, "total_tokens": 15399, "reasoning_tokens": 13, "cached_tokens": 15168}
 ```
 
-That record is what to check when a setting matters: it shows the effort, sampling and model each request carried, not just what you asked for.
+That record is what to check when a setting matters: it shows the effort, sampling and model each request carried, not just what you asked for. A line holds `request.body` (the request as sent: `model`, `reasoning_effort`, `temperature`, `top_p`, `max_tokens` when set), `response.status_code`, `response.body` (`model` as answered, `choices[0].finish_reason`, `usage`) and `metadata.call_purpose`. [`requests.py`](../examples/audit/requests.py) prints those for every request of a job; for the Claude Code trial on MiMo in [OpenTelemetry](#opentelemetry) below:
+
+```bash
+python3 requests.py jobs/2026-11-05__18-12-19
+```
+
+```text
+trial             call  purpose  model            answered         effort  temperature  top_p  max_tokens  status  finish
+primes__c02bbd43  1     agent    mimo-v2.6-flash  mimo-v2.6-flash  high    -            -      -           200     tool_calls
+primes__c02bbd43  2     agent    mimo-v2.6-flash  mimo-v2.6-flash  high    -            -      -           200     tool_calls
+primes__c02bbd43  3     agent    mimo-v2.6-flash  mimo-v2.6-flash  high    -            -      -           200     stop
+```
+
+Claude Code sent effort `high` on each call and no sampling settings; an OpenCode trial on DeepSeek V4 Flash sent neither, and its first call has the purpose `title`, a request OpenCode makes for itself.
 
 ## Where each number comes from
 
@@ -47,15 +62,18 @@ That record is what to check when a setting matters: it shows the effort, sampli
 | `agent_native_acp` | reported by the agent itself over ACP, as with a subscription login, which the proxy doesn't route |
 | `unavailable` | not recorded; treat token and cost figures for the trial as missing, not zero |
 
-`price_source` says where the price came from: `litellm`, the price table bundled with BenchFlow's model proxy; `agent_session_log`, an estimate from the agent's own session log, as for Claude Code on a subscription login; or `null` when there's no price for the model. The proxy is always used for agents it can route, so usage and `llm_trajectory.jsonl` are always captured for them; `--usage-tracking required` additionally makes trusted usage (`provider_response` or `agent_native_acp`) a requirement of the run.
+`price_source` says where the price came from: `litellm`, the price table of LiteLLM, the library BenchFlow's model proxy runs on; `agent_session_log`, an estimate from the agent's own session log, as for Claude Code on a subscription login; or `null` when there's no price for the model. The proxy is always used for agents it can route, so usage and `llm_trajectory.jsonl` are always captured for them; `--usage-tracking required` additionally makes trusted usage (`provider_response` or `agent_native_acp`) a requirement of the run.
 
 ## OpenTelemetry
 
-BenchFlow 0.9.1 and 0.10.0rc1 neither send nor receive OpenTelemetry. Usage, cost and timing come from the model proxy and the trial's own records, so they don't depend on whether an agent exports telemetry of its own. The gap is a subscription login, which bypasses the proxy: then only what the agent reports over ACP is recorded (`agent_native_acp`), or nothing (`unavailable`).
+BenchFlow 0.9.2 neither sends nor receives OpenTelemetry. Usage, cost and timing come from the model proxy and the trial's own records, so they don't depend on whether an agent exports telemetry of its own. The gap is a subscription login, which bypasses the proxy: then only what the agent reports over ACP is recorded (`agent_native_acp`), or nothing (`unavailable`).
 
-An agent can still send its own telemetry to a receiver you run. Claude Code's is off until you turn it on with its variables, which `--agent-env` passes into the sandbox. The receiver must listen on an address the sandbox can reach: for local Docker on Linux, Docker's bridge, which the first line below reads. [`receive.py`](../examples/otel/receive.py) is a receiver of about 30 lines that keeps every export as a JSON line:
+0.10.0rc2 writes each trial's trace as OTLP/JSON to `trajectory/otel-spans.json`, sends it to the collector `OTEL_EXPORTER_OTLP_ENDPOINT` names where `bench` runs, and keeps the exports of an agent whose telemetry you turn on in `trajectory/agent-otel.jsonl` ([OpenTelemetry in the model-call records](../reference/model-calls.md#opentelemetry)). On 0.9.2, an agent can still send its own telemetry to a receiver you run. Claude Code's is off until you turn it on with its variables, which `--agent-env` passes into the sandbox. The receiver must listen on an address the sandbox can reach: for local Docker on Linux, Docker's bridge, which the first line below reads. Docker Desktop on macOS or Windows has no `docker0`; there a container reaches the host as `host.docker.internal`, so run the receiver on `0.0.0.0` and use that name in the endpoint (we ran this on Linux). [`receive.py`](../examples/otel/receive.py) is a receiver of about 30 lines that keeps every export as a JSON line:
 
 ```bash
+git clone --depth 1 https://github.com/benchflow-ai/benchflow.git
+mkdir -p tasks && cp -r benchflow/docs/examples/primes tasks/
+cp benchflow/docs/examples/otel/receive.py benchflow/docs/examples/otel/calls.py .
 BRIDGE=$(ip -4 -o addr show docker0 | awk '{print $4}' | cut -d/ -f1)
 python3 receive.py $BRIDGE 4318 otlp.jsonl &
 bench run tasks/primes -a claude -m xiaomi/mimo-v2.6-flash \
@@ -84,9 +102,12 @@ The two records agree call by call once you know how each counts. Claude Code's 
 
 The trial's `config.json` keeps every variable you pass with `--agent-env`, values included, under `agent_env`. BenchFlow leaves out a variable whose name looks secret (it contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH` or `SESSION`, among others) or whose value looks like a credential.
 
-## Cost for models without a price
+## Cost, and models without a price
 
-BenchFlow prices tokens with the table bundled in its model proxy. A model missing from it, such as MiMo or a model released after the table, gets `cost_usd: null`, and the run summary says so:
+BenchFlow prices tokens with LiteLLM's table. In 0.9.2 the proxy downloads that table from GitHub when it starts, if it can, and otherwise reads the copy installed with it, so the same run can be priced differently on another day. 0.10.0rc2 reads only the installed copy and carries vendors' own rates for 18 current models, MiMo V2.6 and DeepSeek V4 among them. Two consequences for 0.9.2:
+
+- **DeepSeek V4's dollar figures are placeholders.** Its routes are priced at an unverified $0.28 and $0.42 per million input and output tokens, not DeepSeek's rates, so the DeepSeek costs in these docs, such as the $0.00857596 above, are that placeholder's. Report DeepSeek's tokens, or price them from DeepSeek's rate card with the date you read it.
+- **A model missing from the table gets no price**, such as MiMo or any model newer than the table: `cost_usd: null`, and the run summary says so:
 
 ```text
 Cost:      not reported in USD (subscription logins and unpriced models report tokens only), 511,746 tokens

@@ -1,6 +1,6 @@
 # Python API
 
-Each public name in the `benchflow` package (`benchflow.__all__`) has its signature or fields, the methods BenchFlow defines on it, and the first paragraph of its docstring. A name, field, argument or method new since 0.9.1 has `(0.10)` after it when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet.
+Each public name in the `benchflow` package (`benchflow.__all__`) has its signature or fields, the methods BenchFlow defines on it, and the first paragraph of its docstring. A name, field, argument or method new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
 
 <!-- This page is generated from the code by tools/docs_reference.py. To change it, change the docstring or signature in the code, then run `uv run python tools/docs_reference.py --write`. -->
 
@@ -26,7 +26,7 @@ bf.aregrade(path: 'str | Path', *, tasks_dir: 'str | Path | None' = None, sandbo
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
 
-Arguments in no release yet: `review`, `reviewer`.
+New arguments in 0.10: `review`, `reviewer`.
 
 Async `regrade`.
 
@@ -61,8 +61,10 @@ Run rollouts with at most ``concurrency`` at a time, yielding each as it finishe
 ### `astream_rollouts`
 
 ```python
-bf.astream_rollouts(job_dir: 'str | Path', *, follow: 'bool' = True, poll_interval: 'float' = 1.0, timeout: 'float | None' = None, group_by: 'str | Sequence[str] | None' = None, group_size: 'int | None' = None, on_warning: 'Callable[[str], None] | None' = None) -> 'AsyncIterator[StreamedRollout]'
+bf.astream_rollouts(job_dir: 'str | Path', *, follow: 'bool' = True, poll_interval: 'float' = 1.0, timeout: 'float | None' = None, group_by: 'str | Sequence[str] | None' = None, group_size: 'int | None' = None, on_warning: 'Callable[[str], None] | None' = None, on_withheld: 'Callable[[list[StreamedRollout]], None] | None' = None) -> 'AsyncIterator[StreamedRollout]'
 ```
+
+New arguments in 0.10: `on_withheld`.
 
 Async form of `stream_rollouts`; folder scans run off the event loop.
 
@@ -276,7 +278,7 @@ Register a custom service at runtime.
 bf.regrade(path: 'str | Path', *, tasks_dir: 'str | Path | None' = None, sandbox: 'str | None' = None, concurrency: 'int' = 4, reason: 'str | None' = None, runner: 'Runner | None' = None, review: 'bool' = False, reviewer: 'ReviewerConfig | None' = None) -> 'RegradeSummary'
 ```
 
-Arguments in no release yet: `review`, `reviewer`.
+New arguments in 0.10: `review`, `reviewer`.
 
 Re-run each trial's task verifier (from ``tasks_dir`` when given) on the trial's frozen final workspace, in a fresh sandbox.
 
@@ -361,8 +363,10 @@ Copy Dockerfile COPY sources into environment/_deps/ and rewrite paths.
 ### `stream_rollouts`
 
 ```python
-bf.stream_rollouts(job_dir: 'str | Path', *, follow: 'bool' = True, poll_interval: 'float' = 1.0, timeout: 'float | None' = None, group_by: 'str | Sequence[str] | None' = None, group_size: 'int | None' = None, on_warning: 'Callable[[str], None] | None' = None) -> 'Iterator[StreamedRollout]'
+bf.stream_rollouts(job_dir: 'str | Path', *, follow: 'bool' = True, poll_interval: 'float' = 1.0, timeout: 'float | None' = None, group_by: 'str | Sequence[str] | None' = None, group_size: 'int | None' = None, on_warning: 'Callable[[str], None] | None' = None, on_withheld: 'Callable[[list[StreamedRollout]], None] | None' = None) -> 'Iterator[StreamedRollout]'
 ```
+
+New arguments in 0.10: `on_withheld`.
 
 Yield each finished rollout of a job as it finishes.
 
@@ -422,7 +426,7 @@ Client that speaks ACP to an agent process.
 bf.ACPClient(transport: benchflow.acp.transport.Transport, *, subagent_transcript: bool = False, typed_failures: bool = False, session_meta: dict[str, typing.Any] | None = None)
 ```
 
-Arguments in no release yet: `session_meta`.
+New arguments in 0.10: `session_meta`.
 
 - `.authenticate(method_id: str) -> dict`: Async: `await` it. Authenticate with the agent using one of its advertised auth methods.
 - `.cancel() -> None`: Async: `await` it. Cancel the current prompt.
@@ -461,7 +465,7 @@ bf.ACPSession(session_id: str)
 - `.record_agent_timeout(*, timeout_sec: float, pending_tool_call_ids: list[str], terminal_trajectory_complete: bool) -> None`: Append BenchFlow's terminal timeout marker to the ACP event stream.
 - `.record_prompt_usage(usage: object | None) -> None`: Record cumulative ACP token usage returned by session/prompt.
 - `.record_user_prompt(text: str) -> None`: Record a user prompt. Call before sending each ACP prompt.
-- `.stop_reason` (unreleased): How the last prompt ended, as the agent reported it.
+- `.stop_reason` (0.10): How the last prompt ended, as the agent reported it.
 
 ### `Agent`
 
@@ -683,7 +687,7 @@ Two jobs paired by task name (``a`` and ``b`` are their denominators).
 | `b_paired` | `Denominators \| None` | `None` |
 | `by` | `tuple[str, ...]` | `()` |
 | `notes` | `list[str]` | `(computed)` |
-| `scoring` (unreleased) | `dict[str, Any] \| None` | `None` |
+| `scoring` (0.10) | `dict[str, Any] \| None` | `None` |
 
 - `.to_json(path: 'str | Path | None' = None, *, indent: 'int' = 2) -> 'Any'`: `to_json_dict` as a JSON string, or written to ``path`` (returned).
 - `.to_json_dict() -> 'dict[str, Any]'`: The comparison as a ``benchflow.comparison`` document.
@@ -783,7 +787,7 @@ Counts behind a pass rate.
 | `integration_failures` | `int` | `0` |
 | `mean_reward_scored_only` | `float \| None` | `None` |
 | `mean_reward_caveat` | `str \| None` | `None` |
-| `outcomes` (unreleased) | `dict[str, int]` | `(computed)` |
+| `outcomes` (0.10) | `dict[str, int]` | `(computed)` |
 
 - `.of(trials: 'Iterable[Trial]', *, controls_excluded: 'int' = 0) -> 'Denominators'`: Count ``trials`` (see the class docstring for each count).
 - `.pass_rate_attempted`: Passed over attempted trials; None when none was attempted.
@@ -863,7 +867,7 @@ Run a benchmark job across multiple tasks.
 bf.Evaluation(tasks_dir: 'str | Path', jobs_dir: 'str | Path', config: 'EvaluationConfig | None' = None, job_name: 'str | None' = None, on_result: 'Callable[[str, RunResult], None] | None' = None, on_task_start: 'Callable[[str], None] | None' = None, on_plan: 'Callable[[int, int, int, tuple[int, int, int]], None] | None' = None, preflight: 'bool' = True, budget: 'Budget | dict[str, Any] | None' = None, *, restart_changed: 'bool' = False)
 ```
 
-Arguments in no release yet: `restart_changed`.
+New arguments in 0.10: `restart_changed`.
 
 - `.from_dict(raw: 'dict[str, Any]', *, warn_default_agent: 'bool' = True, **kwargs: 'Any') -> 'Evaluation'`: Build an Evaluation from a native config mapping (``to_dict``'s shape).
 - `.from_yaml(path: 'str | Path', *, warn_default_agent: 'bool' = True, job_cell: 'int | None' = None, **kwargs: 'Any') -> 'Evaluation'`: Create a Job from a YAML config file.
@@ -905,7 +909,7 @@ Configuration for a benchmark job.
 | `fresh_install` | `bool` | `False` |
 | `allow_cloud_metadata` | `bool` | `False` |
 | `agent_idle_timeout` | `int \| None` | `600` |
-| `agent_idle_timeout_given` (unreleased) | `bool \| None` | `None` |
+| `agent_idle_timeout_given` (0.10) | `bool \| None` | `None` |
 | `context_root` | `str \| None` | `None` |
 | `base_image_override` | `str \| None` | `None` |
 | `separate_verifier` | `bool` | `False` |
@@ -938,19 +942,19 @@ Configuration for a benchmark job.
 | `retry_prompt` | `str \| None` | `None` |
 | `retry_resume_session` | `bool` | `False` |
 | `budget` | `Budget \| None` | `None` |
-| `trial_budget` (unreleased) | `TrialBudget \| None` | `None` |
+| `trial_budget` (0.10) | `TrialBudget \| None` | `None` |
 | `seeds` | `list[int] \| None` | `None` |
 | `pre_agent_hooks` | `list[Callable[..., Any]] \| None` | `None` |
 | `agent_defaulted` | `bool` | `False` |
 | `accept_deviations` (0.10) | `str \| None` | `None` |
 | `planned_trials` (0.10) | `int` | `1` |
 | `trial_number` (0.10) | `int \| None` | `None` |
-| `model_given` (unreleased) | `bool \| None` | `None` |
+| `model_given` (0.10) | `bool \| None` | `None` |
 
 - `.checkpoint_policy() -> 'CheckpointPolicy | None'`: The parsed checkpoint policy, or None when not requested.
-- `.idle_timeout_source() -> 'str'` (unreleased): Where the idle limit came from: ``given``, or BenchFlow's ``default`` (``effort_max`` and ``effort_xhigh`` for its longer one).
+- `.idle_timeout_source() -> 'str'` (0.10): Where the idle limit came from: ``given``, or BenchFlow's ``default`` (``effort_max`` and ``effort_xhigh`` for its longer one).
 - `.retry_policy() -> 'RetryPolicy | None'`: The parsed retry policy, or None when not requested.
-- `.settle_idle_timeout() -> 'None'` (unreleased): Give a run that set no idle limit BenchFlow's default for its effort; call again after the effort changes.
+- `.settle_idle_timeout() -> 'None'` (0.10): Give a run that set no idle limit BenchFlow's default for its effort; call again after the effort changes.
 
 ### `EvaluationResult`
 
@@ -968,7 +972,7 @@ Aggregated results for a job.
 | `errored` | `int` | `0` |
 | `verifier_errored` | `int` | `0` |
 | `guard_refused` | `int` | `0` |
-| `unusable_rewards` (unreleased) | `int` | `0` |
+| `unusable_rewards` (0.10) | `int` | `0` |
 | `elapsed_sec` | `float` | `0.0` |
 | `memory_score` | `float \| None` | `None` |
 | `memory_scores` | `dict[str, float]` | `(computed)` |
@@ -986,8 +990,8 @@ Aggregated results for a job.
 | `not_run` | `int` | `0` |
 | `stopped` | `bool` | `False` |
 | `interrupted` | `int` | `0` |
-| `run_checks` (unreleased) | `dict[str, Any] \| None` | `None` |
-| `scoring` (unreleased) | `dict[str, Any] \| None` | `None` |
+| `run_checks` (0.10) | `dict[str, Any] \| None` | `None` |
+| `scoring` (0.10) | `dict[str, Any] \| None` | `None` |
 
 - `.planned`: The tasks the job set out to run: ``total`` plus ``not_run``.
 - `.score`: Pass rate over all tasks.
@@ -1114,7 +1118,7 @@ Every trial under a job directory (or any folder of trials).
 | `summary` | `dict[str, Any] \| None` | `None` |
 | `evaluation` | `dict[str, Any] \| None` | `None` |
 | `interrupted` | `list[Path]` | `(computed)` |
-| `unreadable` (unreleased) | `list[Path]` | `(computed)` |
+| `unreadable` (0.10) | `list[Path]` | `(computed)` |
 
 - `.agents() -> 'list[Trial]'`: Agent runs (control runs left out).
 - `.branch_views() -> 'list[dict[str, Any]]'`: The ``benchflow.branch-view/1`` document of every trial that branched (see docs/train/environment.md).
@@ -1145,7 +1149,7 @@ The ``[judge]`` section of a rubric.
 
 | Field | Type | Default |
 |---|---|---|
-| `model` | `str` | `'claude-sonnet-5-5'` |
+| `model` | `str` | `'claude-sonnet-5-5'` (0.9.2: `claude-sonnet-4-6`) |
 | `mode` | `Literal['batched', 'individual']` | `'individual'` |
 | `files` | `list[str]` | `(computed)` |
 | `timeout` | `int` | `120` |
@@ -1159,6 +1163,8 @@ LLM-as-judge for subjective quality scoring.
 ```python
 bf.LLMJudgeRewardFunc(prompt: 'str' = '', model: 'str' = 'claude-sonnet-5-5', *, rubric_path: 'Path | None' = None, criteria: 'list[dict] | None' = None, mode: "Literal['batched', 'individual']" = 'individual', judge_model: 'str | None' = None, judge_env: 'Mapping[str, str] | None' = None, judge_errors_are_infra: 'bool' = False) -> 'None'
 ```
+
+In 0.9.2, `model` defaults to `claude-sonnet-4-6`.
 
 - `.events`: Dense reward events from the last ``score()`` call.
 - `.score(rollout_dir: 'Path') -> 'float'`: Async: `await` it. Score the rollout, returning a float in [0, 1].
@@ -1588,10 +1594,10 @@ Declarative rollout configuration.
 | `environment_manifest` | `EnvironmentManifest \| None` | `None` |
 | `config_override` | `dict \| None` | `None` |
 | `agent_idle_timeout` | `int \| None` | `600` |
-| `agent_idle_timeout_given` (unreleased) | `bool \| None` | `None` |
+| `agent_idle_timeout_given` (0.10) | `bool \| None` | `None` |
 | `timeout` | `int \| None` | `None` |
 | `prompt_suffix` | `str \| None` | `None` |
-| `trial_budget` (unreleased) | `TrialBudget \| None` | `None` |
+| `trial_budget` (0.10) | `TrialBudget \| None` | `None` |
 | `usage_tracking` | `UsageTrackingConfig` | `(computed)` |
 | `harness` | `str` | `'acp'` |
 | `user` | `BaseUser \| None` | `None` |
@@ -1652,7 +1658,7 @@ Outcome of a single rollout execution.
 bf.RolloutResult(task_name: 'str', rollout_name: 'str' = '', rewards: 'dict[str, Any] | None' = None, trajectory: 'list[dict[str, Any]] | None' = None, agent: 'str' = '', agent_name: 'str' = '', model: 'str | None' = None, n_tool_calls: 'int' = 0, n_skill_invocations: 'int' = 0, n_prompts: 'int' = 0, n_input_tokens: 'int | None' = None, n_output_tokens: 'int | None' = None, n_cache_read_tokens: 'int | None' = None, n_cache_creation_tokens: 'int | None' = None, total_tokens: 'int | None' = None, cost_usd: 'float | None' = None, usage_source: 'UsageSource' = 'unavailable', price_source: 'str | None' = None, usage_details: 'dict[str, Any] | None' = None, error: 'str | None' = None, error_category: 'str | None' = None, verifier_error: 'str | None' = None, verifier_error_category: 'str | None' = None, export_error: 'str | None' = None, partial_trajectory: 'bool' = False, trajectory_source: 'TrajectorySource | None' = None, reward_events: 'list[RewardEvent] | None' = None, evolved_skills: 'dict[str, str] | None' = None, source_provenance: 'dict[str, Any] | None' = None, started_at: 'datetime | None' = None, finished_at: 'datetime | None' = None, scoring: 'ScoringResult | None' = None, purpose: "Literal['task', 'reviewer']" = 'task', parent_rollout: 'str | None' = None, rollout_dir: 'Path | None' = None, retry: 'dict[str, Any] | None' = None, integrity: 'dict[str, Any] | None' = None, harness_versions: 'dict[str, Any] | None' = None, model_refusal: 'dict[str, Any] | None' = None, trial_budget: 'dict[str, Any] | None' = None)
 ```
 
-Arguments in no release yet: `harness_versions`, `model_refusal`, `trial_budget`.
+New arguments in 0.10: `harness_versions`, `model_refusal`, `trial_budget`.
 
 - `.from_dict(data: 'dict[str, Any]', *, rollout_dir: 'Path | None' = None) -> 'RolloutResult'`: Build a result from a persisted ``result.json`` payload.
 - `.load(path: 'str | Path') -> 'RolloutResult'`: Read a finished rollout from its directory (or its ``result.json``).
@@ -1910,6 +1916,7 @@ One finished rollout, as a trainer reads it (``benchflow.rollout-stream.v1``).
 | `sequences` | `list[dict[str, Any]]` | `required` |
 | `advantage` | `float \| None` | `None` |
 | `group_complete` | `bool \| None` | `None` |
+| `withheld` (0.10) | `str \| None` | `None` |
 | `rollout_dir` | `Path` | `PosixPath('.')` |
 | `replaces` | `str \| None` | `None` |
 | `retried` | `bool` | `False` |
@@ -2156,7 +2163,7 @@ One finished trial (rollout) directory.
 - `.to_record() -> 'dict[str, Any]'`: ``RolloutResult.to_record()`` plus control, execution, assessment and the settings ``bf.compare`` checks (flattened; ``model`` and ``agent`` already appear once).
 - `.total_tokens`: Tokens of this rollout, or None when unknown.
 
-### `TrialBudget` (unreleased)
+### `TrialBudget` (0.10)
 
 Defined in `benchflow.trial_budget`.
 
@@ -2258,7 +2265,7 @@ Aggregated result from a Rubric or node evaluation.
 
 ### `__version__`
 
-`bf.__version__`: `'0.10.0rc2'`
+`bf.__version__`: `'0.10.0rc3'`
 
 ### `AGENTS`
 

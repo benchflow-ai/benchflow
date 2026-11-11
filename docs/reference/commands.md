@@ -1,6 +1,6 @@
 # Commands
 
-Each `bench` command and flag has its type, default and help here; `benchflow` is the same command as `bench`. A command or flag new since 0.9.1 has `(0.10)` after its name when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet; the options `--help` leaves out have a table of their own under their command, and [the commands `bench --help` hides](#commands-hidden-from-bench---help) come last. Which options `--help` leaves out follows 0.10.0rc1: 0.9.1's `bench run --help` also leaves out `--trials`, `--max-cost-usd`, `--max-tokens` and `--integrity`, which its `--help-all` lists. To see the commands at work, start with the [Quick start](../start/quick-start.md) and [Run a benchmark](../evaluate/run-a-benchmark.md); a run config's keys are in [Files BenchFlow reads and writes](./files.md), and [CLI and Python](./cli-python.md) gives each flag's Python argument.
+Each `bench` command and flag has its type, default and help here; `benchflow` is the same command as `bench`. A command or flag new since 0.9.2 has `(0.10)` after its name when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet; the options `--help` leaves out have a table of their own under their command, and [the commands `bench --help` hides](#commands-hidden-from-bench---help) come last. Which options `--help` leaves out follows 0.10.0rc3: 0.9.2's `bench run --help` also leaves out `--trials`, `--max-cost-usd`, `--max-tokens` and `--integrity`, which its `--help-all` lists. To see the commands at work, start with the [Quick start](../start/quick-start.md) and [Run a benchmark](../evaluate/run-a-benchmark.md); a run config's keys are in [Files BenchFlow reads and writes](./files.md), and [CLI and Python](./cli-python.md) gives each flag's Python argument.
 
 <!-- This page is generated from the code by tools/docs_reference.py. To change it, change the command's help text, then run `uv run python tools/docs_reference.py --write`. -->
 
@@ -70,7 +70,7 @@ Each `bench` command and flag has its type, default and help here; `benchflow` i
 | [`bench preferences pairs`](#bench-preferences-pairs-010) (0.10) | Make the store and the blind assignment. |
 | [`bench preferences import`](#bench-preferences-import-010) (0.10) | Check every vote in the file, then add the new ones to the store. |
 | [`bench preferences rank`](#bench-preferences-rank-010) (0.10) | Ratings from the store's votes (also written to ratings.v1.json). |
-| [`bench bundle`](#bench-bundle-unreleased) (unreleased) | Write one zip of a run's evidence to share, redacted. |
+| [`bench bundle`](#bench-bundle-010) (0.10) | Write one zip of a run's evidence to share, redacted. |
 | [`bench skills`](#bench-skills) | Skill discovery and evaluation. |
 | [`bench skills list`](#bench-skills-list) | List discovered skills. |
 | [`bench skills eval`](#bench-skills-eval) | Evaluate a skill using its evals/evals.json test cases. |
@@ -90,8 +90,8 @@ Each `bench` command and flag has its type, default and help here; `benchflow` i
 | [`bench hub list`](#bench-hub-list) | List a hub's datasets or environments (benchflow or primeintellect). |
 | [`bench hub show`](#bench-hub-show) | Show a dataset's tasks, or a hosted environment's metadata. |
 | [`bench hub inspect`](#bench-hub-inspect) | Inspect a file from a hub environment package. |
-| [`bench hub publish`](#bench-hub-publish-unreleased) (unreleased) | Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub. |
-| [`bench hub push`](#bench-hub-push-unreleased) (unreleased) | Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub. |
+| [`bench hub publish`](#bench-hub-publish-010) (0.10) | Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub. |
+| [`bench hub push`](#bench-hub-push-010) (0.10) | Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub. |
 | [`bench hub check`](#bench-hub-check) | Inventory or structurally check representative registry tasks. |
 | [`bench daemon`](#bench-daemon) | Manage the opt-in warm local runtime. |
 | [`bench daemon start`](#bench-daemon-start) | Start a private runtime; attach runs with BENCHFLOW_DAEMON=auto. |
@@ -133,7 +133,7 @@ bench [OPTIONS] COMMAND [ARGS]...
 | [`review`](#bench-review) | Grade finished rollouts against a rubric with a reviewer agent. |
 | [`assess`](#bench-assess-010) (0.10) | Blind pairwise human assessments of saved outputs, kept in an opt-in sidecar. |
 | [`preferences`](#bench-preferences-010) (0.10) | Human preferences and rubric scores on finished trials. |
-| [`bundle`](#bench-bundle-unreleased) (unreleased) | Write one zip of a run's evidence to share, redacted. |
+| [`bundle`](#bench-bundle-010) (0.10) | Write one zip of a run's evidence to share, redacted. |
 | [`skills`](#bench-skills) | Skill discovery and evaluation. |
 | [`traj`](#bench-traj) | Trajectory commands. |
 | [`train`](#bench-train) | Training data commands. |
@@ -259,7 +259,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--verifier-sandbox` | `text` |  | task or separate. separate runs every task's verifier in a fresh sandbox that gets only the workspace and declared artifacts; a task it cannot run there refuses the whole run before anything starts (default: task, each task's own choice) |
 | `--job`, `--job-name` | `text` |  | Job name under --jobs-dir (an existing job is resumed) |
 | `--fresh` | flag |  | Start a new job instead of resuming the latest one in --jobs-dir |
-| `--dry-run` | flag |  | Print the plan as JSON and the run card on stderr, and run nothing; for a local folder or run config, exits 1 when the run card would refuse the run. In 0.9.1 it prints the plan only, with no run card. |
+| `--dry-run` | flag |  | Print the plan as JSON and the run card on stderr, and run nothing; for a local folder or run config, exits 1 when the run card would refuse the run. In 0.9.2 it prints the plan only, with no run card. |
 | `--quiet`, `-q` | flag |  | Print only warnings, errors and the final score |
 | `--config`, `--run-config` | `path` |  | YAML run-config file (the whole run spec) |
 | `--source-repo` | `text` |  | GitHub repo of the tasks as org/repo (e.g. benchflow-ai/skillsbench) |
@@ -276,7 +276,7 @@ bench run [OPTIONS] [TARGETS]...
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--hub` (unreleased) | `text` |  | Read --dataset from this BenchFlow Hub, as the bench hub commands' --hub does (the same as --registry hub:&lt;url&gt;) |
+| `--hub` (0.10) | `text` |  | Read --dataset from this BenchFlow Hub, as the bench hub commands' --hub does (the same as --registry hub:&lt;url&gt;) |
 | `--tasks-dir` | `path` |  | Local tasks directory |
 | `--source-ref` | `text` |  | Branch, tag or full commit SHA to fetch (e.g. main) |
 | `--source-env` | `text` |  | Hosted environment source (e.g. primeintellect/general-agent) |
@@ -307,10 +307,10 @@ bench run [OPTIONS] [TARGETS]...
 | `--retry-prompt` | `text` |  | Prompt for the retry, replacing the prompts after the checkpoint (the default). '@instruction' is the task instruction, '@verifier_feedback' the failed trial's reward and verifier output tail. |
 | `--max-sandbox-seconds` | `number` |  | Job budget in trial wall-clock seconds, running trials included and re-checked as they run; same stop/cancel behaviour as --max-cost-usd |
 | `--max-rollouts` | `integer` |  | Job budget in rollouts started, retries included: at the cap no rollout starts and running ones finish |
-| `--token-budget` (unreleased) | `integer` |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
-| `--turn-budget` (unreleased) | `integer` |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
+| `--token-budget` (0.10) | `integer` |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
+| `--turn-budget` (0.10) | `integer` |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
 | `--retry-resume-session` | flag |  | The retry resumes the failed trial's conversation at the checkpoint (ACP session/load; Claude Code) instead of a fresh session. |
-| `--restart-changed` (unreleased) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
+| `--restart-changed` (0.10) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
 | `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error (comma-separated or repeated) |
 | `--summary-out` | `path` |  | Write the run's benchflow.run-summary JSON (job dir, counts, gate) here |
 | `--codex-apps-policy` | `text` |  | Codex account Apps: disabled (scored-task default) or inherit (explicit opt-in). |
@@ -474,21 +474,21 @@ bench regrade [OPTIONS] PATH
 | `--concurrency` | `integer range` | `4` | Trials regraded at once |
 | `--reason` | `text` |  | Why the verifier changed; kept in each block |
 | `--json` | flag |  | Print the summary as JSON |
-| `--review` (unreleased) | flag |  | Also rerun each trial's rubric review on its saved outputs, gated by the new test, and compare the combined score. The reviewer is the one the trial recorded, changed by --reviewer-* |
-| `--reviewer-agent` (unreleased) | `text` |  | Rubric reviewer harness |
-| `--reviewer-model` (unreleased) | `text` |  | Rubric reviewer model |
-| `--reviewer-reasoning-effort` (unreleased) | `text` |  | Rubric reviewer reasoning effort |
-| `--reviewer-sandbox` (unreleased) | `text` |  | Rubric reviewer sandbox backend |
-| `--reviewer-timeout-sec` (unreleased) | `integer range` |  | Reviewer execution budget in seconds |
-| `--reviewer-idle-timeout` (unreleased) | `text` |  | Abort a reviewer prompt after this many idle seconds (default: 600). Pass 0 or 'none' to disable the idle watchdog and leave --reviewer-timeout-sec in charge. |
-| `--reviewer-storage-mb` (unreleased) | `integer range` |  | Reviewer sandbox disk in MB (default: the evidence it holds plus 2048, at least 4096, at most the sandbox backend's limit) |
-| `--reviewer-memory-mb` (unreleased) | `integer range` |  | Reviewer sandbox memory in MB (default: 2048) |
-| `--reviewer-setup-timeout` (unreleased) | `integer range` |  | Seconds for the reviewer sandbox's setup, its model proxy install among it (default: the run's --sandbox-setup-timeout) |
-| `--reviewer-evidence-timeout` (unreleased) | `integer range` |  | Seconds to unpack, and again to check, the workspace evidence in the reviewer sandbox (default: 1 per MiB, at least 600) |
-| `--reviewer-concurrency` (unreleased) | `integer range` |  | Max concurrent rubric reviewers |
-| `--reviewer-image` (unreleased) | `text` |  | Rubric reviewer container image |
-| `--reviewer-agent-env` (unreleased) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
-| `--reviewer-open-network` (unreleased) | flag |  | Allow unrestricted reviewer network access |
+| `--review` (0.10) | flag |  | Also rerun each trial's rubric review on its saved outputs, gated by the new test, and compare the combined score. The reviewer is the one the trial recorded, changed by --reviewer-* |
+| `--reviewer-agent` (0.10) | `text` |  | Rubric reviewer harness |
+| `--reviewer-model` (0.10) | `text` |  | Rubric reviewer model |
+| `--reviewer-reasoning-effort` (0.10) | `text` |  | Rubric reviewer reasoning effort |
+| `--reviewer-sandbox` (0.10) | `text` |  | Rubric reviewer sandbox backend |
+| `--reviewer-timeout-sec` (0.10) | `integer range` |  | Reviewer execution budget in seconds |
+| `--reviewer-idle-timeout` (0.10) | `text` |  | Abort a reviewer prompt after this many idle seconds (default: 600). Pass 0 or 'none' to disable the idle watchdog and leave --reviewer-timeout-sec in charge. |
+| `--reviewer-storage-mb` (0.10) | `integer range` |  | Reviewer sandbox disk in MB (default: the evidence it holds plus 2048, at least 4096, at most the sandbox backend's limit) |
+| `--reviewer-memory-mb` (0.10) | `integer range` |  | Reviewer sandbox memory in MB (default: 2048) |
+| `--reviewer-setup-timeout` (0.10) | `integer range` |  | Seconds for the reviewer sandbox's setup, its model proxy install among it (default: the run's --sandbox-setup-timeout) |
+| `--reviewer-evidence-timeout` (0.10) | `integer range` |  | Seconds to unpack, and again to check, the workspace evidence in the reviewer sandbox (default: 1 per MiB, at least 600) |
+| `--reviewer-concurrency` (0.10) | `integer range` |  | Max concurrent rubric reviewers |
+| `--reviewer-image` (0.10) | `text` |  | Rubric reviewer container image |
+| `--reviewer-agent-env` (0.10) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
+| `--reviewer-open-network` (0.10) | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
 | `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 
@@ -762,14 +762,14 @@ bench eval run [OPTIONS]
 | `--max-sandbox-seconds` | `number` |  | Job budget in trial wall-clock seconds, running trials included and re-checked as they run; same stop/cancel behaviour as --max-cost-usd |
 | `--max-tokens` | `integer` |  | Job budget in tokens, checked between starts like --max-cost-usd. With --trials, each repeat has its own cap |
 | `--max-rollouts` | `integer` |  | Job budget in rollouts started, retries included: at the cap no rollout starts and running ones finish |
-| `--token-budget` (unreleased) | `integer` |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
-| `--turn-budget` (unreleased) | `integer` |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
+| `--token-budget` (0.10) | `integer` |  | Per-trial budget in tokens (input, cached included, plus output), subagents' calls included: BenchFlow's model proxy refuses the next model call once it is spent, the agent is stopped and its work graded. Replaces a task's [agent] token_budget |
+| `--turn-budget` (0.10) | `integer` |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
 | `--retry-resume-session` | flag |  | The retry resumes the failed trial's conversation at the checkpoint (ACP session/load; Claude Code) instead of a fresh session. |
 | `--quiet` | flag |  | Print only warnings, errors and the final score: no Rich dashboard on a TTY, no progress heartbeat (the '… Nmin, K tool calls' lines) and no per-trial log lines |
 | `--jobs-dir` | `text` |  | Output directory (default jobs); a plain run resumes its latest job |
 | `--fresh` | flag |  | Start a new timestamped job instead of resuming the latest job in --jobs-dir (the default reuses its finished tasks) |
 | `--job-name` | `text` |  | Job folder name under --jobs-dir (resumed if it exists) |
-| `--restart-changed` (unreleased) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
+| `--restart-changed` (0.10) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
 | `--fail-under` | `number` |  | Exit 1 when the pass rate (passed / planned tasks; one a budget kept from running counts as not passed) is below this, e.g. 0.8 |
 | `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error (comma-separated or repeated) |
 | `--summary-out` | `path` |  | Write the run's benchflow.run-summary JSON (job dir, counts, gate) here |
@@ -831,7 +831,7 @@ bench eval run [OPTIONS]
 | `--sample-seed` | `integer` |  | Seed for the --n-tasks random sample |
 | `--timeout-multiplier` | `number` |  | Scale every task's agent time budget (task.md agent.timeout_sec), e.g. 2.0 |
 | `--extra-instruction` | `text` |  | Text appended to every task prompt (prompt ablations; recorded per rollout) |
-| `--dry-run` | flag |  | Resolve the plan (agent, model, selected tasks, seeds, budgets) and print it without running; exits 1 when the run card would refuse the run. In 0.9.1 it prints the plan only, with no run card. |
+| `--dry-run` | flag |  | Resolve the plan (agent, model, selected tasks, seeds, budgets) and print it without running; exits 1 when the run card would refuse the run. In 0.9.2 it prints the plan only, with no run card. |
 | `--seeds` | `text` |  | Seeded rollouts: run every task once per seed, e.g. 0-4 or 0,3,7 (tasks in a task format that writes seeded variants, such as embodied tasks). summary.json gets pass@k and variance per task. |
 
 ## bench eval adopt
@@ -943,21 +943,21 @@ bench eval regrade [OPTIONS] PATH
 | `--concurrency` | `integer range` | `4` | Trials regraded at once |
 | `--reason` | `text` |  | Why the verifier changed; kept in each block |
 | `--json` | flag |  | Print the summary as JSON |
-| `--review` (unreleased) | flag |  | Also rerun each trial's rubric review on its saved outputs, gated by the new test, and compare the combined score. The reviewer is the one the trial recorded, changed by --reviewer-* |
-| `--reviewer-agent` (unreleased) | `text` |  | Rubric reviewer harness |
-| `--reviewer-model` (unreleased) | `text` |  | Rubric reviewer model |
-| `--reviewer-reasoning-effort` (unreleased) | `text` |  | Rubric reviewer reasoning effort |
-| `--reviewer-sandbox` (unreleased) | `text` |  | Rubric reviewer sandbox backend |
-| `--reviewer-timeout-sec` (unreleased) | `integer range` |  | Reviewer execution budget in seconds |
-| `--reviewer-idle-timeout` (unreleased) | `text` |  | Abort a reviewer prompt after this many idle seconds (default: 600). Pass 0 or 'none' to disable the idle watchdog and leave --reviewer-timeout-sec in charge. |
-| `--reviewer-storage-mb` (unreleased) | `integer range` |  | Reviewer sandbox disk in MB (default: the evidence it holds plus 2048, at least 4096, at most the sandbox backend's limit) |
-| `--reviewer-memory-mb` (unreleased) | `integer range` |  | Reviewer sandbox memory in MB (default: 2048) |
-| `--reviewer-setup-timeout` (unreleased) | `integer range` |  | Seconds for the reviewer sandbox's setup, its model proxy install among it (default: the run's --sandbox-setup-timeout) |
-| `--reviewer-evidence-timeout` (unreleased) | `integer range` |  | Seconds to unpack, and again to check, the workspace evidence in the reviewer sandbox (default: 1 per MiB, at least 600) |
-| `--reviewer-concurrency` (unreleased) | `integer range` |  | Max concurrent rubric reviewers |
-| `--reviewer-image` (unreleased) | `text` |  | Rubric reviewer container image |
-| `--reviewer-agent-env` (unreleased) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
-| `--reviewer-open-network` (unreleased) | flag |  | Allow unrestricted reviewer network access |
+| `--review` (0.10) | flag |  | Also rerun each trial's rubric review on its saved outputs, gated by the new test, and compare the combined score. The reviewer is the one the trial recorded, changed by --reviewer-* |
+| `--reviewer-agent` (0.10) | `text` |  | Rubric reviewer harness |
+| `--reviewer-model` (0.10) | `text` |  | Rubric reviewer model |
+| `--reviewer-reasoning-effort` (0.10) | `text` |  | Rubric reviewer reasoning effort |
+| `--reviewer-sandbox` (0.10) | `text` |  | Rubric reviewer sandbox backend |
+| `--reviewer-timeout-sec` (0.10) | `integer range` |  | Reviewer execution budget in seconds |
+| `--reviewer-idle-timeout` (0.10) | `text` |  | Abort a reviewer prompt after this many idle seconds (default: 600). Pass 0 or 'none' to disable the idle watchdog and leave --reviewer-timeout-sec in charge. |
+| `--reviewer-storage-mb` (0.10) | `integer range` |  | Reviewer sandbox disk in MB (default: the evidence it holds plus 2048, at least 4096, at most the sandbox backend's limit) |
+| `--reviewer-memory-mb` (0.10) | `integer range` |  | Reviewer sandbox memory in MB (default: 2048) |
+| `--reviewer-setup-timeout` (0.10) | `integer range` |  | Seconds for the reviewer sandbox's setup, its model proxy install among it (default: the run's --sandbox-setup-timeout) |
+| `--reviewer-evidence-timeout` (0.10) | `integer range` |  | Seconds to unpack, and again to check, the workspace evidence in the reviewer sandbox (default: 1 per MiB, at least 600) |
+| `--reviewer-concurrency` (0.10) | `integer range` |  | Max concurrent rubric reviewers |
+| `--reviewer-image` (0.10) | `text` |  | Rubric reviewer container image |
+| `--reviewer-agent-env` (0.10) | `text (repeatable)` |  | Reviewer environment variable (KEY=VALUE) |
+| `--reviewer-open-network` (0.10) | flag |  | Allow unrestricted reviewer network access |
 | `--reviewer-pdf-tools` (unreleased) | flag |  | Install PyMuPDF beside numpy and pypdf in the reviewer sandbox, to read and render a submitted PDF (default: off) |
 | `--reviewer-submitted-file-rule` (unreleased) | flag |  | Tell the reviewer to judge a written deliverable by the file the agent submitted: read it first, cite pages, and take a compiled PDF over its sources (default: off) |
 
@@ -1165,7 +1165,7 @@ bench eval resume [OPTIONS] JOB_DIR
 |---|---|---|---|
 | `--agent-env` | `text (repeatable)` |  | KEY=VALUE for the agent (repeatable); values that look secret are never stored in the job |
 | `--concurrency` | `integer` |  | Override the job's concurrency |
-| `--restart-changed` (unreleased) | flag |  | When the job's trials ran with other settings or task files than this resume, set them aside in &lt;job&gt;/.set-aside/ and run them again (default: refuse) |
+| `--restart-changed` (0.10) | flag |  | When the job's trials ran with other settings or task files than this resume, set them aside in &lt;job&gt;/.set-aside/ and run them again (default: refuse) |
 
 ## bench eval branches
 
@@ -1815,12 +1815,12 @@ bench preferences [OPTIONS] COMMAND [ARGS]...
 Make the store and the blind assignment.
 
 ```text
-bench preferences pairs [OPTIONS] JOBS...
+bench preferences pairs [OPTIONS] [JOBS]...
 ```
 
 | Argument | Type | Required | Help |
 |---|---|---|---|
-| `JOBS` | `path` | yes | Job or trial folders whose outputs to pair. |
+| `JOBS` | `path` | no | Job or trial folders whose outputs to pair (none with only --items). |
 
 **Options**
 
@@ -1834,6 +1834,10 @@ bench preferences pairs [OPTIONS] JOBS...
 | `--rubric` (0.10) | `path` |  | A rubric JSON file to freeze for aspects and scores. |
 | `--bundle` (0.10) | `path` |  | Where to copy the outputs under their opaque ids for the rating tool (default: &lt;store&gt;-outputs beside the store). |
 | `--keep-sides` (0.10) | flag |  | Do not shuffle which output is shown on the left. |
+| `--items` (0.10) | `path` |  | A JSON-lines file of outputs made outside BenchFlow (a golden, a remix), each with its task, output folder and arm labels; they pair with the trials of their task's version. |
+| `--condition` (0.10) | `text` |  | A condition to label every trial's output with (one-shot, say); --items rows carry their own. |
+| `--entry` (0.10) | `text` |  | The page to open in each output, such as index.html; an output without it is left out. |
+| `--golden` (0.10) | `text` | `side` | Whether a golden from --items is a side in pairs (side) or only the bar a rater's tool shows (bar). |
 
 ## bench preferences import (0.10)
 
@@ -1851,8 +1855,10 @@ bench preferences import [OPTIONS] STORE
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--votes` (0.10) | `path` |  | Votes as JSON lines or CSV (see the docs for the fields). Required. |
+| `--votes` (0.10) | `path` |  | Votes as JSON lines or CSV, or the FDB vote site's export (see the docs for the fields). Required. |
 | `--source` (0.10) | `text` |  | The tool that collected them, recorded on each vote. |
+| `--skip-unknown` (0.10) | flag |  | Leave out votes on outputs the store doesn't have, instead of refusing the file. |
+| `--dry-run` (0.10) | flag |  | Check every vote and say what would change; write nothing. |
 
 ## bench preferences rank (0.10)
 
@@ -1870,14 +1876,17 @@ bench preferences rank [OPTIONS] STORE
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--by` (0.10) | `text` | `agent+model` | Rate each agent, model or agent+model. |
+| `--by` (0.10) | `text` | `agent+model` | Rate each agent, model, agent+model or condition. |
 | `--bootstrap` (0.10) | `integer` | `1000` | Resamples for the 95% intervals (0: none). |
 | `--seed` (0.10) | `integer` | `0` | Seed for the resampling. |
 | `--min-agreement` (0.10) | `number` |  | Raw agreement (not kappa) to check the raters against (0 to 1); rank says whether it is met. |
 | `--raters-per-pair` (0.10) | `integer` |  | Raters each pair should have. |
+| `--raters` (0.10) | `text` |  | Whose votes to rate together: person, guest, model, or several joined by commas (default: people; the others get tables of their own). |
+| `--cluster` (0.10) | `text` | `auto` | What the intervals resample: vote, rater, task or rater+task (auto: raters and tasks, when there are several of each). |
+| `--provisional` (0.10) | flag |  | Show the ratings before every pair has a vote. |
 | `--json` (0.10) | flag |  | Print JSON. |
 
-## bench bundle (unreleased)
+## bench bundle (0.10)
 
 Write one zip of a run's evidence to share, redacted.
 
@@ -1895,8 +1904,8 @@ bench bundle [OPTIONS] PATH
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--out`, `-o` (unreleased) | `path` |  | Where to write the zip (default: &lt;PATH&gt;.bundle.zip) |
-| `--workspace`, `--no-workspace` (unreleased) | flag | `True` | Include each trial's saved workspace (evidence/) when it has one |
+| `--out`, `-o` (0.10) | `path` |  | Where to write the zip (default: &lt;PATH&gt;.bundle.zip) |
+| `--workspace`, `--no-workspace` (0.10) | flag | `True` | Include each trial's saved workspace (evidence/) when it has one |
 
 ## bench skills
 
@@ -2098,7 +2107,7 @@ bench train convert [OPTIONS] JOBS_DIR
 | Option | Type | Default | Help |
 |---|---|---|---|
 | `--out`, `-o` | `path` |  | Output path: JSONL, or parquet for verl-sft Required. |
-| `--format` | `text` | `prime-sft` | Trainer format: prime-sft, trl-sft, branch-tree (one row per branch child: shared prefix, continuation, reward, advantage), verl-sft (parquet for verl's multi-turn SFT trainer), skyrl-sft (rows for SkyRL's SFT trainer) or openenv-episodes (OpenEnv episode records). 0.9.1 and 0.10.0rc1 write prime-sft, trl-sft and branch-tree; verl-sft, skyrl-sft and openenv-episodes are in no release yet. |
+| `--format` | `text` | `prime-sft` | Trainer format: prime-sft, trl-sft, branch-tree (one row per branch child: shared prefix, continuation, reward, advantage), verl-sft (parquet for verl's multi-turn SFT trainer), skyrl-sft (rows for SkyRL's SFT trainer) or openenv-episodes (OpenEnv episode records). 0.9.2 writes prime-sft, trl-sft and branch-tree only. |
 | `--pairs` | `path` |  | branch-tree only: also write one row per sibling pair whose rewards differ (chosen/rejected, margin) to this JSONL path |
 | `--pairs-any-request` | flag |  | branch-tree only: also pair siblings that were asked different things (default: only siblings with the same first user message) |
 | `--include-oracle` | flag |  | branch-tree only: keep oracle children as rows (skipped by default; their only message is the solution script's exit code) |
@@ -2161,6 +2170,7 @@ bench train stream [OPTIONS] JOB_DIR
 | `--timeout` | `number` |  | Stop after this many seconds (exit 3) |
 | `--group-size` | `integer` |  | Hold rollouts until N of a group finished, then emit them with a GRPO advantage |
 | `--group-by` | `text` |  | Grouping key, comma-separated from task, agent, model, task_digest, job (default task,agent,model,job) |
+| `--withheld` (0.10) | `path` |  | --group-size: write the records of groups withheld from the trainer (a member unscored or without the others' token sequence, or the group still short at the end) to this JSONL file, each with its reason |
 
 ## bench train validate
 
@@ -2178,7 +2188,7 @@ bench train validate [OPTIONS] JSONL
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--format` | `text` | `prime-sft` | Trainer format. 0.9.1 and 0.10.0rc1 check prime-sft, trl-sft and branch-tree rows only. |
+| `--format` | `text` | `prime-sft` | Trainer format. 0.9.2 and 0.10.0rc2 check prime-sft, trl-sft and branch-tree rows only. |
 | `--expected-rows` | `integer` |  | Fail unless this many rows are present |
 | `--source-jobs` | `path` |  | Source BenchFlow jobs dir to audit |
 | `--source-canonical-selection` | `path` |  | Canonical selection JSON used for this trainer data |
@@ -2258,8 +2268,8 @@ bench hub [OPTIONS] COMMAND [ARGS]...
 | [`list`](#bench-hub-list) | List a hub's datasets or environments (benchflow or primeintellect). |
 | [`show`](#bench-hub-show) | Show a dataset's tasks, or a hosted environment's metadata. |
 | [`inspect`](#bench-hub-inspect) | Inspect a file from a hub environment package. |
-| [`publish`](#bench-hub-publish-unreleased) (unreleased) | Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub. |
-| [`push`](#bench-hub-push-unreleased) (unreleased) | Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub. |
+| [`publish`](#bench-hub-publish-010) (0.10) | Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub. |
+| [`push`](#bench-hub-push-010) (0.10) | Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub. |
 | [`check`](#bench-hub-check) | Inventory or structurally check representative registry tasks. |
 
 ## bench hub list
@@ -2299,7 +2309,7 @@ bench hub show [OPTIONS] SOURCE_ENV
 | `--version` | `text` |  | Version (of the dataset or hosted environment) |
 | `--provider` | `text` |  | Where to read it without a Hub: 'benchflow' (BenchFlow's registry; lists the dataset's tasks) or 'primeintellect' (default: benchflow for name@version, primeintellect for owner/name) |
 | `--json` | flag |  | Print the dataset's entry as JSON (for a Hub version, the version and its controls) |
-| `--hub` (unreleased) | `text` |  | A BenchFlow Hub to read org/name@version from, with its control results (default: $BENCHFLOW_HUB_URL when set) |
+| `--hub` (0.10) | `text` |  | A BenchFlow Hub to read org/name@version from, with its control results (default: $BENCHFLOW_HUB_URL when set) |
 
 ## bench hub inspect
 
@@ -2320,7 +2330,7 @@ bench hub inspect [OPTIONS] SOURCE_ENV
 | `--version` | `text` |  | Hosted environment version |
 | `--path` | `text` | `README.md` | File inside the hosted environment package |
 
-## bench hub publish (unreleased)
+## bench hub publish (0.10)
 
 Publish a folder of tasks as an immutable dataset version on a BenchFlow Hub.
 
@@ -2336,16 +2346,16 @@ bench hub publish [OPTIONS] TASKS_DIR
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--name` (unreleased) | `text` |  | The version to publish, as org/name@version (e.g. robouse/metaworld-sample@0.6.1) Required. |
-| `--hub` (unreleased) | `text` |  | Hub address (default: $BENCHFLOW_HUB_URL) |
-| `--description` (unreleased) | `text` |  | One line on what it is |
-| `--license` (unreleased) | `text` |  | The tasks' license, as an SPDX expression (e.g. Apache-2.0 AND MIT) |
-| `--kind` (unreleased) | `text` |  | What its tasks are, e.g. embodied |
-| `--source-repo` (unreleased) | `text` |  | Where the tasks came from (a repository URL) |
-| `--source-commit` (unreleased) | `text` |  | The commit they came from |
-| `--exporter` (unreleased) | `text` |  | What wrote the packages, e.g. 'robouse-export@d05027fb' (the tool and its commit) |
+| `--name` (0.10) | `text` |  | The version to publish, as org/name@version (e.g. robouse/metaworld-sample@0.6.1) Required. |
+| `--hub` (0.10) | `text` |  | Hub address (default: $BENCHFLOW_HUB_URL) |
+| `--description` (0.10) | `text` |  | One line on what it is |
+| `--license` (0.10) | `text` |  | The tasks' license, as an SPDX expression (e.g. Apache-2.0 AND MIT) |
+| `--kind` (0.10) | `text` |  | What its tasks are, e.g. embodied |
+| `--source-repo` (0.10) | `text` |  | Where the tasks came from (a repository URL) |
+| `--source-commit` (0.10) | `text` |  | The commit they came from |
+| `--exporter` (0.10) | `text` |  | What wrote the packages, e.g. 'robouse-export@d05027fb' (the tool and its commit) |
 
-## bench hub push (unreleased)
+## bench hub push (0.10)
 
 Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub.
 
@@ -2361,9 +2371,9 @@ bench hub push [OPTIONS] JOB_DIR
 
 | Option | Type | Default | Help |
 |---|---|---|---|
-| `--hub` (unreleased) | `text` |  | Hub address (default: $BENCHFLOW_HUB_URL) |
-| `--dataset` (unreleased) | `text` |  | The dataset version the job ran, org/name@version (default: what the job recorded) |
-| `--label` (unreleased) | `text` |  | A label for the run on the Hub |
+| `--hub` (0.10) | `text` |  | Hub address (default: $BENCHFLOW_HUB_URL) |
+| `--dataset` (0.10) | `text` |  | The dataset version the job ran, org/name@version (default: what the job recorded) |
+| `--label` (0.10) | `text` |  | A label for the run on the Hub |
 
 ## bench hub check
 
@@ -2537,7 +2547,7 @@ bench sandbox cleanup [OPTIONS]
 | `bench embodied` | Embodied rollouts (robots and simulators): reports, evidence checks, export, specs. |
 | `bench embodied report` | Per task: rewards by seed, mean, std, pass@k and reset reproducibility. |
 | `bench embodied export` | Write every trial's per-step transitions and episode index (steps.jsonl, episodes.jsonl). |
-| `bench embodied verify` (unreleased) | Check each trial's files against its verdict now: record hashes, video copies, reward vs the record. |
+| `bench embodied verify` (0.10) | Check each trial's files against its verdict now: record hashes, video copies, reward vs the record. |
 | `bench embodied check-spec` | Validate an embodiment spec. |
 | `bench embodied robo-path` | Print the path of the agent-side `robo` script (standard library only). |
 | `bench continue` | Resume a previous unfinished (timed-out) OpenHands run to completion. (DEPRECATED) |

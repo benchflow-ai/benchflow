@@ -182,11 +182,20 @@
         "vector_names_differ": {
           "type": "boolean"
         },
+        "withheld": {
+          "type": "string",
+          "description": "Why the whole group is withheld from the trainer: a member has no result or is unscored, or wrote no row (no model calls, every call failed)."
+        },
+        "error": {
+          "type": "string",
+          "description": "This rollout ended with an error (its error_category, verifier_error or partial_trajectory) but was scored, so it stays in its group; a trainer may mask its rows."
+        },
         "excluded": {
           "enum": [
             "unscored",
             "single_scored_rollout",
-            "retried"
+            "retried",
+            "group_withheld"
           ]
         }
       }

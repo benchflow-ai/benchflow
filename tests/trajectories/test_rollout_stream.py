@@ -60,6 +60,10 @@ def _capture(prompt: list[int], sampled: list[int], provider: str = "vllm") -> d
 # Two calls, token-in/token-out: the second prompt is the first prompt, the
 # sampled tokens, then a tool result [7, 8].
 TITO_CALLS = [_capture([1, 2, 3], [10, 11]), _capture([1, 2, 3, 10, 11, 7, 8], [12])]
+# The same conversation after the client re-rendered it: the second prompt
+# carries the sampled text re-tokenized (99 for 10, 11), so it does not extend
+# the first call's tokens and the rollout has no merged sequence.
+RETOKENIZED_CALLS = [_capture([1, 2, 3], [10, 11]), _capture([1, 2, 3, 99, 7, 8], [12])]
 
 
 def write_rollout(
@@ -256,20 +260,34 @@ def test_unreadable_result_is_skipped_with_one_warning(tmp_path):
 
 
 def test_group_size_holds_records_until_the_group_fills(tmp_path):
+    """A group reaches the trainer whole or not at all.
+
+    Changed when whole groups came in (a group with a dropped member is
+    withheld from the trainer, never partially passed): a group still short when the stream
+    ends goes to ``on_withheld``. Before, it was yielded with
+    ``group_complete=False``.
+    """
     job = tmp_path / "job"
     for name, reward in (("t__1", 1.0), ("t__2", 0.0), ("t__3", 1.0)):
         write_rollout(job, name, reward=reward)
     write_rollout(job, "u__1", task="u", reward=1.0)
+    withheld: list[list[rs.StreamedRollout]] = []
 
-    records = list(rs.stream_rollouts(job, follow=False, group_size=3))
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=3, on_withheld=withheld.append)
+    )
 
     by_name = {r.rollout: r for r in records}
-    assert [r.rollout for r in records][-1] == "u__1"  # short group flushed last
-    assert by_name["u__1"].group_complete is False
-    assert by_name["u__1"].advantage is None
+    assert sorted(by_name) == ["t__1", "t__2", "t__3"]
     assert by_name["t__1"].group_complete is True
     assert by_name["t__1"].advantage == pytest.approx(0.5773, abs=1e-3)
     assert by_name["t__2"].advantage == pytest.approx(-1.1546, abs=1e-3)
+    assert all(r.withheld is None for r in records)
+    [[short]] = withheld
+    assert short.rollout == "u__1"
+    assert short.advantage is None
+    assert short.withheld.startswith("short:")
+    assert "1 of 3" in short.withheld
 
 
 def test_group_size_must_be_positive(tmp_path):
@@ -278,10 +296,13 @@ def test_group_size_must_be_positive(tmp_path):
 
 
 def test_records_match_the_committed_schema(tmp_path):
+    """Emitted and withheld records both match the schema."""
     job = tmp_path / "job"
     write_rollout(job, "hello__a", calls=TITO_CALLS)
     write_rollout(job, "hello__b", reward=None, error="boom", calls=[])
     write_rollout(job, "other__c", task="other", reward=0.0)
+    write_rollout(job, "pair__d", task="pair", reward=1.0)
+    write_rollout(job, "pair__e", task="pair", reward=0.0)
     committed = json.loads(
         (REPO / "docs/reference/schemas" / rs.SCHEMA_FILE).read_text()
     )
@@ -290,9 +311,18 @@ def test_records_match_the_committed_schema(tmp_path):
         "docs/reference/schemas"
     )
     validator = jsonschema.Draft202012Validator(rs.SCHEMA)
-    for record in rs.stream_rollouts(job, follow=False, group_size=2):
+    withheld: list[list[rs.StreamedRollout]] = []
+    emitted = list(
+        rs.stream_rollouts(job, follow=False, group_size=2, on_withheld=withheld.append)
+    )
+    assert sorted(r.rollout for r in emitted) == ["pair__d", "pair__e"]
+    held = [r for group in withheld for r in group]
+    assert sorted(r.rollout for r in held) == ["hello__a", "hello__b", "other__c"]
+    for record in emitted + held:
         document = json.loads(record.to_json())
         assert list(validator.iter_errors(document)) == []
+    assert all("withheld" not in json.loads(r.to_json()) for r in emitted)
+    assert all(json.loads(r.to_json())["withheld"] for r in held)
 
 
 def test_async_stream_yields_the_same_records(tmp_path):
@@ -442,9 +472,15 @@ def test_groups_do_not_span_jobs_by_default(tmp_path):
     write_rollout(root / "step-1", "hello__a", reward=1.0)
     write_rollout(root / "step-2", "hello__b", reward=0.0)
 
-    split = list(rs.stream_rollouts(root, follow=False, group_size=2))
-    assert {r.group_complete for r in split} == {False}
-    assert {r.group["job"] for r in split} == {"step-1", "step-2"}
+    # Changed with whole groups: the two short groups are withheld, not yielded.
+    withheld: list[list[rs.StreamedRollout]] = []
+    split = list(
+        rs.stream_rollouts(
+            root, follow=False, group_size=2, on_withheld=withheld.append
+        )
+    )
+    assert split == []
+    assert sorted(r.group["job"] for g in withheld for r in g) == ["step-1", "step-2"]
 
     pooled = list(
         rs.stream_rollouts(
@@ -452,6 +488,216 @@ def test_groups_do_not_span_jobs_by_default(tmp_path):
         )
     )
     assert {r.group_complete for r in pooled} == {True}
+
+
+def test_a_group_with_an_unscored_member_is_withheld_whole(tmp_path):
+    """A group with a dropped member reaches the trainer whole or not at all.
+
+    Before, the stream yielded the scored members of a full group
+    with advantages over the scored ones, and the unscored member with
+    none, so a trainer got two of three samples of the group.
+    """
+    job = tmp_path / "job"
+    write_rollout(job, "t__1", task="t", reward=1.0)
+    write_rollout(job, "t__2", task="t", reward=None, error="verifier never started")
+    write_rollout(job, "t__3", task="t", reward=0.0)
+    for name, reward in (("u__1", 1.0), ("u__2", 0.0), ("u__3", 0.0)):
+        write_rollout(job, name, task="u", reward=reward)
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=3, on_withheld=withheld.append)
+    )
+
+    assert sorted(r.rollout for r in records) == ["u__1", "u__2", "u__3"]
+    assert all(r.group_complete and r.withheld is None for r in records)
+    [group] = withheld
+    assert sorted(r.rollout for r in group) == ["t__1", "t__2", "t__3"]
+    assert all(r.advantage is None for r in group)
+    assert {r.withheld for r in group} == {group[0].withheld}
+    assert group[0].withheld.startswith("unscored:")
+    assert "t__2" in group[0].withheld
+
+
+def test_a_group_mixing_token_exact_and_retokenized_members_is_withheld(tmp_path):
+    """Members without a token sequence don't leave a partial token group.
+
+    Guards the measured case (3 of 8 rollouts on a vLLM policy): a
+    rollout whose next prompt re-tokenized the sampled text has no merged
+    sequence, and the stream passed its group on with only the other
+    members' sequences, so a token-level trainer saw a smaller group.
+    """
+    job = tmp_path / "job"
+    for name in ("t__1", "t__2", "t__3"):
+        write_rollout(job, name, task="t", reward=1.0, calls=TITO_CALLS)
+    write_rollout(job, "t__4", task="t", reward=0.0, calls=RETOKENIZED_CALLS)
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=4, on_withheld=withheld.append)
+    )
+
+    assert records == []
+    [group] = withheld
+    assert len(group) == 4
+    assert group[0].withheld.startswith("tokens:")
+    assert "t__4" in group[0].withheld
+    assert "t__1" not in group[0].withheld
+
+
+def test_a_group_with_no_token_capture_on_any_member_is_whole(tmp_path):
+    """Text-only groups (capture off for every member) still pass."""
+    job = tmp_path / "job"
+    for name, reward in (("t__1", 1.0), ("t__2", 0.0), ("t__3", 0.0)):
+        write_rollout(job, name, task="t", reward=reward)
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=3, on_withheld=withheld.append)
+    )
+
+    assert withheld == []
+    assert sorted(r.rollout for r in records) == ["t__1", "t__2", "t__3"]
+    assert {r.advantage is not None for r in records} == {True}
+
+
+def test_task_package_results_are_scored(tmp_path):
+    """The stream reads a task.toml-package runner's result as BenchFlow's.
+
+    Guards a review finding: the raw file has its reward under
+    ``verifier_result.rewards``, so both rollouts read as unscored and their
+    group was withheld.
+    """
+    job = tmp_path / "job"
+    for i, reward in enumerate([1.0, 0.0]):
+        root = job / f"hello__p{i}"
+        root.mkdir(parents=True)
+        (root / "result.json").write_text(
+            json.dumps(
+                {
+                    "task_name": "org/hello",
+                    "trial_name": root.name,
+                    "agent_info": {
+                        "name": "opencode",
+                        "model_info": {"name": "policy", "provider": "vllm"},
+                    },
+                    "verifier_result": {"rewards": {"reward": reward}},
+                    "exception_info": None,
+                }
+            )
+        )
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=2, on_withheld=withheld.append)
+    )
+
+    assert withheld == []
+    by = {r.rollout: r for r in records}
+    assert sorted(by) == ["hello__p0", "hello__p1"]
+    assert by["hello__p0"].reward == 1.0
+    assert by["hello__p0"].agent == "opencode"
+    assert by["hello__p0"].advantage == pytest.approx(0.5 / (0.5**0.5 + 1e-4))
+
+
+def test_a_scored_member_that_ended_with_an_error_stays_in_its_group(tmp_path):
+    """A rollout that ended with an error but was scored is a member like any
+    other; its record carries the error (the export now passes the same
+    group)."""
+    job = tmp_path / "job"
+    write_rollout(job, "t__1", task="t", reward=1.0)
+    write_rollout(job, "t__2", task="t", reward=0.0)
+    write_rollout(job, "t__3", task="t", reward=0.0, error="wall-clock budget 600s")
+
+    records = list(rs.stream_rollouts(job, follow=False, group_size=3))
+
+    by = {r.rollout: r for r in records}
+    assert sorted(by) == ["t__1", "t__2", "t__3"]
+    assert by["t__3"].error == "wall-clock budget 600s"
+    assert by["t__3"].advantage == pytest.approx(-0.5773, abs=1e-3)
+
+
+def test_a_member_with_no_model_calls_withholds_its_group(tmp_path):
+    """A member whose run never reached the model is not a sample.
+
+    Guards a review finding for the text-only stream: a rollout
+    with a proxy log and no calls in it (the agent died before its first
+    call) passed with its untouched workspace's score, while the export
+    withheld the group ("no model calls recorded").
+    """
+    job = tmp_path / "job"
+    from tests.trajectories.test_export_prime_sft import _exchange
+
+    write_rollout(job, "t__1", task="t", reward=1.0, calls=[_exchange(final=True)])
+    write_rollout(job, "t__2", task="t", reward=0.0, calls=[])
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=2, on_withheld=withheld.append)
+    )
+
+    assert records == []
+    [group] = withheld
+    assert group[0].withheld.startswith("no model calls:")
+    assert "t__2" in group[0].withheld and "t__1" not in group[0].withheld
+
+
+def test_a_withheld_group_is_a_warning_without_on_withheld(tmp_path):
+    """No callback: the group is still withheld, and the warning names it."""
+    job = tmp_path / "job"
+    write_rollout(job, "t__1", task="t", reward=1.0)
+    write_rollout(job, "t__2", task="t", reward=None, error="boom")
+    warnings: list[str] = []
+
+    records = list(
+        rs.stream_rollouts(job, follow=False, group_size=2, on_warning=warnings.append)
+    )
+
+    assert records == []
+    [warning] = warnings
+    assert "withheld" in warning and "task=t" in warning and "t__2" in warning
+
+
+def test_async_stream_withholds_the_same_groups(tmp_path):
+    """astream_rollouts applies the same whole-group rule."""
+    job = tmp_path / "job"
+    write_rollout(job, "t__1", task="t", reward=1.0)
+    write_rollout(job, "t__2", task="t", reward=None, error="boom")
+    write_rollout(job, "u__1", task="u", reward=1.0)
+    write_rollout(job, "u__2", task="u", reward=0.0)
+    withheld: list[list[rs.StreamedRollout]] = []
+
+    async def collect():
+        return [
+            r
+            async for r in rs.astream_rollouts(
+                job, follow=False, group_size=2, on_withheld=withheld.append
+            )
+        ]
+
+    records = asyncio.run(collect())
+    assert sorted(r.rollout for r in records) == ["u__1", "u__2"]
+    assert sorted(r.rollout for g in withheld for r in g) == ["t__1", "t__2"]
+
+
+def test_cli_writes_withheld_groups_to_their_own_file(tmp_path):
+    """stdout carries whole groups only; --withheld gets the rest."""
+    job = tmp_path / "job"
+    write_rollout(job, "t__1", task="t", reward=1.0)
+    write_rollout(job, "t__2", task="t", reward=None, error="boom")
+    write_rollout(job, "u__1", task="u", reward=1.0)
+    write_rollout(job, "u__2", task="u", reward=0.0)
+    held = tmp_path / "withheld.jsonl"
+
+    result = _cli(str(job), "--no-follow", "--group-size", "2", "--withheld", str(held))
+
+    assert result.exit_code == 0, result.output
+    lines = [json.loads(line) for line in result.stdout.splitlines() if line]
+    assert sorted(line["rollout"] for line in lines) == ["u__1", "u__2"]
+    rows = [json.loads(line) for line in held.read_text().splitlines()]
+    assert sorted(row["rollout"] for row in rows) == ["t__1", "t__2"]
+    assert all(row["withheld"].startswith("unscored:") for row in rows)
+    assert "1 group withheld" in result.stderr
 
 
 def _dead_pid() -> int:

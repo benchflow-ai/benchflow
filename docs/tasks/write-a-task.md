@@ -2,10 +2,12 @@
 
 This tutorial builds a small research task the way a physics research benchmark does: the agent gets real data, must produce a number with an uncertainty, and a test checks the answer against a tolerance. You'll write the task, prove it with its reference solution and an agent that does nothing, then run Claude Code on it. Building and checking it takes about twenty minutes; the three Claude Code tries at the end run up to 15 minutes each. You need BenchFlow [installed](../start/install.md) and Docker.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 The finished task is in the repository at [`docs/examples/research-task/half-life`](../examples/research-task/half-life), with the files used to test it. Other guides run it as `tasks/half-life`; to follow them without building it, copy it:
 
 ```bash
-git clone --depth 1 https://github.com/benchflow-ai/benchflow
+git clone --depth 1 https://github.com/benchflow-ai/benchflow.git
 mkdir -p tasks && cp -r benchflow/docs/examples/research-task/half-life tasks/
 rm tasks/half-life/verifier/rubric.json   # Rubric review adds it; the other guides run without it
 ```

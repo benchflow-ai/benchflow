@@ -47,7 +47,7 @@ Next, read each trial's `config.json` and `result.json` for what it ran with. Fo
 | Agent time limit | 300 seconds to 7 days |
 | Task version | five commits from May 5 to June 8, all before the release tag the leaderboard names |
 
-Each gap is something a rerun can't match. BenchFlow 0.9.1 records its own version, the model, the effort asked for and the limits in every trial's `config.json`, the agent's installed version in `agent/install-stdout.txt`, and each request as sent in `trajectory/llm_trajectory.jsonl`; 0.10.0rc1's [run card](../evaluate/before-you-run.md#the-run-card-010) puts them in one file; the [report checklist](./report.md#what-a-result-needs) lists what to publish so others can do this to your number.
+Each gap is something a rerun can't match. BenchFlow 0.9.2 records its own version, the model, the effort asked for and the limits in every trial's `config.json`, the agent's installed version in `agent/install-stdout.txt`, and each request as sent in `trajectory/llm_trajectory.jsonl`; 0.10.0rc2's [run card](../evaluate/before-you-run.md#the-run-card-010) puts them in one file; the [report checklist](./report.md#what-a-result-needs) lists what to publish so others can do this to your number.
 
 ## Match them in a run
 
@@ -84,7 +84,7 @@ Compare each task with the same task's published trials, not with the 87-task he
 | offer-letter-generator | 0 | 100.0 | +100.0 |
 | **mean of the five** | **58.3** | **91.0** | **+32.7** |
 
-[`compare_five.py`](../examples/reproduce/compare_five.py) holds the 30 trial rewards behind this table and computes the comparison three ways (Python 3, nothing to install):
+[`compare_five.py`](../examples/reproduce/compare_five.py) holds the 30 trial rewards behind this table and computes the comparison three ways (Python 3, nothing to install). Given a JSON file of your own, `{"task": [[published rewards], [rerun rewards]], ...}`, it compares those instead:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/benchflow-ai/benchflow/main/docs/examples/reproduce/compare_five.py

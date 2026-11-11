@@ -2,6 +2,10 @@
 
 One `bench run` runs an agent on every task in a folder, several at a time, and repeats each task as many times as you ask. Use it for any run bigger than the [Quick start](../start/quick-start.md)'s single task. Before a run you'll publish, read [Before you run an eval](./before-you-run.md); it costs a minute and catches the settings that change scores.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
+Words in the output: a **trial** is one rollout, one agent's attempt at one task; `--trials N` and the `trial-01` to `trial-NN` folders count **repeats**, passes over the whole task set; and `empty` in the Control column of `bench results` is the `nop` agent ([How BenchFlow works](../start/how-it-works.md#the-words)).
+
 You need an agent with a login or key ([Agents and models](./agents.md)) and a sandbox; Docker is the default ([Sandboxes](../scale/sandboxes.md)).
 
 ## Run three tasks, three times each
@@ -53,7 +57,7 @@ A registry dataset runs the same way with `-d name@version` instead of a folder;
 
 ## Repeat each task
 
-`--trials 3` runs the whole task set three times, one repeat after another. Each repeat is a job of its own, in `<jobs dir>/<agent>/trial-01`, `trial-02`, `trial-03`. The flag, the folders and the `Matrix:` line say trial where these pages say repeat: each `trial-NN` folder is one repeat, holding one trial (one attempt) per task, and `3 trial job(s)` counts the repeats. In 0.9.1, `bench run --help` doesn't list `--trials` (nor `--max-cost-usd`, `--max-tokens` and `--integrity`); `bench run --help-all` does, and so does [Commands](../reference/commands.md#bench-run). Repeats are what [pass@k and intervals](../audit/compare-runs.md) are computed from; one try per task gives a noisy number.
+`--trials 3` runs the whole task set three times, one repeat after another. Each repeat is a job of its own, in `<jobs dir>/<agent>/trial-01`, `trial-02`, `trial-03`. The flag, the folders and the `Matrix:` line say trial where these pages say repeat: each `trial-NN` folder is one repeat, holding one trial per task, and `3 trial job(s)` counts the repeats. In 0.9.2, `bench run --help` doesn't list `--trials` (nor `--max-cost-usd`, `--max-tokens` and `--integrity`); `bench run --help-all` does, and so does [Commands](../reference/commands.md#bench-run). Repeats are what [pass@k and intervals](../audit/compare-runs.md) are computed from; one try per task gives a noisy number.
 
 `--trials` needs a local folder or a registry dataset. Given a GitHub address, it stops with:
 

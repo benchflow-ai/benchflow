@@ -7,15 +7,15 @@ The command line and the result folders call a rollout a **trial** and a set of 
 ## What goes in, what comes out
 
 ```mermaid
-flowchart LR
-  T["Task<br/>instruction, verifier"] --> R(("Rollout"))
-  E["Environment<br/>the sandbox image"] --> R
-  A["Agent<br/>Claude Code, Codex, ..."] --> R
+flowchart TB
+  T["Task"] --> R(("Rollout"))
+  E["Environment"] --> R
+  A["Agent"] --> R
   M["Model"] --> R
   R --> TR["Trajectory"]
   R --> RW["Reward"]
-  R --> AR["Artifacts<br/>and workspace"]
-  TR --> V["Evaluation, preferences,<br/>training"]
+  R --> AR["Artifacts"]
+  TR --> V["Evaluation, preferences, training"]
   RW --> V
   AR --> V
 ```
@@ -41,24 +41,15 @@ A task, its environment, an agent and a model go in; a trajectory, a reward and 
 | **Benchmark** | A set of tasks, often published as a folder in a Git repository; the registry names some of them (`bench hub list`). | a folder of task folders |
 | **Rollout** (trial) | One agent's attempt at one task, in its own sandbox. | `jobs/<job>/<task>__<id>/` |
 | **Sandbox** | The isolated machine one rollout runs in: a Docker container on your machine, or a cloud sandbox on Daytona or Modal. | |
-| **Attempt** | One try at a rollout. A rollout that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default (`--retry-attempts`); it keeps its best attempt. | each trial's `attempts` |
+| **Attempt** | One try at a rollout. A rollout that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default (`--retry-attempts`). The rollout counts its scored attempt, or its newest when none was scored; a scored attempt is never retried. | each trial's `attempts` |
 | **Trajectory** | Everything the agent did: messages, thoughts and tool calls, and each model request that went through the proxy. | `trajectory/` |
 | **Verifier** | The task's check, usually `verifier/test.sh` running tests. | `verifier/` in the task |
-| **Reward** | The verifier's score: 1.0 for a pass, 0.0 for a fail, or a value in between for partial credit. | `verifier/reward.txt`, `result.json` |
+| **Reward** | The verifier's score: 1.0 for a pass, 0.0 for a fail, or a value in between for partial credit. With a rubric review, a trial passes when its test and every blocker pass, and its reward is the rubric's score. | `verifier/reward.txt`, `result.json` |
 | **Artifacts** | What the agent left: the workspace the verifier grades, and the files the task declares, copied into the rollout's folder. | `artifacts/` |
 | **Job** | The rollouts one command starts, one per task, and their summary. Rerunning the same command continues the job. | `jobs/<job>/` |
 | **Repeat** | One pass over the whole task set. `--trials 3` makes three repeats, each a job of its own; the flag and the `trial-01` to `trial-03` folders call a repeat a trial. | `jobs/<agent>/trial-NN/` |
 
 ## One rollout, step by step
-
-```mermaid
-flowchart LR
-  A["Start the sandbox<br/>from environment/"] --> B["Set up the agent<br/>its own user, the model proxy"]
-  B --> C["Agent's turn<br/>prompt, tool calls"]
-  C --> D["Stop the agent<br/>protect the checks"]
-  D --> E["Verifier<br/>runs test.sh"]
-  E --> F["Reward, trajectory<br/>and timings saved"]
-```
 
 1. **Start the sandbox.** BenchFlow builds or pulls the task's image and starts a fresh sandbox from it.
 2. **Set up the agent.** It installs the agent and gives it a user of its own (`agent`, not root). With an API key, it also starts a model proxy, on your machine for local Docker and inside the sandbox on Daytona and Modal; every model call goes through it, so BenchFlow can count tokens and record each request.
@@ -127,7 +118,7 @@ Every file in a rollout's folder, and every key of its `result.json`, is in [Rea
 
 ## Why the rollout
 
-BenchFlow made the rollout its core unit in [v0.4.0](https://github.com/benchflow-ai/benchflow/releases/tag/v0.4.0), in May 2026, when the Python names `Trial` and `Job` became `Rollout` and `Evaluation`. Han-chung Lee, a SkillsBench author, gives the reason in [his essay on agent evaluation infrastructure](https://leehanchung.github.io/blogs/2026/06/13/hidden-technical-debt-agent-evaluation-infra/#rollouts): "Rollouts is the core artifact of an Agentic AI system." An agent does its work by changing its sandbox, so its final answer alone can't show how it got there. A rollout keeps the whole attempt, and the same record serves a score, a vote and a training row. [Why BenchFlow](./why-benchflow.md) follows the rest of his argument.
+BenchFlow made the rollout its core unit in [v0.4.0](https://github.com/benchflow-ai/benchflow/releases/tag/v0.4.0), in May 2026, when the Python names `Trial` and `Job` became `Rollout` and `Evaluation`, terms [the change](https://github.com/benchflow-ai/benchflow/pull/288) took from Han-chung Lee's [taxonomy of RL environments](https://leehanchung.github.io/blogs/2026/03/21/rl-environments-for-llm-agents/). Han-chung Lee, a SkillsBench author, gives the reason in [his essay on agent evaluation infrastructure](https://leehanchung.github.io/blogs/2026/06/13/hidden-technical-debt-agent-evaluation-infra/#rollouts): "Rollouts is the core artifact of an Agentic AI system." An agent does its work by changing its sandbox, so its final answer alone can't show how it got there. A rollout keeps the whole attempt, and the same record serves a score, a vote and a training row. [Why BenchFlow](./why-benchflow.md) follows the rest of his argument.
 
 ## What BenchFlow does not do
 

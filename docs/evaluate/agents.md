@@ -51,7 +51,7 @@ The subscription commands are the agents' own: `claude setup-token` and `claude`
 bench run <task> -a claude -m sonnet
 ```
 
-`-m` takes the model in the agent's own naming. In 0.9.1, Claude Code on a subscription login offers `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`; any other name stops the trial before a model call, with `agent integration failure [agent_model]` and the names it offers ([Quick start](../start/quick-start.md#run-claude-code-on-it)). `-e` (or `--effort`) sets reasoning effort for agents that have one: `low`, `medium`, `high`, `max` and so on, as the agent names them. How it reaches the agent in 0.9.1, from its agent list:
+`-m` takes the model in the agent's own naming. In 0.9.2, Claude Code on a subscription login offers `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`; any other name stops the trial before a model call, with `agent integration failure [agent_model]` and the names it offers ([Quick start](../start/quick-start.md#run-claude-code-on-it)). `-e` (or `--effort`) sets reasoning effort for agents that have one: `low`, `medium`, `high`, `max` and so on, as the agent names them. How it reaches the agent in 0.9.2, from its agent list:
 
 | Agent | `-e` goes to |
 |---|---|
@@ -63,7 +63,7 @@ bench run <task> -a claude -m sonnet
 
 An agent with no such option stops the trial instead: `reasoning_effort='max' was requested for agent '...', but that agent does not declare or advertise an ACP effort config option`. The values each option takes are the agent's own.
 
-> **Pass `-m`.** Without it, an agent falls back to a default model, which for Claude Code in 0.9.1 is `claude-haiku-4-5-20251001`, an older one.
+> **Pass `-m`.** Without it, an agent falls back to a default model, which for Claude Code in 0.9.2 is `claude-haiku-4-5-20251001`, an older one (0.10.0rc2's is `claude-haiku-5-5`).
 
 The model and effort you pass are recorded in the trial's `config.json` (`model`, `reasoning_effort`). What the provider actually received is in `trajectory/llm_trajectory.jsonl`, one line per model call. Check it when a score depends on the setting: a provider can ignore one it doesn't support.
 
@@ -95,7 +95,7 @@ Claude Code can use a provider that serves Anthropic's API. The [Quick start](..
 
 ### The provider prefixes
 
-These are the prefixes 0.9.1 knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Claude Code and Codex are refused before the run starts when the provider doesn't serve their API; the other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
+These are the prefixes 0.9.2 knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Claude Code and Codex are refused before the run starts when the provider doesn't serve their API; the other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
 
 ```text
 Agent 'codex-acp' requires provider protocol 'openai-responses', but provider 'xiaomi' for model 'xiaomi/mimo-v2.6-flash' only supports anthropic-messages, openai-completions. Use a provider prefix that matches the agent protocol.
@@ -149,7 +149,7 @@ Cost:      $0.01, 121,186 tokens
 
 ## Pin the agent's version
 
-Each BenchFlow release installs a fixed version of each agent, so two runs on the same release run the same agent. 0.9.1 installs Claude Code 2.1.280 (through `claude-agent-acp` 0.81.2) and Codex through `codex-acp` 2.0.1; `bench doctor` prints the versions under "Agent versions". To change an agent's version, change BenchFlow's version. A trial's `result.json` doesn't record the agent's version; its `agent/install-stdout.txt` does, in the install command it ran (`claude-agent-acp@0.81.2`, `claude-code@2.1.280`). Write the version down with your results ([Before you run an eval](./before-you-run.md#what-to-write-down)).
+Each BenchFlow release installs a fixed version of each agent, so two runs on the same release run the same agent. 0.9.2 installs Claude Code 2.1.280 (through `claude-agent-acp` 0.81.2) and Codex through `codex-acp` 2.0.1, and 0.10.0rc2 installs Claude Code 2.1.316; `bench doctor` prints the versions under "Agent versions". To change an agent's version, change BenchFlow's version. On 0.9.2, a trial's `result.json` doesn't record the agent's version (0.10.0rc2's records it as `harness_versions`); its `agent/install-stdout.txt` does, in the install command it ran (`claude-agent-acp@0.81.2`, `claude-code@2.1.280`). Write the version down with your results ([Before you run an eval](./before-you-run.md#what-to-write-down)).
 
 ## Run Claude Code or Codex through their own CLI
 

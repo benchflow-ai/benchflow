@@ -660,6 +660,8 @@ def test_other_chatgpt_paths_and_origins_are_refused(codex_stack):
 
 @pytest.mark.asyncio
 async def test_codex_policy_ships_the_guard_beside_the_proxy(monkeypatch):
+    """Guards the fix for the deny-mode proxy's missing request guard (the guard ships
+    with every egress proxy)."""
     uploads: list[dict[str, bytes]] = []
     monkeypatch.setattr(egress_denylist, "_run", AsyncMock())
     monkeypatch.setattr(egress_denylist, "_wait_healthy", AsyncMock())
@@ -680,7 +682,7 @@ async def test_codex_policy_ships_the_guard_beside_the_proxy(monkeypatch):
     await egress_denylist.start_egress_denylist(
         object(), "agent", EgressDenylist((), (), native_claude_model_only=True)
     )
-    assert "request_guard.py" not in uploads[-1]
+    assert "request_guard.py" in uploads[-1]
     assert "native_codex_model_only" not in json.loads(uploads[-1]["policy.json"])
 
 

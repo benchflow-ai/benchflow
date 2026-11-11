@@ -1,8 +1,8 @@
 # Known pitfalls
 
-These are problems that change a score without an error, or break a run in a way that's easy to misread. Each has the symptom you'd see, the cause, how to check for it, and the fix. Every one was hit in real runs on BenchFlow 0.9.1 or 0.10.0rc1, by us or by people running evaluations with it this autumn.
+These are problems that change a score without an error, or break a run in a way that's easy to misread. Each has the symptom you'd see, the cause, how to check for it, and the fix. Every one was hit in real runs on BenchFlow 0.9.1 or 0.10.0rc1, by us or by people running evaluations with it this autumn; each holds for 0.9.2, which is 0.9.1 with five grading-integrity fixes, and where 0.10.0rc2 fixed one, the entry says so.
 
-Most checks read a trial's own files: `result.json` (outcome, reward, error category, usage), `config.json` (what the trial was asked to run), `trajectory/llm_trajectory.jsonl` (each model request and response that passed through BenchFlow's proxy) and, in 0.10.0rc1, the job's `run-card.json` and `report.md`.
+Most checks read a trial's own files: `result.json` (outcome, reward, error category, usage), `config.json` (what the trial was asked to run), `trajectory/llm_trajectory.jsonl` (each model request and response that passed through BenchFlow's proxy) and, in 0.10.0rc2, the job's `run-card.json` and `report.md`.
 
 ## Find your symptom
 
@@ -54,10 +54,12 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ## Settings that don't reach the model
 
+The checks in this section read each request's record in `trajectory/llm_trajectory.jsonl`; [`requests.py`](../examples/audit/requests.py) prints the model, effort, sampling, output cap, HTTP status and finish reason of every request in a job ([Usage and telemetry](../scale/telemetry.md#what-a-trial-records) shows its output).
+
 ### Scores barely move between effort levels
 
 - Cause: the provider or a router in front of it ignored or remapped the setting; some providers map every level above `high` to `high`
-- Check: each request's body in `trajectory/llm_trajectory.jsonl`; in 0.10.0rc1, the sampling line of `report.md`
+- Check: each request's body in `trajectory/llm_trajectory.jsonl`; in 0.10.0rc2, the sampling line of `report.md`
 - Fix: label results with the effort the requests carried, which can differ from the one you typed
 
 ### An effort level is refused for an agent that has no effort option
@@ -69,13 +71,13 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### `agent integration failure [agent_model]` on the first prompt
 
-- Cause: the agent doesn't offer the model you named. In 0.9.1, Claude Code on a subscription login offers only `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`, so `-m claude-sonnet-5-5` stops the trial before any model call
+- Cause: the agent doesn't offer the model you named. In 0.9.2, Claude Code on a subscription login offers only `default`, `sonnet`, `opus`, `haiku` and `claude-fable-5-1`, so `-m claude-sonnet-5-5` stops the trial before any model call
 - Check: the message lists the names the agent offers
 - Fix: pass one of them
 
 ### A run used an older model than you meant
 
-- Cause: `-m` was left out, so the agent used its default (Claude Code: `claude-haiku-4-5-20251001` in 0.9.1)
+- Cause: `-m` was left out, so the agent used its default (Claude Code: `claude-haiku-4-5-20251001` in 0.9.2, `claude-haiku-5-5` in 0.10.0rc2)
 - Check: `config.json`, `model`
 - Fix: always pass `-m`
 
@@ -94,8 +96,8 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 ### Scores far from the published ones for the same model
 
 - Cause: the agent picks its own temperature and thinking settings, and the vendor recommends others for evaluation
-- Check: the run card's `Vendor` line (0.10.0rc1); the request bodies in `llm_trajectory.jsonl`
-- Fix: set the vendor's values through the agent, or report how yours differ
+- Check: the run card's `Vendor` line (0.10.0rc2); the request bodies in `llm_trajectory.jsonl`
+- Fix: 0.9.2 can't set sampling for Claude Code, Codex or OpenCode ([Before you run an eval](../evaluate/before-you-run.md#what-to-write-down)); match the vendor's settings where an agent's own configuration allows it, and otherwise report how yours differ
 
 ### The agent version differs from a published run's
 
@@ -119,7 +121,7 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### An agent looks worse on one benchmark only
 
-- Cause: the verifier's sandbox failed (`verifier_infra`), as with Terminal-Bench 4.1's tasks on these releases ([Bring what you have](../evaluate/bring-what-you-have.md#terminal-bench-41))
+- Cause: the verifier's sandbox failed (`verifier_infra`), as with Terminal-Bench 4.1's tasks on 0.9.2 ([Bring what you have](../evaluate/bring-what-you-have.md#terminal-bench-41))
 - Check: `bench results`: the Assess column says `unscored`, or `error` when the verifier itself failed
 - Fix: leave infrastructure failures out of agent comparisons, and say so
 
@@ -156,9 +158,9 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 ### Correct answers score 0 on tasks whose tests use the repository's own `conftest.py`
 
 - Seen on: SWE-bench Verified's Sphinx, Flask, pytest and seaborn tasks (`fixture 'app' not found`, `pytester`, `long_df`)
-- Cause: 0.9.0 and 0.9.1 remove every `conftest.py` in the workspace before grading, the repository's own included ([Changelog](../versions/changelog.md))
+- Cause: 0.9.0, 0.9.1 and 0.9.2 remove every `conftest.py` in the workspace before grading, the repository's own included ([Changelog](../versions/changelog.md))
 - Check: the tests' output in `verifier/test-stdout.txt`: a missing fixture
-- Fix: use 0.10.0rc1, which keeps a repository's unchanged `conftest.py`, except in a separate verifier sandbox; or leave such tasks out of 0.9.1 results, and say so
+- Fix: on 0.9.2, set `cleanup_conftests: false` under `verifier: hardening:` in the task's `task.md` (`cleanup_conftests = false` in `[verifier.hardening]` of a `task.toml`); that keeps the repository's files, and also any `conftest.py` the agent planted, so probe such tasks with a script agent that plants a `conftest.py` beside the tests, as [Probe your verifier](../tasks/reward-hacking.md#probe-your-verifier) shows for other cheats. 0.10.0rc2 keeps a repository's unchanged `conftest.py` by itself, except in a separate verifier sandbox. Otherwise leave such tasks out of 0.9.2 results, and say so
 
 ### Your number doesn't match a published one
 
@@ -220,15 +222,15 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### Training rows are missing for some rollouts
 
-- Cause: `bench train convert` leaves out rollouts that ended with an error, such as a time limit, even when they were scored 0; their group's advantages still count them
-- Check: `--manifest stats.json`: `skipped_terminal_error`
-- Fix: report it; the trainer sees only the rollouts that finished
+- Cause: `bench train convert` leaves out rollouts that ended with an error, such as a time limit, even when they were scored 0. In 0.10.0rc2 and earlier, `--group-advantage` still wrote the rest of their group with advantages that counted them
+- Check: `--manifest stats.json`: `skipped_terminal_error`, and each withheld group's `withheld` field
+- Fix: with `--group-advantage`, a scored rollout that ended with an error now writes its rows, marked with the error in their `group` block, and a group missing a member's score (no result, unscored) or a member that never reached the model is withheld whole and named in the manifest
 
 ### Training rows have no tool calls
 
-- Cause: `bench train convert` loses a Claude Code trial's tool calls in 0.9.1 and 0.10.0rc1
+- Cause: `bench train convert` loses a Claude Code trial's tool calls in 0.9.2; 0.10.0rc2 keeps them
 - Check: `bench train validate`: `rows_with_tool_calls: 0`
-- Fix: train on other agents' trials for now; `bench train validate --require-tool-calls` fails such rows
+- Fix: convert with 0.10.0rc2 or later, or train on other agents' trials; `bench train validate --require-tool-calls` fails such rows
 
 ### Cost is `null`
 
@@ -238,19 +240,19 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### No traces in your OpenTelemetry collector
 
-- Cause: agents decide whether to export OpenTelemetry, Claude Code often doesn't, and BenchFlow emits none
+- Cause: agents decide whether to export OpenTelemetry, Claude Code often doesn't, and BenchFlow 0.9.2 emits none
 - Check: `usage_source` in `result.json`
-- Fix: read usage and calls from BenchFlow's records ([Usage and telemetry](../scale/telemetry.md))
+- Fix: read usage and calls from BenchFlow's records ([Usage and telemetry](../scale/telemetry.md)); 0.10.0rc2 writes each trial's trace to `trajectory/otel-spans.json` and sends it to the collector `OTEL_EXPORTER_OTLP_ENDPOINT` names
 
 ### `--trials` refuses to start
 
-- Cause: a GitHub address can't be repeated: `--trials > 1 needs a task folder or --dataset`
+- Cause: on 0.9.2 a GitHub address can't be repeated: `--trials > 1 needs a task folder or --dataset`
 - Check: the message
-- Fix: clone the benchmark first
+- Fix: clone the benchmark first; 0.10.0rc2 repeats a task named by its address
 
 ### A registry dataset is refused
 
-- Cause: its entry was validated with other BenchFlow versions: `bench 0.9.1 is outside the range this dataset was validated against`
+- Cause: its entry was validated with other BenchFlow versions: `bench 0.9.2 is outside the range this dataset was validated against`
 - Check: `bench hub show name@version`
 - Fix: use a validated version, or the benchmark's Git repository
 
@@ -262,7 +264,7 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### A rubric task won't start, oracle and nop included
 
-- Cause: every run of a rubric task is reviewed, and 0.9.1's default reviewer has no default model: `the reviewer agent 'opencode' has no default model`
+- Cause: every run of a rubric task is reviewed, and 0.9.2's default reviewer has no default model: `the reviewer agent 'opencode' has no default model`
 - Check: the message
 - Fix: pass `--reviewer-agent` and `--reviewer-model`
 
@@ -280,15 +282,15 @@ Most checks read a trial's own files: `result.json` (outcome, reward, error cate
 
 ### The agent spends its turn on `Permission denied` and tries `su root`
 
-- Cause: the workspace isn't writable by the agent's user: with no `WORKDIR` in the image, it was `/root`
-- Check: `Sandbox user agent ready (workspace=...)` in the run's output
-- Fix: set `WORKDIR` in the task's Dockerfile
+- Cause: the agent's user owns only the working directory (`WORKDIR`, or `/root` when the image sets none) and its own home folder, and the task needs it to write elsewhere or install system packages
+- Check: the denied path in the trajectory against `Sandbox user agent ready (workspace=...)` in the run's output
+- Fix: keep the agent's work inside the working directory and install what it needs in the Dockerfile; `--sandbox-user none` runs the agent as root
 
 ### The agent's requests to the task's own services get HTTP 403 with `X-BenchFlow-Blocked: 1`
 
 - Cause: under `denylist`, the services' names aren't on the agent's list
 - Check: the response headers in the trajectory
-- Fix: use `allowlist`, with the services in `allowed_hosts`: by name in 0.10.0rc1, by their private address range in 0.9.1
+- Fix: use `allowlist`, with the services in `allowed_hosts`: by name in 0.10.0rc2, by their private address range in 0.9.2
 
 ### A task's digest differs between two copies
 

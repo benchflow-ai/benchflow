@@ -9,7 +9,8 @@ The agent works as its own user, not root, and never sees the tests: `verifier/`
 - stops every process the agent left running (`kill-before-grading.json` in the trial records it);
 - removes start-up files the agent could plant to run code inside the test, such as `conftest.py`, `sitecustomize.py` and `.pth` files, and modules named after a test runner, such as `pytest.py`;
 - deletes any reward file already in `/logs/verifier/`;
-- gives the test a fresh, root-only home folder when the agent could write to root's, in 0.9.1 and 0.10.0rc1.
+- gives the test a fresh, root-only home folder when the agent could write to root's;
+- removes the git hooks, filters, aliases and other command settings the agent added to a repository in the workspace, and runs root's git with hooks, `fsmonitor`, external diff and signing off, from 0.9.2 on. A task whose answer is a hook or a filter sets `cleanup_git: false` under `verifier: hardening:`.
 
 ## What it can't stop
 

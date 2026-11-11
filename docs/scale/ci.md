@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: uv tool install --python 3.12 'benchflow==0.9.1' --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.1/constraints.txt
+      - run: uv tool install --python 3.12 'benchflow==0.9.2' --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
       - run: bench run tasks/ -a oracle --fail-under 1.0
       - run: bench run tasks/ -a nop --fresh --fail-on error,verifier-error --summary-out nop.json
       - run: jq -e '.passed == 0' nop.json
@@ -58,4 +58,4 @@ The oracle step fails the build when a task can no longer be solved, and the nop
 nop control: 1/1 passed with nothing done: those tasks can be passed without solving them; check their verifiers
 ```
 
-The summary file then holds `"passed": 1`, and `jq -e '.passed == 0' nop.json` prints `false` and exits 1, failing the build. A task with a rubric is reviewed on these control runs too, and 0.9.1's reviewer has no default model, so such a run stops before it starts: give both steps `--reviewer-agent` and `--reviewer-model` with the model's key as a secret, or keep rubric tasks out of them ([Rubric review](../tasks/rubric-review.md)). For an agent run in CI, pass the model key as a repository secret, and cap the spend with `--max-cost-usd` ([Concurrency and budgets](./cost.md#budgets)).
+The summary file then holds `"passed": 1`, and `jq -e '.passed == 0' nop.json` prints `false` and exits 1, failing the build. A task with a rubric is reviewed on these control runs too, and 0.9.2's reviewer has no default model, so such a run stops before it starts: give both steps `--reviewer-agent` and `--reviewer-model` with the model's key as a secret, or keep rubric tasks out of them ([Rubric review](../tasks/rubric-review.md)). For an agent run in CI, pass the model key as a repository secret, and cap the spend with `--max-cost-usd` ([Concurrency and budgets](./cost.md#budgets)).

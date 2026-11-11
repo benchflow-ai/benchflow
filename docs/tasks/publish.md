@@ -2,6 +2,8 @@
 
 A benchmark is a folder of tasks other people can run and get the same tasks. Share it through Git, pin versions so results can be compared, and, for a widely used set, add it to the registry. Before you publish, run the checks in [Check a benchmark](../audit/check-a-benchmark.md): every task should pass its oracle and fail `nop`.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 ## Share through Git
 
 Push the folder of tasks to a Git repository. Anyone can run it by `org/repo/path`, with `@ref` for a tag or commit:
@@ -50,7 +52,7 @@ The registry is what `bench run -d name@version` and `bench hub list` read. An e
 }
 ```
 
-`bench_version` names the BenchFlow versions the entry was validated with; a run outside that range is refused unless it passes `--ignore-bench-version`, as [Find a benchmark](../evaluate/find-a-benchmark.md#skillsbenchs-registry-entries-need-benchflow-06) shows for this entry on 0.9.1. `bench hub check` checks a sample of a dataset's tasks. The default registry is [`registry.json`](https://github.com/benchflow-ai/skillsbench/blob/main/registry.json) in the SkillsBench repository; to add a benchmark to it, open a pull request there with your entry. To run datasets from your own registry file instead, pass its path or URL with `--registry`.
+`bench_version` names the BenchFlow versions the entry was validated with; a run outside that range is refused unless it passes `--ignore-bench-version`, as [Find a benchmark](../evaluate/find-a-benchmark.md#skillsbenchs-registry-entries-need-benchflow-06) shows for this entry on 0.9.2. `bench hub check` checks a sample of a dataset's tasks. The default registry is [`registry.json`](https://github.com/benchflow-ai/skillsbench/blob/main/registry.json) in the SkillsBench repository; to add a benchmark to it, open a pull request there with your entry. To run datasets from your own registry file instead, pass its path or URL with `--registry`.
 
 ## Publish in the task.toml layout too
 
@@ -58,7 +60,7 @@ Some runners read only the `task.toml` layout. `bench export` writes each task i
 
 ## Declare the setup runs should match (0.10)
 
-> Needs BenchFlow `0.10.0rc1`, a prerelease: [install it](../start/install.md#install-the-010-prerelease).
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
 
 If your benchmark's published numbers used a particular setup, write it in `run-reference.toml` next to the tasks. Every run's [run card](../evaluate/before-you-run.md#the-run-card-010) compares itself with it:
 

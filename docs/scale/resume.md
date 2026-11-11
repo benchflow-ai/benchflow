@@ -2,6 +2,8 @@
 
 Long runs get interrupted, trials fail for reasons that have nothing to do with the agent, and verifiers turn out to be wrong. BenchFlow handles all three without rerunning work that finished: a plain rerun resumes a job, failures that another attempt could fix are retried, and `bench regrade` rescores saved work.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 ## Resume a stopped job
 
 Stop a run with Ctrl-C or `kill`, and it stops its running trials, removes their sandboxes and says how to continue:
@@ -68,4 +70,4 @@ bench run tasks/half-life -a claude -m xiaomi/mimo-v2.6-flash --save-outputs
 bench regrade jobs/<job>
 ```
 
-[Verifiers](../tasks/verifiers.md#fix-a-verifier-and-rescore) shows a regrade turning a wrongly passed trial into a fail. `bench regrade` doesn't rescore multi-step trials.
+[Verifiers](../tasks/verifiers.md#fix-a-verifier-and-rescore) shows a regrade turning a wrongly passed trial into a fail. `bench regrade` doesn't rescore multi-step trials, and 0.9.2 refuses a trial that ran with a separate verifier and points back to `bench run` (0.10.0rc2 regrades it).

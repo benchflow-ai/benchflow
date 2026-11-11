@@ -1,6 +1,6 @@
 # Task format
 
-A task is a folder: an instruction, an environment for the sandbox, a verifier that scores the result, and usually a reference solution. Here are its files, what each is for, and which one BenchFlow reads when two could apply. Every setting with its type and default is in [Files BenchFlow reads and writes](../reference/files.md).
+A task is a folder: an instruction, an environment for the sandbox, a verifier that scores the result, and usually a reference solution. Here are its files and what each is for; where a task has two forms of a part, they must match. Every setting with its type and default is in [Files BenchFlow reads and writes](../reference/files.md).
 
 ## The files
 
@@ -48,7 +48,7 @@ sandbox:
 
 Below the header is the instruction. The body can be split at reserved headings: `## prompt` holds the instruction, and `## role:<name>`, `## scene:<name>` and `## user-persona` hold the parts of a [multi-turn task](./multi-turn.md). A body with none of them is the instruction as a whole.
 
-The header's top-level keys are `schema_version`, `task`, `metadata`, `agent`, `verifier`, `sandbox`, `oracle`, `source`, `artifacts` and `reward`, and for multi-turn tasks `agents`, `scenes` and `user`. An unknown key is refused, so a typo can't silently change a run. `steps` describes a [multi-step task](./multi-step.md), which only 0.10.0rc1 runs, and 0.10.0rc1 adds `preference` for [human preferences](./human-preferences.md).
+The header's top-level keys are `schema_version`, `task`, `metadata`, `agent`, `verifier`, `sandbox`, `oracle`, `source`, `artifacts` and `reward`, and for multi-turn tasks `agents`, `scenes` and `user`. An unknown key is refused, so a typo can't silently change a run. `steps` describes a [multi-step task](./multi-step.md), which only 0.10.0rc2 runs, and 0.10.0rc2 adds `preference` for [human preferences](./human-preferences.md).
 
 ## The environment
 
@@ -60,7 +60,7 @@ sandbox:
   workdir: /app
 ```
 
-The agent works as a user named `agent`, not root, in the image's working directory. Files it must not change, such as the data, can stay owned by root.
+The agent works as a user named `agent`, not root, in the image's working directory: its `WORKDIR`, or `/root` when it sets none. Before the agent starts, BenchFlow gives that folder and everything in it to the `agent` user; files elsewhere in the image stay root's. So keep data the agent must not change outside the working directory, and install in the Dockerfile what the agent would otherwise need root for. (Checked on 0.9.1 and 0.10.0rc1, with a built image and a named one.)
 
 ## Services the agent works with
 

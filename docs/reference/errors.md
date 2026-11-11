@@ -2,7 +2,7 @@
 
 Every message BenchFlow can print that has a fixed text in its source, and what to do about it. Search this page for the words of your message: `…` marks a part filled in at run time. To find out why a trial failed, start with [When a trial fails](../evaluate/failed-trials.md).
 
-These messages come from the source of BenchFlow 0.10.0rc2, so they include some that 0.9.1 doesn't print, such as those of `bench assess` (0.10), and those aren't marked.
+These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 doesn't print has `(0.10)` after it when 0.10.0rc3 prints it, or `(unreleased)` when no release does yet.
 
 <!-- This page is generated from the code by tools/docs_errors.py, so it lists what this version prints. To change it, change the message in the code, then run `uv run python tools/docs_errors.py --write`. -->
 
@@ -10,8 +10,8 @@ These messages come from the source of BenchFlow 0.10.0rc2, so they include some
 |---|---|
 | [Causes a run names](#causes-a-run-names) | 48 |
 | [`bench doctor` warnings and failures](#bench-doctor-warnings-and-failures) | 22 |
-| [Errors that say what to do](#errors-that-say-what-to-do) | 466 |
-| [Command errors](#command-errors) | 232 |
+| [Errors that say what to do](#errors-that-say-what-to-do) | 468 |
+| [Command errors](#command-errors) | 234 |
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
 | [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 46 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 104 |
@@ -38,7 +38,7 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | `verifier_plugin_unproven` |  | verifier plugin trust: test.sh installs a pytest plugin BenchFlow cannot check, and the agent changed files that could have chosen it. The task's test.sh installed a pytest plugin after the agent stopped (with uv, uvx or pip, into the workspace or the verifier's uv state), and the agent had changed files in its trees, any of which could have chosen what was installed. The pytest plugin guard trusts such an install only as a release it can check byte for byte, so it refused the plugin. The trial is a failure in the scores, so a planted input gains nothing, but it is the task's problem: pin the plugin's release in [verifier] pytest_plugin_releases, or bake it into the image. | the task | pin the plugin's release in [verifier] pytest_plugin_releases or install it into the image: `bench tasks check <task>` |
 | `verifier_plugin_unlisted` |  | verifier plugin trust: test.sh installed a pytest-json-ctrf release missing from the table of published releases. The task's test.sh installed a release of pytest-json-ctrf, the plugin BenchFlow vouches for, that was missing from the table of published releases hardening built: this machine could not read the release list from PyPI, or PyPI published the release after hardening read it. The pytest plugin guard refused it, and the trial is a failure in the scores, since the agent can also leave inputs that install a release of any name. Check that this machine reaches pypi.org and run the task again. | the sandbox | check that this machine reaches pypi.org, then run the task again; the trial's verifier/ folder names the release |
 | `verifier_plugin_refused` |  | verifier plugin trust: the plugin guard refused a pytest plugin in a place the agent could write. The pytest plugin guard refused a plugin in a place the agent could write that the agent left there, or changed, after it started. The trial counts as a failure. The trial's verifier/ folder names the plugin and why. | the agent | the trial's verifier/ folder names the plugin and why; when test.sh installs it, `bench tasks check <task>` |
-| `verifier_no_usable_reward` |  | the verifier wrote no usable reward (a failure in every score). The final verify left no reward BenchFlow could use: no reward file, an empty one, one it could not read, or one without a number. That is the verifier's error, not a wrong answer, and it is never retried. The trial still counts as a failure in every score, as a plugin guard refusal does, because the reward files are evidence the agent can reach. The trial's verifier/ folder has test.sh's output. | the task | the trial's verifier/ folder has test.sh's output; fix test.sh so it always writes one number to /logs/verifier/reward.txt, then run the task again |
+| `verifier_no_usable_reward` |  | the verifier wrote no usable reward (a failure in every score) (0.10). The final verify left no reward BenchFlow could use: no reward file, an empty one, one it could not read, or one without a number. That is the verifier's error, not a wrong answer, and it is never retried. The trial still counts as a failure in every score, as a plugin guard refusal does, because the reward files are evidence the agent can reach. The trial's verifier/ folder has test.sh's output. | the task | the trial's verifier/ folder has test.sh's output; fix test.sh so it always writes one number to /logs/verifier/reward.txt, then run the task again |
 | `no_verdict` |  | no verdict was recorded (an assessment still pending, or an interrupted trial). The trial has neither a reward nor an error: a reviewer's assessment is still pending, or the run was interrupted before the trial recorded an outcome. | the sandbox | `bench eval score <job dir>` finishes pending reviews |
 | `kept_service_freezer` |  | the sandbox cannot freeze the task's kept services. The task declares services that must survive the agent turn and be frozen until verification, and this kind of sandbox cannot freeze them for a non-root agent (native Daytona without Compose, for one). The trial has no score; where the task alone decides it, the refusal comes before any sandbox is made. | your setup | run with --sandbox docker or --sandbox remote-docker; Daytona also supports a Compose environment |
 | `runtime_sealing` |  | the protected runtime could not be sealed. BenchFlow refused to run root's steps using runtime files whose ownership or paths could not be protected from the agent. The refusal preserves isolation; changing the task image is required. | the task | fix the image's runtime paths and ownership named in result.json; keep them root-owned and outside the agent's writable workspace |
@@ -53,7 +53,7 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | `pipe_closed` |  | the connection to the agent closed. The connection between BenchFlow and the agent process closed: the Daytona terminal dropped, its websocket closed, or the local or SSH transport ended. It is retried within the run. | the sandbox | `bench eval resume <job dir>` reruns it; transport_error_info in result.json says why |
 | `idle_timeout` | R203 | the agent went silent and the idle watchdog stopped it. The agent sent no tool call, message or thought for longer than the idle timeout, and the idle watchdog stopped it. A hung tool call or a stalled model connection are the usual causes. When the verifier can still score the workspace, the trial is scored instead. | the agent | raise --agent-idle-timeout if the agent thinks for long; idle_timeout_info in result.json has the details |
 | `timeout` |  | the agent ran out of time. The agent ran past its time budget (the task's agent timeout times --timeout-multiplier, or the host's hard deadline) and was stopped. When the verifier can still score the workspace, the trial is scored instead; this cause is a timeout it could not score. | the agent | raise the task's agent timeout (task.md agent.timeout_sec) or --timeout-multiplier |
-| `trial_budget` |  | the trial spent its token or turn budget and the agent was stopped. The trial spent its token or turn budget (a turn is one model call): BenchFlow's model proxy refused the agent's next call and BenchFlow stopped the agent. Like a timeout, the verifier then grades what the agent left, so the trial is usually scored, 0 unless its tests passed, and it is never retried; this cause is a budget stop it could not score. result.json's trial_budget says which measure stopped it, what the trial used and its subagents' share. | the agent | raise --token-budget or --turn-budget (or the task's [agent] budget) if the task needs more; trial_budget in result.json has what it used |
+| `trial_budget` |  | the trial spent its token or turn budget and the agent was stopped (0.10). The trial spent its token or turn budget (a turn is one model call): BenchFlow's model proxy refused the agent's next call and BenchFlow stopped the agent. Like a timeout, the verifier then grades what the agent left, so the trial is usually scored, 0 unless its tests passed, and it is never retried; this cause is a budget stop it could not score. result.json's trial_budget says which measure stopped it, what the trial used and its subagents' share. | the agent | raise --token-budget or --turn-budget (or the task's [agent] budget) if the task needs more; trial_budget in result.json has what it used |
 | `sandbox_setup` |  | the sandbox did not start. The sandbox did not start: the network or the registry failed while the image was pulled or built, the backend refused it (quota, capacity, a daemon that is down), or the task's Dockerfile names a path that is missing. The run summary prints the cause; error in result.json has the whole message (sandbox_startup_info adds the sandbox's id and state when the backend gave them). | the sandbox | `bench doctor`; error in result.json has the whole message |
 | `image_build` |  | the task's image did not build. The task's image did not build, for a reason another attempt would repeat: a RUN step exited nonzero with no network failure in its output, the base image in FROM is not found or not public, or the Dockerfile does not parse. The summary names the Dockerfile line and BuildKit's reason; the trial is not retried. A network or registry failure during the build, a RUN step's included, is sandbox_setup instead and is retried; a registry that refused the login is registry_auth. | the task | fix that line in the task's environment/Dockerfile; `docker build <task>/environment` prints the whole build log |
 | `acp_error` | R205 | the agent reported an error. The agent answered a request with an error of its own over the Agent Client Protocol; the message is the agent's. For Claude Code, 'The connection to Claude was lost' means its own process or its API stream ended, not BenchFlow's connection to the sandbox. | the agent | the agent's log (agent/&lt;agent&gt;.txt in the trial folder) has its side |
@@ -62,14 +62,14 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | `unsupported_task_feature` | R401 | the task asks for something this sandbox backend cannot do. The task asks for something the chosen sandbox backend cannot provide, so the trial is refused before it starts. The message names each feature and the backend. | your setup | the error names what; run the task with `--sandbox docker`, or change what it asks for |
 | `agent_integration:agent_auth` |  | the agent integration broke: its login or billing failed. The agent started, then did nothing, because its own login or billing failed (an expired subscription, no credit left). | your setup | `bench doctor` |
 | `agent_integration:agent_model` |  | the agent integration broke: it does not offer the model. The agent does not offer the model the run asked for. The error lists the models it does offer. | your setup | pick a model the agent lists in the error |
-| `agent_integration:agent_effort` |  | the agent integration broke: it does not offer the model at that reasoning effort. The agent offers the model, but not at the reasoning effort the run asked for (codex-acp lists one model id per effort a model takes). The run is refused before the agent starts rather than run at another effort; the error lists the efforts it does offer. | your setup | pick an effort the error lists for the model, or a model that takes the effort |
-| `agent_integration:agent_budget` |  | the agent integration broke: its model calls go around BenchFlow's model proxy, which enforces the trial's token and turn budget. The trial has a token or turn budget (--token-budget, --turn-budget or the task's [agent] token_budget and turn_budget), but the agent calls its model around BenchFlow's model proxy: a subscription login, an endpoint of its own, or an agent that routes its own model. The proxy is what counts and enforces a trial's budget, so the trial is refused before the agent starts rather than run without one; the error says which route it took. | your setup | run it with an API key, so its calls go through the proxy, or drop --token-budget/--turn-budget (or the task's [agent] budget) |
-| `agent_integration:agent_model_catalog` |  | the agent integration broke: its model catalog has no entry for the model, so it ran on fallback tools. The agent's engine takes each model's tools from its model catalog, and the catalog has no entry for this model, so the agent ran on fallback tools (for Codex: no apply_patch, no code mode). That is another agent than the model is used with, so the trial is not scored. Codex's warning ('Model metadata for ... not found') or the tools its first request offered show it; result.json's tool_surface lists them. | your setup | pick a model the agent's pinned engine catalogues, or an agent release whose engine lists the model |
+| `agent_integration:agent_effort` |  | the agent integration broke: it does not offer the model at that reasoning effort (0.10). The agent offers the model, but not at the reasoning effort the run asked for (codex-acp lists one model id per effort a model takes). The run is refused before the agent starts rather than run at another effort; the error lists the efforts it does offer. | your setup | pick an effort the error lists for the model, or a model that takes the effort |
+| `agent_integration:agent_budget` |  | the agent integration broke: its model calls go around BenchFlow's model proxy, which enforces the trial's token and turn budget (0.10). The trial has a token or turn budget (--token-budget, --turn-budget or the task's [agent] token_budget and turn_budget), but the agent calls its model around BenchFlow's model proxy: a subscription login, an endpoint of its own, or an agent that routes its own model. The proxy is what counts and enforces a trial's budget, so the trial is refused before the agent starts rather than run without one; the error says which route it took. | your setup | run it with an API key, so its calls go through the proxy, or drop --token-budget/--turn-budget (or the task's [agent] budget) |
+| `agent_integration:agent_model_catalog` |  | the agent integration broke: its model catalog has no entry for the model, so it ran on fallback tools (0.10). The agent's engine takes each model's tools from its model catalog, and the catalog has no entry for this model, so the agent ran on fallback tools (for Codex: no apply_patch, no code mode). That is another agent than the model is used with, so the trial is not scored. Codex's warning ('Model metadata for ... not found') or the tools its first request offered show it; result.json's tool_surface lists them. | your setup | pick a model the agent's pinned engine catalogues, or an agent release whose engine lists the model |
 | `agent_integration:agent_install` |  | the agent integration broke: its install or runtime is broken. The agent started, but its install or runtime in the sandbox is broken: a missing program, or a dependency that does not load. | the sandbox | `bench doctor --agent-start <agent>` |
 | `agent_integration:unknown` |  | the agent integration broke: it did nothing useful. The agent did nothing useful, and BenchFlow has no finer cause for it; integration_failure_info in result.json has what it saw. | the agent | integration_failure_info in result.json |
 | `usage_limit` | R213 | usage limit. The login's subscription usage limit was reached (its 5-hour or 7-day window). The job starts no more trials on it; the summary lists the trials it did not start, the login, the window and the reset. | your setup | switch to another login or wait for the reset, then `bench eval resume <job dir>`; `bench doctor` shows each login's headroom |
 | `pipe_closed:exit` | R204 | the agent process exited. The agent process exited during its turn; the message has its exit code, and says whether the sandbox's cgroup counted an OOM kill (an exit is called a memory kill only with that count, never from its code alone). Its log has its last words. | the agent | the agent's log (agent/&lt;agent&gt;.txt) has its last words; `bench eval resume <job dir>` reruns it |
-| `provider_unavailable` |  | the model provider failed with a server error. The agent stopped with an error after the model provider answered a call with a server error (HTTP 500, 502, 503, 504 or 529): the provider's failure, not the agent's or the model's. It is retried within the run; agent_outcome in result.json counts the failed calls. | the sandbox | `bench eval resume <job dir>` reruns it; agent_outcome in result.json counts the calls that failed |
+| `provider_unavailable` |  | the model provider failed with a server error (0.10). The agent stopped with an error after the model provider answered a call with a server error (HTTP 500, 502, 503, 504 or 529): the provider's failure, not the agent's or the model's. It is retried within the run; agent_outcome in result.json counts the failed calls. | the sandbox | `bench eval resume <job dir>` reruns it; agent_outcome in result.json counts the calls that failed |
 | `kept_service_freezer:engine` |  | the Docker Engine cannot freeze the task's kept services. The task's kept services are frozen in a cgroup between the agent's turn and verification, and this Docker Engine cannot make one for a non-root agent: it is older than 28, rootless or remaps user namespaces. No agent code ran; the trial has no score. | your setup | use Docker Engine 28 or later with cgroup v2, not rootless and without user-namespace remapping (`docker info`) |
 | `kept_service_freezer:probe` |  | the sandbox's cgroups cannot freeze the task's kept services. The task's kept services are frozen in a cgroup between the agent's turn and verification, and the freezer check inside this sandbox failed (no cgroup v2, or cgroups it cannot write). No agent code ran; the trial has no score. The check's own reason is in the error. | your setup | run it where Docker uses cgroup v2 with writable cgroups (`docker info` shows Cgroup Version: 2); the check's reason is in result.json |
 | `other` |  | other error. An error none of the other pages covers. If it repeats on other tasks, it may be a bug in BenchFlow: report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder. | the sandbox | the trial's result.json and the run's log have the details |
@@ -115,10 +115,10 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `AgentManifestError` | `duplicate agent name … (second declaration at …)` | Give each `manifest.toml` under the agents folder its own `name`, or remove one of the two manifests. |
 | `AgentManifestError` | `manifest … is missing required …` | Add the named key; every `manifest.toml` needs `contract_version`, `name`, `install_cmd` and `launch_cmd`. |
 | `AgentManifestError` | `manifest …: aliases must be an array of strings` | Write `aliases` as a TOML array of strings, such as `aliases = ['my-agent']`, or remove it. |
-| `AgentManifestError` | `manifest …: model_route must be one of …; got …` | Set `model_route` to `proxy` or `agent`, or remove it to get `proxy`. |
+| `AgentManifestError` | `manifest …: model_route must be one of …; got …` (0.10) | Set `model_route` to `proxy` or `agent`, or remove it to get `proxy`. |
 | `AgentManifestError` | `manifest …: name must be a string` | Set `name` to a quoted string, such as `name = 'my-agent'`. |
 | `AgentManifestError` | `manifest …: protocol … is not supported; the contract is acp-only (…). Non-ACP platforms must ship an ACP-over-stdio shim and declare protocol='acp'.` | Set `protocol = 'acp'` or remove it, and make `launch_cmd` start an ACP-over-stdio shim for your agent. |
-| `AgentManifestError` | `manifest …: … needs contract_version ….… or later; it declares …` | Raise `contract_version` to `'1.1'` or later, or remove the key it names (`model_route` needs 1.1). |
+| `AgentManifestError` | `manifest …: … needs contract_version ….… or later; it declares …` (0.10) | Raise `contract_version` to `'1.1'` or later, or remove the key it names (`model_route` needs 1.1). |
 | `AssessmentError` | (built at run time) | Follow the `next:` line the refusal prints; nothing was appended, and `bench assess show <sidecar>` prints the sidecar's state. |
 | `BranchPlanError` | `--checkpoint …: no such checkpoint in …` | Pass `--checkpoint prompt:N` for an N the trial's `checkpoints.json` lists, or drop it to use the last kept one. |
 | `BranchPlanError` | `--checkpoint …: that snapshot is …, not kept` | Pick a `prompt:N` checkpoint whose status in `checkpoints.json` is `kept`, or rerun the trial with `--checkpoints` to keep a new one. |
@@ -165,29 +165,29 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `BranchPlanError` | `the oracle takes no prompts: every oracle child runs the task's solve.sh, so drop prompt= from --child` | Remove `prompt=` and `prompt-file=` from every `--child`, or branch a model agent instead of the oracle. |
 | `ConfigKeyError` | (built at run time) | change or drop each setting named; what a YAML job config runs is in `https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md` |
 | `ConfigKeyError` | (built at run time) | fix the key; a run config's keys are listed in `https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md` |
-| `Conflict` | `consumer … already recorded using revision …` | Don't record it again: this consumer's use of that revision is already logged; `bench assess show <sidecar> --events` lists the `label.consumed` event. |
-| `Conflict` | `idempotency key … is already used by event …` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `Conflict` | `idempotency key … was used by event … (…) with a different payload; nothing was appended` | Rerun with the original inputs to get the first event back; for a genuinely different write, pass a new `--idempotency-key` (for a changed vote, use `bench assess correct`). |
-| `Conflict` | `revision … was already withdrawn (…); a later withdrawal may only move queued_compensation to compensated` | Leave the revision withdrawn; only a `queued_compensation` withdrawal may be followed by `bench assess withdraw --disposition compensated`. |
-| `Conflict` | `the assessment already has collector assignment …` | a restarted collector must return that same assignment |
-| `Conflict` | `the sidecar already holds assessment …` | create a new assessment in a new sidecar directory |
-| `Conflict` | `this assignment already has an answer; replay it with its own idempotency key, or change it with review.corrected` | Change the answer with `bench assess correct <sidecar> --supersedes <event id>` and the new choice; `bench assess show <sidecar> --events` lists the answer's id. |
-| `Conflict` | `… already holds assessment …` | use a new sidecar directory for another assessment |
-| `Conflict` | `… vote … (rater …, …): its vote_id … (the file's, or one made from the pair or item, the aspect, the rater and rated_at) is already recorded with other content` | to change an answer, import it with a later rated_at and without that vote_id (or with a new one): a rater's latest vote on a pair or item is the one counted; nothing was added |
-| `CorruptSidecar` | `the last line (from byte …) has no newline: a torn append; the log is left exactly as found` | move the sidecar aside and keep it as evidence; nothing reads past a torn line |
-| `CorruptSidecar` | `the log does not contain event …: it was truncated or replaced` | Check that `--expect-event` is the event SHA-256 your receipt holds; if it is, restore the sidecar from a kept copy, as this log was cut or replaced. |
-| `CorruptSidecar` | `… (…) is not allowed: …` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `CorruptSidecar` | `… is a symbolic link` | Replace the symbolic link `assessment-events.v1.jsonl` in the sidecar with the real log file; sidecars refuse links. |
-| `CorruptSidecar` | `… is not in RFC 8785 canonical form` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `CorruptSidecar` | `…: event_seq is …, expected …` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `CorruptSidecar` | `…: event_sha256 does not match the event` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `CorruptSidecar` | `…: expected_previous_event_sha256 differs from the event it followed` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
-| `CorruptSidecar` | `…: previous_event_sha256 breaks the hash chain` | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `Conflict` | `consumer … already recorded using revision …` (0.10) | Don't record it again: this consumer's use of that revision is already logged; `bench assess show <sidecar> --events` lists the `label.consumed` event. |
+| `Conflict` | `idempotency key … is already used by event …` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `Conflict` | `idempotency key … was used by event … (…) with a different payload; nothing was appended` (0.10) | Rerun with the original inputs to get the first event back; for a genuinely different write, pass a new `--idempotency-key` (for a changed vote, use `bench assess correct`). |
+| `Conflict` | `revision … was already withdrawn (…); a later withdrawal may only move queued_compensation to compensated` (0.10) | Leave the revision withdrawn; only a `queued_compensation` withdrawal may be followed by `bench assess withdraw --disposition compensated`. |
+| `Conflict` | `the assessment already has collector assignment …` (0.10) | a restarted collector must return that same assignment |
+| `Conflict` | `the sidecar already holds assessment …` (0.10) | create a new assessment in a new sidecar directory |
+| `Conflict` | `this assignment already has an answer; replay it with its own idempotency key, or change it with review.corrected` (0.10) | Change the answer with `bench assess correct <sidecar> --supersedes <event id>` and the new choice; `bench assess show <sidecar> --events` lists the answer's id. |
+| `Conflict` | `… already holds assessment …` (0.10) | use a new sidecar directory for another assessment |
+| `Conflict` | `… vote … (rater …, …): its vote_id … (the file's, or one made from the pair or item, the aspect, the rater and rated_at) is already recorded with other content` (0.10) | to change an answer, import it with a later rated_at and without that vote_id (or with a new one): a rater's latest vote on a pair or item is the one counted; nothing was added |
+| `CorruptSidecar` | `the last line (from byte …) has no newline: a torn append; the log is left exactly as found` (0.10) | move the sidecar aside and keep it as evidence; nothing reads past a torn line |
+| `CorruptSidecar` | `the log does not contain event …: it was truncated or replaced` (0.10) | Check that `--expect-event` is the event SHA-256 your receipt holds; if it is, restore the sidecar from a kept copy, as this log was cut or replaced. |
+| `CorruptSidecar` | `… (…) is not allowed: …` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `CorruptSidecar` | `… is a symbolic link` (0.10) | Replace the symbolic link `assessment-events.v1.jsonl` in the sidecar with the real log file; sidecars refuse links. |
+| `CorruptSidecar` | `… is not in RFC 8785 canonical form` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `CorruptSidecar` | `…: event_seq is …, expected …` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `CorruptSidecar` | `…: event_sha256 does not match the event` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `CorruptSidecar` | `…: expected_previous_event_sha256 differs from the event it followed` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
+| `CorruptSidecar` | `…: previous_event_sha256 breaks the hash chain` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
 | `DatasetDigestMismatchError` | `Dataset … content does not match its registry digests: …` | If you edited the cached tasks under `.cache/datasets-v2/`, undo the edits or remove that repository's folders there and rerun; otherwise tell the registry's maintainer. |
 | `DatasetResolutionError` | `Could not read …: …` | Check that the `--registry` URL answers without an HTTP error or the file is readable; for BenchFlow's registry, check this machine's network and rerun. |
 | `DatasetResolutionError` | `Dataset … could not be looked up in BenchFlow's registry: …` | check this machine's network, or pick a dataset that BenchFlow's registry lists (bench hub list --provider benchflow), or name a registry that has it with --registry &lt;URL or file&gt; |
-| `DatasetResolutionError` | `Dataset … could not be pulled from the Hub at …: …` | the Hub's stored copy is damaged, so tell its admin; `bench hub show … --hub …` shows what the Hub holds |
-| `DatasetResolutionError` | `Dataset … could not be read from the Hub at …: …` | check the name@version with `bench hub show` |
+| `DatasetResolutionError` | `Dataset … could not be pulled from the Hub at …: …` (0.10) | the Hub's stored copy is damaged, so tell its admin; `bench hub show … --hub …` shows what the Hub holds |
+| `DatasetResolutionError` | `Dataset … could not be read from the Hub at …: …` (0.10) | check the name@version with `bench hub show` |
 | `DatasetResolutionError` | `Dataset … has a malformed digest for …: …` | Write that task's `digest` as the string `bench tasks digest <task>` prints, or remove it to run the task unchecked. |
 | `DatasetResolutionError` | `Dataset … has a malformed task entry (expected an object with …): …` | Make each entry under the dataset's `tasks` an object with at least `git_url` and `path`. |
 | `DatasetResolutionError` | `Dataset … has no tasks in the registry` | Pick a version that has tasks (`bench hub list --provider benchflow`), or add a `tasks` list to the entry in your `--registry` file. |
@@ -232,14 +232,14 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `EvalPlanError` | `--ignore-bench-version requires --dataset` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--loop-strategy drives the prompt loop and conflicts with multiple --prompt values` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--loop-strategy is not supported with --skill-mode self-gen` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `--matrix needs a task folder, a task named by repository or --dataset` | correct the flag the message names; `bench run --help-all` lists every flag |
+| `EvalPlanError` | `--matrix needs a task folder, a task named by repository or --dataset` (0.10) | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--matrix not found: …` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts are not supported with --source-env (vf-eval runs the rollouts)` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts cap one job and are not supported with --worker-concurrency (each worker would get the whole budget)` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--n-tasks must be at least 1` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--registry requires --dataset` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` | drop --restart-changed for a new job, or drop --fresh and name the job to restart with --job-name |
-| `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` | drop --restart-changed: each shard runs a job of its own |
+| `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` (0.10) | drop --restart-changed for a new job, or drop --fresh and name the job to restart with --job-name |
+| `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` (0.10) | drop --restart-changed: each shard runs a job of its own |
 | `EvalPlanError` | `--retry-attempts must be >= 0` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--retry-concurrency must be >= 1` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--retry-policy must be 'default' or 'unscored-only'` | correct the flag the message names; `bench run --help-all` lists every flag |
@@ -249,9 +249,9 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `EvalPlanError` | `--seeds requires --tasks-dir or --source-repo` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--tasks-dir not found: …` | pass a local task folder; a task on GitHub goes in --source-repo and --source-path, or `bench run org/repo/path` |
 | `EvalPlanError` | `--timeout-multiplier must be positive` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `--token-budget and --turn-budget are not supported with --source-env: vf-eval runs the rollouts, and BenchFlow's model proxy, which enforces a trial budget, does not see their calls` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `--token-budget and --turn-budget cannot be enforced on …: …, and BenchFlow's model proxy is what counts a trial's tokens and turns. No job was created.` | run it with an API key, so its calls go through the proxy, or drop the budget |
-| `EvalPlanError` | `--trials > 1 needs a task folder, a task named by repository or --dataset; a --config file repeats tasks with a job config's n_attempts, and a --source-env run with --source-env-rollouts-per-example` | correct the flag the message names; `bench run --help-all` lists every flag |
+| `EvalPlanError` | `--token-budget and --turn-budget are not supported with --source-env: vf-eval runs the rollouts, and BenchFlow's model proxy, which enforces a trial budget, does not see their calls` (0.10) | correct the flag the message names; `bench run --help-all` lists every flag |
+| `EvalPlanError` | `--token-budget and --turn-budget cannot be enforced on …: …, and BenchFlow's model proxy is what counts a trial's tokens and turns. No job was created.` (0.10) | run it with an API key, so its calls go through the proxy, or drop the budget |
+| `EvalPlanError` | `--trials > 1 needs a task folder, a task named by repository or --dataset; a --config file repeats tasks with a job config's n_attempts, and a --source-env run with --source-env-rollouts-per-example` (0.10) | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--trials must be >= 1` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--verifier-sandbox: …` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--warm-pool must be from 0 to --concurrency (…) (got …)` | correct the flag the message names; `bench run --help-all` lists every flag |
@@ -277,82 +277,82 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `EvalPlanError` | `Unsupported eval agent protocol: …` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `give --fresh or --job-name, not both` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `script: does not use a model harness or agent options; drop --harness and --agent-env, or choose a model agent` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `script: runs only on …: its runner needs a trusted root transport the … backend does not have` | use --sandbox docker, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
+| `EvalPlanError` | `script: runs only on …: its runner needs a trusted root transport the … backend does not have` (0.10) | use --sandbox docker, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
 | `EvalPlanError` | ``… (`bench agents` shows the registered agents; to run a command as the agent, give it with its arguments, e.g. 'myagent --acp')`` | pass -a with a name `bench agents` lists |
 | `EvalPlanError` | `… No job was created.` | pass -a with a name `bench agents` lists |
 | `EvalPlanError` | `… … not supported with --source-env: the hosted environment scores the run with its own verifier, which BenchFlow cannot move into a separate verifier sandbox. Run it without …, or run the tasks with --tasks-dir or --dataset.` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `… … not supported with --source-env: vf-eval scores the run as one mean reward, with no trials to count. The run exits 1 when it errors; its reward is in <jobs-dir>/hosted-env/<run>/result.json.` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvidenceRejected` | `an imported vote is written by its collector (actor role collector)` | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `answer names assignment …; this assessment's is …` | Record answers only with `bench assess import-vote`, `correct` or `retract`; if the sidecar log was edited, restore it from your copy. |
-| `EvidenceRejected` | `answer names reviewer …; the assignment's is …` | Check who voted in the collector: only the assignment's own reviewer binds, so have that reviewer vote, or start a new assessment with a fresh assignment. |
-| `EvidenceRejected` | `assignment … has no vote in the collector yet` | Wait until the reviewer votes in the collector, then rerun `bench assess import-vote` with a database copy made after the vote. |
-| `EvidenceRejected` | `both references name the same attempt` | Pass two different attempts: two `--attempt` reference files made from different rollouts or outputs. |
-| `EvidenceRejected` | `cannot read the collector database: …` | Pass `--collector-db` an intact SQLite copy of the collector's `workspace.sqlite3`, made with its `cli.py backup`. |
-| `EvidenceRejected` | `collector artifact … (…) lists … files; the attempt's output has …` | Bind an assignment whose artifact holds exactly the attempt's `--output` files, or hash the output the collector shows with `bench assess attempt-ref` and start a new assessment. |
-| `EvidenceRejected` | `collector artifact … (…): its files are not the attempt's output files (path or hash differs)` | Bind an assignment whose artifact holds exactly the attempt's `--output` files, or hash the output the collector shows with `bench assess attempt-ref` and start a new assessment. |
-| `EvidenceRejected` | `collector artifact … (…): its output hash does not match its own preview and file hashes` | Check that `--collector-db` is an intact `cli.py backup` copy; if it is, the artifact record is inconsistent, so have the collector issue a new assignment. |
-| `EvidenceRejected` | `collector assignment … is marked invalid (its evidence changed)` | Have the collector issue a new assignment for this pair, then run `bench assess assign` with its `--assignment` id. |
-| `EvidenceRejected` | `collector database … does not exist` | Pass `--collector-db` the path of the collector's `workspace.sqlite3`, preferably a `cli.py backup` copy. |
-| `EvidenceRejected` | `collector source … is missing under …` | Point `--collector-code` at the collector's code folder (`design-bench/prototype`) checked out at the commit the judge protocol pins. |
-| `EvidenceRejected` | `collector source … is not a regular file` | Point `--collector-code` at a checkout where that source is a regular file, not a link or folder, at the pinned commit. |
-| `EvidenceRejected` | `collector … … is not a JSON object` | Use an intact `cli.py backup` copy as `--collector-db`; if the record is still malformed, report it to the collector's maintainers. |
-| `EvidenceRejected` | `collector … … is not readable JSON` | Use an intact `cli.py backup` copy as `--collector-db`; if the record is still unreadable, report it to the collector's maintainers. |
-| `EvidenceRejected` | `imported_from must name the collector and its vote id` | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `no release observation for …; every execution resource must be observed released before a human waits` | finished_at or a missing log line is not a release; observe each runtime |
-| `EvidenceRejected` | `output directory … holds no files` | Pass `--output` a folder that holds the attempt's output files, or the output file itself. |
-| `EvidenceRejected` | `output member … is a symbolic link` | Replace the link inside the `--output` folder with the file it points to; links are refused. |
-| `EvidenceRejected` | `output member … is not a regular file` | Remove the socket, pipe or device file from the `--output` folder; only regular files and folders are hashed. |
-| `EvidenceRejected` | `output … is missing` | Pass `--output` an existing file or folder, or move the output back to the path the attempt reference records. |
-| `EvidenceRejected` | `output … is neither a file nor a directory` | Pass `--output` the real file or folder, not a symbolic link or special file. |
-| `EvidenceRejected` | `payload.collector does not name the pinned collector build` | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `payload.collector.assignment_id is not the exported assignment` | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `presentation must be A = the collector's left, B = its right` | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `released_at is earlier than an observation it relies on` | Correct the `observed_at` times in the `--proof` file; none may be later than the moment `bench assess release` records it. |
-| `EvidenceRejected` | `released_at is later than the event that records it` | Record releases only with `bench assess release`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `reviewer_subject must be the collector's reviewer, exactly` | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `the assignment's … artifact id differs from the export's` | Use an intact `cli.py backup` copy as `--collector-db`; if it persists, have the collector issue a new assignment and bind that one. |
-| `EvidenceRejected` | `the assignment's … hash is not its artifact's` | Have the collector issue a new assignment (this one's artifact changed after it was made), then bind it with `bench assess assign`. |
-| `EvidenceRejected` | `the attempts come from different tasks (… and …); an assessment compares two outputs of one task` | Pass two `--attempt` references from trials of the same task, with the same `task_digest`. |
-| `EvidenceRejected` | `the collector assignment does not show exactly this assessment's two review artifacts (a changed, missing or foreign artifact)` | Bind an assignment whose two sides show this assessment's two `--review-artifact` files, byte for byte; check the `--assignment` id. |
-| `EvidenceRejected` | `the collector assignment has no task version binding the frozen rubric; unbound prototype records stay research history` | issue a new assignment for a task version carrying the frozen rubric digest |
-| `EvidenceRejected` | `the collector assignment predates the recorded release; an assignment made before this assessment stays research history and is not bound` | Have the collector issue a new assignment now, after the release, and bind it with `bench assess assign --assignment <id>`. |
-| `EvidenceRejected` | `the collector build differs from the one the frozen judge protocol pins (implementation, commit or a source file hash)` | run the collector at the pinned commit, or freeze a new protocol |
-| `EvidenceRejected` | `the collector has no artifact …` | Pass a complete, current `cli.py backup` copy as `--collector-db`; this one lacks the assignment's artifact record. |
-| `EvidenceRejected` | `the collector has no assignment …` | Check the `--assignment` id, and pass a `--collector-db` copy made after the collector issued that assignment. |
-| `EvidenceRejected` | `the collector has no task …` | Pass a complete, current `cli.py backup` copy as `--collector-db`; this one lacks the assignment's task record. |
-| `EvidenceRejected` | `the collector marked this assignment invalid; its vote is not bound` | Start a new assessment in a new sidecar with a fresh collector assignment; an invalidated assignment's vote cannot be imported. |
-| `EvidenceRejected` | `the collector record does not fit the export schema: …` | Use an intact `cli.py backup` copy from the pinned collector build; if the named field still fails, report it to the collector's maintainers. |
-| `EvidenceRejected` | `the collector task's frozen rubric digest is not the assessment's rubric` | Have the collector issue a new assignment for a task version carrying this assessment's `--rubric` digest, then bind it with `bench assess assign`. |
-| `EvidenceRejected` | `the collector vote's tags are not JSON` | Use an intact `cli.py backup` copy as `--collector-db`; if the vote's tags are still not JSON, report it to the collector's maintainers. |
-| `EvidenceRejected` | `the export's task is not the assignment's task version` | Use an intact `cli.py backup` copy as `--collector-db`; if it persists, have the collector issue a new assignment and bind that one. |
-| `EvidenceRejected` | `the frozen … … changed` | Restore the rubric or judge protocol file to the bytes frozen at `bench assess create`, or start a new assessment with the changed file. |
-| `EvidenceRejected` | `the release must list exactly the runtimes the two attempts recorded (…), in (attempt_id, provider, runtime_id) order` | Record releases only with `bench assess release`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `the release proof observes …:…, which neither attempt recorded` | Remove that observation from the `--proof` file, or correct its provider and runtime id to one the attempts recorded. |
-| `EvidenceRejected` | `the vote is not this assignment's reviewer's vote` | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `the vote predates its assignment` | Check the collector's clock and records; this vote cannot be bound, so start a new assessment with a fresh assignment and vote. |
-| `EvidenceRejected` | `the vote's collector … differs from the assignment's export` | Rerun `bench assess import-vote` with the same `--collector-code` and a database whose assignment, artifacts and task are unchanged since `bench assess assign`. |
-| `EvidenceRejected` | `the … artifact belongs to another collector case` | Have the collector issue an assignment whose two artifacts belong to its own case, then bind it with `bench assess assign`. |
-| `EvidenceRejected` | `the … output belongs to another task version` | Have the collector issue an assignment whose artifacts belong to its task version, then bind it with `bench assess assign`. |
-| `EvidenceRejected` | `… has no finished_at: not a completed rollout` | Wait for the trial to finish, then run `bench assess attempt-ref` again; a finished trial's `result.json` has `finished_at`. |
-| `EvidenceRejected` | `… has no task_digest, so the attempt cannot be bound to a task` | Use a trial run with `bench run` or `bench eval run`, whose `result.json` records `task_digest`. |
-| `EvidenceRejected` | `… is not a JSON object` | Point at a rollout folder whose `result.json` is the JSON object BenchFlow wrote; restore it if it was replaced. |
-| `EvidenceRejected` | `… is not readable JSON` | Restore the rollout's `result.json` as BenchFlow wrote it; this one is not valid JSON (truncated or edited). |
-| `EvidenceRejected` | `… must be the collector vote's (…)` | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
-| `EvidenceRejected` | `… names no rollout (rollout_name)` | Use a rollout folder BenchFlow wrote, whose `result.json` records `rollout_name`. |
-| `EvidenceRejected` | `… records no sandbox and no runtime was declared; name every execution allocation so its release can be proven` | Pass `--runtime PROVIDER:RUNTIME_ID[:ROLE]` for each sandbox the attempt ran in, so its release can be proven. |
-| `EvidenceRejected` | `… repeats the member …` | Restore `result.json` as BenchFlow wrote it; each JSON key may appear only once. |
-| `EvidenceRejected` | `… … cannot be read: …` | Make the named file readable by your user (check its permissions), then rerun. |
-| `EvidenceRejected` | `… … changed while it was hashed` | Wait until nothing writes the named file (a running trial or a sync), then rerun. |
-| `EvidenceRejected` | `… … changed while it was read` | Wait until nothing writes the named file (a running trial or a sync), then rerun. |
-| `EvidenceRejected` | `… … is not a regular file (links are refused)` | Pass the real file instead of a link or folder, or copy the file over the link. |
-| `EvidenceRejected` | `…: a file name is not valid UTF-8` | Rename the file in the `--output` folder to a valid UTF-8 name, then hash the attempt again. |
-| `EvidenceRejected` | `…: output changed (…)` | Restore the output files to what `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
-| `EvidenceRejected` | `…: output manifest digest differs` | Don't edit the attempt reference; make a new one for this rollout with `bench assess attempt-ref` and start a new assessment. |
-| `EvidenceRejected` | `…: result.json changed (…)` | Restore the rollout's `result.json` to the bytes `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
-| `EvidenceRejected` | `…: result.json names another rollout or task` | Don't edit the attempt reference; make a new one for this rollout with `bench assess attempt-ref` and start a new assessment. |
-| `EvidenceRejected` | `…: review artifact changed (…)` | Restore the review artifact to the bytes `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
-| `EvidenceRejected` | `…: runtime_refs do not retain exactly the result.sandbox_id recorded in result.json; declared runtimes cannot replace it` | Don't edit the reference's `runtime_refs`; make a new one with `bench assess attempt-ref`, adding other runtimes with `--runtime`. |
-| `EvidenceRejected` | `…: task_digest is not 'sha256:<64 hex>'` | Restore the rollout's `result.json` as BenchFlow wrote it; `task_digest` must be `sha256:` followed by 64 hex digits. |
+| `EvidenceRejected` | `an imported vote is written by its collector (actor role collector)` (0.10) | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `answer names assignment …; this assessment's is …` (0.10) | Record answers only with `bench assess import-vote`, `correct` or `retract`; if the sidecar log was edited, restore it from your copy. |
+| `EvidenceRejected` | `answer names reviewer …; the assignment's is …` (0.10) | Check who voted in the collector: only the assignment's own reviewer binds, so have that reviewer vote, or start a new assessment with a fresh assignment. |
+| `EvidenceRejected` | `assignment … has no vote in the collector yet` (0.10) | Wait until the reviewer votes in the collector, then rerun `bench assess import-vote` with a database copy made after the vote. |
+| `EvidenceRejected` | `both references name the same attempt` (0.10) | Pass two different attempts: two `--attempt` reference files made from different rollouts or outputs. |
+| `EvidenceRejected` | `cannot read the collector database: …` (0.10) | Pass `--collector-db` an intact SQLite copy of the collector's `workspace.sqlite3`, made with its `cli.py backup`. |
+| `EvidenceRejected` | `collector artifact … (…) lists … files; the attempt's output has …` (0.10) | Bind an assignment whose artifact holds exactly the attempt's `--output` files, or hash the output the collector shows with `bench assess attempt-ref` and start a new assessment. |
+| `EvidenceRejected` | `collector artifact … (…): its files are not the attempt's output files (path or hash differs)` (0.10) | Bind an assignment whose artifact holds exactly the attempt's `--output` files, or hash the output the collector shows with `bench assess attempt-ref` and start a new assessment. |
+| `EvidenceRejected` | `collector artifact … (…): its output hash does not match its own preview and file hashes` (0.10) | Check that `--collector-db` is an intact `cli.py backup` copy; if it is, the artifact record is inconsistent, so have the collector issue a new assignment. |
+| `EvidenceRejected` | `collector assignment … is marked invalid (its evidence changed)` (0.10) | Have the collector issue a new assignment for this pair, then run `bench assess assign` with its `--assignment` id. |
+| `EvidenceRejected` | `collector database … does not exist` (0.10) | Pass `--collector-db` the path of the collector's `workspace.sqlite3`, preferably a `cli.py backup` copy. |
+| `EvidenceRejected` | `collector source … is missing under …` (0.10) | Point `--collector-code` at the collector's code folder (`design-bench/prototype`) checked out at the commit the judge protocol pins. |
+| `EvidenceRejected` | `collector source … is not a regular file` (0.10) | Point `--collector-code` at a checkout where that source is a regular file, not a link or folder, at the pinned commit. |
+| `EvidenceRejected` | `collector … … is not a JSON object` (0.10) | Use an intact `cli.py backup` copy as `--collector-db`; if the record is still malformed, report it to the collector's maintainers. |
+| `EvidenceRejected` | `collector … … is not readable JSON` (0.10) | Use an intact `cli.py backup` copy as `--collector-db`; if the record is still unreadable, report it to the collector's maintainers. |
+| `EvidenceRejected` | `imported_from must name the collector and its vote id` (0.10) | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `no release observation for …; every execution resource must be observed released before a human waits` (0.10) | finished_at or a missing log line is not a release; observe each runtime |
+| `EvidenceRejected` | `output directory … holds no files` (0.10) | Pass `--output` a folder that holds the attempt's output files, or the output file itself. |
+| `EvidenceRejected` | `output member … is a symbolic link` (0.10) | Replace the link inside the `--output` folder with the file it points to; links are refused. |
+| `EvidenceRejected` | `output member … is not a regular file` (0.10) | Remove the socket, pipe or device file from the `--output` folder; only regular files and folders are hashed. |
+| `EvidenceRejected` | `output … is missing` (0.10) | Pass `--output` an existing file or folder, or move the output back to the path the attempt reference records. |
+| `EvidenceRejected` | `output … is neither a file nor a directory` (0.10) | Pass `--output` the real file or folder, not a symbolic link or special file. |
+| `EvidenceRejected` | `payload.collector does not name the pinned collector build` (0.10) | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `payload.collector.assignment_id is not the exported assignment` (0.10) | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `presentation must be A = the collector's left, B = its right` (0.10) | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `released_at is earlier than an observation it relies on` (0.10) | Correct the `observed_at` times in the `--proof` file; none may be later than the moment `bench assess release` records it. |
+| `EvidenceRejected` | `released_at is later than the event that records it` (0.10) | Record releases only with `bench assess release`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `reviewer_subject must be the collector's reviewer, exactly` (0.10) | Bind assignments only with `bench assess assign`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `the assignment's … artifact id differs from the export's` (0.10) | Use an intact `cli.py backup` copy as `--collector-db`; if it persists, have the collector issue a new assignment and bind that one. |
+| `EvidenceRejected` | `the assignment's … hash is not its artifact's` (0.10) | Have the collector issue a new assignment (this one's artifact changed after it was made), then bind it with `bench assess assign`. |
+| `EvidenceRejected` | `the attempts come from different tasks (… and …); an assessment compares two outputs of one task` (0.10) | Pass two `--attempt` references from trials of the same task, with the same `task_digest`. |
+| `EvidenceRejected` | `the collector assignment does not show exactly this assessment's two review artifacts (a changed, missing or foreign artifact)` (0.10) | Bind an assignment whose two sides show this assessment's two `--review-artifact` files, byte for byte; check the `--assignment` id. |
+| `EvidenceRejected` | `the collector assignment has no task version binding the frozen rubric; unbound prototype records stay research history` (0.10) | issue a new assignment for a task version carrying the frozen rubric digest |
+| `EvidenceRejected` | `the collector assignment predates the recorded release; an assignment made before this assessment stays research history and is not bound` (0.10) | Have the collector issue a new assignment now, after the release, and bind it with `bench assess assign --assignment <id>`. |
+| `EvidenceRejected` | `the collector build differs from the one the frozen judge protocol pins (implementation, commit or a source file hash)` (0.10) | run the collector at the pinned commit, or freeze a new protocol |
+| `EvidenceRejected` | `the collector has no artifact …` (0.10) | Pass a complete, current `cli.py backup` copy as `--collector-db`; this one lacks the assignment's artifact record. |
+| `EvidenceRejected` | `the collector has no assignment …` (0.10) | Check the `--assignment` id, and pass a `--collector-db` copy made after the collector issued that assignment. |
+| `EvidenceRejected` | `the collector has no task …` (0.10) | Pass a complete, current `cli.py backup` copy as `--collector-db`; this one lacks the assignment's task record. |
+| `EvidenceRejected` | `the collector marked this assignment invalid; its vote is not bound` (0.10) | Start a new assessment in a new sidecar with a fresh collector assignment; an invalidated assignment's vote cannot be imported. |
+| `EvidenceRejected` | `the collector record does not fit the export schema: …` (0.10) | Use an intact `cli.py backup` copy from the pinned collector build; if the named field still fails, report it to the collector's maintainers. |
+| `EvidenceRejected` | `the collector task's frozen rubric digest is not the assessment's rubric` (0.10) | Have the collector issue a new assignment for a task version carrying this assessment's `--rubric` digest, then bind it with `bench assess assign`. |
+| `EvidenceRejected` | `the collector vote's tags are not JSON` (0.10) | Use an intact `cli.py backup` copy as `--collector-db`; if the vote's tags are still not JSON, report it to the collector's maintainers. |
+| `EvidenceRejected` | `the export's task is not the assignment's task version` (0.10) | Use an intact `cli.py backup` copy as `--collector-db`; if it persists, have the collector issue a new assignment and bind that one. |
+| `EvidenceRejected` | `the frozen … … changed` (0.10) | Restore the rubric or judge protocol file to the bytes frozen at `bench assess create`, or start a new assessment with the changed file. |
+| `EvidenceRejected` | `the release must list exactly the runtimes the two attempts recorded (…), in (attempt_id, provider, runtime_id) order` (0.10) | Record releases only with `bench assess release`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `the release proof observes …:…, which neither attempt recorded` (0.10) | Remove that observation from the `--proof` file, or correct its provider and runtime id to one the attempts recorded. |
+| `EvidenceRejected` | `the vote is not this assignment's reviewer's vote` (0.10) | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `the vote predates its assignment` (0.10) | Check the collector's clock and records; this vote cannot be bound, so start a new assessment with a fresh assignment and vote. |
+| `EvidenceRejected` | `the vote's collector … differs from the assignment's export` (0.10) | Rerun `bench assess import-vote` with the same `--collector-code` and a database whose assignment, artifacts and task are unchanged since `bench assess assign`. |
+| `EvidenceRejected` | `the … artifact belongs to another collector case` (0.10) | Have the collector issue an assignment whose two artifacts belong to its own case, then bind it with `bench assess assign`. |
+| `EvidenceRejected` | `the … output belongs to another task version` (0.10) | Have the collector issue an assignment whose artifacts belong to its task version, then bind it with `bench assess assign`. |
+| `EvidenceRejected` | `… has no finished_at: not a completed rollout` (0.10) | Wait for the trial to finish, then run `bench assess attempt-ref` again; a finished trial's `result.json` has `finished_at`. |
+| `EvidenceRejected` | `… has no task_digest, so the attempt cannot be bound to a task` (0.10) | Use a trial run with `bench run` or `bench eval run`, whose `result.json` records `task_digest`. |
+| `EvidenceRejected` | `… is not a JSON object` (0.10) | Point at a rollout folder whose `result.json` is the JSON object BenchFlow wrote; restore it if it was replaced. |
+| `EvidenceRejected` | `… is not readable JSON` (0.10) | Restore the rollout's `result.json` as BenchFlow wrote it; this one is not valid JSON (truncated or edited). |
+| `EvidenceRejected` | `… must be the collector vote's (…)` (0.10) | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
+| `EvidenceRejected` | `… names no rollout (rollout_name)` (0.10) | Use a rollout folder BenchFlow wrote, whose `result.json` records `rollout_name`. |
+| `EvidenceRejected` | `… records no sandbox and no runtime was declared; name every execution allocation so its release can be proven` (0.10) | Pass `--runtime PROVIDER:RUNTIME_ID[:ROLE]` for each sandbox the attempt ran in, so its release can be proven. |
+| `EvidenceRejected` | `… repeats the member …` (0.10) | Restore `result.json` as BenchFlow wrote it; each JSON key may appear only once. |
+| `EvidenceRejected` | `… … cannot be read: …` (0.10) | Make the named file readable by your user (check its permissions), then rerun. |
+| `EvidenceRejected` | `… … changed while it was hashed` (0.10) | Wait until nothing writes the named file (a running trial or a sync), then rerun. |
+| `EvidenceRejected` | `… … changed while it was read` (0.10) | Wait until nothing writes the named file (a running trial or a sync), then rerun. |
+| `EvidenceRejected` | `… … is not a regular file (links are refused)` (0.10) | Pass the real file instead of a link or folder, or copy the file over the link. |
+| `EvidenceRejected` | `…: a file name is not valid UTF-8` (0.10) | Rename the file in the `--output` folder to a valid UTF-8 name, then hash the attempt again. |
+| `EvidenceRejected` | `…: output changed (…)` (0.10) | Restore the output files to what `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
+| `EvidenceRejected` | `…: output manifest digest differs` (0.10) | Don't edit the attempt reference; make a new one for this rollout with `bench assess attempt-ref` and start a new assessment. |
+| `EvidenceRejected` | `…: result.json changed (…)` (0.10) | Restore the rollout's `result.json` to the bytes `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
+| `EvidenceRejected` | `…: result.json names another rollout or task` (0.10) | Don't edit the attempt reference; make a new one for this rollout with `bench assess attempt-ref` and start a new assessment. |
+| `EvidenceRejected` | `…: review artifact changed (…)` (0.10) | Restore the review artifact to the bytes `bench assess attempt-ref` hashed, or hash the attempt again and start a new assessment. |
+| `EvidenceRejected` | `…: runtime_refs do not retain exactly the result.sandbox_id recorded in result.json; declared runtimes cannot replace it` (0.10) | Don't edit the reference's `runtime_refs`; make a new one with `bench assess attempt-ref`, adding other runtimes with `--runtime`. |
+| `EvidenceRejected` | `…: task_digest is not 'sha256:<64 hex>'` (0.10) | Restore the rollout's `result.json` as BenchFlow wrote it; `task_digest` must be `sha256:` followed by 64 hex digits. |
 | `FileNotFoundError` | `Cannot migrate task without legacy files: …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Could not find MCP server config for …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Could not find skill-creator. Pass --skill-creator-dir or set BENCHFLOW_SKILL_CREATOR_DIR. Checked: …` | check the path, and that you can read it |
@@ -364,7 +364,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `FileNotFoundError` | `No trials under …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Not a job or trial folder: …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Oracle requires oracle/solve.sh or legacy solution/solve.sh: …` | check the path, and that you can read it |
-| `FileNotFoundError` | `Path does not exist: …` | check the path, and that you can read it |
+| `FileNotFoundError` | `Path does not exist: …` (0.10) | check the path, and that you can read it |
 | `FileNotFoundError` | `Path … not found in HF dataset …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Scene skills_dir not found: …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Session file not found: …` | check the path, and that you can read it |
@@ -392,37 +392,39 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `HubError` | (built at run time) | pass --hub &lt;url&gt; or set BENCHFLOW_HUB_URL |
 | `HubError` | (built at run time) | set BENCHFLOW_HUB_TOKEN to an API key of this Hub with the scope this needs |
 | `HubError` | (built at run time) | use the Hub's HTTPS address; BenchFlow never sends a key over a downgrade |
-| `HubError` | `a Hub dataset is named org/name, got …` | Name the dataset as `org/name`, with `@version` on `bench run -d`, as `bench hub list` shows it. |
-| `HubError` | `could not reach the Hub at …: …` | check the address and this machine's network |
-| `HubError` | `no task folders in …` | Give `bench hub publish` a folder that holds task folders, each with its `task.md` or `task.toml`. |
-| `HubError` | `not a Hub address: …` | name the Hub as http(s)://host[:port], e.g. --hub `https://hub.example.org` |
-| `HubError` | `refusing plain http for a Hub that is not on this machine: …` | use https://, or an SSH tunnel to a local port |
-| `HubError` | `refusing to cache …@… from …: a name part is not a folder name` | The Hub named a dataset or version that can't be a folder name (a slash, `..` or an empty part); pull another version, and tell the Hub's operator. |
-| `HubError` | `… answered a dataset document this bench does not read (schema …)` | Upgrade BenchFlow to a release that reads this Hub's dataset format, or ask the Hub's operator which release does. |
-| `HubError` | `… did not answer JSON: …` | Check that `--hub` or `BENCHFLOW_HUB_URL` is a BenchFlow Hub's address and that the Hub is up; a proxy or a login page answers with HTML. |
-| `HubError` | `… holds more than … entries` | The task archive holds more than 100,000 files, so it isn't unpacked; publish the task without generated or vendored files, or run it from its source. |
-| `HubError` | `… is not a task folder (no task.md or task.toml)` | Add the task's `task.md` (or `task.toml`), or move that folder out of the folder you publish. |
-| `HubError` | `… sent more than the … bytes the manifest allows` | The download was larger than the dataset's manifest says, so it was stopped; pull again, and if it repeats, tell the Hub's operator. |
-| `HubError` | `… unpacks to more than … bytes` | The task unpacks to more than 2 GiB, so it isn't unpacked; publish it without large generated files, or run it from its source. |
-| `HubError` | `…: refusing entry … (only plain files and folders inside the task)` | The archive holds a link, a device or a path outside the task, which BenchFlow never unpacks; republish the task with plain files and folders only. |
-| `HubError` | `…: refusing entry … (…)` | The entry broke BenchFlow's unpacking rules, for the reason in parentheses; republish the task with plain files and folders only. |
-| `HubError` | `…: … is a link; a published task holds plain files only` | Replace the link with the file or folder it points to, then publish again. |
-| `HubError` | `…: … is not a regular file` | Remove the device, socket or pipe from the task folder, then publish again. |
-| `HubError` | `…@… has a malformed or repeated task entry: …` | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
-| `HubError` | `…@… on … lists no tasks` | This version holds no tasks; pull another version, or ask its publisher to publish it again. |
-| `HubError` | `…@…: task … has a malformed archive entry` | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
-| `HubError` | `…@…: task … has no digest or archive` | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
-| `HubError` | `…@…: task … unpacked to …, the manifest pins …` | The task's files don't match the digest the dataset pins, so the task isn't used; pull again, and if it repeats, tell the Hub's operator. |
-| `HubError` | `…@…: task …'s archive does not match the manifest's sha256 and size` | The download doesn't match the dataset's checksum, so it isn't used; pull again, and if it repeats, tell the Hub's operator. |
-| `HubError` | `…@…: task …'s archive is larger than … bytes` | The task's archive is over 512 MiB, the most BenchFlow pulls; run the task from its source, or ask its publisher to make it smaller. |
-| `HubError` | `…@…: the Hub's dataset digest … does not match its tasks (…)` | The Hub's digest for this version doesn't match the tasks it lists, so nothing was pulled; tell the Hub's operator, and don't compare scores with runs of that version. |
+| `HubError` | `a Hub dataset is named org/name, got …` (0.10) | Name the dataset as `org/name`, with `@version` on `bench run -d`, as `bench hub list` shows it. |
+| `HubError` | `could not reach the Hub at …: …` (0.10) | check the address and this machine's network |
+| `HubError` | `no task folders in …` (0.10) | Give `bench hub publish` a folder that holds task folders, each with its `task.md` or `task.toml`. |
+| `HubError` | `not a Hub address: …` (0.10) | name the Hub as http(s)://host[:port], e.g. --hub `https://hub.example.org` |
+| `HubError` | `refusing plain http for a Hub that is not on this machine: …` (0.10) | use https://, or an SSH tunnel to a local port |
+| `HubError` | `refusing to cache …@… from …: a name part is not a folder name` (0.10) | The Hub named a dataset or version that can't be a folder name (a slash, `..` or an empty part); pull another version, and tell the Hub's operator. |
+| `HubError` | `… answered a dataset document this bench does not read (schema …)` (0.10) | Upgrade BenchFlow to a release that reads this Hub's dataset format, or ask the Hub's operator which release does. |
+| `HubError` | `… answered run … with something other than a run` (0.10) | check that --hub names a BenchFlow Hub, not a proxy or another server |
+| `HubError` | `… did not answer JSON: …` (0.10) | Check that `--hub` or `BENCHFLOW_HUB_URL` is a BenchFlow Hub's address and that the Hub is up; a proxy or a login page answers with HTML. |
+| `HubError` | `… has no dataset registry: it answered … to … …, and its route list has no /api/v1/registry` (0.10) | this Hub can't publish, show or serve datasets by name; run the tasks from a folder (bench run &lt;tasks-dir&gt;), or name a Hub that has the dataset registry |
+| `HubError` | `… holds more than … entries` (0.10) | The task archive holds more than 100,000 files, so it isn't unpacked; publish the task without generated or vendored files, or run it from its source. |
+| `HubError` | `… is not a task folder (no task.md or task.toml)` (0.10) | Add the task's `task.md` (or `task.toml`), or move that folder out of the folder you publish. |
+| `HubError` | `… sent more than the … bytes the manifest allows` (0.10) | The download was larger than the dataset's manifest says, so it was stopped; pull again, and if it repeats, tell the Hub's operator. |
+| `HubError` | `… unpacks to more than … bytes` (0.10) | The task unpacks to more than 2 GiB, so it isn't unpacked; publish it without large generated files, or run it from its source. |
+| `HubError` | `…: refusing entry … (only plain files and folders inside the task)` (0.10) | The archive holds a link, a device or a path outside the task, which BenchFlow never unpacks; republish the task with plain files and folders only. |
+| `HubError` | `…: refusing entry … (…)` (0.10) | The entry broke BenchFlow's unpacking rules, for the reason in parentheses; republish the task with plain files and folders only. |
+| `HubError` | `…: … is a link; a published task holds plain files only` (0.10) | Replace the link with the file or folder it points to, then publish again. |
+| `HubError` | `…: … is not a regular file` (0.10) | Remove the device, socket or pipe from the task folder, then publish again. |
+| `HubError` | `…@… has a malformed or repeated task entry: …` (0.10) | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
+| `HubError` | `…@… on … lists no tasks` (0.10) | This version holds no tasks; pull another version, or ask its publisher to publish it again. |
+| `HubError` | `…@…: task … has a malformed archive entry` (0.10) | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
+| `HubError` | `…@…: task … has no digest or archive` (0.10) | The Hub's document for this version is broken, so nothing is pulled from it; pull another version, and tell its publisher or the Hub's operator. |
+| `HubError` | `…@…: task … unpacked to …, the manifest pins …` (0.10) | The task's files don't match the digest the dataset pins, so the task isn't used; pull again, and if it repeats, tell the Hub's operator. |
+| `HubError` | `…@…: task …'s archive does not match the manifest's sha256 and size` (0.10) | The download doesn't match the dataset's checksum, so it isn't used; pull again, and if it repeats, tell the Hub's operator. |
+| `HubError` | `…@…: task …'s archive is larger than … bytes` (0.10) | The task's archive is over 512 MiB, the most BenchFlow pulls; run the task from its source, or ask its publisher to make it smaller. |
+| `HubError` | `…@…: the Hub's dataset digest … does not match its tasks (…)` (0.10) | The Hub's digest for this version doesn't match the tasks it lists, so nothing was pulled; tell the Hub's operator, and don't compare scores with runs of that version. |
 | `ImageBuildError` | (built at run time) | fix that line in the task's environment/Dockerfile; `docker build <task>/environment` prints the whole build log |
 | `InterruptedJobError` | `… is a job still running in process …: … … running, none finished yet` | read it again once a trial has finished |
 | `InterruptedJobError` | `… is a job that was stopped before any trial finished: … … started, none wrote result.json` | `bench eval resume …` runs them |
-| `InvalidRecord` | `an assessment compares exactly two attempts` | Pass `--attempt` exactly twice to `bench assess create`. |
-| `InvalidRecord` | `payload is not I-JSON: …` | Remove the value the message names from your input: lone surrogates, non-finite numbers and integers beyond `2**53 - 1` are not I-JSON. |
-| `InvalidRecord` | `runtime … must be PROVIDER:RUNTIME_ID[:ROLE]` | Write each `--runtime` as `PROVIDER:RUNTIME_ID` or `PROVIDER:RUNTIME_ID:ROLE`, with role `solver`, `verifier` or `shared`. |
-| `InvalidRecord` | `… records sandbox …; name its provider (daytona, docker, ...)` | Pass `--sandbox-provider` with the provider of that sandbox, such as `--sandbox-provider docker` or `daytona`. |
+| `InvalidRecord` | `an assessment compares exactly two attempts` (0.10) | Pass `--attempt` exactly twice to `bench assess create`. |
+| `InvalidRecord` | `payload is not I-JSON: …` (0.10) | Remove the value the message names from your input: lone surrogates, non-finite numbers and integers beyond `2**53 - 1` are not I-JSON. |
+| `InvalidRecord` | `runtime … must be PROVIDER:RUNTIME_ID[:ROLE]` (0.10) | Write each `--runtime` as `PROVIDER:RUNTIME_ID` or `PROVIDER:RUNTIME_ID:ROLE`, with role `solver`, `verifier` or `shared`. |
+| `InvalidRecord` | `… records sandbox …; name its provider (daytona, docker, ...)` (0.10) | Pass `--sandbox-provider` with the provider of that sandbox, such as `--sandbox-provider docker` or `daytona`. |
 | `IsADirectoryError` | (built at run time) | check the path, and that you can read it |
 | `JobMatrixError` | `…this YAML job config runs … job(s) (…), and an Evaluation is one of them` | run them all with bench run --config …; from Python, pass job_cell=&lt;n&gt; for one of job_plan(path).cells |
 | `KeptServiceFreezerUnavailable` | ``This task keeps services (x-keep-services), which BenchFlow holds in a frozen cgroup v2 of root's from the kill after the agent's turn until the verifier starts, and this sandbox cannot (the check's reason is below). No agent code ran. Run it where Docker uses cgroup v2 and knows writable-cgroups (`docker info` shows Cgroup Version: 2), or run the task without x-keep-services.…`` | Run the task where Docker uses cgroup v2 with writable cgroups (`docker info` shows Cgroup Version: 2), or run it without `x-keep-services`. |
@@ -464,18 +466,18 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `RemoteDockerConfigError` | `the …:// host in … has an @ after a /, ? or #: percent-encode its ssh user (/ as %2F, ? as %3F, # as %23, @ as %40, a space as %20)` | Percent-encode the ssh user (`/` as `%2F`, `?` as `%3F`, `#` as `%23`, `@` as `%40`) so the only raw `@` is the one before the host. |
 | `RemoteDockerConfigError` | `unsupported remote Docker host …: use ssh://user@host[:port] or tcp://host:port with TLS` | Set the host to `ssh://user@host[:port]`, or `tcp://host:port` with TLS, with a host name and, if given, a port from 1 to 65535. |
 | `RepositoryNotFoundError` | `repository …/… was not found on GitHub, or it is private` | check the name (`https://github.com/…/…`); a private repository needs a git login on this machine (`gh auth login`) |
-| `ResumeMismatchError` | `refusing to resume …: its trials ran …, and setting them aside in … failed (…). … item(s) were moved there; the rest are where they were. Start a new job instead: bench run --fresh (or another --job-name); in Python, a new job_name.` | Start a new job with `bench run --fresh` or another `--job-name` (in Python, a new `job_name`); items already moved are in the job's `.set-aside/` folder. |
+| `ResumeMismatchError` | `refusing to resume …: its trials ran …, and setting them aside in … failed (…). … item(s) were moved there; the rest are where they were. Start a new job instead: bench run --fresh (or another --job-name); in Python, a new job_name.` (0.10) | Start a new job with `bench run --fresh` or another `--job-name` (in Python, a new `job_name`); items already moved are in the job's `.set-aside/` folder. |
 | `ResumeMismatchError` | `… is a folder BenchFlow did not make; nothing in it moves` | pick another --job-name or another --jobs-dir |
 | `ReviewRubricError` | `Review rubric must be a regular task file: …` | Replace the symlinked `rubric.json` with a regular file inside the task (in `verifier/`, `tests/` or the task root). |
 | `ReviewRubricError` | `unsupported rubric format …: rubrics are JSON files` | Give `bench review --rubric` a JSON rubric file whose name ends in `.json`; convert other formats to JSON first. |
 | `ReviewRubricError` | `… is not a valid rubric: …` | Fix the field the error names: a non-empty `criteria` list, each with `name`, `description` and `guidance`, plus both `blocker` and `weight` or neither. |
 | `ReviewRubricError` | `… is not valid JSON: …` | Fix the JSON syntax at the line and column the error gives, and save the rubric as UTF-8. |
 | `RunCardError` | (built at run time) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
-| `RunCardError` | `The trial budget cannot be enforced on …: …, and BenchFlow's model proxy is what counts a trial's tokens and turns` | run it with an API key, so its calls go through the proxy, or drop --token-budget/--turn-budget (and the tasks' [agent] budget) |
-| `RunCardError` | `This run differs from the setup in … (…), which asks every run to match it or say why: …` | match the reference, or pass --accept-deviations '&lt;why&gt;' (accept_deviations: in a run config); the note is kept in run-card.json |
-| `RunCardError` | `…: [reference] … must be …, not …` | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
-| `RunCardError` | `…: put every setting in one [reference] table` | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
-| `RunCardError` | `…: unknown key… … in [reference]; known keys: …` | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
+| `RunCardError` | `The trial budget cannot be enforced on …: …, and BenchFlow's model proxy is what counts a trial's tokens and turns` (0.10) | run it with an API key, so its calls go through the proxy, or drop --token-budget/--turn-budget (and the tasks' [agent] budget) |
+| `RunCardError` | `This run differs from the setup in … (…), which asks every run to match it or say why: …` (0.10) | match the reference, or pass --accept-deviations '&lt;why&gt;' (accept_deviations: in a run config); the note is kept in run-card.json |
+| `RunCardError` | `…: [reference] … must be …, not …` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
+| `RunCardError` | `…: put every setting in one [reference] table` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
+| `RunCardError` | `…: unknown key… … in [reference]; known keys: …` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
 | `RunFolderError` | `--tasks-dir given but … does not exist; expected the task source for … there.` | Pass `--tasks-dir` the folder holding a subfolder named after the task, so `<tasks-dir>/<task name>` exists. |
 | `RunFolderError` | `Live continuation requires …; set it before continuing` | Export the variable the message names (the live model's provider key), or add it to `.env` in the current folder, then rerun `bench eval continue`. |
 | `RunFolderError` | `benchflow continue currently supports the 'openhands' agent only; this run used ….` | `bench eval continue` takes only a run made with the `openhands` agent; for another agent, run the task again with `bench run`. |
@@ -500,7 +502,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `RunFolderError` | `run … has error_category=…, not a timeout/idle_timeout — continuing it may not be meaningful.` | Continue only a run that timed out (`error_category` `timeout` or `idle_timeout`), or drop `--require-timeout` to continue this one anyway. |
 | `RunFolderError` | `… contained no usable LLM exchanges — nothing to replay.` | Continue a run whose `trajectory/llm_trajectory.jsonl` holds recorded exchanges; this one is empty or every line is malformed, so rerun the task instead. |
 | `SeparateVerifierRefusedError` | (built at run time) | Drop the listed tasks with `--exclude <task>`, or run without `--verifier-sandbox separate` (use `--integrity audit` instead of `--integrity strict`). |
-| `StaleExpectation` | `the log ends at event_seq … (…); the writer expected … (…); nothing was appended` | reload the sidecar, re-check its state, then retry |
+| `StaleExpectation` | `the log ends at event_seq … (…); the writer expected … (…); nothing was appended` (0.10) | reload the sidecar, re-check its state, then retry |
 | `TaskConfigKeyError` | (built at run time) | Fix or remove the `task.toml` key the message names (a typo comes with a suggested spelling), or set `BENCHFLOW_TASK_TOML_ALLOW_UNKNOWN_KEYS=1` to load unknown keys anyway. |
 | `TaskDocumentParseError` | `Expected integer value, got bool` | Write the role's `timeout_sec` or `idle_timeout_sec` under `agents.roles` in `task.md` as a whole number of seconds, not `true` or `false`. |
 | `TaskDocumentParseError` | `Expected integer value, got …` | Write the role's `timeout_sec` or `idle_timeout_sec` under `agents.roles` in `task.md` as a whole number of seconds, without quotes or a decimal point. |
@@ -529,28 +531,28 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `TaskDocumentParseError` | `… references unknown role …` | Define that role under `agents.roles` in `task.md`, or correct the name in the scene's `roles` or the turn's `role`. |
 | `TaskDocumentParseError` | `…: the frontmatter is not valid YAML: … …` | Fix the YAML syntax at the `task.md` line the message names, then rerun `bench check <task>`. |
 | `TaskEnvNotAllowedError` | (built at run time) | Pass `--allow-task-env NAME` for each variable you trust the task with, or export `BENCHFLOW_ALLOW_TASK_ENV` (not from `.env`); for a path or hook outside the task, follow the printed remedy. |
-| `TransitionRefused` | `a consumption is recorded by its consumer (actor.subject = consumer_id)` | Record a consumption with `bench assess consume <sidecar> --consumer <id>`, which sets the actor to the consumer; don't append `label.consumed` events by hand. |
-| `TransitionRefused` | `a … must name the current effective answer …; … is superseded, retracted or unknown` | Pass the current effective answer's event id to `--supersedes` (correct) or `--target` (retract); `bench assess show <sidecar> --events` lists the events. |
-| `TransitionRefused` | `an assessment starts with assessment.created` | Start the sidecar with `bench assess create <sidecar>` before any other `bench assess` command; don't write its event log by hand. |
-| `TransitionRefused` | `an unconsumed revision has no consumer to compensate: use not_applicable` | Rerun `bench assess withdraw` with `--disposition not_applicable`: nobody consumed this revision. |
-| `TransitionRefused` | `assignment.issued needs compute.released first: every execution resource is released before an assignment can wait for a person` | record the release with `bench assess release <sidecar> --proof <file>` |
-| `TransitionRefused` | `compute was already released by event …` | Skip this step: the release is already recorded, so continue with `bench assess assign <sidecar>`; a second proof can't replace the first. |
-| `TransitionRefused` | `consumption_event_ids must list every consumption of the revision, in order` | Withdraw with `bench assess withdraw`, which lists the revision's consumptions itself; don't append `label.withdrawn` events by hand. |
-| `TransitionRefused` | `event names assessment …, the sidecar holds …` | Write to each sidecar only with `bench assess` commands; an event from another assessment belongs in that assessment's own sidecar directory. |
-| `TransitionRefused` | `label revision … does not exist` | Pass `--revision` a revision this label has; `bench assess show <sidecar>` prints the label's current revision. |
-| `TransitionRefused` | `label revision … is current; only a revision whose answer was corrected or retracted can be withdrawn` | Withdraw only a superseded revision: first change the answer with `bench assess correct` or `bench assess retract`, then withdraw the old revision. |
-| `TransitionRefused` | `label revision … may not be consumed: …` | Consume only the current, ready revision: run `bench assess reduce <sidecar>` if a correction awaits, then check with `bench assess show <sidecar>`; a withheld label can't be consumed. |
-| `TransitionRefused` | `label … is not this assessment's label` | Use `bench assess consume` or `bench assess withdraw` on this sidecar, which fill in its own label id; don't append label events by hand. |
-| `TransitionRefused` | `label.reduced does not match the deterministic reduction of the log (expected revision … … from event …)` | Run `bench assess reduce <sidecar>`, which appends the reduction the log calls for; don't write `label.reduced` events by hand. |
-| `TransitionRefused` | `nothing to reduce yet (state …): the label needs an answer` | Import the collector's vote first with `bench assess import-vote <sidecar>`, then run `bench assess reduce <sidecar>` again. |
-| `TransitionRefused` | `nothing to reduce: no answer yet` | Import the collector's vote with `bench assess import-vote <sidecar>`, then reduce with `bench assess reduce <sidecar>`; don't append `label.reduced` events by hand. |
-| `TransitionRefused` | `only the reviewer … or an operator may … this answer` | Rerun with `--actor` set to the answer's reviewer, or with `--actor-role operator` if you act as an operator. |
-| `TransitionRefused` | `the assessment has no collector assignment yet` | Bind the assignment first: `bench assess release <sidecar> --proof <file>` if not recorded yet, then `bench assess assign <sidecar>` with the collector's assignment id. |
-| `TransitionRefused` | `the assessment has no label yet` | Record the label first with `bench assess reduce <sidecar>` (after a vote is imported), then consume or withdraw a revision. |
-| `TransitionRefused` | `the label is withheld; only a separately issued replacement assignment (a new assessment) can follow` | Start a new assessment in a new sidecar directory with `bench assess create`; a withheld label's answer can't be corrected or retracted. |
-| `TransitionRefused` | `the sidecar holds no assessment` | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
-| `TransitionRefused` | `the sidecar holds no assessment yet` | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
-| `TransitionRefused` | `there is no effective answer to … (it was retracted)` | Run `bench assess reduce <sidecar>` to record the retraction; for a new answer, start a new assessment with `bench assess create` in a new sidecar directory. |
+| `TransitionRefused` | `a consumption is recorded by its consumer (actor.subject = consumer_id)` (0.10) | Record a consumption with `bench assess consume <sidecar> --consumer <id>`, which sets the actor to the consumer; don't append `label.consumed` events by hand. |
+| `TransitionRefused` | `a … must name the current effective answer …; … is superseded, retracted or unknown` (0.10) | Pass the current effective answer's event id to `--supersedes` (correct) or `--target` (retract); `bench assess show <sidecar> --events` lists the events. |
+| `TransitionRefused` | `an assessment starts with assessment.created` (0.10) | Start the sidecar with `bench assess create <sidecar>` before any other `bench assess` command; don't write its event log by hand. |
+| `TransitionRefused` | `an unconsumed revision has no consumer to compensate: use not_applicable` (0.10) | Rerun `bench assess withdraw` with `--disposition not_applicable`: nobody consumed this revision. |
+| `TransitionRefused` | `assignment.issued needs compute.released first: every execution resource is released before an assignment can wait for a person` (0.10) | record the release with `bench assess release <sidecar> --proof <file>` |
+| `TransitionRefused` | `compute was already released by event …` (0.10) | Skip this step: the release is already recorded, so continue with `bench assess assign <sidecar>`; a second proof can't replace the first. |
+| `TransitionRefused` | `consumption_event_ids must list every consumption of the revision, in order` (0.10) | Withdraw with `bench assess withdraw`, which lists the revision's consumptions itself; don't append `label.withdrawn` events by hand. |
+| `TransitionRefused` | `event names assessment …, the sidecar holds …` (0.10) | Write to each sidecar only with `bench assess` commands; an event from another assessment belongs in that assessment's own sidecar directory. |
+| `TransitionRefused` | `label revision … does not exist` (0.10) | Pass `--revision` a revision this label has; `bench assess show <sidecar>` prints the label's current revision. |
+| `TransitionRefused` | `label revision … is current; only a revision whose answer was corrected or retracted can be withdrawn` (0.10) | Withdraw only a superseded revision: first change the answer with `bench assess correct` or `bench assess retract`, then withdraw the old revision. |
+| `TransitionRefused` | `label revision … may not be consumed: …` (0.10) | Consume only the current, ready revision: run `bench assess reduce <sidecar>` if a correction awaits, then check with `bench assess show <sidecar>`; a withheld label can't be consumed. |
+| `TransitionRefused` | `label … is not this assessment's label` (0.10) | Use `bench assess consume` or `bench assess withdraw` on this sidecar, which fill in its own label id; don't append label events by hand. |
+| `TransitionRefused` | `label.reduced does not match the deterministic reduction of the log (expected revision … … from event …)` (0.10) | Run `bench assess reduce <sidecar>`, which appends the reduction the log calls for; don't write `label.reduced` events by hand. |
+| `TransitionRefused` | `nothing to reduce yet (state …): the label needs an answer` (0.10) | Import the collector's vote first with `bench assess import-vote <sidecar>`, then run `bench assess reduce <sidecar>` again. |
+| `TransitionRefused` | `nothing to reduce: no answer yet` (0.10) | Import the collector's vote with `bench assess import-vote <sidecar>`, then reduce with `bench assess reduce <sidecar>`; don't append `label.reduced` events by hand. |
+| `TransitionRefused` | `only the reviewer … or an operator may … this answer` (0.10) | Rerun with `--actor` set to the answer's reviewer, or with `--actor-role operator` if you act as an operator. |
+| `TransitionRefused` | `the assessment has no collector assignment yet` (0.10) | Bind the assignment first: `bench assess release <sidecar> --proof <file>` if not recorded yet, then `bench assess assign <sidecar>` with the collector's assignment id. |
+| `TransitionRefused` | `the assessment has no label yet` (0.10) | Record the label first with `bench assess reduce <sidecar>` (after a vote is imported), then consume or withdraw a revision. |
+| `TransitionRefused` | `the label is withheld; only a separately issued replacement assignment (a new assessment) can follow` (0.10) | Start a new assessment in a new sidecar directory with `bench assess create`; a withheld label's answer can't be corrected or retracted. |
+| `TransitionRefused` | `the sidecar holds no assessment` (0.10) | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
+| `TransitionRefused` | `the sidecar holds no assessment yet` (0.10) | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
+| `TransitionRefused` | `there is no effective answer to … (it was retracted)` (0.10) | Run `bench assess reduce <sidecar>` to record the retraction; for a new answer, start a new assessment with `bench assess create` in a new sidecar directory. |
 | `UsageLimitError` | (built at run time) | switch to another login or wait for the reset, then resume the job (`bench eval resume <job_dir>`); `bench doctor` shows each login's headroom |
 | `VerifierDocumentParseError` | `expected a non-empty string` | Write a non-empty string for the `verifier.md` field that is empty or not text, such as `name`, `default_strategy`, an `outputs` path or a strategy field. |
 | `VerifierDocumentParseError` | `verifier.default_strategy must name one of verifier.strategies` | Set `verifier.default_strategy` in `verifier.md` to one of the names under `verifier.strategies`, or remove it to use the first strategy. |
@@ -644,8 +646,10 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `_hub_client` | (built at run time) | name the dataset as org/name@version |
 | `_hub_client` | (built at run time) | name the version as org/name@version, e.g. robouse/metaworld-sample@0.6.1 |
 | `_hub_client` | (built at run time) | point at a folder that holds one folder per task |
-| `_hub_client` | `… holds … runs: … and more` | push one run: bench hub push … |
-| `_hub_client` | `… is not a finished job folder (no summary.json)` | pass a job folder under ./jobs (or --jobs-dir) that bench run wrote |
+| `_hub_client` | `… answered the upload without a run: …` (0.10) | nothing on the Hub names this job; check the Hub's log, then push again |
+| `_hub_client` | `… has no dataset registry, so it can't link this run to …; nothing was uploaded` (0.10) | push it to a Hub that has the dataset registry: bench hub push &lt;job&gt; --hub &lt;url&gt; |
+| `_hub_client` | `… holds … runs: … and more` (0.10) | push one run: bench hub push … |
+| `_hub_client` | `… is not a finished job folder (no summary.json)` (0.10) | pass a job folder under ./jobs (or --jobs-dir) that bench run wrote |
 | `_shared` | (built at run time) | `bench explain R213` says more |
 | `_shared` | `--allow-task-env takes one variable name (letters, digits and _), not NAME=VALUE or a list; the value stays in your environment` | Pass one variable name after --allow-task-env; repeat the option for additional names. |
 | `_shared` | `Invalid env var: …` | pass it as KEY=VALUE |
@@ -655,9 +659,9 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `adopt` | `missing target` | pass a SOURCE (convert) or a benchmark SLUG (--verify / --scaffold-only) |
 | `agent` | (built at run time) | `bench agents` lists the agents |
 | `agent` | `Agent catalog incomplete (…): …` | the agents listed above work; BENCHFLOW_AGENTS_SOURCE names the catalog (off skips it) |
-| `assessment` | `… already exists; a reference is never overwritten` | pass a new --out path |
-| `assessment` | `… has no label yet (state …)` | `bench assess reduce <sidecar>` records one once there is an answer |
-| `assessment` | `…'s label file differs from the label its log rebuilds` | `bench assess label <sidecar> --write` rewrites it from the log |
+| `assessment` | `… already exists; a reference is never overwritten` (0.10) | pass a new --out path |
+| `assessment` | `… has no label yet (state …)` (0.10) | `bench assess reduce <sidecar>` records one once there is an answer |
+| `assessment` | `…'s label file differs from the label its log rebuilds` (0.10) | `bench assess label <sidecar> --write` rewrites it from the log |
 | `branch` | (built at run time) | `bench branch --help` shows the --child form and the flags |
 | `branch` | (built at run time) | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `cache` | (built at run time) | `bench cache --help` lists the kinds, backends and ages it takes |
@@ -684,7 +688,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `embodied` | (built at run time) | pass the job folder of a seeded embodied run (`bench run --seeds` writes one) |
 | `embodied` | `invalid embodiment spec: …` | fix the spec; `robo info --json` prints a valid one |
 | `embodied` | `no embodied episodes in …` | pass the job folder of an embodied run |
-| `embodied` | `no embodied trials in …` | pass the job folder of an embodied run |
+| `embodied` | `no embodied trials in …` (0.10) | pass the job folder of an embodied run |
 | `embodied` | `no job directory …` | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `eval_artifacts` | (built at run time) | fix the --matrix file; docs/audit/compare-runs.md#choose-the-metric shows one |
 | `eval_artifacts` | `selected task count … != expected …` | Compare the tasks listed in the `--task-manifest-out` file with what you meant, then fix `--include`/`--exclude` or `--expected-tasks`. |
@@ -693,7 +697,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `eval_lift` | (built at run time) | `bench eval compare-lift --help` describes the two job folders it pairs |
 | `eval_regrade` | `No such file or directory: …` | pass a job or trial folder of a run with --freeze-workspace |
 | `eval_regrade` | `Regrade failed: …` | pass a job or trial folder of a run with --freeze-workspace |
-| `eval_regrade` | `the reviewer options (--reviewer-model and the rest) apply only with --review` | add --review to rerun each trial's rubric review |
+| `eval_regrade` | `the reviewer options (--reviewer-model and the rest) apply only with --review` (0.10) | add --review to rerun each trial's rubric review |
 | `explain` | `no explain page for …` | `bench explain` lists every code |
 | `explain` | `no explain page for …` | its pages are … |
 | `hub` | (built at run time) | check this machine's network (or its proxy), then run the command again |
@@ -741,8 +745,8 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `main` | `…: … of … cells select no task (…), so they would run nothing` | check --include/--exclude and each dataset's task_names against its tasks (bench check &lt;folder&gt; lists them) |
 | `new_verbs` | `--agent must not be empty or whitespace-only` | pass -a &lt;agent&gt; (`bench agents` lists them); to run the oracle, omit -a and model-only flags |
 | `new_verbs` | `--harness … is not a harness` | pass acp or native |
-| `new_verbs` | `--hub and --registry both name where --dataset comes from` | keep one: --hub &lt;url&gt; is --registry hub:&lt;url&gt; |
-| `new_verbs` | `--hub reads a --dataset from the Hub, and none was given` | bench run -d &lt;org/name@version&gt; --hub … |
+| `new_verbs` | `--hub and --registry both name where --dataset comes from` (0.10) | keep one: --hub &lt;url&gt; is --registry hub:&lt;url&gt; |
+| `new_verbs` | `--hub reads a --dataset from the Hub, and none was given` (0.10) | bench run -d &lt;org/name@version&gt; --hub … |
 | `new_verbs` | `--idle-timeout … is not a duration` | pass seconds (600) or a number with s, m or h (90s, 10m, 1h); 0, none or null turns it off |
 | `new_verbs` | `--json, --attempts, --include-controls and --by read one job or compare two` | name the job: bench results &lt;job&gt; --json |
 | `new_verbs` | `--task-skills and --skill-mode both set the skill mode` | keep one: --task-skills is --skill-mode with-skill |
@@ -773,18 +777,18 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `reviewer_options` | `expected whole seconds, 0 or 'none'` | `bench run --help-all` says what each flag takes |
 | `sandbox` | (built at run time) | `bench doctor --sandbox <name>` checks a sandbox |
 | `sandbox` | `--all deletes every sandbox of one owner, and no owner is set` | set BENCHFLOW_DAYTONA_OWNER (cleanup never touches sandboxes without your owner label) |
-| `sandbox` | `Could not attach to the kept sandbox: …` | `bench sandbox release <trial>` deletes it if it is broken |
-| `sandbox` | `Could not delete Daytona sandbox …: …` | `bench sandbox cleanup --id <sandbox id>` deletes it |
+| `sandbox` | `Could not attach to the kept sandbox: …` (0.10) | `bench sandbox release <trial>` deletes it if it is broken |
+| `sandbox` | `Could not delete Daytona sandbox …: …` (0.10) | `bench sandbox cleanup --id <sandbox id>` deletes it |
 | `sandbox` | `Daytona cleanup failed: …` | `bench doctor --sandbox daytona` checks the Daytona key |
-| `sandbox` | `Docker did not remove the … of …: …; the sandbox is still marked kept` | `docker … ls --filter label=com.docker.compose.project=…` shows what is left; run `bench sandbox release` again once it is free |
-| `sandbox` | `Docker still lists containers of …` | `docker ps -a --filter label=com.docker.compose.project=…` shows them |
-| `sandbox` | `No kept sandbox at …: …` | pass the trial folder of a run with --keep-sandbox (it holds kept-sandbox.json) |
+| `sandbox` | `Docker did not remove the … of …: …; the sandbox is still marked kept` (0.10) | `docker … ls --filter label=com.docker.compose.project=…` shows what is left; run `bench sandbox release` again once it is free |
+| `sandbox` | `Docker still lists containers of …` (0.10) | `docker ps -a --filter label=com.docker.compose.project=…` shows them |
+| `sandbox` | `No kept sandbox at …: …` (0.10) | pass the trial folder of a run with --keep-sandbox (it holds kept-sandbox.json) |
 | `sandbox` | `Not a directory: …` | pass a task folder (it holds task.md or task.toml) |
 | `sandbox` | `Not a valid task directory …: …` | pass a task folder (it holds task.md or task.toml) |
 | `sandbox` | `Skipping AgentCore cleanup: …` | check this machine's AWS credentials and BENCHFLOW_AGENTCORE_REGION |
-| `sandbox` | `The kept sandbox … has no main container any more` | `bench sandbox release <trial>` clears the record |
-| `sandbox` | `The sandbox in … was released at …` | run the task again with --keep-sandbox to get a new one |
-| `sandbox` | `… is not a kept-sandbox record` | pass the trial folder of a run with --keep-sandbox (it holds kept-sandbox.json) |
+| `sandbox` | `The kept sandbox … has no main container any more` (0.10) | `bench sandbox release <trial>` clears the record |
+| `sandbox` | `The sandbox in … was released at …` (0.10) | run the task again with --keep-sandbox to get a new one |
+| `sandbox` | `… is not a kept-sandbox record` (0.10) | pass the trial folder of a run with --keep-sandbox (it holds kept-sandbox.json) |
 | `skills` | (built at run time) | `bench doctor` checks this machine and its logins |
 | `skills` | (built at run time) | fix …; `bench skills eval --help` shows its form |
 | `skills` | (built at run time) | pass a skill folder (it holds SKILL.md) or a folder of skills |
@@ -846,7 +850,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `train` | `bench train stream: …` | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `train` | `bench train stream: …` | raise --timeout, or check that the job is still running |
 | `train` | `bench train stream: …; … rollouts streamed` | `bench eval resume …` runs the trials it did not finish |
-| `train` | `bench train validate does not check --format …` | load the file with the library it was written for (see bench train convert in docs/reference/commands.md) |
+| `train` | `bench train validate does not check --format …` (0.10) | load the file with the library it was written for (see bench train convert in docs/reference/commands.md) |
 | `train` | `this is a branch run: runs that branch record the ACP trajectory, not an LLM-proxy llm_trajectory.jsonl (…)` | use --format branch-tree |
 | `train` | `… does not apply to --format branch-tree (one row per branch child from the ACP events, with advantage = reward - value)` | drop … |
 | `train` | `… needs --format branch-tree` | add --format branch-tree, or drop … |
@@ -911,7 +915,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | task.md | `allowed_hosts entry … is not a valid CIDR range` | Write the entry as a strict CIDR range with zero host bits (`10.0.0.0/8`), a single IP, or a hostname without a path. |
 | task.md | `allowed_hosts is only valid for network_mode='allowlist'` | Add `network_mode: allowlist` beside `allowed_hosts`, or remove `allowed_hosts`. |
 | task.md | `allowed_hosts wildcards must be a single leading '*.' label` | Use a single leading `*.` wildcard (`*.example.com`) and list other hosts in full; no other `*` is allowed. |
-| task.md | `artifact … from service … must be an absolute path` | Give the artifact's path in that service from the root, such as `/app/out.json`. |
+| task.md | `artifact … from service … must be an absolute path` (0.10) | Give the artifact's path in that service from the root, such as `/app/out.json`. |
 | task.md | `blocked_hosts entries must name a hostname, not an IP` | Replace the IP address in `blocked_hosts` with the hostname to block. |
 | task.md | `blocked_urls and blocked_hosts are only valid for network_mode='denylist'` | Add `network_mode: denylist` beside `blocked_urls`/`blocked_hosts`, or remove those lists. |
 | task.md | `blocked_urls entries must be non-empty URLs` | Remove the empty entry from `blocked_urls`. |
@@ -922,10 +926,10 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | task.md | `metadata.x-allow-cloud-metadata must be true or false, not …` | Set `metadata.x-allow-cloud-metadata` to `true` or `false`, or use `sandbox.allow_cloud_metadata: true`, the current spelling. |
 | task.md | `network_mode='denylist' requires blocked_urls or blocked_hosts` | Add a `blocked_urls` or `blocked_hosts` list beside `network_mode: denylist`, or choose another `network_mode`. |
 | task.md | `optional_tools must contain nonempty program basenames` | List bare program names in `verifier.optional_tools` (`curl`, not `/usr/bin/curl`), with no empty entries. |
-| task.md | `preference.min_agreement must be a number from 0 to 1 (or a table whose value is one)` | Set `preference.min_agreement` to a number from 0 to 1, such as `0.6`. |
-| task.md | `preference.protocol must be pairwise or rubric (best-of-n is not supported yet), not …` | Set `preference.protocol` to `pairwise` or `rubric`. |
-| task.md | `preference.randomize_sides must be true or false` | Set `preference.randomize_sides` to `true` or `false`, unquoted. |
-| task.md | `preference.raters_per_pair must be a whole number from 1` | Set `preference.raters_per_pair` to a whole number of 1 or more. |
+| task.md | `preference.min_agreement must be a number from 0 to 1 (or a table whose value is one)` (0.10) | Set `preference.min_agreement` to a number from 0 to 1, such as `0.6`. |
+| task.md | `preference.protocol must be pairwise or rubric (best-of-n is not supported yet), not …` (0.10) | Set `preference.protocol` to `pairwise` or `rubric`. |
+| task.md | `preference.randomize_sides must be true or false` (0.10) | Set `preference.randomize_sides` to `true` or `false`, unquoted. |
+| task.md | `preference.raters_per_pair must be a whole number from 1` (0.10) | Set `preference.raters_per_pair` to a whole number of 1 or more. |
 | task.md | `prompt_prefix must contain non-whitespace text` | Give `agent.prompt_prefix` some text, or remove it. |
 | task.md | `pytest_plugin_releases entry … is not a pinned PyPI release (name==version, e.g. pytest-asyncio==0.24.0)` | Pin each `verifier.pytest_plugin_releases` entry as `name==version`, such as `pytest-asyncio==0.24.0`. |
 | task.md | `required_tools must contain nonempty program basenames` | List bare program names in `verifier.required_tools` (`python3`, not `/usr/bin/python3`), with no empty entries; `[]` declares none. |
@@ -948,7 +952,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | task.md | `… entries must be hostnames, not URLs, ports, or paths` | Write each entry as a bare hostname, such as `api.example.com`, with no scheme, port or path. |
 | task.md | `… entries must be non-empty hostnames` | Remove the empty entry from the list the message names. |
 | task.md | `… entries must be valid hostnames containing only letters, digits, hyphens, and dots` | Fix the hostname: labels of letters, digits and hyphens, not starting or ending with a hyphen, joined by dots. |
-| task.md | `… … is not a compose service name` | Use the name of a service in the task's compose file. |
+| task.md | `… … is not a compose service name` (0.10) | Use the name of a service in the task's compose file. |
 | task.md | `….network_mode='denylist' is not supported; declare the denylist on sandbox.network_mode` | Set `network_mode: denylist` with `blocked_urls` or `blocked_hosts` under `sandbox`, and remove it from `agent` or `verifier`. |
 | task.md or run config | `unknown key (did you mean …?)` | Rename the key on that line to the suggested one, or delete it if BenchFlow has no such setting. |
 | task.md or run config | `…: …: this file calls it …` | Rename the key to the name the message gives. |
@@ -962,9 +966,9 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `sandbox.gpus` | `GPU task environments require the Modal sandbox backend` | Run the task with `--sandbox modal`, the only backend that runs GPU tasks, or remove `sandbox.gpus` and `sandbox.gpu_types` if it needs no GPU. |
 | `sandbox.tpu` | `TPU scheduling is parsed but not implemented` | Remove `sandbox.tpu` from the task: no BenchFlow sandbox backend schedules TPUs yet. |
 | `sandbox.os` | `Windows task environments are parsed but not executable` | Set `sandbox.os` to `linux` or remove it: no BenchFlow sandbox backend runs Windows task environments. |
-| `steps` | `a multi-step task's steps are verified in the agent's sandbox, so it cannot use a separate verifier sandbox` | Drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict` for this task, and set its `verifier.sandbox_mode` to `shared` without a `[verifier.sandbox]` table. |
-| `steps[…].verifier.collect` | `a step's collect hooks are parsed but not executed (only the task's [[verifier.collect]] hooks run)` | Move the hooks to the task's `[[verifier.collect]]`; a step's own collect hooks don't run. |
-| `verifier.service` | `a verifier in a compose service other than main needs a backend that runs it in that service: …` | Run the task with `--sandbox docker` or `--sandbox remote-docker`, or set `verifier.service` to `main`. |
+| `steps` | `a multi-step task's steps are verified in the agent's sandbox, so it cannot use a separate verifier sandbox` (0.10) | Drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict` for this task, and set its `verifier.sandbox_mode` to `shared` without a `[verifier.sandbox]` table. |
+| `steps[…].verifier.collect` | `a step's collect hooks are parsed but not executed (only the task's [[verifier.collect]] hooks run)` (0.10) | Move the hooks to the task's `[[verifier.collect]]`; a step's own collect hooks don't run. |
+| `verifier.service` | `a verifier in a compose service other than main needs a backend that runs it in that service: …` (0.10) | Run the task with `--sandbox docker` or `--sandbox remote-docker`, or set `verifier.service` to `main`. |
 | `agent.network_mode` | `agent.network_mode='allowlist' cannot combine with sandbox.network_mode=…` | With `agent.network_mode = 'allowlist'`, set `sandbox.network_mode` to `public` or `allowlist`, or choose another agent network mode. |
 | `verifier.sandbox.transfer` | `artifacts[…] … overlaps verifier-owned …; the separate verifier would receive it there` | Declare the artifact at a path that neither lies under nor contains `/tests`, `/verifier`, `/logs/verifier`, `/logs/agent` or `/opt/runtime`, or run the verifier in the agent's sandbox. |
 | `benchflow.verifier` | `benchflow.verifier must be a mapping` | Write `benchflow.verifier` in the `task.md` frontmatter as a mapping (keys such as `path`, `spec`, `entrypoint`), or use the `verifier: <folder>` shorthand. |
@@ -986,7 +990,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `task.md` | `native task.md config and legacy task.toml config differ` | Make `task.toml` match the `task.md` frontmatter, or remove `task.toml` and `instruction.md` and keep `task.md` alone. |
 | `task.md` | `native task.md prompt and legacy instruction.md prompt differ` | Make `instruction.md` match the prompt in `task.md` (trailing spaces don't count), or remove `instruction.md` and `task.toml` and keep `task.md` alone. |
 |  | `network_mode='allowlist' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which enforce allowlists, or change the task's `network_mode`. |
-| `sandbox.network_mode` | `network_mode='allowlist' with compose services needs a sandbox that checks they have no route out (…); … does not` | Run the task with `--sandbox docker` or `--sandbox remote-docker`, the backends that check an allowlist task's Compose services, or drop the allowlist. |
+| `sandbox.network_mode` | `network_mode='allowlist' with compose services needs a sandbox that checks they have no route out (…); … does not` (0.10) | Run the task with `--sandbox docker` or `--sandbox remote-docker`, the backends that check an allowlist task's Compose services, or drop the allowlist. |
 |  | `network_mode='denylist' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which enforce denylists, or change the task's `network_mode`. |
 |  | `network_mode='no-network' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker`, `daytona` or `modal`, which enforce `no-network`, or change the task's `network_mode`. |
 | `artifacts` | `root artifact collection is implemented for docker and daytona` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which collect root `artifacts`, or remove `artifacts` from the task. |
@@ -995,7 +999,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `verifier.strategies.…` | `script command does not reference a packaged verifier artifact` | Make the script strategy's `command` in `verifier.md` run a file from the verifier folder by relative path, such as `bash test.sh`. |
 | `steps[…].artifacts` | `step artifact transfer is parsed but not implemented` | Remove `artifacts` from each entry in `steps`: no sandbox transfers step artifacts yet. |
 | `steps[…].healthcheck` | `step healthchecks are parsed but not implemented` | Remove `healthcheck` from each entry in `steps`: no sandbox runs step healthchecks yet. |
-| `steps` | `step names must be unique (each is a folder under steps/)` | Give each entry in `steps` a unique `name`, since each step is a folder under `steps/`. |
+| `steps` | `step names must be unique (each is a folder under steps/)` (0.10) | Give each entry in `steps` a unique `name`, since each step is a folder under `steps/`. |
 | `metadata.x-keep-services` | `the tests talk to the services the agent leaves running on port … (from …), and a separate verifier sandbox has none of them, so every trial would score 0; run the verifier in the agent's sandbox (no --verifier-sandbox separate, --separate-verifier or --integrity strict, and no separate verifier sandbox_mode in the task), or remove …` | Run the verifier in the agent's sandbox: drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict`, and set the task's `verifier.sandbox_mode` to `shared`; or remove `metadata.x-keep-services`. |
 | `verifier.strategies.….command` | `the verifier package has no …` | Add the file the taskmd strategy's `command` names to the verifier folder, or correct `command` in `verifier.md`. |
 | `sandbox` | `unknown sandbox backend; use …` | Set `--sandbox` to one of `docker`, `remote-docker`, `daytona`, `modal`, `apple-container` or `agentcore`. |
@@ -1026,8 +1030,8 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._separate_verifier` | `… resolves to …, which overlaps verifier-owned …; before the agent ran it resolved to …` | Expect a 0 when an agent redirects the workspace or an artifact into a verifier-owned path; if the oracle does, make the solution keep those paths as real folders. |
 | `benchflow.rollout._setup` | `; the verifier's PATH left out these folders of the image's PATH: …` | Install the program the test could not find into a root-owned `PATH` folder of the image, such as `/usr/local/bin`; `verifier/trusted-path.json` says why each folder was left out. |
 | `benchflow.rollout._setup` | `Invalid verifier rewards: …` | Make the verifier write a finite numeric `reward` (0 to 1 unless `[verifier] reward_range` widens it) with numeric metrics, or set `BENCHFLOW_REWARD_LENIENT=1` to drop non-numeric metrics. |
-| `benchflow.rollout._setup` | `Keeping the timed-out verifier's output failed: …` | Fix the verifier timeout itself (install test dependencies in the image, or raise `verifier.timeout_sec`); only the partial output kept in `verifier/` is affected. |
-| `benchflow.rollout._setup` | `Killing the verifier's processes failed: …` | Check the sandbox backend with `bench doctor` if this recurs: the kill command got no answer, so test processes may run on until teardown. |
+| `benchflow.rollout._setup` | `Keeping the timed-out verifier's output failed: …` (0.10) | Fix the verifier timeout itself (install test dependencies in the image, or raise `verifier.timeout_sec`); only the partial output kept in `verifier/` is affected. |
+| `benchflow.rollout._setup` | `Killing the verifier's processes failed: …` (0.10) | Check the sandbox backend with `bench doctor` if this recurs: the kill command got no answer, so test processes may run on until teardown. |
 | `benchflow.rollout._setup` | `Publishing for the verifier: … exited …: …` | Check that root can create folders under `/logs` in the sandbox and the agent's user can write `/logs/agent` (the stderr shown says which); BenchFlow retries once. |
 | `benchflow.rollout._setup` | `Publishing for the verifier: … failed: …` | Check the sandbox backend with `bench doctor`: the command could not run there, and BenchFlow retries once before failing the trial's verification. |
 | `benchflow.rollout._setup` | `Running verifier...` | Ignore it: this log line marks the start of grading; the verifier's output goes to the trial's `verifier/test-stdout.txt`. |
@@ -1037,8 +1041,8 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._setup` | `Verifier test command start is unconfirmed (…); retrying it once` | Ignore it if the retry succeeds; if it recurs, keep `test.sh` from deleting files in `/run/runtime` and check the backend with `bench doctor`. |
 | `benchflow.rollout._setup` | `could not read the verifier's refusal stubs: …` | Run the task again (`bench run --fresh`); unreadable refusal markers count as a refused program, which scores 0. If it repeats, check the backend with `bench doctor`. |
 | `benchflow.rollout._setup` | `could not write verifier/trusted-path.json` | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this PATH record is missing, the score stands. |
-| `benchflow.rollout._setup` | `pytest plugin guard not confirmed: it may have failed to load, stopped or refused a plugin; code run by test.sh can also print the diagnostic or change the markers. See verifier/test-stdout.txt and verifier/_runtime_guard_*…` | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
-| `benchflow.rollout._setup` | `pytest plugin guard not confirmed: …; test.sh's reward is not used. See verifier/test-stdout.txt` | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
+| `benchflow.rollout._setup` | `pytest plugin guard not confirmed: it may have failed to load, stopped or refused a plugin; code run by test.sh can also print the diagnostic or change the markers. See verifier/test-stdout.txt and verifier/_runtime_guard_*…` (0.10) | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
+| `benchflow.rollout._setup` | `pytest plugin guard not confirmed: …; test.sh's reward is not used. See verifier/test-stdout.txt` (0.10) | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
 | `benchflow.rollout._setup` | `test.sh ran without the image's …: the root verifier clears these names, so a test that runs the image's own tools with them fails; set the value the test needs in test.sh or [verifier.env]` | Set each listed variable the tests need in `test.sh` or the task's `[verifier.env]`, since the root verifier clears the image's values. |
 | `benchflow.rollout._setup` | `the verifier receipt response is incomplete or invalid` | Leave `/run/runtime` alone in `test.sh` (BenchFlow records the test's exit status there), and raise `verifier.timeout_sec` if the tests run near their limit. |
 | `benchflow.rollout._setup` | `verifier PATH refusal: a refusal marker names …, which only folders the verifier's PATH leaves out have: …` | Install that program into a root-owned `PATH` folder of the image, such as `/usr/local/bin`, or list it in `[verifier] optional_tools` if grading works without it. |
@@ -1071,15 +1075,15 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.task.verifier_core` | `Failed to add verifier directory to sandbox.` | Check the cause chained to the error: make the task's `tests/` or `verifier/` folder readable here and the sandbox reachable (`bench doctor`), then run the task again. |
 | `benchflow.task.verifier_core` | `Failed to capture reward entry …: …` | Check the sandbox connection with `bench doctor` and the cause after the colon, then run the task again; both the folder download and the per-file copy of the reward failed. |
 | `benchflow.task.verifier_core` | `Failed to download verifier directory from sandbox: …` | Check the sandbox connection (`bench doctor`), then run `bench eval resume <job dir>`, which reruns trials whose verifier output was lost this way. |
-| `benchflow.task.verifier_core` | `Failed to parse rewards from JSON file verifier/reward.json` | Make `test.sh` write `/logs/verifier/reward.json` as valid JSON: one object with a numeric `reward` key. |
-| `benchflow.task.verifier_core` | `Failed to parse rewards from text file verifier/reward.txt` | Make `test.sh` write only a number, such as `1` or `0.5`, to `/logs/verifier/reward.txt`. |
+| `benchflow.task.verifier_core` | `Failed to parse rewards from JSON file verifier/reward.json` (0.10) | Make `test.sh` write `/logs/verifier/reward.json` as valid JSON: one object with a numeric `reward` key. |
+| `benchflow.task.verifier_core` | `Failed to parse rewards from text file verifier/reward.txt` (0.10) | Make `test.sh` write only a number, such as `1` or `0.5`, to `/logs/verifier/reward.txt`. |
 | `benchflow.task.verifier_core` | `No marker for the pytest plugin guard … was read; test.sh's reward is scored as it wrote it (guard loading is not confirmed)` | Ignore it if `test.sh` runs no pytest; otherwise check it reached pytest and ran it in the sandbox itself, not over ssh, in another container or as another user. |
-| `benchflow.task.verifier_core` | `No reward file found at verifier/reward.txt or verifier/reward.json` | Make `test.sh` write its score to `/logs/verifier/reward.txt` (a number) or `reward.json` before it exits; `verifier/test-stdout.txt` shows where it stopped. |
-| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json aggregates to reward=…, which does not match scalar reward.txt value …` | Write the same score to both files: make `reward.txt` equal what `reward.json`'s metrics aggregate to, or drop `reward.txt` and let `reward.json` decide. |
-| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json has reward=…, which does not match scalar reward.txt value …` | Write the same score to `reward.txt` and to `reward.json`'s `reward` key, or write only one of the two files. |
-| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json must contain an object with numeric rewards` | Write `reward.json` as one JSON object with a numeric `reward` key, not a list, number or string. |
-| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json …` | Fix `reward.json` as the rest of the message says: a finite numeric `reward` in the task's range and numeric `metrics`; `BENCHFLOW_REWARD_LENIENT=1` drops non-numeric metrics instead. |
-| `benchflow.task.verifier_core` | `Reward text file verifier/reward.txt must contain a finite numeric reward …` | Make `test.sh` write a finite number to `reward.txt`, not `nan` or `inf`. |
+| `benchflow.task.verifier_core` | `No reward file found at verifier/reward.txt or verifier/reward.json` (0.10) | Make `test.sh` write its score to `/logs/verifier/reward.txt` (a number) or `reward.json` before it exits; `verifier/test-stdout.txt` shows where it stopped. |
+| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json aggregates to reward=…, which does not match scalar reward.txt value …` (0.10) | Write the same score to both files: make `reward.txt` equal what `reward.json`'s metrics aggregate to, or drop `reward.txt` and let `reward.json` decide. |
+| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json has reward=…, which does not match scalar reward.txt value …` (0.10) | Write the same score to `reward.txt` and to `reward.json`'s `reward` key, or write only one of the two files. |
+| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json must contain an object with numeric rewards` (0.10) | Write `reward.json` as one JSON object with a numeric `reward` key, not a list, number or string. |
+| `benchflow.task.verifier_core` | `Reward JSON file verifier/reward.json …` (0.10) | Fix `reward.json` as the rest of the message says: a finite numeric `reward` in the task's range and numeric `metrics`; `BENCHFLOW_REWARD_LENIENT=1` drops non-numeric metrics instead. |
+| `benchflow.task.verifier_core` | `Reward text file verifier/reward.txt must contain a finite numeric reward …` (0.10) | Make `test.sh` write a finite number to `reward.txt`, not `nan` or `inf`. |
 | `benchflow.task.verifier_core` | `The verifier.env contains an API key (often the case for LLM-based verifiers). You will incur costs associated with the API calls.` | Ignore it: `[verifier.env]` holds an API key, so the verifier's model calls are billed to it; remove the key if the verifier needs no model. |
 | `benchflow.task.verifier_core` | `Unsafe or unreadable reward entry …: …` | Make `test.sh` leave `reward.txt` and `reward.json` as regular, readable files in `/logs/verifier`, not links, folders or unreadable files. |
 | `benchflow.task.verifier_core` | `Unsafe verifier output capture: …` | Make `test.sh` (or the criteria runner) leave only regular files and folders in `/logs/verifier`; links and special files there make the capture unsafe. |
@@ -1091,7 +1095,7 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.task.verifier_core` | `Verifier setup failed: … did not run` | Check the sandbox connection with `bench doctor`, then run `bench eval resume <job dir>`; BenchFlow tried the named setup step three times and the sandbox never ran it. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: … exited with rc=…` | Check that root can write the folders the named step touches in the image (the tests folder, `/logs/verifier`), then run the trial again with `bench eval resume <job dir>`. |
 | `benchflow.task.verifier_core` | `clearing verifier output directory` | In a `Verifier setup failed` error, check that root can empty and recreate `/logs/verifier` in the sandbox, then run `bench eval resume <job dir>`. |
-| `benchflow.task.verifier_core` | `criteria-runner exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` | Fix the criteria runner so it writes `$BENCHFLOW_REWARD_JSON` (or `$BENCHFLOW_REWARD_TEXT`) before exiting; its output and traceback are in the trial's `verifier/test-stdout.txt`. |
+| `benchflow.task.verifier_core` | `criteria-runner exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` (0.10) | Fix the criteria runner so it writes `$BENCHFLOW_REWARD_JSON` (or `$BENCHFLOW_REWARD_TEXT`) before exiting; its output and traceback are in the trial's `verifier/test-stdout.txt`. |
 | `benchflow.task.verifier_core` | `criteria-runner strategy with declared criteria must write reward.json metrics` | Have the criteria runner write per-criterion `metrics` to `$BENCHFLOW_REWARD_JSON`, since the strategy declares `criteria`; a `reward.txt` alone is refused. |
 | `benchflow.task.verifier_core` | `legacy verifier-mount symlink (… -> …) returned nonzero; verifier scripts hardcoding … may fail` | Make the test scripts find their files through `$TEST_DIR` instead of a hardcoded `/tests`; BenchFlow could not link `/tests` to the verifier folder in this image. |
 | `benchflow.task.verifier_core` | `legacy verifier-mount symlink skipped: …` | Make the test scripts find their files through `$TEST_DIR` instead of a hardcoded `/tests`; BenchFlow could not link `/tests` to the verifier folder in this image. |
@@ -1107,7 +1111,7 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.task.verifier_core` | ``the pytest plugin guard … refused a pytest plugin it could not trust, which the verifier installed after the agent stopped from inputs the agent could have changed, so pytest stopped and this run is not scored (…); …. A task problem: BenchFlow trusts such an install only as a release it can check byte for byte. Pin it in [verifier] pytest_plugin_releases (for example `pytest_plugin_releases = ["…"]`) or install it into the image`` | Pin the plugin's release in `[verifier] pytest_plugin_releases` (as `<name>==<version>`), or install it into the task's image instead of from `test.sh`. |
 | `benchflow.task.verifier_core` | `the pytest plugin guard … refused a pytest plugin it could not trust, with no complete record of the agent's files (…) to tell whether the verifier installed it after the agent stopped or the agent left it, so pytest stopped and this run is not scored (…); files listed in verifier/…. When test.sh installs pytest plugins, pin their releases in [verifier] pytest_plugin_releases or install them into the image (published pytest-json-ctrf releases load wherever installed)` | If `test.sh` installs pytest plugins, pin their releases in `[verifier] pytest_plugin_releases` or install them into the image; the listed `verifier/` file names the refused files. |
 | `benchflow.task.verifier_core` | `the verifier environment BenchFlow computes` | Ignore it: it is the reason BenchFlow records for uploading the verifier's environment file as trusted, not an error. |
-| `benchflow.task.verifier_core` | `verifier exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` | Read `verifier/test-stdout.txt` for why `test.sh` failed, fix it, and make it write `/logs/verifier/reward.txt` (0 when tests fail) before exiting. |
+| `benchflow.task.verifier_core` | `verifier exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` (0.10) | Read `verifier/test-stdout.txt` for why `test.sh` failed, fix it, and make it write `/logs/verifier/reward.txt` (0 when tests fail) before exiting. |
 | `benchflow.task.verifier_core` | `verifier start receipt dir failed: …` | Check the sandbox connection with `bench doctor` if it repeats; without `/run/runtime` the verifier's start can't be confirmed, but grading goes on. |
 | `benchflow.task.verifier_core` | `verifier strategy … has type …, which is parsed but not executable yet` | Set `default_strategy` in `verifier.md` to a `script`, `criteria-runner`, `llm-judge`, `agent-judge`, `ors-episode` or `taskmd` strategy. |
 | `benchflow.task.verifier_core` | `verifier/reward.json is empty` | Make `test.sh` write a JSON object with a numeric `reward` to `reward.json`, and check the disk holding the job folder isn't full. |
@@ -1142,8 +1146,8 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.acp.runtime` | `ACP connect failed (attempt …): …` |
 | `benchflow.acp.runtime` | `Cannot infer models.dev provider for … — defaulting to anthropic/` |
 | `benchflow.acp.selection` | `Invalid …=…; using PTY transport` |
-| `benchflow.acp.selection` | `Invalid …=…; using SSH transport for the reviewer` |
-| `benchflow.acp.selection` | `No ssh client on this machine: Daytona reviewers keep the PTY transport (install OpenSSH, or set …=pty to say so)` |
+| `benchflow.acp.selection` | `Invalid …=…; using SSH transport for the reviewer` (0.10) |
+| `benchflow.acp.selection` | `No ssh client on this machine: Daytona reviewers keep the PTY transport (install OpenSSH, or set …=pty to say so)` (0.10) |
 | `benchflow.acp.session` | `Ignoring conflicting ACP child-tool parent attribution` |
 | `benchflow.acp.session` | `Unknown tool call status: …` |
 | `benchflow.acp.timeout_cleanup` | `ACP prompt task did not finish within …s after cancellation` |
@@ -1153,7 +1157,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.adapters._toolathlon` | `Toolathlon task …: no MCP config for …; dropping server` |
 | `benchflow.agents.install` | `Could not remove agent installer staging: …` |
 | `benchflow.agents.install` | `Skills dir not found: …` |
-| `benchflow.agents.receipt` | `Could not read …'s installed versions: …` |
+| `benchflow.agents.receipt` | `Could not read …'s installed versions: …` (0.10) |
 | `benchflow.batch` | `batch item … not run: …` |
 | `benchflow.branch_run` | `Branch trial for …: …` |
 | `benchflow.branch_run` | `Job-level results.jsonl aggregation failed: …` |
@@ -1174,34 +1178,34 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.evaluation` | `--verifier-sandbox separate moved … task(s) that declare no artifacts: …. Their verifier gets only the workspace and /logs/artifacts, so an answer kept elsewhere (a service, a database, a file outside the workspace) scores 0 like an agent failure; check each task's oracle under the switch before comparing these zeros with task-mode runs.` |
 | `benchflow.evaluation` | `Checkpoint retry of … failed` |
 | `benchflow.evaluation` | `Could not persist LearnerStore: …` |
-| `benchflow.evaluation` | `Could not write the run card: …` |
+| `benchflow.evaluation` | `Could not write the run card: …` (0.10) |
 | `benchflow.evaluation` | `Docker leftover sweep failed: …` |
 | `benchflow.evaluation` | `Ignoring malformed … at the tasks-dir root …: …` |
 | `benchflow.evaluation` | `Job … also holds results of … task(s) this run does not select (…); its score counts them. Name another job (--job) to score only this selection.` |
-| `benchflow.evaluation` | `Job … was made by BenchFlow 0.7 or older (it has no evaluation.json): this run reuses its finished trials and rewrites its summary.json and results files. Its own files are kept in …. Pass --fresh (or another --job-name) to leave it as it was.` |
+| `benchflow.evaluation` | `Job … was made by BenchFlow 0.7 or older (it has no evaluation.json): this run reuses its finished trials and rewrites its summary.json and results files. Its own files are kept in …. Pass --fresh (or another --job-name) to leave it as it was.` (0.10) |
 | `benchflow.evaluation` | `Job-level ADP aggregation failed: …` |
 | `benchflow.evaluation` | `Job-level results.jsonl aggregation failed: …` |
 | `benchflow.evaluation` | `Job-level trainer artifact aggregation failed: …` |
 | `benchflow.evaluation` | `Learner store: … skill export failed — skipping generation commit, staying at generation …` |
 | `benchflow.evaluation` | `Multiple job directories found (…); resuming into most recent: …` |
-| `benchflow.evaluation` | `No run card for this job: …` |
-| `benchflow.evaluation` | `Resuming into existing job directory: … (finished tasks are reused; --fresh or another --job-name starts a new job, as a new job_name does in Python)` |
+| `benchflow.evaluation` | `No run card for this job: …` (0.10) |
+| `benchflow.evaluation` | `Resuming into existing job directory: … (finished tasks are reused; --fresh or another --job-name starts a new job, as a new job_name does in Python)` (0.10) |
 | `benchflow.evaluation` | `Resuming into existing job directory: … (its settings match the ones this run finally has; finished tasks are reused)` |
 | `benchflow.evaluation` | `Resuming without agent_env …: their values are not stored in …. Pass agent_env={...} to Evaluation.resume() if the agent needs them.` |
 | `benchflow.evaluation` | `Seeded-rollout report failed: …` |
-| `benchflow.evaluation` | `Setting aside … earlier trial(s) of job … in …: they ran …. They are kept there and not counted; this run runs those tasks again with its own settings (bench run --fresh, or another --job-name, keeps two runs as two jobs).` |
+| `benchflow.evaluation` | `Setting aside … earlier trial(s) of job … in …: they ran …. They are kept there and not counted; this run runs those tasks again with its own settings (bench run --fresh, or another --job-name, keeps two runs as two jobs).` (0.10) |
 | `benchflow.evaluation` | `Skipping malformed task …: …` |
 | `benchflow.evaluation` | `Skipping task …: …` |
 | `benchflow.evaluation` | `Starting a new job …: the latest job in … (…) ran …. Its results stay in their own job; bench eval resume … finishes it with its own settings.` |
 | `benchflow.evaluation` | `Starting a new job …: …. An unnamed run never shares a job; pass --job-name to resume that job once it has stopped.` |
 | `benchflow.evaluation` | `Taking over a stale job lock from process …, which is gone: …` |
-| `benchflow.evaluation` | `The agent's context window is under half the model's: …` |
+| `benchflow.evaluation` | `The agent's context window is under half the model's: …` (0.10) |
 | `benchflow.evaluation` | `The config names agent_env … without values; pass them in agent_env (or the environment) if the agent needs them.` |
-| `benchflow.evaluation` | `The job ran pre_agent_hooks …, which … cannot store; pass pre_agent_hooks=[...] to Evaluation.resume() to run them again (without them the run is refused as one with other settings).` |
-| `benchflow.evaluation` | `The run differs from its reference setup: …` |
+| `benchflow.evaluation` | `The job ran pre_agent_hooks …, which … cannot store; pass pre_agent_hooks=[...] to Evaluation.resume() to run them again (without them the run is refused as one with other settings).` (0.10) |
+| `benchflow.evaluation` | `The run differs from its reference setup: …` (0.10) |
 | `benchflow.evaluation` | `This job's BenchFlow 0.7 summary said mean_reward=…, the mean over scored trials only. BenchFlow 0.8's mean_reward counts every trial, an unscored one as 0: …; its mean_reward_scored_only is 0.7's figure: ….` |
 | `benchflow.evaluation` | `Unknown agent … — not in registry. Available: …. Will attempt to use as raw command.` |
-| `benchflow.evaluation` | ``… task(s) lost the review or the verifier's sandbox to an infrastructure failure: the trial's result.json names it, and `bench eval score <trial> --tasks-root <tasks> --force` scores it again`` |
+| `benchflow.evaluation` | ``… task(s) lost the review or the verifier's sandbox to an infrastructure failure: the trial's result.json names it, and `bench eval score <trial> --tasks-root <tasks> --force` scores it again`` (0.10) |
 | `benchflow.evaluation` | `… tasks (…%) failed during verifier dependency install — check verifier_error_category in result.json and fix the task's index policy` |
 | `benchflow.evaluation` | `… tasks (…%) had verifier errors — check verifier scripts for bugs` |
 | `benchflow.evaluation` | `…job_name …: … is …; this run starts a new job instead` |
@@ -1226,19 +1230,19 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.native_harness.client` | `Native harness kill of turn … exited …: … …` |
 | `benchflow.native_harness.client` | `Native harness parser failed on an event` |
 | `benchflow.native_harness.client` | `… did not exit …s after the end of its turn; stopping it` |
-| `benchflow.providers.litellm_messages_bridge_patch` | `LiteLLM messages bridge patch not installed` |
-| `benchflow.providers.litellm_messages_bridge_patch` | `LiteLLM's model map could not be read` |
-| `benchflow.providers.litellm_messages_bridge_patch` | `documents left as they came` |
-| `benchflow.providers.litellm_messages_bridge_patch` | `tool result images left as the bridge made them` |
+| `benchflow.providers.litellm_messages_bridge_patch` | `LiteLLM messages bridge patch not installed` (0.10) |
+| `benchflow.providers.litellm_messages_bridge_patch` | `LiteLLM's model map could not be read` (0.10) |
+| `benchflow.providers.litellm_messages_bridge_patch` | `documents left as they came` (0.10) |
+| `benchflow.providers.litellm_messages_bridge_patch` | `tool result images left as the bridge made them` (0.10) |
 | `benchflow.providers.litellm_runtime` | `BENCHFLOW_CAPTURE_TOKEN_LOGPROBS is set but …, so no token ids or logprobs will be recorded (capture runs in the gateway). Use an API key route, e.g. a vllm/ model, for token capture.` |
-| `benchflow.providers.litellm_runtime` | `Could not publish …: …` |
-| `benchflow.providers.litellm_runtime` | `Could not publish …; it holds what the live mirror wrote: …` |
+| `benchflow.providers.litellm_runtime` | `Could not publish …: …` (0.10) |
+| `benchflow.providers.litellm_runtime` | `Could not publish …; it holds what the live mirror wrote: …` (0.10) |
 | `benchflow.providers.litellm_runtime` | `Installing the proxy in the trial: …` |
 | `benchflow.providers.litellm_runtime` | `LiteLLM gateway refused … request(s) for model(s) this run does not serve: …` |
 | `benchflow.providers.litellm_runtime` | `Live token counter has stalled: the model-gateway log tail has not advanced past byte … in … polls (… bytes behind). The live token/cost figures now UNDERCOUNT this run; the final totals, imported from the full log, are unaffected.` |
-| `benchflow.report` | `Could not write …: …` |
+| `benchflow.report` | `Could not write …: …` (0.10) |
 | `benchflow.review.evidence` | `Could not remove temporary evidence archive …` |
-| `benchflow.review.probe` | `Could not record the reviewer image's tools` |
+| `benchflow.review.probe` | `Could not record the reviewer image's tools` (unreleased) |
 | `benchflow.review.resume` | `Could not resume scoring for …: …; its saved result is kept` |
 | `benchflow.rewards.builtins` | `Judge aggregate reward is invalid (…); returning 0.0` |
 | `benchflow.rewards.builtins` | `Judge error on criterion …: …` |
@@ -1246,12 +1250,12 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rewards.builtins` | `Rubric has no criteria — returning 0.0` |
 | `benchflow.rewards.file_readers` | `Error reading …: …` |
 | `benchflow.rewards.file_readers` | `judge deliverables: refusing unsafe directory …` |
-| `benchflow.rewards.llm` | `… judge call failed after … attempts` |
+| `benchflow.rewards.llm` | `… judge call failed after … attempts` (0.10) |
 | `benchflow.rewards.validation` | `… reward map parsed in lenient mode; dropped unrecognized/non-numeric keys: …` |
 | `benchflow.rollout.__init__` | `--separate-verifier-include has no effect for …: its verifier runs in the agent's sandbox` |
 | `benchflow.rollout.__init__` | `ACP client close failed: …` |
 | `benchflow.rollout.__init__` | `ACP tool-evidence reconciliation failed: …` |
-| `benchflow.rollout.__init__` | `Agent integration failure [agent_model_catalog]: …` |
+| `benchflow.rollout.__init__` | `Agent integration failure [agent_model_catalog]: …` (0.10) |
 | `benchflow.rollout.__init__` | `Agent integration failure […]: … — trial unscored` |
 | `benchflow.rollout.__init__` | `Branch snapshot has no verifier baseline; re-capturing it from the checkpoint state (tampering before the fork would not be undone at verification)` |
 | `benchflow.rollout.__init__` | `Cannot record timed_out in unreadable …` |
@@ -1259,12 +1263,12 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout.__init__` | `Cleanup failed: …` |
 | `benchflow.rollout.__init__` | `Cloud metadata: the agent runs as root on a sandbox provider; the provider's own metadata policy applies (no BenchFlow block)` |
 | `benchflow.rollout.__init__` | `Could not clean up an unused warm-pool sandbox` |
-| `benchflow.rollout.__init__` | `Could not keep the sandbox (deleting it): …` |
-| `benchflow.rollout.__init__` | `Could not write agent/runtime.json: …` |
+| `benchflow.rollout.__init__` | `Could not keep the sandbox (deleting it): …` (0.10) |
+| `benchflow.rollout.__init__` | `Could not write agent/runtime.json: …` (0.10) |
 | `benchflow.rollout.__init__` | `Credential cleanup at disconnect failed: …` |
 | `benchflow.rollout.__init__` | `Egress denylist proxy stop failed: …` |
 | `benchflow.rollout.__init__` | `Installing … in the trial: …` |
-| `benchflow.rollout.__init__` | `Kept the sandbox for inspection: … (delete it with …)` |
+| `benchflow.rollout.__init__` | `Kept the sandbox for inspection: … (delete it with …)` (0.10) |
 | `benchflow.rollout.__init__` | `LLM trajectory write failed: …` |
 | `benchflow.rollout.__init__` | `Partial session-factory trajectory capture failed: …` |
 | `benchflow.rollout.__init__` | `Partial trajectory capture failed: …` |
@@ -1277,20 +1281,20 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout.__init__` | `oracle_access=True without a User — it has no effect: only a User reads the solution.` |
 | `benchflow.rollout.__init__` | `sandbox_user=None — agent runs as root with no path lockdown.` |
 | `benchflow.rollout._artifacts` | `Collecting the artifacts of an unverified rollout timed out after … s` |
-| `benchflow.rollout._artifacts` | `Could not hand the mounted artifacts folder to the host user: …` |
-| `benchflow.rollout._collect_hooks` | `Collect hook in service … exited …: …` |
-| `benchflow.rollout._collect_hooks` | `Collect hook in service … failed: …` |
-| `benchflow.rollout._collect_hooks` | `Sidecar artifact … from … not collected: …` |
+| `benchflow.rollout._artifacts` | `Could not hand the mounted artifacts folder to the host user: …` (0.10) |
+| `benchflow.rollout._collect_hooks` | `Collect hook in service … exited …: …` (0.10) |
+| `benchflow.rollout._collect_hooks` | `Collect hook in service … failed: …` (0.10) |
+| `benchflow.rollout._collect_hooks` | `Sidecar artifact … from … not collected: …` (0.10) |
 | `benchflow.rollout._config` | `--agent oracle was requested, but … pins scene agents (agents.roles / document scenes), which take precedence. Oracle mode will NOT run; the task's scene agent(s) will execute instead.` |
 | `benchflow.rollout._config` | `loop_strategy=single-shot suppresses the user declared by …/task.md` |
 | `benchflow.rollout._config` | `loop_strategy=… overrides the user declared by …/task.md` |
 | `benchflow.rollout._deadline` | `BENCHFLOW_ROLLOUT_HARD_DEADLINE=… is not a number; using computed deadline` |
-| `benchflow.rollout._keep_sandbox` | `Could not keep Daytona sandbox … (deleting it as usual): …` |
+| `benchflow.rollout._keep_sandbox` | `Could not keep Daytona sandbox … (deleting it as usual): …` (0.10) |
 | `benchflow.rollout._results` | `ADP artifact write failed: …` |
 | `benchflow.rollout._results` | `ATIF artifact write failed: …` |
 | `benchflow.rollout._results` | `Cannot record reported models in …: …` |
-| `benchflow.rollout._results` | `Cannot record the applied effort in …: …` |
-| `benchflow.rollout._results` | `Cannot record the harness versions in …: …` |
+| `benchflow.rollout._results` | `Cannot record the applied effort in …: …` (0.10) |
+| `benchflow.rollout._results` | `Cannot record the harness versions in …: …` (0.10) |
 | `benchflow.rollout._results` | `Embodied trainer artifact write failed: …` |
 | `benchflow.rollout._results` | `Trainer artifact write failed: …` |
 | `benchflow.rollout._results` | `results.jsonl write failed: …` |
@@ -1305,8 +1309,8 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout._setup` | `Could not publish script.txt as the agent; trajectory retains its output` |
 | `benchflow.rollout._setup` | `Could not write the host copy of …: …` |
 | `benchflow.rollout._setup` | `Ending the kept services after grading failed: …` |
-| `benchflow.rollout._setup` | `Keeping the timed-out verifier's output failed: …` |
-| `benchflow.rollout._setup` | `Killing the verifier's processes failed: …` |
+| `benchflow.rollout._setup` | `Keeping the timed-out verifier's output failed: …` (0.10) |
+| `benchflow.rollout._setup` | `Killing the verifier's processes failed: …` (0.10) |
 | `benchflow.rollout._setup` | `Listing git repositories in … for … failed; git may refuse them as 'dubious ownership'` |
 | `benchflow.rollout._setup` | `Oracle solve.sh exited with rc=…` |
 | `benchflow.rollout._setup` | `Publishing for the verifier: … exited …: …` |
@@ -1323,7 +1327,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout._setup` | `verifier PATH refusal: a refusal marker names …, which only folders the verifier's PATH leaves out have: …` |
 | `benchflow.rollout._teardown_queue` | `Cleanup of … failed: …` |
 | `benchflow.rollout._teardown_queue` | `Counting the stop of … failed: …` |
-| `benchflow.rollout._user_loop` | `Could not keep round …'s check output: …` |
+| `benchflow.rollout._user_loop` | `Could not keep round …'s check output: …` (0.10) |
 | `benchflow.rollout._user_loop` | `Mid-loop verifier isolation skipped at round …: …. Final verify() still hardens before scoring; next-round feedback may be less isolated.` |
 | `benchflow.rollout._user_loop` | `Skill export attempt … failed: …. Retrying in …s...` |
 | `benchflow.rollout._verifier_recovery` | `Verifier scored 0: verifier output capture failed: …` |
@@ -1331,7 +1335,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout_branch` | `Branch child … failed before doing anything (…: …); retrying it once in a new sandbox` |
 | `benchflow.rollout_branch` | `` Branch snapshot … was not deleted (…: …); remove it by hand or with `bench sandbox cleanup` `` |
 | `benchflow.rollout_branch` | `… during cancellation` |
-| `benchflow.run_checks` | `…, at or above …: raise the output cap, or report the rate beside the score` |
+| `benchflow.run_checks` | `…, at or above …: raise the output cap, or report the rate beside the score` (0.10) |
 | `benchflow.runtime` | `RuntimeConfig no longer applies a … s agent timeout by default; this run uses the task's own timeout of … s. Pass RuntimeConfig(timeout=…) to keep the old limit.` |
 | `benchflow.runtime` | `RuntimeConfig.… is not used and will be removed; it has no effect on the run.` |
 | `benchflow.runtime` | `RuntimeResult is deprecated; Runtime.execute() and bf.run() return benchflow.RolloutResult, which has reward, passed and rollout_dir.` |
@@ -1342,20 +1346,20 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox._base` | `Overriding memory to … MB alters the task from its intended configuration.` |
 | `benchflow.sandbox._base` | `Overriding storage to … MB alters the task from its intended configuration.` |
 | `benchflow.sandbox._base` | `Skipping env var(s) with non-identifier names (cannot be exported by the shell): …` |
-| `benchflow.sandbox._delegate_disarm` | `Cloud metadata: nothing disarmed was put back before grading: processes outside no_new_privs are alive (…); the files stay without their set-ID bits or capability while the verifier runs` |
-| `benchflow.sandbox._delegate_disarm` | `Cloud metadata: … was not restored before grading (…); it stays without its set-ID bits or capability while the verifier runs` |
-| `benchflow.sandbox._docker_sweep` | `Could not mark the kept sandbox … on the Docker daemon: a BenchFlow run with another HOME may remove it as a leftover` |
+| `benchflow.sandbox._delegate_disarm` | `Cloud metadata: nothing disarmed was put back before grading: processes outside no_new_privs are alive (…); the files stay without their set-ID bits or capability while the verifier runs` (0.10) |
+| `benchflow.sandbox._delegate_disarm` | `Cloud metadata: … was not restored before grading (…); it stays without its set-ID bits or capability while the verifier runs` (0.10) |
+| `benchflow.sandbox._docker_sweep` | `Could not mark the kept sandbox … on the Docker daemon: a BenchFlow run with another HOME may remove it as a leftover` (0.10) |
 | `benchflow.sandbox._docker_sweep` | ``Docker leftover sweep: `docker …` failed: …`` |
 | `benchflow.sandbox._docker_sweep` | ``… BenchFlow container(s) are still running although the BenchFlow process that started them has exited: ……. BenchFlow force-removes such a container only when its label proves which process made it; if you did not keep these on purpose, `docker rm -f …` removes them (their networks go at the next run).`` |
 | `benchflow.sandbox._prepull` | `Pre-pull of … failed; its trial pulls it: …` |
 | `benchflow.sandbox._recovery_baseline` | `Could not release verifier recovery image lease …: …` |
-| `benchflow.sandbox._sdk_ops` | `Daytona build keys keep the SDK's folder order: … in daytona … is not the source BenchFlow's sorted context hash was written against, so a task with a COPY folder can get another build key on another machine` |
+| `benchflow.sandbox._sdk_ops` | `Daytona build keys keep the SDK's folder order: … in daytona … is not the source BenchFlow's sorted context hash was written against, so a task with a COPY folder can get another build key on another machine` (0.10) |
 | `benchflow.sandbox._sdk_ops` | `Invalid …=…; pinging every …s` |
 | `benchflow.sandbox._sdk_ops` | `daytona get_session_command_logs malformed payload (attempt …/…) for session=… command=…: …` |
 | `benchflow.sandbox._snapshot_credentials` | `Credential put-back of … not done: …` |
 | `benchflow.sandbox._verifier_runtime` | `verifier runtime (…): …` |
 | `benchflow.sandbox._verifier_runtime` | `verifier runtime: BenchFlow's pytest is not in the offline cache; building the plugins without the protected runner` |
-| `benchflow.sandbox.agent_otel` | `The agent's OpenTelemetry is not received: …` |
+| `benchflow.sandbox.agent_otel` | `The agent's OpenTelemetry is not received: …` (0.10) |
 | `benchflow.sandbox.agentcore` | `AgentCore runtime … points at …, not … — updating` |
 | `benchflow.sandbox.agentcore` | `Failed to stop AgentCore session: …` |
 | `benchflow.sandbox.agentcore_builder` | `Could not delete uploaded build context s3://…/…: …. It will expire with the bucket lifecycle policy.` |
@@ -1377,25 +1381,25 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.daytona` | `Could not read Daytona file info for …; treating search hit as a file: …` |
 | `benchflow.sandbox.daytona` | `Could not renew the run lease of Daytona sandbox …: …; it lapses at … unless a later renewal goes through` |
 | `benchflow.sandbox.daytona` | `Could not write daytona-execs.json: …` |
-| `benchflow.sandbox.daytona` | `Daytona batch download failed for … (… files); retrying files individually: …` |
+| `benchflow.sandbox.daytona` | `Daytona batch download failed for … (… files); retrying files individually: …` (0.10) |
 | `benchflow.sandbox.daytona` | ``No Daytona sandbox handle to delete, but a create request did not finish, so a sandbox may still exist on Daytona. It is looked for by its create-attempt label until it is found and deleted, up to the job's exit; one still not found then is recorded for `bench sandbox cleanup`.`` |
-| `benchflow.sandbox.daytona` | `Sandbox … started from the image rebuilt with Dockerfile salt …; later runs reuse that build` |
-| `benchflow.sandbox.daytona` | `The create with Dockerfile salt … failed the same way (…): …` |
+| `benchflow.sandbox.daytona` | `Sandbox … started from the image rebuilt with Dockerfile salt …; later runs reuse that build` (0.10) |
+| `benchflow.sandbox.daytona` | `The create with Dockerfile salt … failed the same way (…): …` (0.10) |
 | `benchflow.sandbox.daytona` | `network_block_all=… overrides task config allow_internet=…` |
-| `benchflow.sandbox.daytona` | `the Daytona runner holding this image never started the sandbox, and every create of the image goes to it: …. Building the same image again under a new build key (a Dockerfile comment, salts 1 to …)` |
+| `benchflow.sandbox.daytona` | `the Daytona runner holding this image never started the sandbox, and every create of the image goes to it: …. Building the same image again under a new build key (a Dockerfile comment, salts 1 to …)` (0.10) |
 | `benchflow.sandbox.daytona_dind` | `Environment vars override BenchFlow compose variable(s): …` |
 | `benchflow.sandbox.daytona_dind` | `Retrying docker compose up inside DinD after network create/attach race (attempt …/…, retrying in …s): …` |
 | `benchflow.sandbox.daytona_dind` | `docker compose down failed: …` |
 | `benchflow.sandbox.daytona_ledger` | `Could not compact …: …` |
 | `benchflow.sandbox.daytona_ledger` | `Could not delete sandbox … of create attempt …: …; it stays in the ledger and is retried` |
 | `benchflow.sandbox.daytona_ledger` | ``Daytona: … sandbox(es) or create attempt(s) could not be confirmed deleted before exit: …. They are recorded in …; `bench sandbox cleanup` deletes them.`` |
-| `benchflow.sandbox.daytona_ledger` | `… (create attempt …)` |
+| `benchflow.sandbox.daytona_ledger` | `… (create attempt …)` (0.10) |
 | `benchflow.sandbox.daytona_reaper` | `Daytona sandbox … has unparseable created_at …; skipping (possible leak)` |
 | `benchflow.sandbox.daytona_reaper` | `Daytona snapshot … has no parseable created_at; skipping` |
 | `benchflow.sandbox.daytona_reaper` | `Failed to delete sandbox …` |
 | `benchflow.sandbox.daytona_reaper` | `Failed to delete snapshot …` |
-| `benchflow.sandbox.daytona_reaper` | `Not deleting Daytona sandbox …: it is still building (…), and a delete now would make Daytona keep its build as failed ("context canceled") for every later create of the image` |
-| `benchflow.sandbox.daytona_reaper` | ``… Daytona sandbox(es) carry a benchflow label namespace but not the …=… ownership label, so the age-based reaper will never reclaim them (possible orphan leak): …. Not deleting. They may belong to other users of this API key: delete one only if you started it, with `bench sandbox cleanup --id <sandbox id>`.`` |
+| `benchflow.sandbox.daytona_reaper` | `Not deleting Daytona sandbox …: it is still building (…), and a delete now would make Daytona keep its build as failed ("context canceled") for every later create of the image` (0.10) |
+| `benchflow.sandbox.daytona_reaper` | ``… Daytona sandbox(es) carry a benchflow label namespace but not the …=… ownership label, so the age-based reaper will never reclaim them (possible orphan leak): …. Not deleting. They may belong to other users of this API key: delete one only if you started it, with `bench sandbox cleanup --id <sandbox id>`.`` (0.10) |
 | `benchflow.sandbox.daytona_strategies` | `Could not start from content snapshot …; building the image instead (…)` |
 | `benchflow.sandbox.daytona_strategies` | `Daytona could not build the cached install layers on this image; installing in the sandbox instead (…)` |
 | `benchflow.sandbox.daytona_strategies` | ``Daytona snapshot … could not be deleted (…); `bench sandbox cleanup` removes it once it is stale`` |
@@ -1408,10 +1412,10 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.docker` | ``Docker verifier-log bind mount is not visible inside the container; verifier outputs will be copied back explicitly. The daemon cannot see …, so it may be remote or reached without path translation (check DOCKER_HOST and `docker context ls`).`` |
 | `benchflow.sandbox.docker` | `Failed to chown logs directory: …` |
 | `benchflow.sandbox.docker` | `Force-kill of compose project … failed: …` |
-| `benchflow.sandbox.docker` | `Force-kill of compose project … stopped: docker network prune gave no answer within … s (Docker is busy); the job's leftover sweep removes what is left` |
+| `benchflow.sandbox.docker` | `Force-kill of compose project … stopped: docker network prune gave no answer within … s (Docker is busy); the job's leftover sweep removes what is left` (0.10) |
 | `benchflow.sandbox.docker` | `Inspecting the images … built failed: …` |
 | `benchflow.sandbox.docker` | `Listing the images … built failed: …` |
-| `benchflow.sandbox.docker` | ``Listing the images … built gave no answer within 30 s (Docker is busy), so they stay: `docker image ls --filter label=com.docker.compose.project=…` lists them`` |
+| `benchflow.sandbox.docker` | ``Listing the images … built gave no answer within 30 s (Docker is busy), so they stay: `docker image ls --filter label=com.docker.compose.project=…` lists them`` (0.10) |
 | `benchflow.sandbox.docker` | `No cached … layer for …; it installs in the trial: …` |
 | `benchflow.sandbox.docker` | `Removing the images … built failed: …` |
 | `benchflow.sandbox.docker` | `Removing the trial's layer tag … failed: …` |
@@ -1420,7 +1424,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.docker` | `Retrying docker compose up for … after network create/attach race (attempt …/…, retrying in …s): …` |
 | `benchflow.sandbox.docker` | ``Snapshot image … is still in use (kept container?); remove it with `docker image rm …` when done`` |
 | `benchflow.sandbox.docker` | `Snapshot image … removal failed: …` |
-| `benchflow.sandbox.egress_denylist` | `Egress log … not collected: …` |
+| `benchflow.sandbox.egress_denylist` | `Egress log … not collected: …` (0.10) |
 | `benchflow.sandbox.env_layers` | `Not reusing …: no BenchFlow build on this machine made it; building the … layer again` |
 | `benchflow.sandbox.env_layers` | `Pruning build records of layer … failed: …` |
 | `benchflow.sandbox.env_layers` | `Pruning old … layers failed: …` |
@@ -1433,14 +1437,14 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.env_layers` | `…=… is not a whole number; keeping …` |
 | `benchflow.sandbox.lockdown` | `BenchFlow's root steps leave … off their PATH from now on` |
 | `benchflow.sandbox.lockdown` | `Could not check the folders on PATH.…` |
-| `benchflow.sandbox.lockdown` | `Egress firewall exec timed out after …s; installing iptables in its own exec, then retrying (… of …)` |
+| `benchflow.sandbox.lockdown` | `Egress firewall exec timed out after …s; installing iptables in its own exec, then retrying (… of …)` (0.10) |
 | `benchflow.sandbox.lockdown` | `Folders on PATH the agent user may write, which could not be locked to root: …` |
 | `benchflow.sandbox.lockdown` | `Ignoring a plugin guard marker with a bad signature: …` |
 | `benchflow.sandbox.lockdown` | `Kept service pid … did not live to be graded` |
 | `benchflow.sandbox.lockdown` | `Kept service pid … killed before grading: …` |
 | `benchflow.sandbox.lockdown` | `Kept service pid … was not frozen before grading (state …)` |
 | `benchflow.sandbox.lockdown` | `Kept service pid … writes to the terminal …, which ended with the agent's terminal tool: its writes there fail, so it may not answer; start it with its output in a file` |
-| `benchflow.sandbox.lockdown` | ``Killed instead of kept: port … pid … `…` ran without no_new_privs (not the agent's launch), so it could use a set-ID file or a file capability put back before grading`` |
+| `benchflow.sandbox.lockdown` | ``Killed instead of kept: port … pid … `…` ran without no_new_privs (not the agent's launch), so it could use a set-ID file or a file capability put back before grading`` (0.10) |
 | `benchflow.sandbox.lockdown` | `Protected runtime in … holds no Python: …` |
 | `benchflow.sandbox.lockdown` | `Root's preparation steps do not run …: …` |
 | `benchflow.sandbox.lockdown` | `Sandbox user … setup step failed.…` |
@@ -1503,7 +1507,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.task.verifier_core` | `Criteria runner exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` |
 | `benchflow.task.verifier_core` | `Criteria-runner verifier directory download failed; recovered canonical verifier output files individually: …` |
 | `benchflow.task.verifier_core` | `Plugin guard …'s markers were not all read (…); deciding on the verdicts that were` |
-| `benchflow.task.verifier_core` | `Reading the pytest plugin guard …'s markers failed (…); retrying in …s` |
+| `benchflow.task.verifier_core` | `Reading the pytest plugin guard …'s markers failed (…); retrying in …s` (0.10) |
 | `benchflow.task.verifier_core` | `Verifier directory download failed; recovered canonical verifier output files individually: …` |
 | `benchflow.task.verifier_core` | `Verifier exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` |
 | `benchflow.taskmd.verify` | `Could not restore the paths hidden from the judge: …` |
@@ -1513,8 +1517,8 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.trajectories._capture` | `Could not scrape gemini trajectory: …` |
 | `benchflow.trajectories._capture` | `Failed to parse gemini trajectory: …` |
 | `benchflow.trajectories._export_common` | `Skipping unreadable trainer artifact …: …` |
-| `benchflow.trajectories._llm_capture` | `… holds … of the … lines earlier roles published; this role's lines follow them` |
-| `benchflow.trajectories.otel_spans` | `Trial spans not sent to …: …` |
+| `benchflow.trajectories._llm_capture` | `… holds … of the … lines earlier roles published; this role's lines follow them` (0.10) |
+| `benchflow.trajectories.otel_spans` | `Trial spans not sent to …: …` (0.10) |
 | `benchflow.trajectories.results` | `Skipping invalid results artifact row …:…: …` |
 | `benchflow.trajectories.results` | `Skipping non-object results artifact row …:…` |
 | `benchflow.trajectories.results` | `Skipping unreadable results artifact …: …` |

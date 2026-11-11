@@ -552,6 +552,7 @@ def register_train(app: typer.Typer) -> None:
                 if m.get("excluded") == "unscored"
             )
             single = sum(1 for g in groups if g["scored"] == 1)
+            withheld = signal.get("withheld_groups", 0)
             console.print(
                 f"Groups ({signal['group_advantage']}, by "
                 f"{','.join(signal['group_by'])}): {len(groups)}; "
@@ -559,6 +560,15 @@ def register_train(app: typer.Typer) -> None:
                 + (
                     f"; {single} group(s) with one scored rollout (no advantage)"
                     if single
+                    else ""
+                )
+                + (
+                    f"; {withheld} group{'s' if withheld != 1 else ''} withheld "
+                    f"whole ({signal.get('rows_withheld', 0)} row(s) not written): "
+                    "a member is unscored or wrote no row, and a trainer gets a "
+                    "group whole or not at all (each group's withheld field in "
+                    "--manifest says why)"
+                    if withheld
                     else ""
                 )
                 + "."
@@ -674,6 +684,16 @@ def register_train(app: typer.Typer) -> None:
                 "task_digest, job (default task,agent,model,job)",
             ),
         ] = None,
+        withheld_out: Annotated[
+            Path | None,
+            typer.Option(
+                "--withheld",
+                help="--group-size: write the records of groups withheld from "
+                "the trainer (a member unscored or without the others' token "
+                "sequence, or the group still short at the end) to this JSONL "
+                "file, each with its reason",
+            ),
+        ] = None,
     ) -> None:
         """Print each finished rollout of a (running) job as one JSON line.
 
@@ -711,6 +731,19 @@ def register_train(app: typer.Typer) -> None:
                 "`bench train stream --help` describes --group-by",
             ) from None
         count = 0
+        held = {"groups": 0, "rollouts": 0}
+        sink = None
+        if withheld_out is not None:
+            withheld_out.parent.mkdir(parents=True, exist_ok=True)
+            sink = withheld_out.open("w", encoding="utf-8")
+
+        def on_withheld(members: list[Any]) -> None:
+            held["groups"] += 1
+            held["rollouts"] += len(members)
+            if sink is not None:
+                sink.writelines(member.to_json() + "\n" for member in members)
+                sink.flush()
+
         try:
             for record in stream_rollouts(
                 job_dir,
@@ -719,6 +752,7 @@ def register_train(app: typer.Typer) -> None:
                 timeout=timeout,
                 group_by=group_key,
                 group_size=group_size,
+                on_withheld=on_withheld,
             ):
                 typer.echo(record.to_json())
                 count += 1
@@ -736,7 +770,22 @@ def register_train(app: typer.Typer) -> None:
             raise fail(
                 str(exc), 3, "raise --timeout, or check that the job is still running"
             ) from None
-        typer.echo(f"bench train stream: {count} rollouts streamed", err=True)
+        finally:
+            if sink is not None:
+                sink.close()
+        summary = f"bench train stream: {count} rollouts streamed"
+        if held["groups"]:
+            groups = held["groups"]
+            summary += (
+                f"; {groups} group{'s' if groups != 1 else ''} withheld "
+                f"({held['rollouts']} rollouts), "
+                + (
+                    f"written to {withheld_out}"
+                    if withheld_out is not None
+                    else "--withheld FILE writes them with the reason"
+                )
+            )
+        typer.echo(summary, err=True)
 
     @train_app.command("validate")
     def train_validate(

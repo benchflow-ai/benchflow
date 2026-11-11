@@ -20,7 +20,19 @@ must not share a baseline. Within an Evaluation job, an attempt that a retry
 - ``advantage_vector`` (both options): the same normalisation per component.
 
 Unscored rollouts never enter a baseline and never get a number: their
-advantage is null with ``excluded: "unscored"``. The committed JSON Schema
+advantage is null with ``excluded: "unscored"``.
+
+A group reaches the trainer whole or not at all. A group is withheld when a
+member has no score for its baseline (unscored, or a trial whose
+``result.json`` is missing or cut short: its ``config.json`` places it in its
+group) or never reached the model (the exporter found no model calls, or every
+call failed): none of its rows are written, its manifest entry says why
+(``withheld``), and its other members are ``excluded: "group_withheld"`` with a
+null advantage. A scored member keeps its group whole: one under
+``min_reward`` loses only its own rows (advantages are computed on the whole
+group, then rows are filtered), and one that ended with an error (a time-out)
+writes its rows with the error in its ``group`` block, so a trainer can mask
+them. The committed JSON Schema
 (``docs/reference/schemas/benchflow-training-signal.v1.schema.json``) is
 generated from :data:`SCHEMA` (``python -m
 benchflow.trajectories.training_signal docs/reference/schemas``).
@@ -318,6 +330,85 @@ class _Member:
     excluded: str | None = None
     # A later attempt of the same trial replaced it: not a sample.
     retried: bool = False
+    # Why it has no result to read ("result.json missing"), or None.
+    no_result: str | None = None
+    # How the rollout ended when it ended with an error, or None.
+    error: str | None = None
+
+
+def ended_with_error(result: dict[str, Any]) -> str | None:
+    """The error a rollout ended with, as a short name, or None: its
+    ``error_category`` (``error`` without one), a verifier error, or a
+    partial trajectory."""
+    if result.get("error"):
+        return str(result.get("error_category") or "error")
+    if result.get("verifier_error"):
+        return str(result.get("verifier_error_category") or "verifier_error")
+    if result.get("partial_trajectory") is True:
+        return "partial_trajectory"
+    return None
+
+
+def _stand_in(rollout_dir: Path) -> dict[str, Any] | None:
+    """A result for a trial with no readable ``result.json``, from the
+    ``config.json`` the trial wrote when it started: unscored, and enough to
+    place it in its group (its task is the task folder's name, as a trial
+    names it). None for a folder that is not a trial's."""
+    config = _read(Path(rollout_dir) / "config.json")
+    if config is None or not config.get("task_path"):
+        return None
+    return {
+        "task_name": Path(str(config["task_path"])).name,
+        "agent": config.get("agent"),
+        "model": config.get("model"),
+        "task_digest": config.get("task_digest"),
+        "rewards": None,
+    }
+
+
+def unfinished_rollout_dirs(rollout_dirs: Iterable[Path]) -> list[Path]:
+    """Trial folders beside these rollouts that never wrote a ``result.json``
+    (a trial killed after it started, or still running): their groups are
+    not whole. Set-aside trials and folders that are not a trial's are left
+    out."""
+    from benchflow._utils.result_paths import SET_ASIDE_DIR
+
+    dirs = [Path(d) for d in rollout_dirs]
+    known = {d.resolve() for d in dirs}
+    out: list[Path] = []
+    for folder in sorted({d.parent for d in dirs}):
+        try:
+            children = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if (
+                child.name == SET_ASIDE_DIR
+                or not child.is_dir()
+                or child.resolve() in known
+                or (child / "result.json").exists()
+            ):
+                continue
+            if _stand_in(child) is not None:
+                out.append(child)
+    return out
+
+
+# Why an exporter wrote no row for a rollout, in the words a withheld group
+# gives (codes the Prime-SFT and TRL converters record). A member under
+# --min-reward ("reward") is scored and never withholds its group.
+_NO_ROW_WORDS = {
+    "terminal_error": "ended with an error",
+    "reward": "below --min-reward",
+    "no_trajectory": "no model calls recorded",
+    "provider_error": "every model call failed",
+    "control": "a control run",
+    "no_result": "no readable result.json",
+}
+
+
+def _rollout_key(rollout_dir: Path) -> str:
+    return str(Path(rollout_dir).resolve())
 
 
 @dataclass
@@ -328,7 +419,14 @@ class TrainingSignals:
     group_advantage: str | None
     group_by: tuple[str, ...]
     groups: list[dict[str, Any]] = field(default_factory=list)
+    rows_withheld: int = 0
     _rows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Per group id: its samples' rollout keys, every member's key (retried
+    # attempts too), its manifest entry, and why it is withheld.
+    _samples: dict[str, list[str]] = field(default_factory=dict)
+    _members: dict[str, list[str]] = field(default_factory=dict)
+    _entries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _withheld: dict[str, str] = field(default_factory=dict)
 
     @property
     def enabled(self) -> bool:
@@ -336,10 +434,10 @@ class TrainingSignals:
 
     def for_rollout(self, rollout_dir: Path) -> dict[str, Any]:
         """The fields to add to every row of this rollout (empty when off)."""
-        return dict(self._rows.get(str(Path(rollout_dir).resolve()), {}))
+        return dict(self._rows.get(_rollout_key(rollout_dir), {}))
 
     def manifest(self) -> dict[str, Any]:
-        return {
+        manifest: dict[str, Any] = {
             "reward_vector": self.reward_vector,
             "group_advantage": self.group_advantage,
             "group_by": list(self.group_by),
@@ -347,6 +445,72 @@ class TrainingSignals:
             "eps": EPS,
             "groups": self.groups,
         }
+        if self.group_advantage is not None:
+            manifest["withheld_groups"] = len(self._withheld)
+            manifest["rows_withheld"] = self.rows_withheld
+        return manifest
+
+    def withhold(self, gid: str, reason: str) -> None:
+        """Withhold a whole group: no advantage for any member, and why."""
+        self._withheld[gid] = reason
+        entry = self._entries[gid]
+        entry["withheld"] = reason
+        for member in entry["members"]:
+            member["advantage"] = None
+            member.setdefault("excluded", "group_withheld")
+        for key in self._members[gid]:
+            fields = self._rows.get(key)
+            if not fields or "group" not in fields:
+                continue
+            fields["advantage"] = None
+            if "advantage_vector" in fields:
+                fields["advantage_vector"] = None
+            block = fields["group"]
+            block["withheld"] = reason
+            block.setdefault("excluded", "group_withheld")
+
+    def keep_whole_groups(
+        self,
+        rows: list[dict[str, Any]],
+        row_keys: list[str],
+        dropped: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        """The rows of whole groups only.
+
+        ``row_keys`` holds each row's rollout key (:func:`_rollout_key`), and
+        ``dropped`` the reason code of each rollout the exporter wrote no row
+        for. A group one of whose samples wrote no row is withheld, and so is
+        every group already withheld for an unscored member: none of their
+        rows are kept. A sample ``min_reward`` dropped (``"reward"``) is
+        scored: its reward is in the baseline already, so its group keeps
+        its other rows. Without ``group_advantage`` there are no groups to
+        keep whole, and every row is kept.
+        """
+        if self.group_advantage is None:
+            return rows
+        written = set(row_keys)
+        for gid, samples in self._samples.items():
+            if gid in self._withheld:
+                continue
+            missing = [
+                key
+                for key in samples
+                if key not in written and dropped.get(key) != "reward"
+            ]
+            if missing:
+                self.withhold(
+                    gid,
+                    "no row: "
+                    + ", ".join(
+                        f"{Path(key).name} "
+                        f"({_NO_ROW_WORDS.get(dropped.get(key, ''), 'no trainable model call')})"
+                        for key in missing
+                    ),
+                )
+        held = {key for gid in self._withheld for key in self._members[gid]}
+        kept = [row for row, key in zip(rows, row_keys, strict=True) if key not in held]
+        self.rows_withheld = len(rows) - len(kept)
+        return kept
 
 
 def compute_training_signals(
@@ -363,11 +527,24 @@ def compute_training_signals(
     )
     if not signals.enabled:
         return signals
-    pairs = [(Path(d), r) for d, r in rollouts if isinstance(r, dict)]
+    # A rollout without a readable result.json joins its group through the
+    # config.json its trial wrote at start (unscored: the group is withheld).
+    triples: list[tuple[Path, dict[str, Any], str | None]] = []
+    for d, r in rollouts:
+        rollout_dir = Path(d)
+        if isinstance(r, dict):
+            triples.append((rollout_dir, r, None))
+            continue
+        stand_in = _stand_in(rollout_dir)
+        if stand_in is not None:
+            gone = not (rollout_dir / "result.json").exists()
+            why = "result.json missing" if gone else "result.json unreadable"
+            triples.append((rollout_dir, stand_in, why))
+    pairs = [(d, r) for d, r, _ in triples]
     labels = job_labels(d for d, _ in pairs)
     replaced = replaced_attempts(pairs)
     grouped: dict[str, tuple[dict[str, Any], list[_Member]]] = {}
-    for rollout_dir, result in pairs:
+    for rollout_dir, result, no_result in triples:
         key = {
             k: _key_value(result, rollout_dir, k, job=labels.get(rollout_dir.parent))
             for k in keys
@@ -377,6 +554,8 @@ def compute_training_signals(
             reward=scored_reward(result),
             vector=reward_vector_or_none(rollout_dir, result),
             retried=rollout_dir in replaced,
+            no_result=no_result,
+            error=None if no_result else ended_with_error(result),
         )
         grouped.setdefault(_group_id(key), (key, []))[1].append(member)
 
@@ -433,21 +612,24 @@ def _fill_group(
         }
         if len(names_seen) > 1:
             group_block["vector_names_differ"] = True
-        signals.groups.append(
-            {
-                **group_block,
-                "members": [
-                    {
-                        "rollout": m.rollout_dir.name,
-                        "rollout_dir": str(m.rollout_dir),
-                        "reward": m.reward,
-                        "advantage": m.advantage,
-                        **({"excluded": m.excluded} if m.excluded else {}),
-                    }
-                    for m in members
-                ],
-            }
-        )
+        entry = {
+            **group_block,
+            "members": [
+                {
+                    "rollout": m.rollout_dir.name,
+                    "rollout_dir": str(m.rollout_dir),
+                    "reward": m.reward,
+                    "advantage": m.advantage,
+                    **({"excluded": m.excluded} if m.excluded else {}),
+                    **({"error": m.error} if m.error else {}),
+                }
+                for m in members
+            ],
+        }
+        signals.groups.append(entry)
+        signals._entries[gid] = entry
+        signals._samples[gid] = [_rollout_key(m.rollout_dir) for m in samples]
+        signals._members[gid] = [_rollout_key(m.rollout_dir) for m in members]
     for member in members:
         fields: dict[str, Any] = {}
         if signals.reward_vector:
@@ -457,10 +639,25 @@ def _fill_group(
             block = dict(group_block)
             if member.excluded:
                 block["excluded"] = member.excluded
+            if member.error:
+                block["error"] = member.error
             fields["group"] = block
             if signals.reward_vector:
                 fields["advantage_vector"] = member.advantage_vector
-        signals._rows[str(member.rollout_dir.resolve())] = fields
+        signals._rows[_rollout_key(member.rollout_dir)] = fields
+    no_result = [
+        f"{m.rollout_dir.name} ({m.no_result})" for m in samples if m.no_result
+    ]
+    unscored = [
+        m.rollout_dir.name for m in samples if m.reward is None and not m.no_result
+    ]
+    if group_block is not None and (no_result or unscored):
+        reasons = []
+        if no_result:
+            reasons.append("no result: " + ", ".join(no_result))
+        if unscored:
+            reasons.append("unscored: " + ", ".join(unscored))
+        signals.withhold(gid, "; ".join(reasons))
 
 
 def _fill_vector_advantages(members: list[_Member], method: str) -> None:
@@ -502,6 +699,7 @@ def rollout_training_signals(
     from benchflow.trajectories.export_prime_sft import (
         _iter_rollout_dirs,
         _iter_selected_rollout_dirs,
+        load_rollout_result,
     )
 
     dirs = (
@@ -509,8 +707,10 @@ def rollout_training_signals(
         if canonical_selection is not None
         else _iter_rollout_dirs(jobs_dir)
     )
+    if canonical_selection is None and group_advantage is not None:
+        dirs = [*dirs, *unfinished_rollout_dirs(dirs)]
     return compute_training_signals(
-        ((d, _read(d / "result.json")) for d in dirs),
+        ((d, load_rollout_result(d)) for d in dirs),
         reward_vector=reward_vector,
         group_advantage=group_advantage,
         group_by=group_by,
@@ -612,7 +812,27 @@ SCHEMA: dict[str, Any] = {
                 "std_ddof": {"const": STD_DDOF},
                 "eps": {"type": "number"},
                 "vector_names_differ": {"type": "boolean"},
-                "excluded": {"enum": ["unscored", "single_scored_rollout", "retried"]},
+                "withheld": {
+                    "type": "string",
+                    "description": "Why the whole group is withheld from "
+                    "the trainer: a member has no result or is unscored, or "
+                    "wrote no row (no model calls, every call failed).",
+                },
+                "error": {
+                    "type": "string",
+                    "description": "This rollout ended with an error (its "
+                    "error_category, verifier_error or partial_trajectory) "
+                    "but was scored, so it stays in its group; a trainer may "
+                    "mask its rows.",
+                },
+                "excluded": {
+                    "enum": [
+                        "unscored",
+                        "single_scored_rollout",
+                        "retried",
+                        "group_withheld",
+                    ]
+                },
             },
         },
     },

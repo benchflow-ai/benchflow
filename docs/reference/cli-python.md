@@ -1,6 +1,6 @@
 # CLI and Python
 
-Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench eval compare`, `bench eval regrade`, `bench train convert`, `bench train stream`, and the Python that does the same. `sdk` is a name in the public `benchflow` package, `module` a function or field in one of its modules, and `cli` a flag with no Python equivalent, for the reason given. `bench run` takes the flags of `bench eval run`, some under shorter names: [Commands](./commands.md) has both, and [Python API](./python.md) every public name. A command or flag new since 0.9.1 has `(0.10)` after it when 0.10.0rc1 has it, or `(unreleased)` when no release has it yet.
+Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench eval compare`, `bench eval regrade`, `bench train convert`, `bench train stream`, and the Python that does the same. `sdk` is a name in the public `benchflow` package, `module` a function or field in one of its modules, and `cli` a flag with no Python equivalent, for the reason given. `bench run` takes the flags of `bench eval run`, some under shorter names: [Commands](./commands.md) has both, and [Python API](./python.md) every public name. A command or flag new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
 
 <!-- This page is generated from src/benchflow/cli_parity.py by tools/docs_reference.py; tests/test_cli_python_parity.py fails when a flag has no row or a Python target stops existing. To change it, change the table there, then run `uv run python tools/docs_reference.py --write`. -->
 
@@ -54,7 +54,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--jobs-dir` | sdk | `benchflow.Evaluation.__init__(jobs_dir)` |  |
 | `--fresh` | sdk | `benchflow.Evaluation.__init__(job_name)` | pass a new job_name |
 | `--job-name` | sdk | `benchflow.Evaluation.__init__(job_name)` |  |
-| `--restart-changed` (unreleased) | sdk | `benchflow.Evaluation.__init__(restart_changed)` | also `Evaluation.resume(restart_changed=)` |
+| `--restart-changed` (0.10) | sdk | `benchflow.Evaluation.__init__(restart_changed)` | also `Evaluation.resume(restart_changed=)` |
 | `--fail-under` | sdk | `benchflow.EvaluationResult.score_of_plan` | compare it to your threshold |
 | `--fail-on` | sdk | `benchflow.EvaluationResult.results` | count results by error_category / errored / verifier_errored |
 | `--summary-out` | module | `benchflow.job_export.run_summary_export(result)` | the benchflow.run-summary document of an EvaluationResult |
@@ -107,8 +107,8 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--max-sandbox-seconds` | sdk | `benchflow.Budget.max_sandbox_seconds` |  |
 | `--max-tokens` | sdk | `benchflow.Budget.max_tokens` |  |
 | `--max-rollouts` | sdk | `benchflow.Budget.max_rollouts` |  |
-| `--token-budget` (unreleased) | sdk | `benchflow.TrialBudget.tokens` | `EvaluationConfig(trial_budget=TrialBudget(...))`; a task's agent.token_budget |
-| `--turn-budget` (unreleased) | sdk | `benchflow.TrialBudget.turns` | as --token-budget; a task's agent.turn_budget |
+| `--token-budget` (0.10) | sdk | `benchflow.TrialBudget.tokens` | `EvaluationConfig(trial_budget=TrialBudget(...))`; a task's agent.token_budget |
+| `--turn-budget` (0.10) | sdk | `benchflow.TrialBudget.turns` | as --token-budget; a task's agent.turn_budget |
 | `--retry-policy` | cli |  | reserved: only recorded in the --run-config-out file |
 | `--retry-attempts` | sdk | `benchflow.RetryConfig.max_retries` | EvaluationConfig.retry |
 | `--retry-concurrency` | cli |  | reserved: only recorded in the --run-config-out file |
@@ -194,21 +194,21 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--concurrency` | sdk | `benchflow.regrade(concurrency)` |  |
 | `--reason` | sdk | `benchflow.regrade(reason)` |  |
 | `--json` | sdk | `benchflow.RegradeSummary.to_dict` | also written to regrade-summary.json |
-| `--review` (unreleased) | sdk | `benchflow.regrade(review)` |  |
-| `--reviewer-agent` (unreleased) | sdk | `benchflow.ReviewerConfig.agent` | `benchflow.regrade(reviewer)`; set fields replace the trial's recorded ones |
-| `--reviewer-model` (unreleased) | sdk | `benchflow.ReviewerConfig.model` |  |
-| `--reviewer-reasoning-effort` (unreleased) | sdk | `benchflow.ReviewerConfig.reasoning_effort` |  |
-| `--reviewer-sandbox` (unreleased) | sdk | `benchflow.ReviewerConfig.environment` |  |
-| `--reviewer-timeout-sec` (unreleased) | sdk | `benchflow.ReviewerConfig.timeout_sec` |  |
-| `--reviewer-idle-timeout` (unreleased) | sdk | `benchflow.ReviewerConfig.idle_timeout_sec` |  |
-| `--reviewer-storage-mb` (unreleased) | sdk | `benchflow.ReviewerConfig.storage_mb` |  |
-| `--reviewer-memory-mb` (unreleased) | sdk | `benchflow.ReviewerConfig.memory_mb` |  |
-| `--reviewer-setup-timeout` (unreleased) | sdk | `benchflow.ReviewerConfig.setup_timeout_sec` |  |
-| `--reviewer-evidence-timeout` (unreleased) | sdk | `benchflow.ReviewerConfig.evidence_timeout_sec` |  |
-| `--reviewer-concurrency` (unreleased) | sdk | `benchflow.ReviewerConfig.concurrency` |  |
-| `--reviewer-image` (unreleased) | sdk | `benchflow.ReviewerConfig.image` |  |
-| `--reviewer-agent-env` (unreleased) | sdk | `benchflow.ReviewerConfig.agent_env` |  |
-| `--reviewer-open-network` (unreleased) | sdk | `benchflow.ReviewerConfig.open_network` |  |
+| `--review` (0.10) | sdk | `benchflow.regrade(review)` |  |
+| `--reviewer-agent` (0.10) | sdk | `benchflow.ReviewerConfig.agent` | `benchflow.regrade(reviewer)`; set fields replace the trial's recorded ones |
+| `--reviewer-model` (0.10) | sdk | `benchflow.ReviewerConfig.model` |  |
+| `--reviewer-reasoning-effort` (0.10) | sdk | `benchflow.ReviewerConfig.reasoning_effort` |  |
+| `--reviewer-sandbox` (0.10) | sdk | `benchflow.ReviewerConfig.environment` |  |
+| `--reviewer-timeout-sec` (0.10) | sdk | `benchflow.ReviewerConfig.timeout_sec` |  |
+| `--reviewer-idle-timeout` (0.10) | sdk | `benchflow.ReviewerConfig.idle_timeout_sec` |  |
+| `--reviewer-storage-mb` (0.10) | sdk | `benchflow.ReviewerConfig.storage_mb` |  |
+| `--reviewer-memory-mb` (0.10) | sdk | `benchflow.ReviewerConfig.memory_mb` |  |
+| `--reviewer-setup-timeout` (0.10) | sdk | `benchflow.ReviewerConfig.setup_timeout_sec` |  |
+| `--reviewer-evidence-timeout` (0.10) | sdk | `benchflow.ReviewerConfig.evidence_timeout_sec` |  |
+| `--reviewer-concurrency` (0.10) | sdk | `benchflow.ReviewerConfig.concurrency` |  |
+| `--reviewer-image` (0.10) | sdk | `benchflow.ReviewerConfig.image` |  |
+| `--reviewer-agent-env` (0.10) | sdk | `benchflow.ReviewerConfig.agent_env` |  |
+| `--reviewer-open-network` (0.10) | sdk | `benchflow.ReviewerConfig.open_network` |  |
 | `--reviewer-pdf-tools` (unreleased) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
 | `--reviewer-submitted-file-rule` (unreleased) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
 
@@ -246,3 +246,4 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--timeout` | sdk | `benchflow.stream_rollouts(timeout)` | raises StreamTimeout (CLI exit 3) |
 | `--group-size` | sdk | `benchflow.stream_rollouts(group_size)` |  |
 | `--group-by` | sdk | `benchflow.stream_rollouts(group_by)` | comma-separated on the CLI, a tuple in Python |
+| `--withheld` (0.10) | sdk | `benchflow.stream_rollouts(on_withheld)` | the CLI writes each withheld group's records to a file; Python gets the list |

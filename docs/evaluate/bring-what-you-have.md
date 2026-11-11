@@ -5,7 +5,7 @@ BenchFlow runs the tasks, agents and models you already have, and writes its res
 | You have | What BenchFlow does with it | See |
 |---|---|---|
 | Tasks in the `task.toml` layout, Terminal-Bench's | runs them as they are, or converts them with `bench import` | [below](#tasks-in-the-tasktoml-format) |
-| Terminal-Bench 4.1 | can't score it yet on these releases | [below](#terminal-bench-41) |
+| Terminal-Bench 4.1 | runs it from the registry on 0.10.0rc2, which grades tasks 0.9.2 leaves unscored; check each task's oracle first | [below](#terminal-bench-41) |
 | A benchmark someone else wrote | check it with controls before you trust its numbers | [Check a benchmark](../audit/check-a-benchmark.md) |
 | Your own agent | runs it over ACP, or as a script | [Your own agent](./your-own-agent.md) |
 | A model on your own server | calls any OpenAI-compatible endpoint | [A model you serve](./agents.md#a-model-you-serve) |
@@ -45,11 +45,31 @@ Created: half-life/task.md
 
 Ten published Terminal-Bench 2.0 tasks, `hf-model-inference` and `pypi-server` among them, keep services the agent leaves running (`x-keep-services`). A `--sandbox daytona` sandbox can't hold those for an agent that runs as a non-root user, so BenchFlow refuses such a trial before it starts, with `KeptServiceFreezerUnavailable` ([Error messages](../reference/errors.md)). Run those tasks with `--sandbox docker` or `--sandbox remote-docker`.
 
-> **Known issue in 0.9.1:** before grading, it removes every `conftest.py` in the workspace, the repository's own included, so on repository-based benchmarks such as SWE-bench a correct answer whose tests need its fixtures scores 0. 0.10.0rc1 keeps a repository's unchanged `conftest.py`. Run the oracle over such a benchmark before you trust its scores ([Known pitfalls](../audit/pitfalls.md#scores-that-count-the-wrong-thing)).
+> **Known issue in 0.9.2:** before grading, it removes every `conftest.py` in the workspace, the repository's own included, so on repository-based benchmarks such as SWE-bench a correct answer whose tests need its fixtures scores 0. `cleanup_conftests = false` in the task's `[verifier.hardening]` keeps them on 0.9.2, planted ones included; 0.10.0rc2 keeps a repository's unchanged `conftest.py` by itself. Run the oracle over such a benchmark before you trust its scores ([Known pitfalls](../audit/pitfalls.md#scores-that-count-the-wrong-thing)).
 
 ## Terminal-Bench 4.1
 
-Terminal-Bench 4.1 ([tbench.ai](https://www.tbench.ai), released 2026-11-03, 66 tasks) is the current Terminal-Bench. It isn't in the registry: its tasks are in the Git repository tbench.ai links to, under `tasks/` at the tag `v4.1.0`, and run by address like any [folder of tasks in a repository](./find-a-benchmark.md#run-a-benchmark-from-a-git-repository), as `<org>/<repo>/tasks/interleaved-vigenere@v4.1.0`. They don't score yet: none of the four we ran with their reference solutions on 0.9.1 got a score, nor the one we ran on 0.10.0rc1. Three failed where the tests' separate sandbox receives the files the task lists as artifacts; the fourth uses a newer `task.toml` schema (2.0) that 0.9.1 refuses. On `interleaved-vigenere`:
+Terminal-Bench 4.1 ([tbench.ai](https://www.tbench.ai), released 2026-11-03, 66 tasks) is the current Terminal-Bench. 0.10.0rc2 (0.10) has it in its registry, each task pinned by its digest, and grades tasks that 0.9.2 leaves unscored. On `interleaved-vigenere`, its reference solution scores 1:
+
+```bash
+bench run -d terminal-bench@4.1 -i interleaved-vigenere -a oracle
+```
+
+```text
+✓ terminal-bench@4.1: 66 tasks, digests verified (4070d6cef56a)
+...
+[interleaved-vigenere] Oracle mode: running oracle solve.sh
+[interleaved-vigenere] The separate verifier sandbox runs with BASH_ENV empty: transferred activation has no pre-agent provenance
+[interleaved-vigenere] Running verifier...
+[interleaved-vigenere] Rewards: {'reward': 1.0}
+[PASS] interleaved-vigenere (reward=1.00, tools=0)
+...
+✓ Score: 1/1 (100.0%), mean reward 1.00, errors=0
+```
+
+That is one task. Before you report a Terminal-Bench 4.1 score, run the oracle and `nop` over the tasks you use and leave out the ones that fail a control ([Check a benchmark](../audit/check-a-benchmark.md)).
+
+0.9.2 has no `terminal-bench@4.1` entry, and the tasks don't score on it. Its tasks are in the Git repository tbench.ai links to, under `tasks/` at the tag `v4.1.0`, and run by address like any [folder of tasks in a repository](./find-a-benchmark.md#run-a-benchmark-from-a-git-repository), as `<org>/<repo>/tasks/interleaved-vigenere@v4.1.0`. None of the four we ran with their reference solutions on 0.9.1 got a score, nor `interleaved-vigenere` on 0.9.2. Three failed where the tests' separate sandbox receives the files the task lists as artifacts; the fourth uses a newer `task.toml` schema (2.0) that 0.9.2 refuses. On `interleaved-vigenere`:
 
 ```text
 [ERR] interleaved-vigenere (tools=0) (separate verifier transfer failed: artifact…)
@@ -58,11 +78,11 @@ Outcomes: 0 scored (0 passed, 0 failed), 1 unscored, 0 errored
   1 unscored: the verifier's sandbox failed (infrastructure problem): interleaved-vigenere
 ```
 
-and `result.json` records `separate verifier transfer failed: artifact collection of /app/cracker.py error: Workspace metadata could not be captured completely`. On `session-window-debug` the task is refused with `Unsupported schema_version major 2 (from '2.0'); supported major version(s): 1`. The run then suggests `bench eval resume`, which fails the same way, and `bench results` lists the trial as a verifier error rather than unscored; neither is a problem with your task or your machine. Don't report Terminal-Bench 4.1 scores from these releases. The registry's `terminal-bench@2.0` runs on 0.9.1: its `fix-git` task, above, scores 1 with its reference solution, and [Check a benchmark](../audit/check-a-benchmark.md#terminal-bench-20-on-091) has the oracle and nop on all 89 of its tasks, with the 12 that fail a control. Name the version next to any Terminal-Bench score you report.
+and `result.json` records `separate verifier transfer failed: artifact collection of /app/cracker.py error: Workspace metadata could not be captured completely`. On `session-window-debug` the task is refused with `Unsupported schema_version major 2 (from '2.0'); supported major version(s): 1`. The run then suggests `bench eval resume`, which fails the same way, and `bench results` lists the trial as a verifier error rather than unscored; neither is a problem with your task or your machine. Don't report Terminal-Bench 4.1 scores from 0.9.2. The registry's `terminal-bench@2.0` runs on 0.9.1: its `fix-git` task, above, scores 1 with its reference solution, and [Check a benchmark](../audit/check-a-benchmark.md#terminal-bench-20-on-091) has the oracle and nop on all 89 of its tasks, with the 12 that fail a control. Name the version next to any Terminal-Bench score you report.
 
 ## Old results
 
-`bench results` and `bench eval metrics` read jobs from BenchFlow 0.7 and later as they are. A job made by 0.7.11, read by 0.9.1:
+`bench results` and `bench eval metrics` read jobs from BenchFlow 0.7 and later as they are. A job made by 0.7.11, read by 0.9.1 (0.9.2 reads it the same way):
 
 ```bash
 bench eval metrics jobs/old07
@@ -80,13 +100,13 @@ Don't run into an old job's folder unless you mean to: a plain rerun resumes the
 
 ## Trajectories and training rows
 
-Every trial writes `trainer/atif.json`, its trajectory in ATIF (the Agent Trajectory Interchange Format), version `ATIF-v1.7`, for any tool that reads ATIF. BenchFlow writes ATIF but doesn't read it: `bench traj` uploads and checks trajectories, and has no import.
+Every trial writes `trainer/atif.json`, its trajectory in ATIF (the Agent Trajectory Interchange Format), version `ATIF-v1.7`, for any tool that reads ATIF. 0.9.2 writes ATIF but doesn't read it: `bench traj` uploads and checks trajectories, and has no import. 0.10.0rc2 also reads ATIF v1.0 to v1.8: `bench train convert` uses a trial's ATIF file when the trial has no proxy log, as with a trial another `task.toml` runner wrote.
 
-For a trainer, `bench train convert` writes rows in the `prime-sft`, `trl-sft` or `branch-tree` layout, and every JSON file BenchFlow writes for other programs has a versioned schema. [Trajectory and rollout formats](../train/formats.md) lists the files and schemas; [Export training data](../train/export.md) shows a row.
+For a trainer, `bench train convert` writes rows in the `prime-sft`, `trl-sft` or `branch-tree` layout (0.10.0rc2 adds `verl-sft`, `skyrl-sft` and `openenv-episodes`), and every JSON file BenchFlow writes for other programs has a versioned schema. [Trajectory and rollout formats](../train/export.md#trajectory-and-rollout-formats) lists the files and schemas; [Export training data](../train/export.md) shows a row.
 
 ## Model calls and OpenTelemetry
 
-BenchFlow records each model call where it passes through BenchFlow's model proxy, with its tokens, timing and the settings it carried, so it doesn't depend on the agent's own telemetry. That matters because agents don't all export OpenTelemetry, and Claude Code often doesn't. BenchFlow 0.9.1 and 0.10.0rc1 neither emit nor read OpenTelemetry. The gap is a subscription login, whose calls skip the proxy: [Usage and telemetry](../scale/telemetry.md) says what is recorded then.
+BenchFlow records each model call where it passes through BenchFlow's model proxy, with its tokens, timing and the settings it carried, so it doesn't depend on the agent's own telemetry. That matters because agents don't all export OpenTelemetry, and Claude Code often doesn't. BenchFlow 0.9.2 neither emits nor reads OpenTelemetry; 0.10.0rc2 writes each trial's trace as OTLP/JSON and can send it to your collector ([Usage and telemetry](../scale/telemetry.md#opentelemetry)). The gap is a subscription login, whose calls skip the proxy: [Usage and telemetry](../scale/telemetry.md) says what is recorded then.
 
 ## Take your tasks elsewhere
 

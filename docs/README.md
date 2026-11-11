@@ -1,16 +1,16 @@
 # BenchFlow
 
-BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (these pages cover 0.9.1). It runs AI agents on tasks in isolated sandboxes, scores every attempt with the task's own checks, and keeps everything the agent did.
+BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (these pages cover 0.9.2), for evaluating AI agents. It runs an agent on each task in a fresh sandbox, scores what the agent left with the task's own checks, and keeps a record of each attempt that can explain its score: what the agent did, each model call through BenchFlow's proxy with the settings it carried, and the workspace it left. SkillsBench and Robo Use run on it.
 
 ## What do you want to do?
 
 - Run my first eval: [Quick start](./start/quick-start.md)
-- See what an agent eval needs, and how BenchFlow's parts fit: [Why BenchFlow](./start/why-benchflow.md), [How BenchFlow works](./start/how-it-works.md)
+- See what that record lets you decide, where BenchFlow stops, and how its parts fit: [Why BenchFlow](./start/why-benchflow.md), [How BenchFlow works](./start/how-it-works.md)
 - Measure an agent or a model on a benchmark: [Find a benchmark](./evaluate/find-a-benchmark.md), then [Run a benchmark](./evaluate/run-a-benchmark.md)
 - Check a benchmark, or a published score: [Check a benchmark](./audit/check-a-benchmark.md), [Reproduce a published score](./audit/reproduce.md)
 - Publish a score others can check: [Report a result](./audit/report.md)
 - Build tasks, or a whole benchmark: [Write a task](./tasks/write-a-task.md)
-- Grade design work by people's votes (0.10): [Human preferences](./tasks/human-preferences.md)
+- Grade design work by blind pairwise votes, from people or a model (0.10): [Human preferences](./tasks/human-preferences.md)
 - Score an agent I wrote: [Run your own agent](./evaluate/your-own-agent.md)
 - Run simulated robot tasks from several seeds: [Embodied tasks](./evaluate/embodied.md)
 - Train a model on scored attempts: [BenchFlow as an RL environment](./train/environment.md)
@@ -23,8 +23,8 @@ BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (th
 You need [uv](https://docs.astral.sh/uv/getting-started/installation/) and Docker running. Install BenchFlow:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.9.1' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.1/constraints.txt
+uv tool install --python 3.12 'benchflow==0.9.2' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
 ```
 
 The constraints file pins every dependency to the version the release was tested with ([Install](./start/install.md)).
@@ -39,13 +39,11 @@ It prints `Score: 1/1` when the solution passes the task's tests. The [Quick sta
 
 ## Not in these guides
 
-Two features of 0.9.1 have only their reference here: branching a trial from a saved sandbox snapshot ([`bench branch`](./reference/commands.md#bench-branch) and `bench run --checkpoints`), and hosted environments ([`bench hub`](./reference/commands.md#bench-hub) and `bench run --source-env`).
-
-For coding agents, every page is also plain Markdown at its address with `.md` added, and `llms.txt` at the root of the docs lists them all.
+Two features of 0.9.2 have only their reference here: branching a trial from a saved sandbox snapshot ([`bench branch`](./reference/commands.md#bench-branch) and `bench run --checkpoints`), and hosted environments ([`bench hub`](./reference/commands.md#bench-hub) and `bench run --source-env`).
 
 ## Versions
 
-These pages document BenchFlow 0.9.1, and their outputs come from runs on it. A page that needs the 0.10.0rc1 prerelease says so in its first line, its outputs come from 0.10.0rc1, and the sidebar tags it `0.10`. A section that needs it ends its heading with "(0.10)". [What's in 0.10.0rc1](./versions/0.10.md) lists them all.
+These pages document BenchFlow 0.9.2, the current release. 0.9.2 is 0.9.1 with five grading-integrity fixes and nothing else ([Changelog](./versions/changelog.md)). Outputs from runs on 0.9.1 say so, and hold for 0.9.2 unless a task's grading meets one of those fixes. Commands that download BenchFlow's example files name the repository's `main` branch in this Markdown. On the published site they fetch from `v0.10.0rc3` instead, the 0.10.0rc3 release tag, which holds these pages and their example files, so a page always runs against the files it was written with. The repository's Markdown and preview builds keep `main`. A page that needs 0.10.0rc3 says so in its first line, and the sidebar tags it `0.10`; it's on PyPI as a pre-release ([Install](./start/install.md#install-the-010-prerelease)). A section that needs it ends its heading with "(0.10)". [What's in 0.10.0rc3](./versions/0.10.md) lists them all.
 
 ## For coding agents
 

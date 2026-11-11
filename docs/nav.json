@@ -1,6 +1,6 @@
 {
-  "stable": "0.9.1",
-  "prerelease": "0.10.0rc1",
+  "stable": "0.9.2",
+  "prerelease": "0.10.0rc3",
   "sections": [
     {
       "id": "start",
@@ -37,7 +37,7 @@
         {
           "path": "start/why-benchflow",
           "title": "Why BenchFlow",
-          "job": "See what an agent evaluation needs beyond a score, from Han-chung Lee's posts, and which part of BenchFlow answers each need.",
+          "job": "See what each rollout records, what BenchFlow decides from that record, and where it stops, against Han-chung Lee's posts.",
           "since": null,
           "kind": "guide"
         }
@@ -174,7 +174,7 @@
         {
           "path": "tasks/task-format",
           "title": "Task format",
-          "job": "The files of a task, what each is for, and which one wins when two exist.",
+          "job": "The files of a task, what each is for, and the task.toml layout BenchFlow also reads; where both forms exist, they must match.",
           "since": null,
           "kind": "reference"
         },
@@ -201,15 +201,22 @@
         },
         {
           "path": "tasks/rubric-review",
-          "title": "Rubric review (LLM judge)",
-          "job": "Grade the work a test can't check with a weighted rubric and a reviewer agent, or grade an answer with a model alone, and read the verdicts.",
+          "title": "Rubric review",
+          "job": "Grade the work a test can't check, such as the method behind an answer, with a weighted rubric and a reviewer agent, and read its verdicts.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
+          "path": "tasks/llm-judge",
+          "title": "LLM judge",
+          "job": "Grade what no script can check, a piece of writing or a web page, with a model and criteria you write, and know what the judge records.",
           "since": null,
           "kind": "guide"
         },
         {
           "path": "tasks/human-preferences",
           "title": "Human preferences",
-          "job": "Grade design work by people's blind pairwise votes and rubric scores, then rank the agents.",
+          "job": "Judge two outputs at a time, blind, live and with reasons, by a person or a model, then rank the agents with intervals.",
           "since": "0.10",
           "kind": "tutorial"
         },
@@ -310,16 +317,9 @@
           "kind": "guide"
         },
         {
-          "path": "train/formats",
-          "title": "Trajectory and rollout formats",
-          "job": "The files a trial's trajectory and rollout are written in, their schema versions, and which one to read for what.",
-          "since": null,
-          "kind": "reference"
-        },
-        {
           "path": "train/export",
           "title": "Export training data",
-          "job": "Turn finished runs into JSONL rows a trainer reads, and check them before training.",
+          "job": "Turn finished trials into rows a trainer reads, check the rows, and know each file a trial writes for trainers and other tools, with its schema.",
           "since": null,
           "kind": "guide"
         },
@@ -339,13 +339,13 @@
         {
           "path": "versions/upgrade-from-0.7",
           "title": "Upgrade from 0.7",
-          "job": "Move an install and a project from 0.7.x to 0.9.1, and go back if you need to.",
+          "job": "Move an install and a project from 0.7.x to 0.9.2, and go back if you need to.",
           "since": null,
           "kind": "guide"
         },
         {
           "path": "versions/0.10",
-          "title": "What's in 0.10.0rc1",
+          "title": "What's in 0.10.0rc3",
           "job": "The prerelease's features, how to install it, and what may still change.",
           "since": "0.10",
           "kind": "guide"

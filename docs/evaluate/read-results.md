@@ -16,7 +16,7 @@ Artifacts: jobs/2026-11-04__16-43-38
 
 `Score` counts passed trials; `mean reward` averages the rewards, which differs when a task gives partial credit. `Outcomes` splits trials that were scored from those that weren't ([When a trial fails](./failed-trials.md)).
 
-Later 0.10 builds count every figure by one [scoring rule](../reference/scoring-rule.md), `benchflow.score.v1`: every finished trial is in n, and only a scored pass counts 1, so an error or a trial with no score counts 0. Under the `Score` they print its 95% interval, over tasks, and who ended the trials with no score (the model provider, or BenchFlow's time limits). They warn when a task has fewer than 3 trials, and when more than 5% of the trials errored, timed out or met a rate limit. `Outcomes` and `bench results` name the trials with no score in the same words: `1 unscored (1 verifier error), 2 errored (1 with no verdict)`.
+0.10.0rc2 counts every figure by one [scoring rule](../reference/scoring-rule.md), `benchflow.score.v1`: every finished trial is in n, and only a scored pass counts 1, so an error or a trial with no score counts 0. Under the `Score` they print its 95% interval, over tasks, and who ended the trials with no score (the model provider, or BenchFlow's time limits). They warn when a task has fewer than 3 trials, and when more than 5% of the trials errored, timed out or met a rate limit. `Outcomes` and `bench results` name the trials with no score in the same words: `1 unscored (1 verifier error), 2 errored (1 with no verdict)`.
 
 A folder whose trials ran more than one setting gets no single score. The settings are the agent and its harness version, the model that served the calls, their route, the effort they carried, the task set and the BenchFlow version. Each setting gets its own line with its own score and interval, and a warning names what differs (`mixed settings: ...`). Runs that differ only in effort are never pooled.
 
@@ -37,7 +37,7 @@ jobs/no-skills/claude-agent-acp/trial-01/2026-11-04__17-52-13 (evaluation): 2/3 
 └────────────────────────────────────────────┴────────┴───────────┴────────┴─────────┴──────────────────┴────────────────────────┘
 ```
 
-Two columns describe each trial. **Exec** says how the agent's turn ended: `completed`, `timed_out`, or an error. **Assess** says whether the verifier scored the result: `scored`; `error` when the verifier itself failed, as a verifier sandbox that never started; or `unscored` when no score came back for another reason. In 0.10.0rc1 the run's own summary counts both of the last two as unscored. In later 0.10 builds the first line counts the trials with no score the way the run's summary does, `0 unscored, 0 errored` here: unscored when the verifier gave none, errored when the run stopped before a verdict. **Control** marks the control runs, `oracle` and `empty` (the `nop` agent), which the totals leave out unless you pass `--include-controls`. The crystallographic trial ran out of time, and the verifier still scored what it left: 0. `bench results` on a folder of jobs lists them; on two jobs, it compares them task by task ([Compare runs](../audit/compare-runs.md)).
+Two columns describe each trial. **Exec** says how the agent's turn ended: `completed`, `timed_out`, or an error. **Assess** says whether the verifier scored the result: `scored`; `error` when the verifier itself failed, as a verifier sandbox that never started; or `unscored` when no score came back for another reason. In 0.10.0rc1 the run's own summary counts both of the last two as unscored. In 0.10.0rc2 the first line counts the trials with no score the way the run's summary does, `0 unscored, 0 errored` here: unscored when the verifier gave none, errored when the run stopped before a verdict. **Control** marks the control runs, `oracle` and `empty` (the `nop` agent), which the totals leave out unless you pass `--include-controls`. The crystallographic trial ran out of time, and the verifier still scored what it left: 0. `bench results` on a folder of jobs lists them; on two jobs, it compares them task by task ([Compare runs](../audit/compare-runs.md)).
 
 ## Where the reward is
 
@@ -65,7 +65,7 @@ The job's `summary.json` holds the counts for the whole job, and `results.jsonl`
 | `agent/` | the agent's own log |
 | `verifier/test-stdout.txt` | what the tests printed |
 
-`bench view <job or trial folder>` shows the same in a browser: the conversation, each tool call with its output, and the verifier's result. [Trajectory and rollout formats](../train/formats.md) describes each file.
+`bench view <job or trial folder>` shows the same in a browser, at the `localhost` address it prints (the same page at `127.0.0.1` is refused): the conversation, each tool call with its output, and the verifier's result. [Trajectory and rollout formats](../train/export.md#trajectory-and-rollout-formats) describes each file.
 
 ## Tokens, cost and time
 
@@ -95,8 +95,8 @@ The folder of the [Quick start](../start/quick-start.md#on-another-provider)'s C
 | `trajectory/provider_requests.jsonl` | the proxy's timing events for each request: its start, the upstream call's start and end, the response |
 | `verifier/` | what the test printed (`test-stdout.txt`), the reward it wrote (`reward.txt`), and its own report when it writes one (`ctrf.json` here) |
 | `rewards.jsonl` | each reward event; here one, the verifier's final reward |
-| `results.jsonl` | the trial as one row of prompt and completion |
-| `trainer/` | the trial for training: ADP, ATIF and verifiers-style rows ([Trajectory and rollout formats](../train/formats.md)) |
+| `results.jsonl` | the trial as one row of prompt and completion (the job folder's own `results.jsonl` has one line per trial) |
+| `trainer/` | the trial for training: ADP, ATIF and verifiers-style rows ([Trajectory and rollout formats](../train/export.md#trajectory-and-rollout-formats)) |
 | `artifacts/`, `artifacts-manifest.json` | the files the task declares as artifacts, collected after the agent's turn, and their manifest |
 | `cloud-metadata.json`, `firewall-power.json`, `locked-system-path.json`, `kill-before-grading.json`, `trust-state.json` | the protections BenchFlow set up and what each found: the cloud metadata block, whether anything in the sandbox could take the firewall, whether the folders on `PATH` are root's alone, the processes it stopped before grading, and the trial's trust record |
 

@@ -9,11 +9,11 @@ The verifier scores a trial. After the agent stops, BenchFlow copies the task's 
 | `verifier/test.sh` | a script can check the answer: a file, a value, a command's output | no model | [How a verifier scores](#how-a-verifier-scores) |
 | pytest, as `$BENCHFLOW_PYTEST` | the checks are pytest tests | no model | [Run pytest in a test](#run-pytest-in-a-test) |
 | A rubric review, `verifier/rubric.json` | a right-looking answer can hide a wrong method, so someone has to read the work | a reviewer agent and model, on every run | [Rubric review](./rubric-review.md) |
-| A model alone, an `llm-judge` strategy in `verifier/verifier.md` | no script can check the answer, such as a poem, and the files the agent leaves are all there is to grade | a model, with its key in the task's `verifier.env` | [Grade with a model, no test script](./rubric-review.md#grade-with-a-model-no-test-script) |
-| Human preferences (0.10) | quality is a judgement call (a design, a piece of writing), made in blind pairs | raters; 0.10.0rc1 | [Human preferences](./human-preferences.md) |
+| A model alone, an `llm-judge` strategy in `verifier/verifier.md` | no script can check the answer, such as a poem, and the files the agent leaves are all there is to grade | a model, with its key in the task's `verifier.env` | [Grade with a model, no test script](./llm-judge.md) |
+| Human preferences (0.10) | quality is a judgement call (a design, a piece of writing), made in blind pairs | raters; 0.10.0rc2 | [Human preferences](./human-preferences.md) |
 | The verifier in its own sandbox | the test shouldn't share a machine with what the agent left running | the task's artifacts declared | [Run the verifier in its own sandbox](#run-the-verifier-in-its-own-sandbox) |
 
-`bench new` also writes a verifier document (`verifier/verifier.md` and `verifier/rubrics/`) that combines several checks into one weighted reward. Combining checks isn't covered in these guides, and [Write a task](./write-a-task.md#scaffold-it) removes the document. A verifier document can also hand the grading to a model, with no test ([Grade with a model, no test script](./rubric-review.md#grade-with-a-model-no-test-script)); 0.9.1 refuses the `verifier.type: llm-judge` setting in `task.md`.
+`bench new` also writes a verifier document (`verifier/verifier.md` and `verifier/rubrics/`) that combines several checks into one weighted reward. Combining checks isn't covered in these guides, and [Write a task](./write-a-task.md#scaffold-it) removes the document. A verifier document can also hand the grading to a model, with no test ([Grade with a model, no test script](./llm-judge.md)); 0.9.2 refuses the `verifier.type: llm-judge` setting in `task.md`.
 
 ## How a verifier scores
 
@@ -28,7 +28,7 @@ These rules decide the reward:
 - Before `test.sh` runs, BenchFlow deletes any `reward.txt` or `reward.json` already there, so an agent can't leave a reward behind.
 - A reward the script wrote counts, whatever its exit code. A script that exits with an error and writes nothing scores 0, with a warning: `Verifier scored 0: verifier exited with rc=1; no reward file found at ...`. A script that runs past `verifier.timeout_sec` is stopped and scores 0 the same way (`Verifier scored 0: verifier timed out after 10.0s`). Either way the trial counts in the score, as a failure, and what the script printed is in the trial's `verifier/test-stdout.txt`.
 - `reward.json` holds the reward and any other scores: `{"reward": 1.0, "precision": 0.8}`. Every number in it is a score held to the reward range, so a detail like `"seed": 3` scores the trial 0; write details that aren't scores to `reward-details.json`. A `reward.txt` beside a `reward.json` gives the reward, and the JSON's details that aren't numbers are kept, not scored.
-- The reward is 0.0 to 1.0. A task can widen that with `verifier.reward_range`, for example `[-1.0, 1.0]` to score a deliberate violation below doing nothing; it can't narrow it. A trial passes at 1.0.
+- The reward is 0.0 to 1.0. A task can widen that with `verifier.reward_range`, for example `[-1.0, 1.0]` to score a deliberate violation below doing nothing; it can't narrow it. A trial passes at 1.0; with a [rubric review](./rubric-review.md#write-the-rubric), it passes when its test and every blocker pass, and its reward is then the rubric's score, which can be below 1.
 
 ## Pass or fail
 
@@ -124,7 +124,7 @@ The separate sandbox gets the workspace and the files the task declares under `a
 
 ## When the verifier can't run
 
-A test that crashes before writing a reward, runs past its time limit, or writes a reward that isn't a number in range scores 0 and counts as a failure, with a `Verifier scored 0:` warning; [When a trial fails](../evaluate/failed-trials.md#when-the-test-itself-fails) has each case's warning. A reward the test did write, such as the 0.67 above, counts as written. A trial ends **unscored** only when nothing was assessed: BenchFlow couldn't run the verifier, or its sandbox failed. Such a trial has no reward, and the summary counts it apart from failures; the reason is in `result.json` under `verifier_error`, with a category in `verifier_error_category`. A Terminal-Bench 4.1 task whose artifacts couldn't be copied to its separate verifier ends like this:
+On 0.9.2, a test that crashes before writing a reward, runs past its time limit, or writes a reward that isn't a number in range scores 0 and counts as a failure, with a `Verifier scored 0:` warning; 0.10.0rc2 records a missing or unusable reward as a verifier error instead (`verifier wrote no usable reward`), still a failure in every score, and a number out of range still scores 0; [When a trial fails](../evaluate/failed-trials.md#when-the-test-itself-fails) has each case's warning. A reward the test did write, such as the 0.67 above, counts as written. A trial ends **unscored** only when nothing was assessed: BenchFlow couldn't run the verifier, or its sandbox failed. Such a trial has no reward, and the summary counts it apart from failures; the reason is in `result.json` under `verifier_error`, with a category in `verifier_error_category`. A Terminal-Bench 4.1 task whose artifacts couldn't be copied to its separate verifier, on 0.9.1 and 0.9.2, ends like this:
 
 ```text
 [ERR] interleaved-vigenere (tools=0) (separate verifier transfer failed: artifact…)

@@ -3,15 +3,15 @@
 - ``docs/reference/commands.md``: every ``bench`` command, with its arguments
   and options, from the live Typer app. The options ``--help`` leaves out have
   a table of their own, the commands ``bench --help`` hides are listed at the
-  end, and a command or option the 0.9.1 release did not have
-  (``tools/cli_baseline_0.9.1.json``) is labelled ``(0.10)`` when 0.10.0rc1
-  has it (``tools/cli_baseline_0.10.0rc1.json``) and ``(unreleased)`` when no
+  end, and a command or option the 0.9.2 release did not have
+  (``tools/cli_baseline_0.9.2.json``) is labelled ``(0.10)`` when 0.10.0rc3
+  has it (``tools/cli_baseline_0.10.0rc3.json``) and ``(unreleased)`` when no
   release has it yet.
 - ``docs/reference/python.md``: every name in ``benchflow.__all__``, with its
   signature (or fields) and the first paragraph of its docstring. A name,
-  field or argument the 0.9.1 release did not have
-  (``tools/reference_baseline_0.9.1.json``) is labelled ``(0.10)`` or
-  ``(unreleased)`` the same way (``tools/reference_baseline_0.10.0rc1.json``),
+  field or argument the 0.9.2 release did not have
+  (``tools/reference_baseline_0.9.2.json``) is labelled ``(0.10)`` or
+  ``(unreleased)`` the same way (``tools/reference_baseline_0.10.0rc3.json``),
   here and on the next two pages.
 - ``docs/reference/cli-python.md``: the tables of ``benchflow.cli_parity``,
   each flag with the Python that does the same.
@@ -35,20 +35,20 @@ from, then regenerate on a build VM with the test environment and read
 
 ``--dump-inventory PATH`` writes every command (hidden ones included) and the
 names of its options, as JSON, for the CLI the running interpreter imports.
-Run with a release's own environment, it makes the baseline the labels come
-from::
+Run with a release's own environment (a venv with that release installed from
+PyPI with its constraints file), it makes the baseline the labels come from::
 
-    /path/to/0.9.1/.venv/bin/python tools/docs_reference.py \\
-        --dump-inventory tools/cli_baseline_0.9.1.json
+    /path/to/0.9.2/venv/bin/python tools/docs_reference.py \\
+        --dump-inventory tools/cli_baseline_0.9.2.json
 
 ``--dump-names PATH --schemas DIR`` does the same for the Python and files
 pages: the public names with their fields or arguments, the task.md, run
 config and job config keys, and the fields of the schema files in ``DIR``
 (that release's ``docs/reference/schemas``)::
 
-    /path/to/0.9.1/.venv/bin/python tools/docs_reference.py \\
-        --dump-names tools/reference_baseline_0.9.1.json \\
-        --schemas /path/to/0.9.1/docs/reference/schemas
+    /path/to/0.9.2/venv/bin/python tools/docs_reference.py \\
+        --dump-names tools/reference_baseline_0.9.2.json \\
+        --schemas /path/to/v0.9.2-checkout/docs/reference/schemas
 """
 
 from __future__ import annotations
@@ -92,19 +92,19 @@ CHANGELOG = REPO / "CHANGELOG.md"
 REDIRECTS = REPO / "docs" / "redirects.json"
 # The commands and options of the last release, and the label of what is new
 # since. Remake the file with --dump-inventory from that release's tree.
-BASELINE = REPO / "tools" / "cli_baseline_0.9.1.json"
-BASELINE_RELEASE = "0.9.1"
+BASELINE = REPO / "tools" / "cli_baseline_0.9.2.json"
+BASELINE_RELEASE = "0.9.2"
 NEW_LABEL = "0.10"
 # The prerelease the NEW_LABEL items shipped in: what it lacks too is in no
 # release yet, and is labelled NEXT_LABEL instead.
-PRE_BASELINE = REPO / "tools" / "cli_baseline_0.10.0rc1.json"
-PRE_RELEASE = "0.10.0rc1"
+PRE_BASELINE = REPO / "tools" / "cli_baseline_0.10.0rc3.json"
+PRE_RELEASE = "0.10.0rc3"
 NEXT_LABEL = "unreleased"
 # The same release's public Python names and their fields, its task.md and
 # run config keys, and its schema files' fields: what the Python and files
 # pages list beyond them is labelled too. Remake it with --dump-names.
-NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.9.1.json"
-PRE_NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.10.0rc1.json"
+NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.9.2.json"
+PRE_NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.10.0rc3.json"
 _SCHEMAS_FROM = "_BENCHFLOW_DOCS_REFERENCE_SCHEMAS"
 REGENERATE = "uv run python tools/docs_reference.py --write"
 _CHILD = "_BENCHFLOW_DOCS_REFERENCE_CHILD"
@@ -229,24 +229,23 @@ def inventory() -> dict[str, list[str]]:
 
 # Options the baseline release has but that do more since; said in the row, since
 # the option itself is not new. Found by comparing every option's help in 0.9.1
-# and 0.10.0rc1 (the others that changed only say the same thing in other words),
-# plus the train formats added after 0.10.0rc1.
+# and 0.10.0rc1 (the others that changed only say the same thing in other words;
+# 0.9.2's commands and options are 0.9.1's), then 0.9.2's with 0.10.0rc2's.
 _CHANGED_SINCE = {
-    ("bench run", "--dry-run"): "In 0.9.1 it prints the plan only, with no run card.",
+    ("bench run", "--dry-run"): "In 0.9.2 it prints the plan only, with no run card.",
     (
         "bench eval run",
         "--dry-run",
-    ): "In 0.9.1 it prints the plan only, with no run card.",
+    ): "In 0.9.2 it prints the plan only, with no run card.",
     (
         "bench eval create",
         "--dry-run",
-    ): "In 0.9.1 it prints the plan only, with no run card.",
+    ): "In 0.9.2 it prints the plan only, with no run card.",
     ("bench train convert", "--format"): (
-        "0.9.1 and 0.10.0rc1 write prime-sft, trl-sft and branch-tree; verl-sft, "
-        "skyrl-sft and openenv-episodes are in no release yet."
+        "0.9.2 writes prime-sft, trl-sft and branch-tree only."
     ),
     ("bench train validate", "--format"): (
-        "0.9.1 and 0.10.0rc1 check prime-sft, trl-sft and branch-tree rows only."
+        "0.9.2 and 0.10.0rc2 check prime-sft, trl-sft and branch-tree rows only."
     ),
 }
 
@@ -257,6 +256,22 @@ def _tier(in_release: bool, in_prerelease: bool) -> str:
     if in_release:
         return ""
     return f" ({NEW_LABEL})" if in_prerelease else f" ({NEXT_LABEL})"
+
+
+# Defaults the stable release has that the 0.10 line changed (0.10.0rc2 has the new ones): (public name,
+# field or argument) -> the stable release's default.
+_RELEASE_DEFAULTS = {
+    ("JudgeConfig", "model"): "claude-sonnet-4-6",
+    ("LLMJudgeRewardFunc", "model"): "claude-sonnet-4-6",
+}
+
+
+def _release_default_lines(name: str, params) -> list[str]:
+    return [
+        f"In {BASELINE_RELEASE}, `{p}` defaults to `{_RELEASE_DEFAULTS[name, p]}`."
+        for p in params
+        if (name, p) in _RELEASE_DEFAULTS
+    ]
 
 
 def _new_arguments(since: _Since, name: str, params) -> list[str]:
@@ -491,6 +506,14 @@ def _commands_page() -> str:
     shown = [(path, command) for path, command, hidden in entries if not hidden]
     hidden_commands = [(path, command) for path, command, hidden in entries if hidden]
     heading = {path: _command_name(path) + labels.command(path) for path, _ in shown}
+    # Commands no release has go after the released ones, under a heading of their own.
+    unreleased = {
+        path for path, _ in shown if labels.command(path) == f" ({NEXT_LABEL})"
+    }
+    shown = [e for e in shown if e[0] not in unreleased] + [
+        e for e in shown if e[0] in unreleased
+    ]
+    unreleased_section = "Commands in no release yet"
     hidden_section = "Commands hidden from `bench --help`"
     out = [
         "# Commands",
@@ -500,7 +523,7 @@ def _commands_page() -> str:
         f"A command or flag new since {BASELINE_RELEASE} has `({NEW_LABEL})` after its "
         f"name when {PRE_RELEASE} has it, or `({NEXT_LABEL})` when no release has it yet; the options `--help` leaves out have a table of their own under their "
         f"command, and [the commands `bench --help` hides](#{_slug(hidden_section)}) come last. "
-        "Which options `--help` leaves out follows 0.10.0rc1: 0.9.1's `bench run --help` also leaves out "
+        f"Which options `--help` leaves out follows {PRE_RELEASE}: 0.9.2's `bench run --help` also leaves out "
         "`--trials`, `--max-cost-usd`, `--max-tokens` and `--integrity`, which its `--help-all` lists. "
         "To see the commands at work, start with the [Quick start](../start/quick-start.md) "
         "and [Run a benchmark](../evaluate/run-a-benchmark.md); a run config's keys are in "
@@ -513,13 +536,27 @@ def _commands_page() -> str:
         "|---|---|",
     ]
     for path, command in shown:
-        if not path:
+        if not path or path in unreleased:
             continue
         out.append(
             f"| [`{_command_name(path)}`](#{_slug(heading[path])}){labels.command(path)} "
             f"| {_short_help(command)} |"
         )
+    if unreleased:
+        out += [
+            "",
+            f"The [commands in no release yet](#{_slug(unreleased_section)}) are listed after these.",
+        ]
+    first_unreleased = next((path for path, _ in shown if path in unreleased), None)
     for path, command in shown:
+        if path == first_unreleased:
+            out += [
+                "",
+                f"## {unreleased_section}",
+                "",
+                f"These commands are on the main line after {PRE_RELEASE}: neither {BASELINE_RELEASE} "
+                f"nor {PRE_RELEASE} has them, and they can change before a release.",
+            ]
         out += ["", f"## {heading[path]}", ""]
         if getattr(command, "deprecated", False):
             out += ["Deprecated: still runs, and prints which command replaces it.", ""]
@@ -782,7 +819,13 @@ def _python_page() -> str:
             if rows:
                 out += ["", "| Field | Type | Default |", "|---|---|---|"]
                 out += [
-                    f"| `{n}`{since.python(name, n)} | {_code(_clean(t))} | {_code(_clean(d))} |"
+                    f"| `{n}`{since.python(name, n)} | {_code(_clean(t))} | {_code(_clean(d))}"
+                    + (
+                        f" ({BASELINE_RELEASE}: `{_RELEASE_DEFAULTS[name, n]}`)"
+                        if (name, n) in _RELEASE_DEFAULTS
+                        else ""
+                    )
+                    + " |"
                     for n, t, d in rows
                 ]
             elif not issubclass(cls, BaseException):
@@ -793,6 +836,9 @@ def _python_page() -> str:
                 if signature is not None:
                     out += ["", "```python", _clean(f"bf.{name}{signature}"), "```"]
                     out += _new_arguments(since, name, signature.parameters)
+                    notes = _release_default_lines(name, signature.parameters)
+                    if notes:
+                        out += ["", " ".join(notes)]
             members = _methods(cls)
             if members:
                 out += [""]
@@ -1060,12 +1106,19 @@ def _section_heading(path: str) -> str:
 
 
 # What a release reads but does not run: said beside the key, since the
-# key itself is not new. Checked by running a multi-step task on 0.9.1.
+# key itself is not new. Checked by running a multi-step task on 0.9.2 and
+# 0.10.0rc2, and by checking a task.md that sets `verifier.type` on 0.9.2.
 _RUNS_FROM = {
-    ("", "steps"): "0.9.1 reads this key but refuses to run a task that has it "
-    "(`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc1.",
+    ("", "steps"): "0.9.2 reads this key but refuses to run a task that has it "
+    "(`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc2.",
     ("", "multi_step_reward_strategy"): "Used only by a task with `steps`, which "
-    "runs on 0.10.0rc1.",
+    "runs on 0.10.0rc2.",
+    ("verifier", "type"): "In `task.md`, 0.9.2's `bench check` and `bench run` refuse "
+    "`llm-judge` (no runnable verifier entrypoint); a verifier document grades with a model "
+    "instead ([LLM judge](../tasks/llm-judge.md)).",
+    ("verifier", "judge"): "Read only with `type: llm-judge`, which 0.9.2 refuses in "
+    "`task.md` ([LLM judge](../tasks/llm-judge.md)).",
+    ("verifier.judge", "model"): "0.9.2 defaults to `claude-sonnet-4-6`.",
 }
 
 
@@ -1725,14 +1778,127 @@ def _mdx_safe(text: str, page: Path) -> str:
     return "\n".join(out)
 
 
+# The [0.10.0rc1] section's entries at the commit the 0.10.0rc1 wheel was built from (bold titles, one a line);
+# the page marks the section's other entries, which were added after that wheel.
+RC1_ENTRIES = REPO / "tools" / "changelog_0.10.0rc1_entries.txt"
+
+
+def _section_above_rc1(lines: list[str]) -> tuple[int | None, str]:
+    """The section shown right above [0.10.0rc1]: its heading's line and its name, or (None, "Unreleased")
+    when [0.10.0rc1] is the newest section."""
+    start = next(i for i, line in enumerate(lines) if line.startswith("## [0.10.0rc1]"))
+    above = next(
+        (i for i in range(start - 1, -1, -1) if lines[i].startswith("## [")), None
+    )
+    if above is None:
+        return None, "Unreleased"
+    return above, lines[above][len("## [") :].split("]", 1)[0]
+
+
+def _move_after_rc1(body: str) -> str:
+    """Show the [0.10.0rc1] entries the wheel's own changelog didn't have in the section above it, each under
+    its subsection's heading: [Unreleased], or the next release candidate once CHANGELOG.md has one. The
+    wheel's entries stay where they are. An entry's indented lines move with it."""
+    known = [
+        line.strip()
+        for line in RC1_ENTRIES.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+
+    def after(line: str) -> bool:
+        m = re.match(r"^- \*\*(.+?)\*\*", line)
+        return bool(m) and not any(
+            difflib.SequenceMatcher(None, m.group(1).strip(), k).ratio() > 0.85
+            for k in known
+        )
+
+    lines = body.split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith("## [0.10.0rc1]"))
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    kept: list[str] = []
+    moved: dict[str, list[str]] = {}
+    heading = ""
+    i = start
+    while i < end:
+        line = lines[i]
+        if line.startswith("### "):
+            heading = line
+        if line.startswith("- ") and after(line):
+            block = [line]
+            i += 1
+            while i < end and lines[i].startswith("  "):
+                block.append(lines[i])
+                i += 1
+            moved.setdefault(heading, []).extend(block)
+            continue
+        kept.append(line)
+        i += 1
+    if not moved:
+        return body
+    above, name = _section_above_rc1(lines)
+    count = len([b for blk in moved.values() for b in blk if b.startswith("- ")])
+    if name == "Unreleased":
+        note = [
+            "",
+            f"{count} changes on the main line after the 0.10.0rc1 wheel, which CHANGELOG.md lists under "
+            "`[0.10.0rc1]`: no release has them yet.",
+        ]
+        for head, block in moved.items():
+            note += ["", head or "### Other", "", *block]
+    else:
+        # Under a release candidate's own sub-headings, the moved entries get one heading of their own.
+        note = [
+            "",
+            "### After the 0.10.0rc1 wheel",
+            "",
+            f"{count} more changes came after the 0.10.0rc1 wheel, though CHANGELOG.md lists them under "
+            "`[0.10.0rc1]`.",
+        ]
+        for head, block in moved.items():
+            note += ["", "#" + (head or "### Other"), "", *block]
+    # Drop sub-headings the move left empty in the rc1 section.
+    out_section: list[str] = []
+    for j, line in enumerate(kept):
+        if line.startswith("### "):
+            rest = kept[j + 1 :]
+            nxt = next(
+                (k for k, l2 in enumerate(rest) if l2.startswith("### ")), len(rest)
+            )
+            if not any(l2.strip() for l2 in rest[:nxt]):
+                continue
+        out_section.append(line)
+    if above is None:
+        # No section above [0.10.0rc1]: the moved entries get an [Unreleased] of their own.
+        return "\n".join(
+            [*lines[:start], "## [Unreleased]", *note, "", *out_section, *lines[end:]]
+        )
+    # The moved entries close the section above, after its own entries.
+    before = lines[:start]
+    while before and not before[-1].strip():
+        before.pop()
+    return "\n".join(before + note + [""] + out_section + lines[end:])
+
+
 def _changelog_page() -> str:
     text = CHANGELOG.read_text(encoding="utf-8")
     lines = text.split("\n")
     assert lines[0].startswith("# "), "CHANGELOG.md starts with its title"
-    body = "\n".join(lines[1:]).strip("\n")
+    body = _move_after_rc1("\n".join(lines[1:]).strip("\n"))
+    _, above = _section_above_rc1(lines)
+    where = (
+        "under `[Unreleased]`, as no release has them yet"
+        if above == "Unreleased"
+        else f"at the end of `[{above}]`"
+    )
     return (
         "# Changelog\n\n"
-        "What changed in each BenchFlow release.\n\n"
+        f"What changed in each BenchFlow release: {BASELINE_RELEASE} is the current release, and "
+        f"{PRE_RELEASE} the current release candidate. Under `[0.10.0rc1]` are the changes its wheel has; the "
+        f"ones CHANGELOG.md also lists there but that came after the wheel are {where}. "
+        f"[What's in {PRE_RELEASE}](./0.10.md) walks through what 0.10 adds.\n\n"
         "<!-- This page is generated from the repository's CHANGELOG.md by "
         "tools/docs_reference.py; to change it, change that file, then run "
         f"`{REGENERATE}`. -->\n\n" + _mdx_safe(body, PAGES["changelog"]) + "\n"

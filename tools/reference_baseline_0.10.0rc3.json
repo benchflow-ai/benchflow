@@ -1,6 +1,7 @@
 {
   "python": {
     "ACPClient": [
+      "session_meta",
       "subagent_transcript",
       "transport",
       "typed_failures"
@@ -95,6 +96,7 @@
       "mismatches",
       "notes",
       "rows",
+      "scoring",
       "solve_rates_a",
       "solve_rates_b",
       "summary",
@@ -152,6 +154,7 @@
       "mean_reward",
       "mean_reward_caveat",
       "mean_reward_scored_only",
+      "outcomes",
       "passed",
       "scored",
       "unscored"
@@ -193,6 +196,7 @@
       "on_result",
       "on_task_start",
       "preflight",
+      "restart_changed",
       "tasks_dir"
     ],
     "EvaluationConfig": [
@@ -201,6 +205,7 @@
       "agent_defaulted",
       "agent_env",
       "agent_idle_timeout",
+      "agent_idle_timeout_given",
       "allow_cloud_metadata",
       "base_image_override",
       "budget",
@@ -227,6 +232,7 @@
       "keep_sandbox",
       "loop_strategy",
       "model",
+      "model_given",
       "n_tasks",
       "planned_trials",
       "pre_agent_hooks",
@@ -251,6 +257,7 @@
       "skip_agent_install",
       "source_provenance",
       "timeout_multiplier",
+      "trial_budget",
       "trial_number",
       "usage_tracking",
       "verifier_sandbox",
@@ -278,9 +285,12 @@
       "ran",
       "results",
       "reused",
+      "run_checks",
+      "scoring",
       "stopped",
       "task_failures",
       "total",
+      "unusable_rewards",
       "verifier_errored"
     ],
     "ExecResult": [
@@ -330,7 +340,8 @@
       "interrupted",
       "path",
       "summary",
-      "trials"
+      "trials",
+      "unreadable"
     ],
     "JudgeConfig": [
       "files",
@@ -499,6 +510,7 @@
       "agent",
       "agent_env",
       "agent_idle_timeout",
+      "agent_idle_timeout_given",
       "allow_cloud_metadata",
       "allow_document_user",
       "artifact_skill_mode",
@@ -551,6 +563,7 @@
       "task_digest",
       "task_path",
       "timeout",
+      "trial_budget",
       "uploads",
       "usage_tracking",
       "user",
@@ -565,8 +578,10 @@
       "evolved_skills",
       "export_error",
       "finished_at",
+      "harness_versions",
       "integrity",
       "model",
+      "model_refusal",
       "n_cache_creation_tokens",
       "n_cache_read_tokens",
       "n_input_tokens",
@@ -590,6 +605,7 @@
       "total_tokens",
       "trajectory",
       "trajectory_source",
+      "trial_budget",
       "usage_details",
       "usage_source",
       "verifier_error",
@@ -710,7 +726,8 @@
       "rollout_path",
       "sequences",
       "task",
-      "token_capture"
+      "token_capture",
+      "withheld"
     ],
     "StringMatchRewardFunc": [
       "expected",
@@ -810,6 +827,10 @@
       "timing",
       "verifier"
     ],
+    "TrialBudget": [
+      "tokens",
+      "turns"
+    ],
     "Turn": [
       "prompt",
       "role"
@@ -877,6 +898,8 @@
       "concurrency",
       "path",
       "reason",
+      "review",
+      "reviewer",
       "runner",
       "sandbox",
       "tasks_dir"
@@ -903,6 +926,7 @@
       "group_size",
       "job_dir",
       "on_warning",
+      "on_withheld",
       "poll_interval",
       "timeout"
     ],
@@ -1052,6 +1076,8 @@
       "concurrency",
       "path",
       "reason",
+      "review",
+      "reviewer",
       "runner",
       "sandbox",
       "tasks_dir"
@@ -1118,6 +1144,7 @@
       "group_size",
       "job_dir",
       "on_warning",
+      "on_withheld",
       "poll_interval",
       "timeout"
     ],
@@ -1173,7 +1200,8 @@
       "progress_snapshot",
       "record_agent_timeout",
       "record_prompt_usage",
-      "record_user_prompt"
+      "record_user_prompt",
+      "stop_reason"
     ],
     "Agent": [
       "config",
@@ -1299,7 +1327,9 @@
     ],
     "EvaluationConfig": [
       "checkpoint_policy",
-      "retry_policy"
+      "idle_timeout_source",
+      "retry_policy",
+      "settle_idle_timeout"
     ],
     "EvaluationResult": [
       "planned",
@@ -1619,6 +1649,12 @@
       "to_record",
       "total_tokens"
     ],
+    "TrialBudget": [
+      "coerce",
+      "proxy_env",
+      "text",
+      "to_dict"
+    ],
     "Turn": [],
     "UsageLimitError": [
       "describe",
@@ -1667,6 +1703,8 @@
       "network_mode",
       "prompt_prefix",
       "timeout_sec",
+      "token_budget",
+      "turn_budget",
       "user"
     ],
     "agents.roles.*": [
@@ -1683,6 +1721,7 @@
     "artifacts[]": [
       "destination",
       "exclude",
+      "service",
       "source"
     ],
     "benchflow": [
@@ -1798,6 +1837,7 @@
     ],
     "verifier": [
       "allowed_hosts",
+      "collect",
       "env",
       "hardening",
       "judge",
@@ -1817,8 +1857,15 @@
       "user",
       "workspace_recovery"
     ],
+    "verifier.collect[]": [
+      "command",
+      "service",
+      "timeout_sec",
+      "user"
+    ],
     "verifier.hardening": [
-      "cleanup_conftests"
+      "cleanup_conftests",
+      "cleanup_git"
     ],
     "verifier.judge": [
       "context",
@@ -1890,6 +1937,8 @@
     "source_provenance",
     "tasks_dir",
     "timeout_multiplier",
+    "token_budget",
+    "turn_budget",
     "usage_proxy",
     "usage_proxy_advertised_base_url",
     "usage_proxy_bind_host",
@@ -2093,6 +2142,7 @@
       "rows",
       "schema_minor",
       "schema_version",
+      "scoring",
       "summary",
       "vary"
     ],
@@ -2125,10 +2175,97 @@
       "path",
       "schema_minor",
       "schema_version",
+      "scoring",
       "solve_rates",
       "summary",
       "timing_totals",
       "trials"
+    ],
+    "benchflow-model-call.v1.schema.json": [
+      "cache_read_tokens",
+      "cache_write_tokens",
+      "cost_usd",
+      "duration_ms",
+      "effort",
+      "finish_reason",
+      "http_status",
+      "index",
+      "input_tokens",
+      "max_output_tokens",
+      "model_requested",
+      "model_served",
+      "output_tokens",
+      "purpose",
+      "reasoning_tokens",
+      "refused",
+      "route",
+      "schema",
+      "source",
+      "started_at",
+      "subagent",
+      "temperature",
+      "thinking",
+      "top_p",
+      "truncated"
+    ],
+    "benchflow-model-call.v2.schema.json": [
+      "cache_read_tokens",
+      "cache_write_tokens",
+      "cost_usd",
+      "duration_ms",
+      "effort",
+      "finish_reason",
+      "http_status",
+      "index",
+      "input_tokens",
+      "max_output_tokens",
+      "model_requested",
+      "model_served",
+      "output_tokens",
+      "purpose",
+      "reasoning_tokens",
+      "refused",
+      "route",
+      "schema",
+      "seed",
+      "source",
+      "started_at",
+      "subagent",
+      "temperature",
+      "thinking",
+      "tools",
+      "top_p",
+      "truncated"
+    ],
+    "benchflow-model-calls.v1.schema.json": [
+      "agent_effort",
+      "agent_retries",
+      "calls",
+      "cost_usd",
+      "effort",
+      "finish_reasons",
+      "first_agent_tools",
+      "first_call_at",
+      "http_errors",
+      "http_status_counts",
+      "input_files",
+      "last_agent_call",
+      "max_output_tokens",
+      "model_time_ms",
+      "models_requested",
+      "models_served",
+      "purposes",
+      "refused_calls",
+      "schema",
+      "source",
+      "sources",
+      "thinking",
+      "tokens",
+      "truncated_calls",
+      "truncation_rate",
+      "upstream_attempts",
+      "upstream_errors",
+      "upstream_retries"
     ],
     "benchflow-rollout-stream.v1.schema.json": [
       "advantage",
@@ -2151,7 +2288,8 @@
       "scored",
       "sequences",
       "task",
-      "token_capture"
+      "token_capture",
+      "withheld"
     ],
     "benchflow-run-summary.v1.schema.json": [
       "budget",

@@ -81,6 +81,13 @@ def _by_rollout(rows: list[dict]) -> dict[str, dict]:
 
 
 def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
+    """Changed with whole groups: the four-rollout group is withheld whole.
+
+    A group with a dropped member is withheld from the trainer, never
+    partially passed. Before, its two scored rollouts were written with
+    advantages over the two of them. The formula is still checked on the
+    two scored rollouts alone, in a job of their own.
+    """
     job = tmp_path / "job"
     _rollout(job, "demo__00000001", reward=0.0)
     _rollout(job, "demo__00000002", reward=1.0)
@@ -90,16 +97,37 @@ def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
     rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
         job, reward_vector=True, group_advantage="grpo"
     )
+    assert rows == []
+    signal = stats.training_signal
+    (entry,) = signal["groups"]
+    assert entry["withheld"].startswith("unscored:")
+    assert "demo__00000003" in entry["withheld"]
+    assert (signal["withheld_groups"], signal["rows_withheld"]) == (1, 2)
+    members = {m["rollout"]: m for m in entry["members"]}
+    assert members["demo__00000003"]["excluded"] == "unscored"
+    assert members["demo__00000001"]["excluded"] == "group_withheld"
+    assert members["demo__00000001"]["advantage"] is None
+    assert entry["mean"] == pytest.approx(0.5)
+
+    job = tmp_path / "scored"
+    _rollout(job, "demo__00000001", reward=0.0)
+    _rollout(job, "demo__00000002", reward=1.0)
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        job, reward_vector=True, group_advantage="grpo"
+    )
     by = _by_rollout(rows)
     assert sorted(by) == ["demo__00000001", "demo__00000002"]
     std = math.sqrt(0.5)  # sample std of (0, 1)
     assert by["demo__00000002"]["advantage"] == pytest.approx(0.5 / (std + 1e-4))
     assert by["demo__00000001"]["advantage"] == pytest.approx(-0.5 / (std + 1e-4))
     group = by["demo__00000002"]["group"]
-    assert group["id"] == ("task=demo-task|agent=opencode|model=vendor/model-a|job=job")
+    assert group["id"] == (
+        "task=demo-task|agent=opencode|model=vendor/model-a|job=scored"
+    )
     assert group["by"] == ["task", "agent", "model", "job"]
     assert group["normalisation"] == "grpo"
-    assert group["rollouts"] == 4
+    assert "withheld" not in group
+    assert group["rollouts"] == 2
     assert group["scored"] == 2
     assert group["mean"] == pytest.approx(0.5)
     assert group["std"] == pytest.approx(std)
@@ -117,11 +145,10 @@ def test_two_scored_two_unscored_group(tmp_path: Path) -> None:
     signal = stats.training_signal
     assert signal["group_advantage"] == "grpo"
     assert signal["group_by"] == ["task", "agent", "model", "job"]
+    assert (signal["withheld_groups"], signal["rows_withheld"]) == (0, 0)
     (entry,) = signal["groups"]
     members = {m["rollout"]: m for m in entry["members"]}
-    assert members["demo__00000003"]["reward"] is None
-    assert members["demo__00000003"]["advantage"] is None
-    assert members["demo__00000003"]["excluded"] == "unscored"
+    assert "excluded" not in members["demo__00000002"]
     assert members["demo__00000002"]["advantage"] == pytest.approx(0.5 / (std + 1e-4))
 
     rows, _ = convert_benchflow_rollouts_to_prime_sft_rows(job, group_advantage="loo")
@@ -186,6 +213,9 @@ def test_group_by_keeps_models_apart_and_is_configurable(tmp_path: Path) -> None
 
 
 def test_min_reward_does_not_move_the_baseline(tmp_path: Path) -> None:
+    """Restored after review: advantages are computed on the whole
+    group, then ``min_reward`` filters rows. A scored member under the bar
+    keeps its reward in the baseline and does not withhold its group."""
     job = tmp_path / "job"
     _rollout(job, "lo", reward=0.0)
     _rollout(job, "hi", reward=1.0)
@@ -507,3 +537,294 @@ def test_groups_stay_inside_a_job_and_skip_retried_attempts(tmp_path: Path) -> N
     )
     (only,) = pooled.groups
     assert (only["rollouts"], only["scored"]) == (5, 5)
+
+
+def _whole_and_cut_job(job: Path) -> None:
+    """A group whose third member made no model calls (scored 0, no row),
+    and a whole group of another task.
+
+    Changed after review: the cut member used to end with an error,
+    which now keeps its group whole when it is scored (see
+    test_a_scored_member_that_ended_with_an_error_keeps_its_group_whole).
+    """
+    _rollout(job, "a", reward=1.0)
+    _rollout(job, "b", reward=0.0)
+    _rollout(job, "c", reward=0.0)
+    (job / "c" / "trajectory" / "llm_trajectory.jsonl").write_text("")
+    _rollout(job, "x", reward=1.0, task="other")
+    _rollout(job, "y", reward=0.0, task="other")
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [
+        convert_benchflow_rollouts_to_prime_sft_rows,
+        convert_benchflow_rollouts_to_trl_sft_rows,
+    ],
+    ids=["prime-sft", "trl-sft"],
+)
+def test_a_group_with_a_member_that_wrote_no_row_is_withheld_whole(
+    tmp_path: Path, convert
+) -> None:
+    """A group with a dropped member is withheld from the trainer, never
+    partially passed.
+
+    Before, a rollout that wrote no row (here: no model calls) had
+    its group's other members written with advantages whose baseline
+    counted it, so a trainer got part of the group.
+    """
+    job = tmp_path / "job"
+    _whole_and_cut_job(job)
+
+    rows, stats = convert(job, group_advantage="grpo")
+
+    assert sorted(_by_rollout(rows)) == ["x", "y"]
+    signal = stats.training_signal
+    groups = {g["key"]["task"]: g for g in signal["groups"]}
+    assert groups["demo-task"]["withheld"].startswith("no row:")
+    assert "c (no model calls recorded)" in groups["demo-task"]["withheld"]
+    assert "withheld" not in groups["other"]
+    assert signal["withheld_groups"] == 1
+    assert signal["rows_withheld"] > 0
+    assert stats.rows_written == len(rows)
+    assert stats.sources == [row["source_path"] for row in rows]
+
+
+def test_without_group_advantage_nothing_is_withheld(tmp_path: Path) -> None:
+    """Plain SFT rows have no groups to keep whole (whole groups change only grouped rows)."""
+    job = tmp_path / "job"
+    _whole_and_cut_job(job)
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(job)
+
+    assert sorted(_by_rollout(rows)) == ["a", "b", "x", "y"]
+    assert stats.training_signal is None
+
+
+def test_skyrl_rows_keep_groups_whole(tmp_path: Path) -> None:
+    """verl-sft and skyrl-sft build on the TRL rows, so they withhold the same groups."""
+    from benchflow.trajectories.export_skyrl_sft import export_skyrl_sft_jsonl
+
+    job = tmp_path / "job"
+    _whole_and_cut_job(job)
+    out = tmp_path / "skyrl" / "train.jsonl"
+
+    stats = export_skyrl_sft_jsonl(job, out, group_advantage="grpo")
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert {Path(r["source_rollout_dir"]).name for r in rows} == {"x", "y"}
+    assert stats.training_signal["withheld_groups"] == 1
+
+
+def test_cli_reports_withheld_groups(tmp_path: Path) -> None:
+    """The summary line names the withheld groups; the manifest has them."""
+    job = tmp_path / "job"
+    _whole_and_cut_job(job)
+    out, manifest = tmp_path / "out.jsonl", tmp_path / "m.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "train",
+            "convert",
+            str(job),
+            "--out",
+            str(out),
+            "--manifest",
+            str(manifest),
+            "--group-advantage",
+            "grpo",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert {r["task_name"] for r in rows} == {"other"}
+    assert "1 group withheld" in result.output
+    signal = json.loads(manifest.read_text())["training_signal"]
+    assert signal["withheld_groups"] == 1
+
+
+_CONVERTERS = pytest.mark.parametrize(
+    "convert",
+    [
+        convert_benchflow_rollouts_to_prime_sft_rows,
+        convert_benchflow_rollouts_to_trl_sft_rows,
+    ],
+    ids=["prime-sft", "trl-sft"],
+)
+
+
+def _trial_config(root: Path, task: str = "demo-task") -> None:
+    """The ``config.json`` a trial writes when it starts, before any result."""
+    (root / "config.json").write_text(
+        json.dumps(
+            {
+                "task_path": f"tasks/{task}",
+                "agent": "opencode",
+                "model": "vendor/model-a",
+            }
+        )
+    )
+
+
+def _four_and_a_whole_group(job: Path) -> None:
+    for i, reward in enumerate([1.0, 0.0, 1.0, 0.0]):
+        _trial_config(_rollout(job, f"demo__a{i}", reward=reward))
+    _rollout(job, "x", reward=1.0, task="other")
+    _rollout(job, "y", reward=0.0, task="other")
+
+
+@_CONVERTERS
+@pytest.mark.parametrize("damage", ["truncated", "missing"])
+def test_a_member_without_a_readable_result_withholds_its_group(
+    tmp_path: Path, convert, damage: str
+) -> None:
+    """The export sees a member whose result.json is cut short or missing.
+
+    Guards a review finding: a trial killed while writing its
+    result (or before) was invisible to the export, which wrote the other
+    three rows with advantages over three rewards instead of four (+0.577,
+    -1.155, +0.577 where the full group gives +-0.866), and withheld nothing.
+    """
+    job = tmp_path / "job"
+    _four_and_a_whole_group(job)
+    result = job / "demo__a3" / "result.json"
+    if damage == "truncated":
+        result.write_text('{"task_name": "demo-task", "rewa')
+    else:
+        result.unlink()
+
+    rows, stats = convert(job, group_advantage="grpo")
+
+    assert sorted(_by_rollout(rows)) == ["x", "y"]
+    signal = stats.training_signal
+    groups = {g["key"]["task"]: g for g in signal["groups"]}
+    held = groups["demo-task"]
+    assert held["withheld"].startswith("no result:")
+    assert "demo__a3" in held["withheld"]
+    assert held["rollouts"] == 4
+    assert "withheld" not in groups["other"]
+    assert signal["withheld_groups"] == 1
+
+
+def test_a_missing_result_in_an_evaluation_folder_is_a_replaced_attempt(
+    tmp_path: Path,
+) -> None:
+    """An Evaluation retried a trial whose first attempt left no result: the
+    attempt is not a sample, and the scored retry keeps the group whole."""
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "evaluation.json").write_text("{}")
+    _trial_config(_rollout(job, "demo-task__1", reward=1.0))
+    _trial_config(_rollout(job, "demo-task__2", reward=0.0, agent="other-agent"))
+    first = _rollout(job, "demo-task__0", reward=None)
+    _trial_config(first)
+    (first / "result.json").unlink()
+
+    rows, stats = convert_benchflow_rollouts_to_prime_sft_rows(
+        job, group_advantage="grpo", group_by=("task", "model")
+    )
+
+    assert sorted(_by_rollout(rows)) == ["demo-task__1", "demo-task__2"]
+    assert stats.training_signal["withheld_groups"] == 0
+
+
+def _task_package_rollout(job: Path, name: str, reward: float) -> Path:
+    """A trial in the task.toml-package runner's format: its reward under
+    ``verifier_result.rewards``, its agent and model under ``agent_info``."""
+    d = job / name
+    (d / "trajectory").mkdir(parents=True)
+    (d / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "org/demo-task",
+                "trial_name": name,
+                "agent_info": {
+                    "name": "opencode",
+                    "model_info": {"name": "model-a", "provider": "vendor"},
+                },
+                "verifier_result": {"rewards": {"reward": reward}},
+                "exception_info": None,
+            }
+        )
+    )
+    (d / "trajectory" / "llm_trajectory.jsonl").write_text(
+        "\n".join(
+            json.dumps(e) for e in (_exchange(final=False), _exchange(final=True))
+        )
+        + "\n"
+    )
+    return d
+
+
+@_CONVERTERS
+def test_task_package_results_are_scored(tmp_path: Path, convert) -> None:
+    """The signal pass reads results as the row pass does (load_rollout_result).
+
+    Guards a review finding: it read the raw file, so both rollouts
+    were unscored and their group withheld, and the export wrote no rows.
+    """
+    job = tmp_path / "job"
+    _task_package_rollout(job, "demo-task__c0", 1.0)
+    _task_package_rollout(job, "demo-task__c1", 0.0)
+
+    rows, stats = convert(job, group_advantage="grpo")
+
+    by = _by_rollout(rows)
+    assert sorted(by) == ["demo-task__c0", "demo-task__c1"]
+    assert by["demo-task__c0"]["advantage"] == pytest.approx(0.5 / (0.5**0.5 + 1e-4))
+    (group,) = stats.training_signal["groups"]
+    assert group["scored"] == 2 and "withheld" not in group
+
+    signals = rollout_training_signals(job, group_advantage="grpo")
+    assert signals.groups[0]["scored"] == 2
+
+
+@_CONVERTERS
+def test_a_scored_member_that_ended_with_an_error_keeps_its_group_whole(
+    tmp_path: Path, convert
+) -> None:
+    """A rollout that ended with an error but was scored is a whole member.
+
+    Guards a review finding: the export withheld this group while
+    the stream passed it with every member's advantage. Time-outs cluster
+    on hard tasks, so the export dropped hard tasks' groups. Its rows now
+    carry the error, so a trainer can mask them, and the advantages are the
+    stream's.
+    """
+    from benchflow.trajectories.rollout_stream import stream_rollouts
+
+    job = tmp_path / "job"
+    _rollout(job, "ok1", reward=1.0)
+    _rollout(job, "ok2", reward=0.0)
+    _rollout(
+        job, "err", reward=0.0, error="Agent prompt exceeded wall-clock budget 600s"
+    )
+
+    rows, stats = convert(job, group_advantage="grpo")
+
+    by = _by_rollout(rows)
+    assert sorted(by) == ["err", "ok1", "ok2"]
+    (group,) = stats.training_signal["groups"]
+    assert "withheld" not in group
+    assert by["err"]["group"]["error"] == "pipe_closed"
+    assert "error" not in by["ok1"]["group"]
+    streamed = {
+        r.rollout: r.advantage for r in stream_rollouts(job, follow=False, group_size=3)
+    }
+    assert {k: by[k]["advantage"] for k in by} == pytest.approx(streamed)
+    assert by["ok1"]["advantage"] == pytest.approx(1.1547, abs=1e-3)
+
+
+def test_without_group_advantage_an_errored_rollout_still_writes_no_row(
+    tmp_path: Path,
+) -> None:
+    """Plain SFT rows still leave out a rollout that ended with an error."""
+    job = tmp_path / "job"
+    _rollout(job, "ok", reward=1.0)
+    _rollout(job, "err", reward=0.0, error="agent timed out")
+
+    rows, _ = convert_benchflow_rollouts_to_prime_sft_rows(job)
+
+    assert sorted(_by_rollout(rows)) == ["ok"]

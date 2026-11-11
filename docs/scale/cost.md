@@ -2,6 +2,8 @@
 
 `-j` sets how many trials run at once, and a budget stops a job before it spends more than you meant. Use both on any run larger than a handful of trials, and watch the run's own progress lines while it goes.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`): export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)), or use `-m sonnet` with a Claude login.
+
 ## Concurrency
 
 ```bash
@@ -33,7 +35,7 @@ bench run skillsbench/tasks \
   --max-cost-usd 0.004
 ```
 
-`skillsbench/` is a clone of SkillsBench at commit f860ecf0 ([how](../evaluate/run-a-benchmark.md#run-three-tasks-three-times-each)).
+`skillsbench/` is a clone of SkillsBench at commit f860ecf0 ([how](../evaluate/run-a-benchmark.md#run-three-tasks-three-times-each)). The dollars below come from the placeholder price 0.9.1 and 0.9.2 have for DeepSeek ([Usage and telemetry](./telemetry.md#cost-and-models-without-a-price)): use them to see how a cap behaves, and DeepSeek's rate card for what a run costs.
 
 ```text
 budget reached: $0.0385 USD spent of a $0.0040 cap; stopping: no new rollouts, 0 running trial(s) cancelled
@@ -64,7 +66,7 @@ To run what the budget skipped, start a new job with a cap that fits (`--fresh`)
 
 ### Per-trial budgets (0.10)
 
-> Needs a BenchFlow 0.10 build newer than `0.10.0rc1`.
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
 
 A per-trial budget caps each trial, not the job, and it is enforced while the trial runs:
 
@@ -126,7 +128,7 @@ Each trial prints a progress line about every 45 seconds, with its tool calls so
 
 ### How busy the run is (0.10)
 
-> Needs BenchFlow `0.10.0rc1`, a prerelease: [install it](../start/install.md#install-the-010-prerelease).
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
 
 The run says how busy it is two minutes after it starts and every five minutes after, and warns when slots sit idle while tasks wait or when the agents are rarely waiting on the model:
 

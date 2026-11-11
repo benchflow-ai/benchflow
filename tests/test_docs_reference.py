@@ -2,8 +2,8 @@
 
 ``docs/reference/commands.md``, ``python.md``, ``cli-python.md``,
 ``files.md`` and ``docs/versions/changelog.md`` are written by
-``tools/docs_reference.py`` from the live CLI app (and the 0.9.1 command
-inventory in ``tools/cli_baseline_0.9.1.json``), ``benchflow.__all__``,
+``tools/docs_reference.py`` from the live CLI app (and the 0.9.2 command
+inventory in ``tools/cli_baseline_0.9.2.json``), ``benchflow.__all__``,
 ``benchflow.cli_parity``, the task and run config loaders, the schema files
 and ``CHANGELOG.md``. A branch that changes a flag, a docstring, a field or a
 schema regenerates them with the command the tool documents, and the diff
@@ -27,6 +27,8 @@ from tools.docs_reference import (
     PAGES,
     PRE_BASELINE,
     REGENERATE,
+    _Labels,
+    _move_after_rc1,
     _undash,
     diff,
     render,
@@ -79,9 +81,9 @@ def test_command_reference_covers_the_commands_the_journeys_use(
         assert f"| `{command}` |" in hidden, command
 
 
-def test_command_reference_labels_what_0_9_1_lacked(generated: dict[str, str]) -> None:
-    """A command or flag absent from the 0.9.1 inventory is labelled; one
-    0.9.1 had, hidden or not, is not."""
+def test_command_reference_labels_what_0_9_2_lacked(generated: dict[str, str]) -> None:
+    """A command or flag absent from the 0.9.2 inventory is labelled; one
+    0.9.2 had, hidden or not, is not."""
     page = generated["commands"]
     label = f" ({NEW_LABEL})"
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
@@ -92,7 +94,7 @@ def test_command_reference_labels_what_0_9_1_lacked(generated: dict[str, str]) -
     run = _section(page, "## bench run")
     assert f"| `--keep-sandbox`{label} |" in run
     assert f"| `--accept-deviations`{label} |" in run
-    # Hidden in 0.9.1's bench run, so not new.
+    # Hidden in 0.9.2's bench run, so not new.
     assert "--trials" in baseline["bench run"]
     for flag in ("--trials", "--integrity", "--max-cost-usd", "--max-tokens"):
         assert f"| `{flag}` |" in run, flag
@@ -108,18 +110,34 @@ def test_command_reference_labels_what_0_9_1_lacked(generated: dict[str, str]) -
 def test_command_reference_labels_what_no_release_has(
     generated: dict[str, str],
 ) -> None:
-    """A command 0.10.0rc1 has is labelled (0.10); one it lacks too is
+    """A command 0.10.0rc3 has is labelled (0.10); one it lacks too is
     labelled (unreleased), so the page never says a release has it."""
     page = generated["commands"]
     prerelease = json.loads(PRE_BASELINE.read_text(encoding="utf-8"))
-    assert "bench preferences" in prerelease and "bench hub push" not in prerelease
+    assert "bench preferences" in prerelease and "bench hub push" in prerelease
     assert f"\n## bench preferences ({NEW_LABEL})\n" in page
-    assert f"\n## bench hub push ({NEXT_LABEL})\n" in page
+    assert f"\n## bench hub push ({NEW_LABEL})\n" in page
     for line in page.splitlines():
         m = re.match(r"^## (bench(?: [\w-]+)*) \((.+)\)$", line)
         if m:
             assert m.group(2) in (NEW_LABEL, NEXT_LABEL), line
             assert (m.group(1) in prerelease) == (m.group(2) == NEW_LABEL), line
+
+
+def test_a_command_the_prerelease_lacks_is_labelled_unreleased() -> None:
+    """The labels against a prerelease inventory that lacks a command: what the
+    release has gets none, what the prerelease added gets (0.10), and what
+    neither has gets (unreleased), as do a flag added to a new command after the
+    prerelease shipped that command."""
+    labels = _Labels(
+        {"bench run": ["--agent"]},
+        {"bench run": ["--agent", "--keep-sandbox"], "bench preferences": []},
+    )
+    assert labels.command(("run",)) == ""
+    assert labels.command(("preferences",)) == f" ({NEW_LABEL})"
+    assert labels.command(("hub", "push")) == f" ({NEXT_LABEL})"
+    assert labels.flag("bench run", {"--keep-sandbox"}) == f" ({NEW_LABEL})"
+    assert labels.flag("bench run", {"--restart-changed"}) == f" ({NEXT_LABEL})"
 
 
 def test_command_reference_lists_what_help_all_adds(generated: dict[str, str]) -> None:
@@ -153,7 +171,7 @@ def test_files_reference_has_every_task_md_and_run_config_key(
         for name, field in TaskConfig.model_fields.items()
     ]
 
-    # A key 0.9.1 lacked has "(0.10)" or "(unreleased)" after it.
+    # A key 0.9.2 lacked has "(0.10)" or "(unreleased)" after it.
     def row(key: str) -> str:
         return rf"\n\| `{re.escape(key)}`(?: \((?:0\.10|unreleased)\))? \|"
 
@@ -172,6 +190,7 @@ def test_changelog_page_is_the_changelog(generated: dict[str, str]) -> None:
     anchor, and a link to a file the repository doesn't have becomes its
     text. Its prose is set in the docs' punctuation: no em dashes, and an
     ellipsis for three dots."""
+    # The entries the 0.10.0rc1 wheel's own changelog lacked are shown in the section above it.
     page = generated["changelog"]
     assert page.startswith("# Changelog\n\n")
     # Title, one line of intro, the maintainers' comment, then the changelog.
@@ -202,7 +221,9 @@ def test_changelog_page_is_the_changelog(generated: dict[str, str]) -> None:
         relative = Path(os.path.relpath(repo / target, folder)).as_posix()
         return f"{text}({relative}{fragment or ''})"
 
-    source = CHANGELOG.read_text(encoding="utf-8").split("\n", 1)[1].strip("\n")
+    source = _move_after_rc1(
+        CHANGELOG.read_text(encoding="utf-8").split("\n", 1)[1].strip("\n")
+    )
     expected = re.sub(
         r"`+[^`]*?`+"
         r"|(?P<text>\[(?:[^\[\]`]|`[^`]*`)*\])"
@@ -215,3 +236,21 @@ def test_changelog_page_is_the_changelog(generated: dict[str, str]) -> None:
     # The rewritten links all reach a page.
     for target in re.findall(r"\]\((\.\./[^)\s#]+)", unescaped):
         assert (folder / target).exists(), target
+
+
+def test_changelog_shows_entries_after_the_rc1_wheel_above_it(
+    generated: dict[str, str],
+) -> None:
+    """An entry the [0.10.0rc1] section gained after the wheel was built is shown in the section above it
+    ([Unreleased], or the next release candidate once CHANGELOG.md has one); one the wheel's own changelog
+    had stays under [0.10.0rc1]."""
+    page = generated["changelog"]
+    rc1_at = page.index("## [0.10.0rc1]")
+    above = page[page.rindex("\n## [", 0, rc1_at) + 1 : rc1_at]
+    rc1 = page[rc1_at : page.index("## [0.9.1]")]
+    assert "- **`bench bundle` writes one zip of a run's evidence to share.**" in above
+    assert "`bench bundle` writes one zip" not in rc1
+    assert sum(line.startswith("- **") for line in above.splitlines()) > 10
+    assert any(line.startswith("- **") for line in rc1.splitlines()), (
+        "the wheel's own entries stay"
+    )

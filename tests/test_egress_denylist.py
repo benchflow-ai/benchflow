@@ -488,6 +488,7 @@ class TestStartStop:
         expected = {
             "/opt/runtime-egress/policy.json",
             "/opt/runtime-egress/proxy.py",
+            "/opt/runtime-egress/request_guard.py",
             "/opt/runtime-egress/ca.crt",
             "/opt/runtime-egress/ca.key",
             "/opt/runtime-egress/certs/a.test.pem",

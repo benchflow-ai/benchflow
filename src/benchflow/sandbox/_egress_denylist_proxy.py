@@ -1895,7 +1895,13 @@ class Handler(socketserver.BaseRequestHandler):
                 chunked,
                 path,
             )
-            if rule := deny_body.check():
+            try:
+                rule = deny_body.check()
+            except (OSError, ConnectionError, ssl.SSLError):
+                raise
+            except Exception as exc:
+                rule = f"body-check-failed: {type(exc).__name__}"
+            if rule:
                 self._deny(sock, method, url, rule)
                 return
         try:
@@ -1932,6 +1938,13 @@ class Handler(socketserver.BaseRequestHandler):
                     deny_body.send(_CountingSink(upstream, exchange.sent))
                 except _DeniedBody as exc:
                     self._deny(sock, method, url, str(exc))
+                    return
+                except (OSError, ConnectionError, ssl.SSLError):
+                    raise
+                except Exception as exc:
+                    self._deny(
+                        sock, method, url, f"body-check-failed: {type(exc).__name__}"
+                    )
                     return
             else:
                 if expectations:

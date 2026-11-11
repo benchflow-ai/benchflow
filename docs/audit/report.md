@@ -2,6 +2,8 @@
 
 A score is worth publishing when another researcher can check it: what ran, how, how many times, how noisy the number is, and what was left out. Below: what a result needs, the BenchFlow files that hold each part, and how to share them.
 
+Runs here use MiMo (`-m xiaomi/mimo-v2.6-flash`) with an API key: export its key and base URL first ([Quick start](../start/quick-start.md#on-another-provider)); any model with an API key works the same way.
+
 ## What a result needs
 
 | Part | Where it comes from |
@@ -62,9 +64,9 @@ It also asks for your GitHub username and email (`--github-id`, `--email`), whic
 
 ## The report file (0.10)
 
-> Needs BenchFlow `0.10.0rc1`, a prerelease: [install it](../start/install.md#install-the-010-prerelease).
+> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
 
-0.10.0rc1 writes `report.md` into every job, next to `run-card.json`. One from an OpenCode trial on the repair-café task:
+0.10 writes `report.md` into every job, next to `run-card.json`. One from an OpenCode trial on the repair-café task, written by 0.10.0rc1:
 
 ```markdown
 # Report: 2026-11-04__18-15-46
@@ -82,4 +84,4 @@ Sampling the model requests carried (the first 20 of each trial, with how many s
 
 The last line is the part people usually leave out: what the requests actually carried, read from the recorded calls rather than from what was asked for. With one trial, the interval runs from 21% to 100%; that is what one try can tell you.
 
-Later 0.10 builds count the first line by the [scoring rule](../reference/scoring-rule.md): the interval is over tasks, not trials, the line after it names the rule, and a warning says when a task has fewer than 3 trials. A report over trials that ran several settings (agent and harness version, served model, route, effort sent, task set, BenchFlow version) gives one line per setting instead of one score, with a `mixed settings` warning. A `Seeds:` line says which seeds the numbers depend on. Report a result per setting, the way the report gives it.
+0.10.0rc2 counts the first line by the [scoring rule](../reference/scoring-rule.md): the interval is over tasks, not trials, the line after it names the rule, and a warning says when a task has fewer than 3 trials. A report over trials that ran several settings (agent and harness version, served model, route, effort sent, task set, BenchFlow version) gives one line per setting instead of one score, with a `mixed settings` warning. A `Seeds:` line says which seeds the numbers depend on, and a table puts each trial's model outcome beside its verifier reward. Report a result per setting, the way the report gives it.

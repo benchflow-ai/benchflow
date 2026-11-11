@@ -44,18 +44,18 @@ Invalid dataset spec 'skillsbench' — expected <name>@<version> (e.g. skillsben
 
 ### SkillsBench's registry entries need BenchFlow 0.6
 
-An entry names the BenchFlow versions it was checked with, and the two SkillsBench entries name `>=0.6.3,<0.7`. BenchFlow 0.9.1 refuses them:
+An entry names the BenchFlow versions it was checked with, and the two SkillsBench entries name `>=0.6.3,<0.7`. BenchFlow 0.9.2 refuses them:
 
 ```bash
 bench run -d skillsbench@1.1 -i econ-detrending-correlation
 ```
 
 ```text
-bench 0.9.1 is outside the range this dataset was validated against (>=0.6.3,<0.7) — results may not be comparable with published runs
+bench 0.9.2 is outside the range this dataset was validated against (>=0.6.3,<0.7) — results may not be comparable with published runs
   next: pick a dataset version validated for this version of BenchFlow, or re-run with --ignore-bench-version to proceed anyway
 ```
 
-`--ignore-bench-version` doesn't help: the tasks at tag v1.1 use a `task.md` key 0.9.1 has renamed, so none of them load (`the 'environment' key was renamed to 'sandbox'`). Run SkillsBench from its repository instead, at a commit, as below; the [Quick start](../start/quick-start.md)'s outputs came from commit f860ecf0.
+`--ignore-bench-version` doesn't help: the tasks at tag v1.1 use a `task.md` key 0.9.1 renamed, so none of them load (`the 'environment' key was renamed to 'sandbox'`). Run SkillsBench from its repository instead, at a commit, as below; the [Quick start](../start/quick-start.md)'s outputs came from commit f860ecf0.
 
 ### Terminal-Bench 2.0 on 0.9.1
 
