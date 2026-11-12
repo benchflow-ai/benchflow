@@ -128,6 +128,16 @@ ReviewerSubmittedFileRuleOption = Annotated[
         ),
     ),
 ]
+ReviewerCriterionEvidenceOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--reviewer-criterion-evidence",
+        help=(
+            "Show the reviewer each criterion's Evidence line, the Evidence: "
+            "sentence of its rubric description (default: off)"
+        ),
+    ),
+]
 
 
 def reviewer_idle_timeout(value: str | None) -> int | None:

@@ -315,7 +315,7 @@
 │ --help                                                            Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
- 87 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
+ 88 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
  run --help-all                                                                                     
                                                                                                     
 
@@ -563,6 +563,10 @@
 │                                                             submitted: read it first, cite       │
 │                                                             pages, and take a compiled PDF over  │
 │                                                             its sources (default: off)           │
+│ --reviewer-criterion-evidence                               Show the reviewer each criterion's   │
+│                                                             Evidence line, the Evidence:         │
+│                                                             sentence of its rubric description   │
+│                                                             (default: off)                       │
 │ --help                                                      Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -1172,6 +1176,10 @@
 │                                                                 first, cite pages, and take a    │
 │                                                                 compiled PDF over its sources    │
 │                                                                 (default: off)                   │
+│ --reviewer-criterion-evidence                                   Show the reviewer each           │
+│                                                                 criterion's Evidence line, the   │
+│                                                                 Evidence: sentence of its rubric │
+│                                                                 description (default: off)       │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1662,6 +1670,10 @@
 │                                                                 first, cite pages, and take a    │
 │                                                                 compiled PDF over its sources    │
 │                                                                 (default: off)                   │
+│ --reviewer-criterion-evidence                                   Show the reviewer each           │
+│                                                                 criterion's Evidence line, the   │
+│                                                                 Evidence: sentence of its rubric │
+│                                                                 description (default: off)       │
 │ --agent-env                               TEXT                  Agent env var (KEY=VALUE)        │
 │ --allow-task-env                          TEXT                  Let tasks read this variable of  │
 │                                                                 your environment (a ${NAME} env  │
@@ -1885,6 +1897,10 @@
 │                                                                first, cite pages, and take a     │
 │                                                                compiled PDF over its sources     │
 │                                                                (default: off)                    │
+│    --reviewer-criterion-evidence                               Show the reviewer each            │
+│                                                                criterion's Evidence line, the    │
+│                                                                Evidence: sentence of its rubric  │
+│                                                                description (default: off)        │
 │    --help                                                      Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -1958,6 +1974,10 @@
 │                                                             submitted: read it first, cite       │
 │                                                             pages, and take a compiled PDF over  │
 │                                                             its sources (default: off)           │
+│ --reviewer-criterion-evidence                               Show the reviewer each criterion's   │
+│                                                             Evidence line, the Evidence:         │
+│                                                             sentence of its rubric description   │
+│                                                             (default: off)                       │
 │ --help                                                      Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -2773,6 +2793,8 @@
 │ --submitted-file-rule                   Tell the reviewer to judge a written deliverable by the  │
 │                                         file the agent submitted: read it first, cite pages, and │
 │                                         take a compiled PDF over its sources                     │
+│ --criterion-evidence                    Show the reviewer each criterion's Evidence line, the    │
+│                                         Evidence: sentence of its rubric description             │
 │ --help                                  Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
