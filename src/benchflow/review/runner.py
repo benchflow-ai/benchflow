@@ -498,6 +498,15 @@ async def _review_one(
     except ReviewRubricError as exc:
         trial.error = str(exc)
         return trial
+    # The captured workspace, as the in-run review gets it (finish_review);
+    # run_review checks it against its manifest before any upload.
+    bundle = rollout_dir / "evidence"
+    workspace_bundle = bundle if (bundle / "manifest.json").is_file() else None
+    if workspace_bundle is None:
+        trial.notes.append(
+            "workspace evidence skipped: the rollout holds no captured "
+            "workspace (evidence/manifest.json)"
+        )
     reviewed = await run_review(
         rollout_dir,
         task_dir,
@@ -508,6 +517,7 @@ async def _review_one(
         deterministic_pass=source_deterministic_pass(
             _read_json(rollout_dir / "result.json") or {}
         ),
+        workspace_bundle=workspace_bundle,
         template=template,
     )
     reviewed.notes[:0] = trial.notes
