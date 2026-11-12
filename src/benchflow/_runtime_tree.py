@@ -455,25 +455,59 @@ def _reserved_in(ws: str) -> list[str]:
     return reserved
 
 
-def workspace_grant_command(workspace: str, owner: str) -> str:
+def workspace_grant_command(workspace: str, owner: str, *, guarded: bool = True) -> str:
     """sh: give *owner* the workspace. A workspace that holds a reserved
     folder (``/opt`` holds the runtime tree, ``/usr/local`` the loader's
     folders, see :func:`_reserved_in`) stays root's and sticky, and every
     entry but the reserved ones is granted: the user may add and change its
     own files there, never rename a reserved folder. A loader folder stays
     root's with the files directly in it; its subfolders other than the
-    loader's own (``*-linux-*``) are granted (PT-C8-R9-4)."""
+    loader's own (``*-linux-*``) are granted (PT-C8-R9-4).
+
+    A provider daemon's folder directly in the workspace
+    (``SANDBOX_RUNTIME_STATE_PATHS``: Daytona's daemon keeps each exec's
+    script, output and exit code in ``.daytona`` in root's home) stays
+    root's too when the sandbox has it as a folder, without group or other
+    write, and is bind-mounted onto itself: a mount point cannot be renamed
+    or removed. The agent can then put nothing there for test.sh to read
+    while the review leaves it out, nor move it away, and the workspace
+    itself stays the owner's (#1232). It is not made sticky: under
+    ``fs.protected_regular`` (2 on Daytona) root could no longer open an
+    existing file of the owner's directly in it with ``O_CREAT``, as an
+    oracle that rewrites an input in place does. Where the sandbox refuses
+    the mount and *guarded* (an untrusted turn will run as *owner*), the
+    workspace becomes root's and sticky instead, as with a reserved folder.
+    """
+    from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS
+
     ws = "/" + workspace.strip("/")
-    q_ws = shlex.quote(ws)
-    q_owner = shlex.quote(f"{owner}:{owner}")
     reserved = _reserved_in(ws)
-    if not reserved:
-        return f"chown -R {q_owner} {q_ws}"
     if any("/" in r[len(ws.rstrip("/")) + 1 :] for r in reserved):
         raise ValueError(f"the workspace {ws} holds a reserved folder below its top")
-    skip = " ".join(f"! -path {shlex.quote(r)}" for r in reserved)
+    held = [ws.rstrip("/") + "/" + name for name in SANDBOX_RUNTIME_STATE_PATHS]
+    present = " || ".join(
+        f"{{ [ -d {q} ] && [ ! -L {q} ]; }}" for q in map(shlex.quote, held)
+    )
+    return (
+        f"if {present}; then {_grant_command(ws, owner, reserved, held, guarded)}; "
+        f"else {_grant_command(ws, owner, reserved, [], guarded)}; fi"
+    )
+
+
+def _grant_command(
+    ws: str, owner: str, reserved: list[str], held: list[str], guarded: bool
+) -> str:
+    """:func:`workspace_grant_command`'s sh for *reserved* folders and the
+    daemon folders *held* (each kept root's and pinned when it is a folder)."""
+    q_ws = shlex.quote(ws)
+    q_owner = shlex.quote(f"{owner}:{owner}")
+    if not reserved and not held:
+        return f"chown -R {q_owner} {q_ws}"
+    sticky = f"chown 0:0 {q_ws} && chmod 1777 {q_ws}"
+    top = sticky if reserved else f"chown {q_owner} {q_ws}"
+    skip = " ".join(f"! -path {shlex.quote(r)}" for r in (*reserved, *held))
     parts = [
-        f"chown 0:0 {q_ws} && chmod 1777 {q_ws} && "
+        f"{top} && "
         f"find {q_ws} -mindepth 1 -maxdepth 1 {skip} -exec chown -R {q_owner} {{}} +"
     ]
     for loader in (r for r in reserved if r in _LOADER_TREES):
@@ -485,6 +519,13 @@ def workspace_grant_command(workspace: str, owner: str) -> str:
             f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q} && "
             f"find {q} -mindepth 1 -maxdepth 1 -type d ! -name '*-linux-*' "
             f"-exec chown -R {q_owner} {{}} +; fi"
+        )
+    unpinned = sticky if guarded else "true"
+    for folder in held:
+        q = shlex.quote(folder)
+        parts.append(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q} && "
+            f"{{ mount -o bind {q} {q} 2>/dev/null || {{ {unpinned}; }}; }}; fi"
         )
     return " && ".join(parts)
 
