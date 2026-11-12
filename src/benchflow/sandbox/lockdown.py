@@ -3939,7 +3939,7 @@ async def setup_sandbox_user(
         f"cp -a /root/$d/. {home}/$d/ 2>/dev/null || true; fi; done && "
         f"{create_empty_dirs}"
         f"chown -R {sandbox_user}:{sandbox_user} {home} && "
-        f"{workspace_grant_command(workspace, sandbox_user)} && "
+        f"{workspace_grant_command(workspace, sandbox_user, guarded=guard_daemon)} && "
         f"for d in /output /outputs; do "
         f'if [ -d "$d" ] && [ ! -L "$d" ]; then '
         f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
