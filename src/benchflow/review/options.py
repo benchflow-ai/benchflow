@@ -65,6 +65,10 @@ class ReviewerConfig(BaseModel):
     # written deliverable, judge the submitted file. Off by default: the
     # default instruction is unchanged.
     submitted_file_rule: bool = False
+    # Show the reviewer each criterion's Evidence line, the ``Evidence:``
+    # sentence of its rubric description (config.criterion_evidence). Off by
+    # default: the default instruction is unchanged.
+    criterion_evidence: bool = False
 
     @field_validator("agent")
     @classmethod

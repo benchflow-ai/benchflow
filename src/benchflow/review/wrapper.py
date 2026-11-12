@@ -380,6 +380,7 @@ def assemble_review_task(
     environment: str = "docker",
     pdf_tools: bool = False,
     submitted_file_rule: bool = False,
+    criterion_evidence: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -390,7 +391,8 @@ def assemble_review_task(
     each workspace unpacked beside its archive. The setup installs
     :func:`reviewer_setup_packages` for *image* and *pdf_tools*; the
     instruction takes the rule with *submitted_file_rule*
-    (:func:`~benchflow.review.prompts.review_template`).
+    (:func:`~benchflow.review.prompts.review_template`), and each criterion's
+    Evidence line with *criterion_evidence*.
     """
 
     if dest.exists():
@@ -451,6 +453,7 @@ def assemble_review_task(
         output_schema=response_model.model_json_schema(),
         workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
         submitted_file_rule=submitted_file_rule,
+        criterion_evidence=criterion_evidence,
     )
     packages = reviewer_setup_packages(image, pdf_tools=pdf_tools)
     frontmatter = _TASK_FRONTMATTER.format(

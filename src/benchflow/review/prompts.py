@@ -10,7 +10,9 @@ Available placeholders:
 - ``{trial_path}`` — absolute in-sandbox path of the read-only rollout evidence copy.
 - ``{task_section}`` — pre-rendered paragraph describing the task-definition
   copy (or its absence).
-- ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
+- ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion, and
+  with ``ReviewerConfig.criterion_evidence`` each criterion's Evidence line
+  (:func:`~benchflow.review.config.build_criteria_guidance`).
 - ``{result_path}`` / ``{output_schema}`` — output-contract details.
 
 :data:`SUBMITTED_FILE_RULE` is an opt-in paragraph for tasks whose deliverable
@@ -138,11 +140,13 @@ def render_review_instruction(
     output_schema: dict[str, Any] | None = None,
     workspace_path: str | None = None,
     submitted_file_rule: bool = False,
+    criterion_evidence: bool = False,
 ) -> str:
     """Render the full wrapper-task instruction body.
 
     The template is :func:`review_template` of *template* and
-    *submitted_file_rule*.
+    *submitted_file_rule*; with *criterion_evidence* its guidance carries each
+    criterion's Evidence line.
     """
 
     body = review_template(
@@ -151,7 +155,9 @@ def render_review_instruction(
         {
             "trial_path": trial_path,
             "task_section": render_task_section(task_path),
-            "criteria_guidance": build_criteria_guidance(rubric),
+            "criteria_guidance": build_criteria_guidance(
+                rubric, evidence=criterion_evidence
+            ),
         }
     )
     if workspace_path is not None:

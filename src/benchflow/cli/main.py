@@ -59,6 +59,7 @@ from benchflow.cli._options import (
 from benchflow.cli.reviewer_options import (
     ReviewerAgentOption,
     ReviewerConcurrencyOption,
+    ReviewerCriterionEvidenceOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
     ReviewerEvidenceTimeoutOption,
@@ -1793,6 +1794,7 @@ def eval_run(
     reviewer_open_network: ReviewerNetworkOption = None,
     reviewer_pdf_tools: ReviewerPdfToolsOption = None,
     reviewer_submitted_file_rule: ReviewerSubmittedFileRuleOption = None,
+    reviewer_criterion_evidence: ReviewerCriterionEvidenceOption = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="Agent env var (KEY=VALUE)"),
@@ -2152,6 +2154,7 @@ def eval_run(
             open_network=reviewer_open_network,
             pdf_tools=reviewer_pdf_tools,
             submitted_file_rule=reviewer_submitted_file_rule,
+            criterion_evidence=reviewer_criterion_evidence,
         ),
         include=include,
         exclude=exclude,

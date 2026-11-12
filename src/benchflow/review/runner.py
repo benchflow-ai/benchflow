@@ -565,6 +565,7 @@ async def run_review(
             environment=config.environment,
             pdf_tools=config.pdf_tools,
             submitted_file_rule=config.submitted_file_rule,
+            criterion_evidence=config.criterion_evidence,
         )
         from benchflow.review.persistence import write_json_atomic
         from benchflow.review.probe import (
@@ -630,6 +631,7 @@ async def run_review(
             else None,
             "pdf_tools": config.pdf_tools,
             "submitted_file_rule": config.submitted_file_rule,
+            "criterion_evidence": config.criterion_evidence,
             # The template (the rule in it or not) and the instruction the
             # reviewer got, rendered from it for this rollout.
             "template_sha256": _sha256(
@@ -864,10 +866,12 @@ async def run_reviews(
     out_dir: Path | None = None,
     pdf_tools: bool = False,
     submitted_file_rule: bool = False,
+    criterion_evidence: bool = False,
 ) -> tuple[ReviewReport, Path]:
     """Review rollout(s) at ``path`` and return the report plus its location.
 
-    *pdf_tools* and *submitted_file_rule* are those of :class:`ReviewerConfig`.
+    *pdf_tools*, *submitted_file_rule* and *criterion_evidence* are those of
+    :class:`ReviewerConfig`.
     """
 
     path = Path(path).resolve()
@@ -909,6 +913,7 @@ async def run_reviews(
         concurrency=max(1, concurrency),
         pdf_tools=pdf_tools,
         submitted_file_rule=submitted_file_rule,
+        criterion_evidence=criterion_evidence,
     )
     semaphore = asyncio.Semaphore(max(1, concurrency))
 

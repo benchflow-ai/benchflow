@@ -94,6 +94,7 @@ def test_the_review_runner_logs_a_user_error_without_its_traceback(
         environment="docker",
         pdf_tools=False,
         submitted_file_rule=False,
+        criterion_evidence=False,
     )
     caplog.set_level(logging.ERROR, logger="benchflow")
     trial = asyncio.run(
