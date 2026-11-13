@@ -234,7 +234,7 @@ async def test_anthropic_request_carries_requested_effort(
 async def test_openai_compatible_route_keeps_claude_code_effort(
     monkeypatch, model_map, model
 ):
-    """Guards the fix from PR #PRNUM: Claude Code's ``output_config.effort=max``
+    """Guards the fix from PR #1242: Claude Code's ``output_config.effort=max``
     on /v1/messages, bridged to an OpenAI-compatible route such as OpenRouter,
     must reach the provider as ``reasoning_effort=max``. The capability entry
     used to be filed under provider ``anthropic``, which LiteLLM does not match
@@ -247,7 +247,7 @@ async def test_openai_compatible_route_keeps_claude_code_effort(
 
 
 def test_registration_files_openai_compatible_claude_ids_under_openai(model_map):
-    """Guards the fix from PR #PRNUM: a Claude id behind an OpenAI-compatible
+    """Guards the fix from PR #1242: a Claude id behind an OpenAI-compatible
     route is registered under provider ``openai``, the provider LiteLLM resolves
     for an ``openai/`` model; other models on that route are left alone."""
     litellm = model_map
