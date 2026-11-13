@@ -19,6 +19,7 @@ import subprocess
 import sys
 
 import httpx
+import openai
 import pytest
 
 import benchflow.providers.litellm_bedrock_patch as patch
@@ -33,6 +34,7 @@ _ENV = {
     "AWS_BEARER_TOKEN_BEDROCK": "test-bedrock-key",
     "AWS_REGION": "us-east-2",
     "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "OPENROUTER_API_KEY": "test-openrouter-key",
     "BENCHFLOW_BEDROCK_THINKING_EFFORT": "max",
 }
 _ANTHROPIC_RESPONSE = {
@@ -51,6 +53,21 @@ _CONVERSE_RESPONSE = {
     "stopReason": "end_turn",
     "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
 }
+# An OpenAI-compatible provider's answer (OpenRouter's /chat/completions).
+_CHAT_RESPONSE = {
+    "id": "chatcmpl-1",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "claude",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
 _BEDROCK_MODELS = (
     "aws-bedrock/us.anthropic.claude-fable-5-1",
     "aws-bedrock/global.anthropic.claude-fable-5-1",
@@ -61,6 +78,12 @@ _ANTHROPIC_MODELS = (
     "anthropic/claude-fable-5-1",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5",
+)
+# OpenRouter ids use dots; the gateway routes them as ``openai/<vendor>/<model>``.
+_OPENAI_COMPATIBLE_MODELS = (
+    "openrouter/anthropic/claude-opus-5.5",
+    "openrouter/anthropic/claude-fable-5.2",
+    "openrouter/anthropic/claude-opus-4.8",
 )
 
 
@@ -126,14 +149,25 @@ async def _captured_body(monkeypatch, litellm, model: str, *, wire: str):
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        converse = request.url.path.endswith("/converse")
-        return httpx.Response(
-            200, json=_CONVERSE_RESPONSE if converse else _ANTHROPIC_RESPONSE
-        )
+        if request.url.path.endswith("/converse"):
+            return httpx.Response(200, json=_CONVERSE_RESPONSE)
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(200, json=_CHAT_RESPONSE)
+        return httpx.Response(200, json=_ANTHROPIC_RESPONSE)
 
-    client = AsyncHTTPHandler()
-    client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport = httpx.MockTransport(handler)
     params = {**route.litellm_params, "api_key": "test-key"}
+    client: object
+    if str(params["model"]).startswith("openai/"):
+        # OpenAI-compatible routes (OpenRouter) go through the OpenAI SDK.
+        client = openai.AsyncOpenAI(
+            api_key="test-key",
+            base_url=str(params["api_base"]),
+            http_client=httpx.AsyncClient(transport=transport),
+        )
+    else:
+        client = AsyncHTTPHandler()
+        client.client = httpx.AsyncClient(transport=transport)
     messages = [{"role": "user", "content": "Fix the failing test."}]
     if wire == "messages":
         # Claude Code's /v1/messages shape with ``--effort max``.
@@ -194,6 +228,45 @@ async def test_anthropic_request_carries_requested_effort(
     assert request.url.path == "/v1/messages"
     assert sent["thinking"]["type"] == "adaptive"
     assert sent["output_config"] == {"effort": "max"}
+
+
+@pytest.mark.parametrize("model", _OPENAI_COMPATIBLE_MODELS)
+async def test_openai_compatible_route_keeps_claude_code_effort(
+    monkeypatch, model_map, model
+):
+    """Guards the fix from PR #PRNUM: Claude Code's ``output_config.effort=max``
+    on /v1/messages, bridged to an OpenAI-compatible route such as OpenRouter,
+    must reach the provider as ``reasoning_effort=max``. The capability entry
+    used to be filed under provider ``anthropic``, which LiteLLM does not match
+    for an ``openai/`` model, so its Messages adapter lowered max to high."""
+    request, sent = await _captured_body(monkeypatch, model_map, model, wire="messages")
+
+    assert request.url.host == "openrouter.ai"
+    assert request.url.path.endswith("/chat/completions")
+    assert sent["reasoning_effort"] == "max"
+
+
+def test_registration_files_openai_compatible_claude_ids_under_openai(model_map):
+    """Guards the fix from PR #PRNUM: a Claude id behind an OpenAI-compatible
+    route is registered under provider ``openai``, the provider LiteLLM resolves
+    for an ``openai/`` model; other models on that route are left alone."""
+    litellm = model_map
+
+    updated = patch.register_claude_effort_capabilities(
+        [
+            "openai/anthropic/claude-opus-5.5",
+            "openai/anthropic/claude-opus-4.8",
+            "openai/anthropic/claude-3.7-sonnet",
+            "openai/openai/gpt-5.5",
+        ]
+    )
+
+    assert updated == [
+        "openai/anthropic/claude-opus-5.5",
+        "openai/anthropic/claude-opus-4.8",
+    ]
+    for key in updated:
+        assert litellm.model_cost[key]["litellm_provider"] == "openai"
 
 
 def test_registration_keeps_litellm_entries_and_skips_other_models(model_map):
