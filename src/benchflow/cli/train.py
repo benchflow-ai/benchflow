@@ -375,7 +375,7 @@ def register_train(app: typer.Typer) -> None:
             if skipped:
                 console.print("Skipped: " + "; ".join(skipped) + ".")
             if manifest is not None:
-                console.print(f"Stats: {escape(str(manifest))}")
+                console.print(f"Stats: {escape(str(manifest))}", soft_wrap=True)
             return
         exit_if_missing(
             canonical_selection,
@@ -487,9 +487,12 @@ def register_train(app: typer.Typer) -> None:
             # An oracle or nop job made no model calls (DFR-p5-18).
             console.print(
                 f"0 rows: the job holds only control runs ({stats.skipped_control} "
-                f"oracle or nop rollout(s)) -> {escape(str(output))}"
+                f"oracle or nop rollout(s)) -> {escape(str(output))}",
+                soft_wrap=True,
             )
             return
+        # Paths are never wrapped, so they can be copied and grepped from a
+        # pipe or CI log (Rich wraps at 80 columns when there is no terminal).
         console.print(
             f"[green]Converted {stats.rows_written} row(s)[/green] "
             f"from {stats.rollouts_seen} rollout(s) -> {escape(str(output))}"
@@ -510,7 +513,8 @@ def register_train(app: typer.Typer) -> None:
                 "skipped_terminal_error in the manifest)"
                 if getattr(stats, "skipped_terminal_error", 0)
                 else ""
-            )
+            ),
+            soft_wrap=True,
         )
         if format_name in _CONVERSATION_FORMATS:
             from benchflow.trajectories.rl_conversations import context_summary
@@ -574,7 +578,7 @@ def register_train(app: typer.Typer) -> None:
                 + "."
             )
         if manifest is not None:
-            console.print(f"Stats: {escape(str(manifest))}")
+            console.print(f"Stats: {escape(str(manifest))}", soft_wrap=True)
 
     @train_app.command("token-coverage")
     def train_token_coverage(
@@ -974,7 +978,9 @@ def register_train(app: typer.Typer) -> None:
                 next_step="`bench train validate --help` describes the files it reads",
             )
             raise typer.Exit(1) from None
-        console.print(json.dumps(result, sort_keys=True))
+        # Plain stdout, not Rich: Rich wraps a long value at 80 columns when no
+        # terminal is attached and reads a [...] in a path as markup.
+        typer.echo(json.dumps(result, sort_keys=True))
 
     @run_app.command("sft")
     def train_run_sft(
@@ -1188,7 +1194,9 @@ def register_train(app: typer.Typer) -> None:
         publish_model: Annotated[
             str | None,
             typer.Option(
-                "--publish-model", help="Upload trainer output to this HF model repo"
+                "--publish-model",
+                help="Upload trainer output to this HF model repo "
+                "(a new one is private unless --public)",
             ),
         ] = None,
         model_tag: Annotated[
@@ -1207,7 +1215,8 @@ def register_train(app: typer.Typer) -> None:
             str | None,
             typer.Option(
                 "--publish-artifacts",
-                help="Upload BenchFlow train run artifacts to this HF dataset repo",
+                help="Upload BenchFlow train run artifacts to this HF dataset repo "
+                "(a new one is private unless --public)",
             ),
         ] = None,
         hf_prefix: Annotated[
@@ -1218,6 +1227,15 @@ def register_train(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--hf-public-read-check", help="Verify public HF reads after upload"
+            ),
+        ] = False,
+        public: Annotated[
+            bool,
+            typer.Option(
+                "--public",
+                help="Make a new HF repo public: what --publish-model and "
+                "--publish-artifacts create on Hugging Face is private unless "
+                "this is given. A repo that already exists is not changed",
             ),
         ] = False,
     ) -> None:
@@ -1261,6 +1279,7 @@ def register_train(app: typer.Typer) -> None:
                     publish_artifacts=publish_artifacts,
                     hf_prefix=hf_prefix,
                     hf_public_read_check=hf_public_read_check,
+                    public=public,
                 )
             )
         except ValueError as exc:
@@ -1278,5 +1297,12 @@ def register_train(app: typer.Typer) -> None:
             raise typer.Exit(result.returncode)
         console.print(
             "[green]Prime-RL SFT completed[/green] "
-            f"(manifest: {escape(str(result.manifest_path))})"
+            f"(manifest: {escape(str(result.manifest_path))})",
+            soft_wrap=True,
         )
+        for published in result.published:
+            console.print(
+                f"[green]Published HF {published.repo_type}:[/green] "
+                f"{escape(published.url)} ({published.visibility})",
+                soft_wrap=True,
+            )

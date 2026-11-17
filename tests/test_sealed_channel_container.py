@@ -157,7 +157,11 @@ class TestReceiverBoundary:
         original = mod.seal
         mod.seal = lambda *_a, **_k: bad
         try:
-            with pytest.raises(RuntimeError):
+            # The receiver's decrypt chain exits non-zero with nothing on
+            # stderr; the file check below proves nothing landed.
+            with pytest.raises(
+                RuntimeError, match=r"^AgentCore sealed upload failed: $"
+            ):
                 asyncio.run(channel.upload(b"ignored", target="/tmp/attack.bin"))
         finally:
             mod.seal = original

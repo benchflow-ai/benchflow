@@ -173,7 +173,10 @@ def test_sample_mean_shim_refuses_prime_rl_0_9_naming_versions(shim) -> None:
     """
     origin = "/opt/prime-rl/src/prime_rl/trainer/sft/train.py"
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError,
+        match=r"matches no layout BenchFlow has verified, so it refuses to train with an unverified loss",
+    ) as excinfo:
         shim["_patch_sample_mean_loss"](_fixture("train_v0.9.0.txt"), origin, "0.9.0")
 
     message = str(excinfo.value)

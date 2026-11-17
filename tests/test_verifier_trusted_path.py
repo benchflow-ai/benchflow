@@ -55,7 +55,11 @@ IMAGE_PATH = ":".join(
         "/opt/linkout/bin",  # another user's, with a link into the agent's home: out
         "/tmp/tools",  # a temp folder: out
         "/app/bin",  # the workspace: out
-        "/nonexistent",  # no folder yet: excluded, including any late uploads
+        # Absent, with root's closed / its only part: only root could make
+        # it, so kept (the 0700 /root/.cargo/bin case).
+        "/nonexistent",
+        # Absent under a folder others can write: anyone could make it, so out.
+        "/opt/open/bin/later",
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     ]
 )
@@ -145,7 +149,9 @@ def box(request):
         timeout=600,
     )
     if build.returncode != 0:
-        pytest.skip(f"could not build the fixture image: {build.stderr[-300:]}")
+        pytest.fail(
+            f"could not build the fixture image: {build.stderr[-300:]}", pytrace=False
+        )
     name = f"{tag}-c"
     run = subprocess.run(
         [
@@ -202,7 +208,8 @@ async def test_the_path_check_needs_no_python_and_keeps_closed_folders(box):
     path = await _trusted_verifier_path(env, "agent", "/app")
 
     assert path == (
-        "/home/sandbox/.cargo/bin:/opt/root-tool/bin:" + _SAFE_VERIFIER_PATH
+        "/home/sandbox/.cargo/bin:/opt/root-tool/bin:/nonexistent:"
+        + _SAFE_VERIFIER_PATH
     )
     assert not any("python3" in command for command in env.commands)
 
@@ -216,7 +223,9 @@ async def test_a_root_agent_keeps_root_owned_folders_only(box):
     path = await _trusted_verifier_path(env, None, "/app")
 
     # No agent user here, so /opt/mine/bin is still root's.
-    assert path == "/opt/root-tool/bin:/opt/mine/bin:" + _SAFE_VERIFIER_PATH
+    assert path == (
+        "/opt/root-tool/bin:/opt/mine/bin:/nonexistent:" + _SAFE_VERIFIER_PATH
+    )
 
 
 @pytest.mark.asyncio
@@ -228,8 +237,13 @@ async def test_each_folder_left_out_is_named_with_its_reason(box):
         await _trusted_verifier_path(env, "agent", "/app")
 
     (report,) = reports
-    assert report.kept == ("/home/sandbox/.cargo/bin", "/opt/root-tool/bin")
+    assert report.kept == (
+        "/home/sandbox/.cargo/bin",
+        "/opt/root-tool/bin",
+        "/nonexistent",
+    )
     assert report.kept_other == ("/home/sandbox/.cargo/bin",)
+    assert report.absent_root_only == ("/nonexistent",)
     why = dict(report.dropped)
     assert set(why) == {
         "/opt/open/bin",
@@ -239,7 +253,7 @@ async def test_each_folder_left_out_is_named_with_its_reason(box):
         "/opt/linkout/bin",
         "/tmp/tools",
         "/app/bin",
-        "/nonexistent",
+        "/opt/open/bin/later",
     }
     assert why["/opt/open/bin"] == "root's, but writable by group or others"
     assert why["/opt/mine/bin"].endswith("/opt/mine/bin is the agent user's")
@@ -252,7 +266,10 @@ async def test_each_folder_left_out_is_named_with_its_reason(box):
     )
     assert why["/tmp/tools"] == "under /tmp"
     assert why["/app/bin"] == "under /app"
-    assert why["/nonexistent"] == "not present when the verifier PATH was checked"
+    assert why["/opt/open/bin/later"] == (
+        "not present when the verifier PATH was checked, and "
+        "/opt/open/bin is writable by group or others"
+    )
 
 
 @pytest.mark.parametrize(
@@ -303,7 +320,9 @@ async def test_an_unreadable_agent_uid_keeps_root_owned_folders_only(box):
     with recording_trusted_path() as reports:
         path = await _trusted_verifier_path(env, "nosuchuser", "/app")
 
-    assert path == "/opt/root-tool/bin:/opt/mine/bin:" + _SAFE_VERIFIER_PATH
+    assert path == (
+        "/opt/root-tool/bin:/opt/mine/bin:/nonexistent:" + _SAFE_VERIFIER_PATH
+    )
     assert dict(reports[0].dropped)["/home/sandbox/.cargo/bin"] == (
         "not root's (uid 1000), and the agent user's uid could not be read"
     )

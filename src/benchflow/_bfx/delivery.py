@@ -62,12 +62,18 @@ from benchflow._bfx.locate import (
 BIND = "bind"
 VOLUME = "volume"
 UPLOAD = "upload"
+#: Daytona native with no /.bfx (step 5b): root uploads the pinned
+#: binary into a fresh root-only folder when a walk needs it, before the turn
+#: and again after it, and checks its SHA-256 before every call. Nothing is
+#: at /.bfx/bfx, so root's scripts keep the forms they use without bfx.
+PER_CALL = "per-call"
 
 #: Who each delivery holds against.
 GUARANTEE = {
     BIND: "any-agent",
     VOLUME: "any-agent",
     UPLOAD: "non-root-agent",
+    PER_CALL: "any-agent",
 }
 
 #: Operators and tests choose the Docker delivery: ``auto`` (bind on a local

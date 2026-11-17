@@ -31,16 +31,21 @@ from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
-from benchflow import _park
+from benchflow import _park, build_info
 from benchflow._diagnostics import render_text
 from benchflow._utils import timing_spans
+from benchflow._utils.attempt_decision import FINAL, RETRIED, record_decision
 from benchflow._utils.command_hints import command_arg
 from benchflow._utils.config import (
     DEFAULT_AGENT_IDLE_TIMEOUT_SEC,
     default_agent_idle_timeout,
 )
+from benchflow._utils.config_keys import ConfigKeyError, key_lines, located
 from benchflow._utils.env_values import env_value_text, normalize_env_mapping
 from benchflow._utils.evaluation_results import (
+    attempt_spend_summary,
+    judge_usage_summary,
+    kept_usage_rows,
     loop_summary,
     model_call_summary,
     phase_timing_summary,
@@ -59,7 +64,11 @@ from benchflow._utils.learner_memory import (
     memory_delta_from_skills,
     patch_learner_generation_artifact,
 )
-from benchflow._utils.result_paths import load_task_results
+from benchflow._utils.result_paths import (
+    interrupted_trial_results,
+    kept_ending_is_final,
+    load_task_results,
+)
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
@@ -70,6 +79,7 @@ from benchflow._utils.scoring import (
     INFRA_ERROR,
     INSTALL_FAILED,
     OTHER_ERROR,
+    PHASE_TIMEOUT,
     PIPE_CLOSED,
     PROVIDER_AUTH,
     PROVIDER_RATE_LIMIT,
@@ -83,18 +93,17 @@ from benchflow._utils.scoring import (
     api_error_is_transient,
     classify_error,
     classify_score_outcome,
-    classify_verifier_error,
     count_guard_refusals,
     count_score_outcomes,
     count_unusable_rewards,
     is_output_cap_error,
+    is_output_unwritable,
     is_unrecoverable_startup_error,
     mean_reward_caveat,
     mean_reward_every_trial,
     mean_scored_reward,
     pass_rate,
     pass_rate_excl_errors,
-    plugin_guard_error_message,
     retry_category,
     score_summary_fields,
     scored_trial_count,
@@ -116,10 +125,17 @@ from benchflow.budget import (
     task_budget_path,
     with_cancelled_budget,
 )
+from benchflow.build_info import benchflow_build
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
-from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
+from benchflow.diagnostics import (
+    DIAGNOSTIC_REGISTRY,
+    PostTurnFailureDiagnostic,
+    rewards_outside_range_summary,
+    summary_warning,
+)
 from benchflow.environment.manifest import EnvironmentManifest, load_manifest
 from benchflow.errors import UserError
+from benchflow.integrity.constants import normalize_integrity_mode
 from benchflow.learner_store import LearnerState, LearnerStore
 from benchflow.loop_strategies import (
     LoopStrategySpec,
@@ -141,6 +157,7 @@ from benchflow.task.discovery import (
 from benchflow.task.discovery import (
     resolve_task_collection_root,
 )
+from benchflow.task.refused_tasks import refused_tasks_summary
 from benchflow.task.verifier_sandbox import effective_verifier_sandbox
 from benchflow.trajectories.tree import RolloutNode
 from benchflow.trial_budget import TrialBudget
@@ -164,6 +181,13 @@ _MODEL_CALL_KEYS = ("agent_outcome", "effort", "tool_surface", "input_delivery")
 # taken once by its first attempt (_run_single_task).
 _WARM_ROLLOUT: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "benchflow_warm_rollout", default=None
+)
+
+# Whether the retry loop may still retry the attempt running in this task
+# (_run_task): False on its last try, or when its policy never retries an
+# idle timeout. RolloutConfig.owned_by_retry_loop follows it.
+_MAY_RETRY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "benchflow_may_retry", default=True
 )
 
 # Label applied to every container/network BenchFlow's compose files create.
@@ -419,6 +443,55 @@ def _task_parse_error(path: Path) -> tuple[Path, str] | None:
     return None
 
 
+class UnreadableSolverSnapshotError(ValueError, UserError):
+    """A trial's solver snapshot (``solver-complete.json`` or ``solver.json``)
+    cannot be read, so a resume cannot tell whether that trial's solver
+    finished or whether its scoring did. The resume stops: skipping the file
+    could run the solver again, which the snapshot exists to prevent, or leave
+    its scoring unfinished."""
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.hint = hint
+
+
+def _read_solver_snapshot(path: Path) -> dict[str, Any]:
+    """A trial's solver snapshot, or the refusal that names the file."""
+    try:
+        snapshot = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        snapshot = exc
+    if isinstance(snapshot, dict):
+        return snapshot
+    reason = (
+        f"{type(snapshot).__name__}: {snapshot}"
+        if isinstance(snapshot, Exception)
+        else "it does not hold a JSON object"
+    )
+    raise UnreadableSolverSnapshotError(
+        f"{path} is truncated or unreadable ({reason}), so the job cannot be "
+        "resumed: it records that trial's finished solver, and a resume "
+        "without it could run that solver again or leave its scoring unfinished.",
+        hint=(
+            f"restore {path.name} from a copy of the job, or move the trial "
+            f"folder {path.parent.name} out of the job to run its task again"
+        ),
+    )
+
+
+def _check_solver_snapshots(job_dir: Path) -> None:
+    """Refuse a resume, before it reviews or runs anything, when a solver
+    snapshot it reads cannot be read: every trial's ``solver.json``
+    (``resume_pending_reviews`` reads each, finished trial or not) and the
+    ``solver-complete.json`` of a trial with no result.json
+    (``_get_completed_tasks``)."""
+    for snapshot in sorted(job_dir.glob("*/solver.json")):
+        _read_solver_snapshot(snapshot)
+    for checkpoint in sorted(job_dir.glob("*/solver-complete.json")):
+        if not (checkpoint.parent / "result.json").exists():
+            _read_solver_snapshot(checkpoint)
+
+
 class EmptyTaskSelectionError(ValueError, UserError):
     """Raised when task discovery + include/exclude filters resolve to zero tasks.
 
@@ -435,6 +508,162 @@ class JobMatrixError(ValueError, UserError):
     def __init__(self, message: str, *, hint: str | None = None) -> None:
         super().__init__(message)
         self.hint = hint
+
+
+class RunConfigValueError(ConfigKeyError):
+    """A run config gives a setting a value the same flag refuses.
+
+    The flags are checked when the command line is planned
+    (``eval_plan.build_eval_plan``); a config file's values reached the run
+    unchecked, so ``timeout_multiplier: -1`` gave every agent a one-second
+    limit and ``include: name`` selected by the letters of the name. Like a
+    :class:`ConfigKeyError`, the message starts with the file and line of the
+    key, and ``bench run`` prints it with its hint and exits 2.
+    """
+
+
+def _key_at(path: Path | str | None, text: str | None = None) -> Callable[..., str]:
+    """``at("retry", "max_retries")``: ``file:line: `` of that key in the run
+    config at *path* (its *text*, else the file), for a refusal to start
+    with; nothing for a config given as a mapping (``Evaluation.from_dict``)."""
+
+    def at(*keys: str) -> str:
+        if path is None:
+            return ""
+        lines = key_lines(Path(path).read_text() if text is None else text)
+        return f"{located(path, lines.get(keys))}: "
+
+    return at
+
+
+def _whole_number(
+    raw: dict,
+    key: str,
+    *,
+    least: int,
+    at: Callable[..., str],
+    under: tuple[str, ...] = (),
+) -> int | None:
+    """``raw[key]`` as a whole number of at least *least*, None when unset;
+    *under* is the keys *raw* sits under in the file."""
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < least:
+        # A quoted whole number (`concurrency: '8'`) is that number unquoted.
+        digits = value.strip() if isinstance(value, str) else ""
+        quoted = int(digits) if digits.isascii() and digits.isdigit() else None
+        example = quoted if quoted is not None and quoted >= least else max(least, 1)
+        raise RunConfigValueError(
+            f"{at(*under, key)}{key}: {value!r} is not a whole number of at least "
+            f"{least}",
+            hint=f"write {key}: {example} (a number, without quotes)",
+        )
+    return value
+
+
+def _check_run_config_values(raw: dict, *, at: Callable[..., str]) -> None:
+    """Refuse the run-config values the flags refuse (see RunConfigValueError).
+
+    *at* names a key's file and line (:func:`_key_at`). A check that compares
+    two settings a flag can each replace waits for the flags:
+    :func:`check_warm_pool`.
+    """
+    from dataclasses import fields
+
+    from benchflow._utils.sandbox_providers import is_known_provider, providers_phrase
+
+    for key in ("include", "exclude"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) or not (
+            isinstance(value, list | tuple | set | frozenset)
+            and all(isinstance(item, str) for item in value)
+        ):
+            raise RunConfigValueError(
+                f"{at(key)}{key}: {value!r} is not a list of task names or patterns",
+                hint=f"write {key}: [{value}]"
+                if isinstance(value, str)
+                else f"give {key} a list of strings",
+            )
+    _whole_number(raw, "concurrency", least=1, at=at)
+    _whole_number(raw, "build_concurrency", least=1, at=at)
+    _whole_number(raw, "n_tasks", least=1, at=at)
+    _whole_number(raw, "max_retries", least=0, at=at)
+    _whole_number(raw, "warm_pool", least=0, at=at)
+    multiplier = raw.get("timeout_multiplier")
+    if multiplier is not None and (
+        isinstance(multiplier, bool)
+        or not isinstance(multiplier, (int, float))
+        or not multiplier > 0
+    ):
+        raise RunConfigValueError(
+            f"{at('timeout_multiplier')}timeout_multiplier: {multiplier!r} is not a "
+            "positive number",
+            hint="write timeout_multiplier: 2.0 to double every agent's time limit",
+        )
+    environment = raw.get("environment")
+    if environment is not None and not (
+        isinstance(environment, str) and is_known_provider(environment)
+    ):
+        raise RunConfigValueError(
+            f"{at('environment')}environment: {environment!r} is not a sandbox",
+            hint=f"choose {providers_phrase()}",
+        )
+    retry = raw.get("retry")
+    if retry is not None and not isinstance(retry, dict):
+        # Not read as a count: retry: is a table, and a bare number could
+        # mean the retries or the attempts.
+        raise RunConfigValueError(
+            f"{at('retry')}retry: {retry!r} is not a table of retry settings",
+            hint="for N retries per task write max_retries: N (what "
+            "--retry-attempts N sets), or retry: {max_retries: N}",
+        )
+    if isinstance(retry, dict):
+        known = {f.name for f in fields(RetryConfig)}
+        unknown = sorted(str(key) for key in retry if key not in known)
+        if unknown:
+            raise RunConfigValueError(
+                f"{at('retry', unknown[0])}retry: BenchFlow reads no key "
+                f"{unknown[0]!r} there",
+                hint=f"its keys are {', '.join(sorted(known))}",
+            )
+        _whole_number(retry, "max_retries", least=0, at=at, under=("retry",))
+
+
+def check_warm_pool(
+    warm_pool: int | None,
+    concurrency: int,
+    *,
+    path: Path | str | None = None,
+    text: str | None = None,
+    flags: Iterable[str] = (),
+) -> None:
+    """Refuse a warm pool larger than the concurrency, once both are final.
+
+    A run config's own values are final when it loads; ``bench run
+    --config`` checks once its flags are on the config, *flags* naming the
+    settings a flag gave (``warm_pool``, ``concurrency``). So the file's
+    ``warm_pool: 6`` runs with ``--concurrency 8``, and is refused with a
+    concurrency of 4 from the file, a flag or the default.
+    """
+    if warm_pool is None or warm_pool <= concurrency:
+        return
+    at = _key_at(path, text)
+    given = set(flags)
+    if "warm_pool" in given:
+        # The file's concurrency (build_eval_plan refuses two flags).
+        raise RunConfigValueError(
+            f"{at('concurrency')}--warm-pool {warm_pool} is more than concurrency "
+            f"({concurrency})",
+            hint=f"pass --warm-pool from 0 to {concurrency}, or a higher --concurrency",
+        )
+    limit = "--concurrency" if "concurrency" in given else "concurrency"
+    raise RunConfigValueError(
+        f"{at('warm_pool')}warm_pool: {warm_pool} is more than {limit} ({concurrency})",
+        hint=f"give warm_pool a number from 0 to {concurrency}",
+    )
 
 
 class ResumeMismatchError(ValueError, UserError):
@@ -744,6 +973,7 @@ RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
         "reasoning_effort", "retry", "retry_from_checkpoint", "retry_prompt",
         "retry_resume_session", "reviewer", "sample_seed", "sandbox_locked_paths",
         "sandbox_setup_timeout", "sandbox_user", "seeds", "self_gen_no_internet",
+        "verifier_setup_timeout",
         "separate_verifier", "separate_verifier_include", "skill_creator_dir",
         "skill_mode", "skills_dir", "skip_install", "source", "source_provenance",
         "tasks_dir", "timeout_multiplier", "token_budget", "turn_budget",
@@ -758,6 +988,7 @@ LEGACY_RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
         "base_image_override", "codex_apps_policy", "context_root",
         "fresh_install", "harness", "integrity", "reasoning_effort", "reviewer",
         "sandbox_locked_paths", "sandbox_setup_timeout", "sandbox_user",
+        "verifier_setup_timeout",
         "self_gen_no_internet", "separate_verifier", "separate_verifier_include",
         "skill_creator_dir", "skill_mode", "skills_dir", "verifier_sandbox",
         "include", "includes", "include_tasks", "exclude", "excludes",
@@ -917,6 +1148,19 @@ def sample_task_dirs(
     return sorted(random.Random(seed).sample(tasks, n_tasks))
 
 
+# The tasks-root warnings this process has printed, by (resolved tasks root,
+# the names skipped): a --config matrix lists each cell up front and again for
+# each trial job, each a new Evaluation, and the warning prints once in all.
+_TASKS_ROOT_WARNED: set[tuple[Path, frozenset[str]]] = set()
+
+
+def _rule_took_nothing(evaluation: Any) -> dict[str, Any] | None:
+    """The listing's tasks-root record when the rule took none of the entries
+    it listed, else None. A shard's record is its job's, which took some."""
+    skips = getattr(evaluation, "_tasks_root_skips", None)
+    return skips if skips and skips["listed"] == len(skips["skipped"]) else None
+
+
 class MalformedTaskError(ValueError, UserError):
     """A single-task input whose ``task.md`` (or legacy ``task.toml``) exists
     but fails to parse (#3).
@@ -1046,7 +1290,11 @@ class RetryConfig:
             return True
         if self.retry_on_idle_timeout and category == IDLE_TIMEOUT:
             return True
-        if self.retry_on_infra and category in {INFRA_ERROR, SANDBOX_SETUP}:
+        if self.retry_on_infra and category in {
+            INFRA_ERROR,
+            SANDBOX_SETUP,
+            PHASE_TIMEOUT,
+        }:
             # A missing build-context path fails the same way every time.
             return not is_unrecoverable_startup_error(error)
         if category == API_ERROR:
@@ -1062,12 +1310,18 @@ class RetryConfig:
     def reruns_on_resume(
         self, error: str | None, *, category: str | None = None
     ) -> bool:
-        """Whether a resumed job runs an unscored trial again.
+        """Whether a resumed job runs a rubric trial's solver again when
+        nothing was judged.
 
-        Everything ``should_retry`` retries, and a trial that ended on its
-        login's usage limit: never retried within the run (the same login
-        would only hit it again), but a resume is how a caller runs it again
-        on another login or after the reset.
+        Asked only of a rubric trial: its solver checkpoint left without a
+        result, or a scoring block with no verdict
+        (:meth:`reruns_unjudged_solver`); a model refusal is never run again
+        whatever it says. A resume decides every other trial without it
+        (:func:`benchflow._utils.result_paths.load_task_results`). Everything
+        ``should_retry`` retries, and a trial that ended on its login's usage
+        limit: never retried within the run (the same login would only hit
+        it again), but a resume is how a caller runs it again on another
+        login or after the reset.
         """
         category = retry_category(error, category or classify_error(error))
         # A full disk is not retried within the run; once space is freed a
@@ -1109,17 +1363,15 @@ class RetryConfig:
         repeat for nothing (DF-p5-cli-craft-17). A verifier that never
         started is ``verifier_wedge:``, which is infrastructure and retried.
         """
-        from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+        from benchflow.rollout._verifier_recovery import verifier_error_reruns_trial
 
-        if (
-            not self.retry_on_verifier_infra
-            or (verifier_error and PRESERVED_SOLVER in verifier_error)
-            # A guard refusal is decided by what the agent left; another
-            # attempt would be a re-roll (V2-R1-A-1).
-            or plugin_guard_error_message(verifier_error) is not None
-        ):
-            return False
-        return classify_verifier_error(verifier_error) == VERIFIER_INFRA
+        # A guard refusal is decided by what the agent left; another attempt
+        # would be a re-roll (V2-R1-A-1). The rollout reads the same rule: a
+        # verifier crash after the agent's turn ended the trial is recorded
+        # beside that ending instead, never retried.
+        return self.retry_on_verifier_infra and verifier_error_reruns_trial(
+            verifier_error
+        )
 
     def reruns_verifier_error_on_resume(self, verifier_error: str | None) -> bool:
         """Whether a resumed job runs a scoreless verifier-errored trial again.
@@ -1131,14 +1383,10 @@ class RetryConfig:
         preserved gets its one verifier-only re-run through verifier recovery
         instead (``needs_verifier_recovery``), in the run or on resume.
         """
-        from benchflow.rollout._verifier_recovery import PRESERVED_SOLVER
+        from benchflow.rollout._verifier_recovery import verifier_error_reruns_trial
 
-        if self.should_retry_verifier_error(verifier_error):
-            return True
-        return (
-            self.retry_on_verifier_infra
-            and not (verifier_error and PRESERVED_SOLVER in verifier_error)
-            and classify_verifier_error(verifier_error) == DISK_FULL
+        return self.retry_on_verifier_infra and verifier_error_reruns_trial(
+            verifier_error, on_resume=True
         )
 
     def backoff_delay(self, attempt: int) -> float:
@@ -1484,6 +1732,7 @@ _RESUME_SETTINGS = (
     "timeout_multiplier",
     "agent_idle_timeout",
     "sandbox_setup_timeout",
+    "verifier_setup_timeout",
     "budget",
     "trial_budget",
     "agent_env",
@@ -1619,27 +1868,8 @@ def _without_secrets(value: Any, free_form: bool = False) -> Any:
     return value
 
 
-def _changed_paths(old: Any, new: Any, prefix: str = "") -> list[str]:
-    """The dotted paths below which ``old`` and ``new`` differ (a list or a
-    scalar is one leaf), e.g. ["sandbox.env.MY_FLAG"]."""
-    if not isinstance(old, dict) and not isinstance(new, dict):
-        return [prefix] if prefix and old != new else []
-    old = old if isinstance(old, dict) else {}
-    new = new if isinstance(new, dict) else {}
-    paths: list[str] = []
-    for sub in sorted(old.keys() | new.keys(), key=str):
-        if old.get(sub) != new.get(sub):
-            paths.extend(_changed_paths(old.get(sub), new.get(sub), f"{prefix}{sub}."))
-    return [p.rstrip(".") for p in paths]
-
-
 def _setting_change(key: str, old: Any, new: Any) -> str:
     """One setting's difference, e.g. "model='a' (this run: 'b')"."""
-    if key == "config_override":
-        # Paths only: the overlay is free-form (sandbox env, MCP headers), so
-        # any of its values may be a credential under a harmless name.
-        paths = _changed_paths(old, new)
-        return f"{key} " + (f"{', '.join(paths)} changed" if paths else "changed")
     if key.endswith("agent_env"):
         # Names only: values stay out of logs even when config.json keeps them.
         old_env = old if isinstance(old, dict) else {}
@@ -1735,6 +1965,27 @@ def _task_digest_for(task_dir: Path, config: EvaluationConfig) -> str | None:
 #: left none (it failed before its rollout folder existed): never reused as
 #: finished, never compared as a trial that ran (review DX-e R2-M1, R2-L1).
 NO_ROLLOUT_FOLDER = "no_rollout_folder"
+#: summary.json's token and cost fields the run card's ``after_run.usage``
+#: repeats.
+RUN_CARD_USAGE_FIELDS = (
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_cache_read_tokens",
+    "total_cache_write_tokens",
+    "total_cache_write_5m_tokens",
+    "total_cache_write_1h_tokens",
+    "total_tokens",
+    "total_cost_usd",
+    "total_cost_usd_provider",
+    "n_calls_cost_estimated",
+    "usage_sources",
+    "cost_sources",
+    "trials_without_usage",
+    "trials_without_cost",
+    "trials_without_model_call",
+    "trials_usage_incomplete",
+    "trials_cost_incomplete",
+)
 
 
 def _left_no_rollout_folder(trial_dir: Path) -> bool:
@@ -1743,6 +1994,66 @@ def _left_no_rollout_folder(trial_dir: Path) -> bool:
     except (OSError, ValueError):
         return False
     return isinstance(result, dict) and result.get(NO_ROLLOUT_FOLDER) is True
+
+
+def _write_trial_rows(folder: Path, task_name: str, payload: dict[str, Any]) -> None:
+    """Write the rows an errored rollout leaves in its folder, its
+    ``results.jsonl`` row and its trainer files, for a trial that left no
+    folder of its own, from the result.json *payload* the job wrote for it.
+
+    The job's ``results.jsonl`` and trainer files are made from these rows,
+    so without them the trial was in the job's folder and not in its file:
+    the file had no result for the task, or only the attempt the run
+    retried. The rows have the shape an errored rollout's have, with no
+    prompt and no trajectory; a write that fails is logged, as a rollout's.
+    An error with no recorded category is classified as a rollout's is (and
+    as the job's summary counts it).
+    """
+    # Imported here, not at the top: another open change stops using these
+    # two elsewhere in this module and drops them from its imports, and the
+    # two merge without a conflict.
+    from benchflow._utils.scoring import classify_error, classify_verifier_error
+    from benchflow.rollout._results import (
+        _write_results_jsonl,
+        _write_trainer_artifact,
+    )
+
+    error, verifier_error = payload.get("error"), payload.get("verifier_error")
+    _write_results_jsonl(
+        folder,
+        task_name=task_name,
+        rollout_name=folder.name,
+        agent=payload.get("agent") or "",
+        agent_name=payload.get("agent_name") or "",
+        model=payload.get("model"),
+        n_tool_calls=payload.get("n_tool_calls") or 0,
+        prompts=[],
+        trajectory=[],
+        partial_trajectory=False,
+        rewards=payload.get("rewards"),
+        error=error,
+        verifier_error=verifier_error,
+        error_category=payload.get("error_category") or classify_error(error),
+        verifier_error_category=payload.get("verifier_error_category")
+        or classify_verifier_error(verifier_error),
+        export_error=payload.get("export_error"),
+        timing=payload.get("timing"),
+        agent_result=payload.get("agent_result"),
+        purpose=payload.get("purpose") or "task",
+        parent_rollout=payload.get("parent_rollout"),
+    )
+    _write_trainer_artifact(
+        folder,
+        task_name=task_name,
+        rollout_name=folder.name,
+        agent_name=payload.get("agent_name") or payload.get("agent") or "",
+        prompts=[],
+        trajectory=[],
+        rewards=payload.get("rewards"),
+        model=payload.get("model"),
+        verifier_error=verifier_error,
+        error=error,
+    )
 
 
 def _rollout_skill_mode(requested: str, *, learner: bool) -> str:
@@ -1791,11 +2102,6 @@ def _resolved_primary_settings(
     if role is not None:
         agent, model, effort = role.agent, role.model, role.reasoning_effort
     return normalize_agent_name(agent), model, normalize_reasoning_effort(effort)
-
-
-def _resolved_agent(task_dir: Path, config: EvaluationConfig) -> str:
-    """The agent a rollout records, including task-pinned scene overrides."""
-    return _resolved_primary_settings(task_dir, config)[0]
 
 
 def _task_image_ref(task_dir: Path, config: EvaluationConfig) -> str | None:
@@ -2207,6 +2513,17 @@ def _job_record_changes(
         if key not in recorded:
             continue
         old, new = recorded[key], current.get(key)
+        if key == "config_override":
+            # Stored without its secret-looking values, with the form compared
+            # and the paths withheld beside it (overlay_record); an older job
+            # stored the overlay itself. Named by path only: the overlay is
+            # free-form, so any of its values may be a credential.
+            from benchflow._utils.config_override import overlay_changes
+
+            changes = overlay_changes(old, new)
+            if changes is not None:
+                diffs.append(f"{key} {changes}")
+            continue
         if key == "agent_env":
             old, new = _env_comparison_record(recorded), _env_comparison_record(current)
         if key != "agent_env":
@@ -2750,6 +3067,10 @@ class EvaluationConfig:
     agent: str = DEFAULT_AGENT
     model: str | None = None
     reasoning_effort: str | None = None
+    # Where the effort was asked (--effort, a model's [effort], an
+    # agent setting); kept across dataclasses.replace(), which sees the
+    # suffix already taken off the model.
+    reasoning_effort_source: str | None = None
     # "acp" (default) or "native": run the agent through its own CLI in
     # headless JSON mode instead of its ACP adapter (benchflow.native_harness).
     harness: str = "acp"
@@ -2768,6 +3089,11 @@ class EvaluationConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    # Whether the run named it; None reads it from the value (not 120).
+    sandbox_setup_timeout_given: bool | None = None
+    # Seconds each verifier-setup command may take; None: the task's
+    # verifier.setup_timeout_sec, else 180.
+    verifier_setup_timeout: int | None = None
     skip_agent_install: bool = False
     # Every trial installs the model proxy and the agent itself, with no
     # cached layer (``--fresh-install``).
@@ -2832,7 +3158,7 @@ class EvaluationConfig:
     keep_sandbox: str = "never"
     # Reward integrity for every trial (benchflow.integrity): "off", "audit"
     # or "strict". Writes integrity/claim_verdict.json; never changes a reward.
-    integrity: str = "off"
+    integrity: str = "audit"
     # Where every trial's verifier runs (benchflow.task.verifier_sandbox):
     # "task" keeps each task's declared mode, "separate" moves every task's
     # verifier into the separate verifier sandbox and refuses, before the job
@@ -2922,6 +3248,13 @@ class EvaluationConfig:
         return parse_checkpoint_policy(self.checkpoints, keep=self.checkpoint_keep)
 
     def __post_init__(self):
+        from benchflow._verifier_setup import validate_verifier_setup_timeout
+
+        self.verifier_setup_timeout = validate_verifier_setup_timeout(
+            self.verifier_setup_timeout, where="verifier_setup_timeout"
+        )
+        if self.sandbox_setup_timeout_given is None:
+            self.sandbox_setup_timeout_given = self.sandbox_setup_timeout != 120
         self.budget = Budget.coerce(self.budget)
         self.trial_budget = TrialBudget.coerce(self.trial_budget)
         from benchflow.rollout._keep_sandbox import check_backend, normalize_policy
@@ -2956,6 +3289,19 @@ class EvaluationConfig:
         # A config that sets a model names it unless its maker says not.
         self.model_given = self.model is not None and self.model_given is not False
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        from benchflow.effort_request import effort_source, settle_effort
+
+        # Every way of asking counts: a model[effort] suffix or a
+        # CODEX_CONFIG effort is the run's effort, and a level the agent's
+        # model cannot take is refused here, before any trial starts.
+        settled = settle_effort(
+            self.agent, self.model, self.reasoning_effort, self.agent_env
+        )
+        # The effort suffix is consumed: the model id goes upstream bare.
+        self.model, self.reasoning_effort = settled.model, settled.effort
+        self.reasoning_effort_source = effort_source(
+            self.reasoning_effort_source, settled.source
+        )
         from benchflow.native_harness.harnesses import (
             check_harness,
             normalize_harness,
@@ -3115,11 +3461,15 @@ class EvaluationResult:
 
     def __repr__(self) -> str:
         # The counts, not the config or every task's RolloutResult.
+        from benchflow._utils.scoring import result_unscored_note
+
         job_dir = str(self.job_dir) if self.job_dir is not None else None
+        note = result_unscored_note(self)
+        note = f" ({note})" if note else ""
         return (
             f"EvaluationResult(job_name={self.job_name!r}, total={self.total}, "
             f"passed={self.passed}, failed={self.failed}, errored={self.errored}, "
-            f"verifier_errored={self.verifier_errored}, score={self.score:.3f}, "
+            f"verifier_errored={self.verifier_errored}, score={self.score:.3f}{note}, "
             f"mean_reward={self.mean_reward!r} (over "
             f"{self.mean_reward_n or self.total} trials, unscored as 0), "
             f"mean_reward_scored_only={self.mean_reward_scored_only!r} (over "
@@ -3283,6 +3633,35 @@ def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
     return results, without_receipt
 
 
+def _kept_attempt_usage_rows(
+    rows: dict[str, dict[str, Any]], job_dir: Path
+) -> dict[str, dict[str, Any]]:
+    """The trials summary.json's ``total_*`` and ``judge_totals`` count: each
+    task's kept attempt as the summary's ``rows`` hold it (the run's own
+    result; a resumed task's from :func:`load_task_results`, the job's
+    kept-attempt picker), and for a task with none the attempt stopped
+    before it finished, which still spent (:func:`kept_usage_rows`).
+
+    The one place those totals take their trials, so the attempt-decision
+    picker (the R2 stack, PRs #137-#139) replaces the kept rows here and
+    nowhere else. :func:`_spend_all_attempts` counts every attempt and takes
+    no pick.
+    """
+    return kept_usage_rows(rows, interrupted_trial_results(job_dir))
+
+
+def _spend_all_attempts(job_dir: Path) -> dict[str, Any]:
+    """summary.json's ``spend_all_attempts`` (:func:`attempt_spend_summary`)
+    from every attempt the job folder records; None when a record of one
+    cannot be read (a resume refuses the job then too)."""
+    try:
+        attempts, _ = _recorded_attempts(job_dir)
+    except ValueError as exc:
+        logger.warning("summary.json has no spend_all_attempts: %s", exc)
+        return {"spend_all_attempts": None}
+    return attempt_spend_summary(attempts)
+
+
 def _pid_alive(pid: int) -> bool:
     """Whether a process with this pid exists on this host."""
     try:
@@ -3350,7 +3729,11 @@ def _acquire_job_lock(job_dir: Path) -> JobLock:
                     f"Job {job_dir} is already running (or crashed) on host "
                     f"{host} (pid {pid}); delete {lock} if that run is gone."
                 ) from None
-            if isinstance(pid, int) and _pid_alive(pid):
+            # This process holds the job's flock, and no second claim of it
+            # can be made from one process, so a record naming this pid was
+            # left by a run that is gone and whose pid this process was given
+            # (the usual case when a container restarts).
+            if isinstance(pid, int) and pid != me["pid"] and _pid_alive(pid):
                 raise JobLockedError(
                     f"Job {job_dir} is already running in process {pid} "
                     f"(started {holder.get('started_at', '?')}); wait for it "
@@ -3425,6 +3808,11 @@ def _config_to_record(config: EvaluationConfig) -> dict[str, Any]:
             record[f.name] = (
                 None if not value else [_callable_name(hook) for hook in value]
             )
+        elif f.name == "config_override":
+            # Without the values that look secret (see overlay_record).
+            from benchflow._utils.config_override import overlay_record
+
+            record[f.name] = overlay_record(value) if value else None
         elif isinstance(value, set):
             record[f.name] = sorted(value)
         else:
@@ -3484,6 +3872,14 @@ def _config_from_record(
         )
     for name in ("exclude_tasks", "include_tasks"):
         kwargs[name] = set(raw.get(name) or [])
+    # The record keeps the overlay the job ran with, minus the values that
+    # look secret; those come from the caller's environment, as agent_env's
+    # do. A resume that needs them and has none stops here.
+    from benchflow._utils.config_override import recorded_overlay
+
+    kwargs["config_override"] = recorded_overlay(
+        raw.get("config_override"), what="a resume"
+    )
     return EvaluationConfig(**kwargs)
 
 
@@ -3572,6 +3968,8 @@ class Evaluation:
         *,
         restart_changed: bool = False,
     ):
+        # The build this job's records name, read as it starts.
+        build_info.read_at_start()
         # A saved job may be resumed from a different working directory. Bind
         # relative input paths when selected, before writing evaluation.json.
         self._tasks_dir = resolve_task_collection_root(tasks_dir).absolute()
@@ -3590,6 +3988,9 @@ class Evaluation:
         # made when it runs.
         self._run_checks = RunChecks(None, planned=1)
         self._selection_warned = False
+        # A shard of a sharded run lists only its own tasks: its records carry
+        # the tasks-root skips of the job's listing (eval_sharding).
+        self._job_tasks_root_skips: dict[str, Any] | None = None
         # Set by resume(): it runs the selection the job recorded.
         self._resuming = False
         # agent_env names a loaded config declared without values; to_dict
@@ -3687,15 +4088,24 @@ class Evaluation:
         except OSError as e:
             logger.warning(f"Could not persist LearnerStore: {e}")
 
-    def to_dict(self, *, include_agent_env: bool = False) -> dict[str, Any]:
+    def to_dict(
+        self, *, include_agent_env: bool = False, include_config_override: bool = False
+    ) -> dict[str, Any]:
         """This job as the native config mapping that ``from_yaml`` and
         ``bench eval run --config`` read.
 
         agent_env values (the agent's and the reviewer's) are left out unless
         ``include_agent_env=True``; their key names are listed under
-        ``agent_env_keys`` so a reader knows what to supply. The job name is
-        not written, so each run of the saved config starts a new job.
+        ``agent_env_keys`` so a reader knows what to supply. In the same way
+        a config_override that holds a value that may be a credential is
+        written as its record (no such value, their paths under
+        ``withheld``) unless ``include_config_override=True``; loading that
+        takes the override again from ``BENCHFLOW_CONFIG_OVERRIDE`` or stops
+        with ``ConfigOverrideNeededError``. The job name is not written, so
+        each run of the saved config starts a new job.
         """
+        from benchflow._utils.config_override import exported_override
+
         cfg = self._config
         if cfg.pre_agent_hooks:
             raise ValueError(
@@ -3726,7 +4136,18 @@ class Evaluation:
             "codex_apps_policy": cfg.codex_apps_policy,
             "sandbox_user": cfg.sandbox_user,
             "sandbox_locked_paths": cfg.sandbox_locked_paths,
-            "sandbox_setup_timeout": cfg.sandbox_setup_timeout,
+            # Only a value the job named: a written default would read back
+            # as named and win over each task's sandbox.setup_timeout_sec.
+            **(
+                {"sandbox_setup_timeout": cfg.sandbox_setup_timeout}
+                if cfg.sandbox_setup_timeout_given
+                else {}
+            ),
+            **(
+                {"verifier_setup_timeout": cfg.verifier_setup_timeout}
+                if cfg.verifier_setup_timeout is not None
+                else {}
+            ),
             "skip_install": cfg.skip_agent_install,
             "fresh_install": cfg.fresh_install,
             "allow_cloud_metadata": cfg.allow_cloud_metadata,
@@ -3743,7 +4164,9 @@ class Evaluation:
             "job_mode": cfg.job_mode,
             **cfg.usage_tracking.to_mapping(),
             "environment_manifest": record["environment_manifest"],
-            "config_override": cfg.config_override,
+            "config_override": exported_override(
+                cfg.config_override, include=include_config_override
+            ),
             "loop_strategy": record["loop_strategy"],
             "checkpoints": cfg.checkpoints,
             "checkpoint_keep": cfg.checkpoint_keep,
@@ -3777,15 +4200,21 @@ class Evaluation:
         }
         return json.loads(json.dumps(out, default=str))
 
-    def to_yaml(self, path: str | Path, *, include_agent_env: bool = False) -> Path:
+    def to_yaml(
+        self,
+        path: str | Path,
+        *,
+        include_agent_env: bool = False,
+        include_config_override: bool = False,
+    ) -> Path:
         """Write :meth:`to_dict` as YAML (``bench eval run --config`` reads it)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            yaml.safe_dump(
-                self.to_dict(include_agent_env=include_agent_env), sort_keys=False
-            )
+        saved = self.to_dict(
+            include_agent_env=include_agent_env,
+            include_config_override=include_config_override,
         )
+        path.write_text(yaml.safe_dump(saved, sort_keys=False))
         return path
 
     @classmethod
@@ -3804,6 +4233,7 @@ class Evaluation:
         *,
         warn_default_agent: bool = True,
         job_cell: int | None = None,
+        overrides_follow: bool = False,
         **kwargs: Any,
     ) -> Evaluation:
         """Create a Job from a YAML config file.
@@ -3815,6 +4245,12 @@ class Evaluation:
         unless ``warn_default_agent`` is false (``bench eval run --config``
         passes false and warns itself once its --agent/--model overrides are
         applied).
+
+        A value the same flag refuses raises :class:`RunConfigValueError`,
+        naming the file and line. ``overrides_follow`` (``bench run --config``)
+        says flags go on the config after it loads: the warm pool is then
+        checked against the concurrency by the caller, with
+        :func:`check_warm_pool`.
 
         benchflow format:
             tasks_dir: path/to/tasks
@@ -3884,14 +4320,31 @@ class Evaluation:
         if job_cell is not None:
             raise ValueError(f"{path} is not a YAML job config; it has no cells")
         return cls._from_native_yaml(
-            raw, warn_default_agent=warn_default_agent, **kwargs
+            raw,
+            warn_default_agent=warn_default_agent,
+            path=path,
+            text=text,
+            overrides_follow=overrides_follow,
+            **kwargs,
         )
 
     @classmethod
     def _from_native_yaml(
-        cls, raw: dict, *, warn_default_agent: bool = True, **kwargs
+        cls,
+        raw: dict,
+        *,
+        warn_default_agent: bool = True,
+        path: Path | None = None,
+        text: str | None = None,
+        overrides_follow: bool = False,
+        **kwargs,
     ) -> Evaluation:
-        """Parse benchflow-native YAML."""
+        """Parse benchflow-native YAML (the file at *path*, whose *text* it is)."""
+        _check_run_config_values(raw, at=_key_at(path, text))
+        if not overrides_follow:
+            check_warm_pool(
+                raw.get("warm_pool"), raw.get("concurrency") or 4, path=path, text=text
+            )
         from benchflow._utils.benchmark_repos import (
             TASK_ALIASES,
             ensure_tasks,
@@ -3965,6 +4418,8 @@ class Evaluation:
                 "agent_env (or the environment) if the agent needs them.",
                 ", ".join(missing_env),
             )
+        from benchflow._utils.config_override import recorded_overlay
+
         config = EvaluationConfig(
             agent=agent_name,
             model=effective_model(agent_name, raw.get("model"), agent_env_raw),
@@ -3985,6 +4440,8 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            sandbox_setup_timeout_given="sandbox_setup_timeout" in raw,
+            verifier_setup_timeout=raw.get("verifier_setup_timeout"),
             skip_agent_install=bool(raw.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
             allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
@@ -4014,7 +4471,10 @@ class Evaluation:
             dataset_task_digests=raw.get("dataset_task_digests") or {},
             usage_tracking=UsageTrackingConfig.from_mapping(raw),
             environment_manifest=env_manifest,
-            config_override=raw.get("config_override"),
+            # A saved config may hold the override's record (to_dict).
+            config_override=recorded_overlay(
+                raw.get("config_override"), what="loading this config"
+            ),
             loop_strategy=raw.get("loop_strategy"),
             checkpoints=raw.get("checkpoints"),
             checkpoint_keep=raw.get("checkpoint_keep", 3),
@@ -4025,7 +4485,7 @@ class Evaluation:
                 if raw.get("accept_deviations") is not None
                 else None
             ),
-            integrity=raw.get("integrity") or "off",
+            integrity=normalize_integrity_mode(raw.get("integrity")),
             verifier_sandbox=raw.get("verifier_sandbox", "task"),
             retry_from_checkpoint=raw.get("retry_from_checkpoint"),
             retry_prompt=raw.get("retry_prompt"),
@@ -4289,6 +4749,8 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            sandbox_setup_timeout_given="sandbox_setup_timeout" in raw,
+            verifier_setup_timeout=raw.get("verifier_setup_timeout"),
             skip_agent_install=bool(agent_cfg.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
             allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
@@ -4318,7 +4780,7 @@ class Evaluation:
             # that asks for separate verifiers (or strict integrity, which
             # implies them) must get them, never a silent shared run
             # (SV2-codex-1).
-            integrity=raw.get("integrity") or "off",
+            integrity=normalize_integrity_mode(raw.get("integrity")),
             verifier_sandbox=raw.get("verifier_sandbox", "task"),
             # The agent phase's multiplier; job_config_problems refused any other
             # unsupported phase multiplier.
@@ -4352,6 +4814,23 @@ class Evaluation:
             path, image_supplied=self._config.environment_manifest is not None
         )
 
+    def _warn_lost_report(self, task_dir: Path) -> None:
+        """Warn, once per task, of a test.sh whose CTRF report never reaches
+        /logs/verifier/ctrf.json: the task grades itself, so it runs, and the
+        run keeps no per-test results (F2b, 2026-11-16 12:27Z; ``bench check`` warns in the
+        same words). A task.md criterion graded from the report is the task.md
+        plan's refusal."""
+        from benchflow.task.ctrf_report import verifier_script_ctrf_issue
+        from benchflow.task.paths import TaskPaths
+
+        warned = self.__dict__.setdefault("_lost_report_warned", set())
+        if task_dir in warned:
+            return
+        warned.add(task_dir)
+        issue = verifier_script_ctrf_issue(TaskPaths(task_dir).test_path)
+        if issue is not None:
+            logger.warning("Task %r: %s", task_dir.name, issue)
+
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories.
 
@@ -4372,10 +4851,20 @@ class Evaluation:
             )
 
         from benchflow._utils.task_authoring import (
+            holds_task_file,
             run_folder_link_issues,
             task_symlink_issues,
+            tasks_root_entry_refusal,
+            tasks_root_skip_reason,
         )
         from benchflow.task.formats import detect_task_format, materialize_task_dir
+
+        # What the tasks-root rule skipped of the listing, for the run card and
+        # summary.json: a skipped entry never shrinks a run silently.
+        self._tasks_root_skips: dict[str, Any] | None = getattr(
+            self, "_job_tasks_root_skips", None
+        )
+        skipped: list[dict[str, str]] = []
 
         seeds = self._config.seeds
         include, exclude = self._config.include_tasks, self._config.exclude_tasks
@@ -4430,6 +4919,7 @@ class Evaluation:
         # root is a single-task input too; it runs as its materialized package.
         if source_format is not None:
             natives = materialize(self._tasks_dir)
+            self._warn_lost_report(self._tasks_dir)
             # with seeds, filters match the source folder (like child folders below)
             base = self._tasks_dir.name if seeds else natives[0].name
             if not picked(base):
@@ -4445,6 +4935,7 @@ class Evaluation:
                 )
             if not picked(self._tasks_dir.name):
                 return []
+            self._warn_lost_report(self._tasks_dir)
             return [self._tasks_dir]
 
         # Batch input: collect valid child tasks; warn (don't silently drop) on
@@ -4457,32 +4948,49 @@ class Evaluation:
         # selection names them, not the filters (DFR-p1-2).
         malformed_tasks: list[tuple[str, str]] = []
         self._malformed_tasks = malformed_tasks
-        children = [
-            d
-            for d in sorted(self._tasks_dir.iterdir())
-            if d.is_dir() and picked(d.name)
-        ]
-        children = sample_task_dirs(
-            children,
-            self._config.n_tasks,
-            self._config.sample_seed,
-            is_task=lambda d: detect_task_format(d) is not None or self._is_runnable(d),
-        )
+        children: list[Path] = []
+        for d in sorted(self._tasks_dir.iterdir()):
+            if not (d.is_dir() and picked(d.name)):
+                continue
+            # The rule a review resume takes a task by, too, applied before
+            # --n-tasks samples: a skipped entry never takes a task's place.
+            refusal = tasks_root_entry_refusal(self._tasks_dir, d.name)
+            if refusal is None:
+                children.append(d)
+                continue
+            if not (holds_task_file(d) or detect_task_format(d) is not None):
+                # A link to a folder that holds no task (shared files, docs)
+                # is not a skipped task: it is left out unrecorded, as before
+                # the rule. BenchFlow's task formats detect a task by its
+                # task.md, so nothing the link reaches is read.
+                continue
+            reason = tasks_root_skip_reason(self._tasks_dir, d.name)
+            skipped.append({"name": d.name, "reason": reason, "detail": refusal})
+        # The entries --n-tasks leaves out are listed too, so the record's
+        # "N of M listed" counts every task entry of the root.
+        dropped = 0
+        if self._config.n_tasks and self._config.n_tasks > 0:
+            pool = [
+                d
+                for d in children
+                if detect_task_format(d) is not None or self._is_runnable(d)
+            ]
+            children = sample_task_dirs(
+                pool, self._config.n_tasks, self._config.sample_seed
+            )
+            dropped = len(pool) - len(children)
+        # The entries that gave the run its tasks: the record counts entries,
+        # though with --seeds each gives one task per seed.
+        taken = 0
         for d in children:
             linked = task_symlink_issues(d)
-            has_task_file = (d / "task.md").is_file() or (d / "task.toml").is_file()
-            if has_task_file and (
-                any((d / name).is_symlink() for name in ("task.md", "task.toml"))
-                or run_folder_link_issues(d)
-                or (linked and detect_task_format(d) is not None)
-            ):
-                logger.warning("Skipping task %r: %s", d.name, linked[0])
-                continue
             if detect_task_format(d) is not None:
                 from benchflow.taskmd import TaskMdError
 
                 try:
                     selected.extend(materialize(d))
+                    self._warn_lost_report(d)
+                    taken += 1
                 except TaskMdError as exc:
                     # A task.md draft 2 package BenchFlow refuses must not
                     # vanish from a batch silently, nor stop the healthy ones.
@@ -4498,7 +5006,9 @@ class Evaluation:
                 if linked:
                     # The same rule as a task named on its own (above).
                     logger.warning("Task %r: %s", d.name, linked[0])
+                self._warn_lost_report(d)
                 selected.append(d)
+                taken += 1
                 continue
             malformed = _task_parse_error(d)
             if malformed is not None:
@@ -4510,6 +5020,39 @@ class Evaluation:
                 # A task that would run without its linked files must not
                 # vanish silently from a batch.
                 logger.warning("Skipping task %r: %s", d.name, linked[0])
+        if skipped:
+            listed = taken + dropped + len(skipped)
+            self._tasks_root_skips = {
+                "count": f"{taken} of {listed} listed; "
+                f"{len(skipped)} skipped by the tasks-root rule",
+                "listed": listed,
+                "skipped": skipped,
+            }
+            warned = (self._tasks_dir.resolve(), frozenset(s["name"] for s in skipped))
+            if warned not in _TASKS_ROOT_WARNED:
+                # Once per process, before anything runs, though the listing is
+                # read again. Each entry keeps its "Skipping task" line, which
+                # log readers (tools/dt/normalise.py) look for.
+                _TASKS_ROOT_WARNED.add(warned)
+                shown = [
+                    f"  Skipping task {s['name']!r}: {s['detail']}" for s in skipped[:5]
+                ]
+                if len(skipped) > 5:
+                    shown.append(f"  and {len(skipped) - 5} more")
+                # A listing that leaves no task is refused, and writes no record.
+                record = (
+                    "; run-card.json and summary.json list each with its reason"
+                    if selected
+                    else ", so no task is left to run"
+                )
+                logger.warning(
+                    "The tasks-root rule skips %d of the %d tasks listed in %s%s:\n%s",
+                    len(skipped),
+                    listed,
+                    self._tasks_dir,
+                    record,
+                    "\n".join(shown),
+                )
 
         # A malformed task file at the tasks-dir ROOT is a hard error ONLY when
         # no valid child tasks were found — i.e. the root was meant as a single
@@ -4585,6 +5128,17 @@ class Evaluation:
                 f"(first: {name}: {render_text(_first_line(error), 200)}){filtered}."
                 + tail
             )
+        skips = _rule_took_nothing(self)
+        if skips:
+            # The tasks-root rule skipped every entry the filters left: a fix
+            # to the links, which the tasks themselves pass.
+            n = len(skips["skipped"])
+            what = "the 1 entry listed" if n == 1 else f"all {n} entries listed"
+            return (
+                f"No tasks selected in {root}: the tasks-root rule skips {what} "
+                f"(first: {skips['skipped'][0]['detail']})"
+                f"{self._unrunnable_beside(skips)}." + tail
+            )
         if cfg.include_tasks or cfg.exclude_tasks:
             return empty_selection_message(
                 f"tasks_dir={root}",
@@ -4629,6 +5183,38 @@ class Evaluation:
             )
         return f"No tasks selected: no task found in {root}." + tail
 
+    def _unrunnable_beside(self, skips: dict[str, Any]) -> str:
+        """The selected task folders beside the rule's skips that cannot run,
+        for an empty selection: ``; 1 other task folder is not runnable
+        (first: <name>: <issue>)``, or "" when there are none."""
+        from benchflow._utils.task_authoring import (
+            holds_task_file,
+            runnable_task_issues,
+        )
+
+        cfg = self._config
+        skipped = {s["name"] for s in skips["skipped"]}
+        others = sorted(
+            d
+            for d in self._tasks_dir.iterdir()
+            if d.is_dir()
+            and d.name not in skipped
+            and task_name_selected(d.name, cfg.include_tasks, cfg.exclude_tasks)
+            and holds_task_file(d)
+        )
+        if not others:
+            return ""
+        issues = runnable_task_issues(
+            others[0], image_supplied=cfg.environment_manifest is not None
+        )
+        first = f" (first: {others[0].name}: {issues[0]})" if issues else ""
+        noun = (
+            "1 other task folder is not runnable"
+            if len(others) == 1
+            else f"{len(others)} other task folders are not runnable"
+        )
+        return f"; {noun}{first}"
+
     def _empty_selection_hint(self) -> str | None:
         """The next step for an empty selection of one named task folder, or
         of tasks that are all malformed."""
@@ -4642,6 +5228,19 @@ class Evaluation:
                 f"fix {name}'s task file ({render_text(_first_line(error), 160)}); "
                 f"`bench check {command_arg(folder, '<folder>')}` lists each issue"
             )
+        skips = _rule_took_nothing(self)
+        if skips:
+            reasons = {s["reason"] for s in skips["skipped"]}
+            steps = []
+            if reasons - {"link inside the task"}:
+                steps.append(
+                    "link a task under its folder's own name "
+                    "(tasks/bar -> ../store/bar) or put the folder itself in the "
+                    "tasks root"
+                )
+            if "link inside the task" in reasons:
+                steps.append("copy a task's linked files into it")
+            return "; ".join(steps) + "; the warning above gives each entry's reason"
         if cfg.include_tasks or cfg.exclude_tasks:
             return None
         if not ((root / "task.md").is_file() or (root / "task.toml").is_file()):
@@ -4657,10 +5256,10 @@ class Evaluation:
 
         Scoped to the current job directory (``_jobs_dir / _job_name``) to
         prevent cross-job contamination. When multiple result.json files exist
-        for the same task (retry artifacts), a scored result always wins over
-        a scoreless verifier error; otherwise the newest artifact wins.
-
-        orphan retry artifacts no longer pollute resume.
+        for the same task (retry artifacts), the attempt the run kept is the
+        task's result and one it retried never is
+        (:func:`benchflow._utils.result_paths.load_task_results`); the same
+        holds for an attempt that left only a solver checkpoint.
         """
         job_dir = self._jobs_dir / self._job_name
         if not job_dir.exists():
@@ -4679,10 +5278,18 @@ class Evaluation:
         # A process may have died after the solver completed but before
         # capture/cleanup produced a terminal result. Preserve the stage
         # checkpoint without pretending it is a completed scoring verdict.
-        for checkpoint in job_dir.glob("*/solver-complete.json"):
+        from benchflow._utils.attempt_decision import not_retried
+
+        def checkpoints(name: str) -> list[Path]:
+            # An attempt the run retried is never the task's result.
+            return not_retried(
+                sorted(job_dir.glob(f"*/{name}")), folder=lambda p: p.parent
+            )
+
+        for checkpoint in checkpoints("solver-complete.json"):
             if (checkpoint.parent / "result.json").exists():
                 continue
-            pending = json.loads(checkpoint.read_text())
+            pending = _read_solver_snapshot(checkpoint)
             name = pending.get("task_name")
             if name and name not in latest and pending.get("purpose", "task") == "task":
                 latest[name] = pending
@@ -4699,15 +5306,17 @@ class Evaluation:
         # committed their skills would corrupt the learning curve; there the
         # errored result stays reused, matching the pre-existing behavior.
         rerun_ok = self._config.job_mode != "sequential-shared"
-        for snapshot in job_dir.glob("*/solver.json"):
+        for snapshot in checkpoints("solver.json"):
             if (snapshot.parent / "result.json").exists():
                 continue
-            pending = json.loads(snapshot.read_text())
+            pending = _read_solver_snapshot(snapshot)
             name = pending.get("task_name")
             if name and name not in latest and pending.get("purpose", "task") == "task":
                 if (
                     rerun_ok
                     and pending.get("rewards") is None
+                    # The model's refusal is its answer: never re-rolled.
+                    and not pending.get("model_refusal")
                     and self._config.retry.reruns_on_resume(
                         pending.get("error"), category=pending.get("error_category")
                     )
@@ -4730,11 +5339,17 @@ class Evaluation:
             # solver. Even an unsuccessful retry must never replay that solver,
             # unless the solver failed on infrastructure and nothing was judged.
             if r.get("scoring") is not None:
-                if rerun_ok and self._config.retry.reruns_unjudged_solver(
-                    _scoring_block(r),
-                    r.get("error"),
-                    category=r.get("error_category"),
-                    on_resume=True,
+                if (
+                    rerun_ok
+                    # The model's refusal is its answer, as within the run
+                    # (_run_task): a resume never re-rolls it.
+                    and not r.get("model_refusal")
+                    and self._config.retry.reruns_unjudged_solver(
+                        _scoring_block(r),
+                        r.get("error"),
+                        category=r.get("error_category"),
+                        on_resume=True,
+                    )
                 ):
                     logger.info(
                         f"Re-running task whose solver failed on infrastructure "
@@ -4762,6 +5377,22 @@ class Evaluation:
                     f"({render_text(r['verifier_error'], 80)})"
                 )
             completed[task] = r
+        kept_endings = sum(
+            1
+            for r in completed.values()
+            if r.get("rewards") is None
+            and isinstance(r.get("post_turn_failure_info"), dict)
+            and r["post_turn_failure_info"].get("step") == "verify"
+            and kept_ending_is_final(r)
+        )
+        if kept_endings:
+            logger.info(
+                f"{kept_endings} reused trial(s) whose verify step failed are not "
+                "run again, because the agent's turn had already ended them; "
+                f"`bench regrade {command_arg(job_dir, '<job dir>')}` re-runs only "
+                "the verifier on a trial whose final workspace the run saved "
+                "(--freeze-workspace, a rubric review or verifier recovery)."
+            )
         return completed
 
     def _prune_docker(self):
@@ -4806,8 +5437,8 @@ class Evaluation:
     def _enrich_payload_with_persisted_timing(
         self, payload: dict, result: RolloutResult
     ) -> None:
-        """Copy timing, loop and integration-failure records from the
-        rollout's on-disk result.json into payload.
+        """Copy into payload every record of the rollout's on-disk result.json
+        that the in-memory result does not carry.
 
         ``RolloutResult`` does not carry phase timing, but the rollout writer
         (``rollout.py``) persists it under ``rollout_dir/result.json``. Reading
@@ -4821,6 +5452,7 @@ class Evaluation:
             for key in (
                 "timing",
                 "integration_failure_info",
+                "post_turn_failure_info",
                 "loop",
                 "verifier_isolation",
                 "warnings",
@@ -4865,6 +5497,12 @@ class Evaluation:
         for key in _MODEL_CALL_KEYS:
             if isinstance(persisted.get(key), dict):
                 payload.setdefault(key, persisted[key])
+        # Every other record result.json holds (the *_info diagnostics, the
+        # trial's times, its agent and model): a resumed trial's row is the
+        # whole persisted result, so a fresh trial's row is too, and
+        # summary.json counts both the same way. The in-memory values win.
+        for key, value in persisted.items():
+            payload.setdefault(key, value)
 
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig
@@ -4883,6 +5521,10 @@ class Evaluation:
 
         rollout = _WARM_ROLLOUT.get()
         _WARM_ROLLOUT.set(None)  # a retried attempt starts cold
+        if rollout is not None:
+            # Prepared before its attempt: whether it is the last try is
+            # known only now.
+            rollout._config.owned_by_retry_loop = _MAY_RETRY.get()
         if rollout is None:
             rollout_config = self._rollout_config(task_dir, cfg)
             if rollout_config.skill_mode == SKILL_MODE_SELF_GEN:
@@ -4904,7 +5546,18 @@ class Evaluation:
             # awaits wedged below the phase-level timeouts — see
             # benchflow.rollout._deadline. A trip surfaces here as a normal
             # infra-retryable error result.
-            result = await rollout.run()
+            try:
+                result = await rollout.run()
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                # The trial keeps its own folder and id, with what it spent
+                # one with no folder yet is the job's to record.
+                recorded = rollout.result_after_failure(exc)
+                if recorded is None:
+                    raise
+                logger.error("[ERR] %s: %s", task_dir.name, _unexpected_text(exc))
+                return recorded
             policy = cfg.retry_policy()
             if policy is not None:
                 try:
@@ -4952,6 +5605,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            reasoning_effort_source=cfg.reasoning_effort_source,
             harness=cfg.harness,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
@@ -4969,6 +5623,8 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            sandbox_setup_timeout_given=cfg.sandbox_setup_timeout_given,
+            verifier_setup_timeout=cfg.verifier_setup_timeout,
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             # The job settled its limit (its effort's default or a set one).
@@ -4999,6 +5655,9 @@ class Evaluation:
                 *cfg.pre_agent_hooks,
             ]
         rollout_config.freeze_workspace = cfg.freeze_workspace
+        # Every attempt this config runs is one of the retry loop's
+        # (_run_task): owned unless the loop will not retry it.
+        rollout_config.owned_by_retry_loop = _MAY_RETRY.get()
         rollout_config.keep_sandbox = cfg.keep_sandbox
         rollout_config.fresh_install = cfg.fresh_install
         rollout_config.allow_cloud_metadata = cfg.allow_cloud_metadata
@@ -5015,6 +5674,12 @@ class Evaluation:
         retry starts only while the budget allows another rollout; otherwise
         the task keeps its last attempt's result.
         """
+        from benchflow.trajectories.otel_spans import (
+            defer_trial_spans,
+            send_deferred_trial_spans,
+            stop_deferring_trial_spans,
+        )
+
         cfg = self._config
         guard = self._budget_guard
         last_result: RunResult | None = None
@@ -5025,7 +5690,27 @@ class Evaluation:
                 logger.info(f"Retry backoff: {delay:.1f}s before attempt {attempt}")
                 await asyncio.sleep(delay)
                 await self._sweep_docker()
-            result = await self._run_single_task(task_dir, cfg)
+            # An attempt the loop will not retry (its last try, or a policy
+            # that never retries an idle timeout) is final as it ends: the
+            # rollout judges its idle timeout when it writes it and sends its
+            # spans then. Any other attempt is the loop's to decide.
+            owned = attempt <= cfg.retry.max_retries and cfg.retry.should_retry(
+                None, category=IDLE_TIMEOUT
+            )
+            may_retry = _MAY_RETRY.set(owned)
+            # The span files this try writes and leaves for its decision.
+            spans: list[Path] = []
+            deferring = defer_trial_spans(spans)
+            try:
+                result = await self._run_single_task(task_dir, cfg)
+            except BaseException:
+                # Stopped before the loop decided it (a cancel, a kill, an
+                # error after its result was written): what it wrote goes out.
+                send_deferred_trial_spans(spans)
+                raise
+            finally:
+                stop_deferring_trial_spans(deferring)
+                _MAY_RETRY.reset(may_retry)
             last_result = result
             if guard is not None:
                 guard.attempt_done(task_dir.name, result)
@@ -5035,6 +5720,9 @@ class Evaluation:
                 # Once solver evidence is committed, only the scoring stage may
                 # be retried. Replaying the solver would change the trial. A
                 # solver that failed on infrastructure left nothing judged.
+                self._record_attempt_decision(
+                    task_dir.name, result, FINAL, attempt, spans=spans
+                )
                 return result
 
             retryable_agent_error = cfg.retry.should_retry(
@@ -5078,11 +5766,76 @@ class Evaluation:
                 logger.info(
                     f"Retrying {task_dir.name} (attempt {attempt + 1}): {err_preview}"
                 )
+                # The decision is the record: this attempt is not the trial's
+                # result, whatever reward it carries.
+                self._record_attempt_decision(
+                    task_dir.name, result, RETRIED, attempt, spans=spans
+                )
 
         # The loop always runs at least once (range(1, max_retries + 2)
         # has min 1 iter), so last_result is guaranteed set.
         assert last_result is not None
+        self._record_attempt_decision(
+            task_dir.name, last_result, FINAL, attempt, spans=spans
+        )
         return last_result
+
+    def _pending_finals(self) -> dict[str, int]:
+        """Kept attempts that left no folder yet, by task: the attempt number."""
+        pending = getattr(self, "_folderless_finals", None)
+        if pending is None:
+            pending = self._folderless_finals = {}
+        return pending
+
+    def _record_attempt_decision(
+        self,
+        task_name: str,
+        result: RunResult,
+        decision: str,
+        attempt: int,
+        *,
+        spans: list[Path] | None = None,
+    ) -> None:
+        """Keep the retry loop's decision with the attempt it is about
+        (:mod:`benchflow._utils.attempt_decision`). A kept attempt that left
+        no folder gets its record when its folder is made
+        (:meth:`_record_trial_without_folder`). A kept idle timeout whose
+        agent did nothing is judged before its record is written
+        (:func:`~benchflow.rollout._results.judge_kept_idle_timeout`); an
+        attempt the run retries stays as written. The trial spans the try
+        left for its decision (*spans*, an attempt the loop could have
+        retried) are sent now, once, with the ending it is kept or retried
+        with. Never fails the trial."""
+        folder = getattr(result, "rollout_dir", None)
+        if folder is None or not Path(folder).is_dir():
+            if decision == FINAL:
+                self._pending_finals()[task_name] = attempt
+        else:
+            if decision == FINAL:
+                from benchflow.rollout._results import judge_kept_idle_timeout
+
+                judge_kept_idle_timeout(result)
+            self._write_attempt_decision(Path(folder), decision, task_name, attempt)
+        from benchflow.trajectories.otel_spans import send_deferred_trial_spans
+
+        send_deferred_trial_spans(spans if spans is not None else [])
+
+    @staticmethod
+    def _write_attempt_decision(
+        folder: Path, decision: str, task_name: str, attempt: int
+    ) -> None:
+        """Write the record, and never fail the trial over it: an attempt
+        with no record reads as it does in an older job."""
+        try:
+            record_decision(folder, decision, task=task_name, attempt=attempt)
+        except Exception as exc:
+            logger.warning(
+                "Could not record that attempt %s of %s is %s: %s",
+                attempt,
+                task_name,
+                decision,
+                exc,
+            )
 
     @staticmethod
     def _fire_progress(callback, *args) -> None:
@@ -5797,7 +6550,12 @@ class Evaluation:
                 "`bench results <jobs-dir>` lists them",
             )
         record = json.loads(record_path.read_text())
-        config = _config_from_record(record["config"], agent_env)
+        recorded_config = dict(record["config"])
+        if "config_override" in config_overrides:
+            # The caller passes the overlay itself (below); whether it is the
+            # one the trials ran with is the settings comparison's to say.
+            recorded_config["config_override"] = None
+        config = _config_from_record(recorded_config, agent_env)
         hooks = record["config"].get("pre_agent_hooks")
         if hooks and "pre_agent_hooks" not in config_overrides:
             logger.warning(
@@ -5872,7 +6630,9 @@ class Evaluation:
                 else {}
             ),
         }
-        path.write_text(json.dumps(record, indent=2) + "\n")
+        from benchflow._utils.disk_space import write_text_atomic
+
+        write_text_atomic(path, json.dumps(record, indent=2) + "\n")
 
     def _record_trial_without_folder(
         self,
@@ -5892,7 +6652,8 @@ class Evaluation:
         resume reuses it as finished, in any job mode, so a task fixed since
         runs again (review DX-e R2-M1), and its config.json carries what the
         rollout's own records (task_digest, loop, the resolved agent), so the
-        resume checks read it truly (R2-L1).
+        resume checks read it truly (R2-L1). The folder also gets the rows an
+        errored rollout writes in its own (:func:`_write_trial_rows`).
         """
         name = payload.get("rollout_name")
         if name and (job_dir / name).is_dir():
@@ -5918,15 +6679,34 @@ class Evaluation:
             if digest is not None:
                 config["task_digest"] = digest
             try:
-                config["agent"] = _resolved_agent(task_dir, self._config)
+                config["agent"], config["model"], _ = _resolved_primary_settings(
+                    task_dir, self._config
+                )
             except Exception as exc:  # a task that does not load (the typo)
-                logger.debug("Could not resolve the agent of %s: %s", task_name, exc)
+                logger.debug(
+                    "Could not resolve the agent and model of %s: %s", task_name, exc
+                )
+        # The agent and model the trial's other attempts record in their
+        # result.json: readers group a task's attempts by them. A script
+        # agent is named by its file there, as a rollout names it; config.json
+        # keeps its host path, as a rollout's does.
+        from benchflow.agents.scripts import script_label
+
+        payload["agent"] = script_label(payload.get("agent") or config["agent"])
+        if not payload.get("model"):
+            payload["model"] = config["model"]
         # dx-a's writer: a full disk names the job folder (DiskFullError,
         # DF-p5-cli-craft-5) and never leaves a partial result.json.
         from benchflow._utils.disk_space import write_text_atomic
 
         write_text_atomic(folder / "config.json", json.dumps(config, indent=2) + "\n")
-        write_text_atomic(folder / "result.json", json.dumps(payload, indent=2) + "\n")
+        record = {**payload, "benchflow_build": benchflow_build()}
+        write_text_atomic(folder / "result.json", json.dumps(record, indent=2) + "\n")
+        _write_trial_rows(folder, task_name, payload)
+        attempt = self._pending_finals().pop(task_name, None)
+        if attempt is not None:
+            # The attempt the retry loop kept, which had no folder until now.
+            self._write_attempt_decision(folder, FINAL, task_name, attempt)
 
     def _keep_pre_08_files(self) -> None:
         """Copy a 0.7 job's result files to ``<job>/.pre-0.8/`` and say so.
@@ -6035,6 +6815,9 @@ class Evaluation:
 
             prefetch = prefetch_local_subnet_allocator()
         try:
+            # Before the host checks, the job folder and the Daytona reaper,
+            # preflight or not.
+            self._refuse_script_backend()
             if self._preflight:
                 self._check_before_run()
             # Not a preflight check: the CLI builds Evaluation(preflight=False),
@@ -6121,6 +6904,11 @@ class Evaluation:
                 "The run differs from its reference setup:\n  " + "\n  ".join(findings),
                 extra=show,
             )
+        # The tasks whose own harness runs the agent as another user.
+        from benchflow.sandbox.agent_user import start_lines
+
+        for line in start_lines(card.get("agent_user") or {}, card["agent"]["name"]):
+            logger.warning(line, extra=show)
         context = card.get("context") or {}
         if context.get("under_half"):
             from benchflow.run_card import context_text
@@ -6144,10 +6932,14 @@ class Evaluation:
         job_dir: Path,
         checks: dict[str, Any] | None,
         scoring: dict[str, Any] | None = None,
+        usage: dict[str, Any] | None = None,
+        verifier_network_refusals: int | None = None,
+        network_policy_breaches: int | None = None,
     ) -> None:
-        """Add the run's checks and the scoring rule's figures to
-        run-card.json (``after_run``) and log the card's lines after the run:
-        a refusal as an error, a warning as one."""
+        """Add the run's checks, the scoring rule's figures and the trials'
+        tokens and cost (summary.json's) to run-card.json
+        (``after_run``) and log the card's lines after the run: a refusal as
+        an error, a warning as one."""
         from benchflow.run_card import write_card
         from benchflow.run_checks import after_run_lines
 
@@ -6155,6 +6947,30 @@ class Evaluation:
             return
         if scoring is not None:
             checks = {**checks, "scoring": scoring}
+        if usage is not None:
+            checks = {**checks, "usage": usage}
+        if verifier_network_refusals:
+            # Trials whose tests the verifier's network refused: the
+            # job is flagged, on the card and in its log.
+            checks = {
+                **checks,
+                "verifier_network_refusals": verifier_network_refusals,
+                "warnings": [
+                    *(checks.get("warnings") or []),
+                    "verifier_network_refused",
+                ],
+            }
+        if network_policy_breaches:
+            # Trials whose network rules no longer held: the job is
+            # flagged, on the card and in its log.
+            checks = {
+                **checks,
+                "network_policy_breaches": network_policy_breaches,
+                "warnings": [
+                    *(checks.get("warnings") or []),
+                    "network_policy_breached",
+                ],
+            }
         card = getattr(self, "_run_card", None)
         if card is not None:
             card["after_run"] = checks
@@ -6162,6 +6978,16 @@ class Evaluation:
                 write_card(card, job_dir)
             except OSError as exc:
                 logger.warning(f"Could not write the run card: {exc}")
+        if network_policy_breaches:
+            # Loud whatever the job recorded: no model calls (an oracle job)
+            # keep the card's other lines out of the log, never this one.
+            logger.error(
+                f"{network_policy_breaches} "
+                f"trial{'s' if network_policy_breaches != 1 else ''} ended "
+                '"network policy breached": BenchFlow\'s network rules no longer '
+                "held when proven again (unscored, 0 in mean_reward); see each "
+                "trial's verifier/network-policy.json"
+            )
         settings = checks.get("settings") or {}
         if not (
             (checks.get("truncation") or {}).get("trials")
@@ -6325,10 +7151,20 @@ class Evaluation:
         )
 
         cfg = self._config
+        self._refuse_script_backend()
         check_sandbox_name(cfg.environment)
         check_agent_names([cfg.agent])
         check_agent_routes([cfg])
         check_host([cfg])
+
+    def _refuse_script_backend(self) -> None:
+        """A ``script:`` agent on a backend without its runner
+        (``refuse_script_backend``), refused before the host checks (a
+        Daytona key check) and the job-start Daytona reaper, which lists the
+        owner's sandboxes and can delete stale ones."""
+        from benchflow.agents.scripts import refuse_script_backend
+
+        refuse_script_backend(self._config.agent, self._config.environment)
 
     def _acquire_job_lock(self) -> JobLock:
         """Create the job lock, refusing a live holder and taking over a dead one.
@@ -6389,6 +7225,7 @@ class Evaluation:
             self.learner_store = self._load_or_init_learner_store()
 
     async def _run_unlocked(self) -> EvaluationResult:
+        self._refuse_script_backend()
         self._maybe_start_daytona_reap()
         task_dirs = self._get_task_dirs()
         if not task_dirs:
@@ -6450,6 +7287,9 @@ class Evaluation:
             if self._config.job_mode == "sequential-shared":
                 # Its learner store moved with the trials whose lessons it holds.
                 self.learner_store = LearnerStore()
+        # A snapshot pending reviews would stop on is refused here, as a user
+        # error naming the file, before any trial's review starts.
+        _check_solver_snapshots(self._jobs_dir / self._job_name)
         from benchflow.review.resume import resume_pending_reviews
 
         cfg = self._config
@@ -6701,13 +7541,14 @@ class Evaluation:
         )
         interrupted: list[str] = []
         if stopped:
-            # Every planned task with no result: those whose trial started
-            # (a trial folder with no result.json) and those never started.
-            from benchflow.jobs import _attempt_task_name, _interrupted
+            # Every planned task with no result: those with any attempt
+            # folder (one that wrote no result.json, or attempts the run
+            # retried and then stopped before it kept one) and those never
+            # started.
+            from benchflow.jobs import _started_tasks
 
             unfinished = set(self._planned_tasks) - set(all_results)
-            started = {_attempt_task_name(p) for p in _interrupted(job_dir)}
-            interrupted = sorted(unfinished & started)
+            interrupted = sorted(unfinished & _started_tasks(job_dir))
             not_run = sorted(set(not_run) | unfinished)
         job_result = EvaluationResult(
             job_name=self._job_name,
@@ -6764,13 +7605,16 @@ class Evaluation:
         )
         from benchflow.agents.registry import MODEL_ROUTE_AGENT, agent_routes_own_model
 
+        usage_rows = _kept_attempt_usage_rows(all_results, job_dir)
         # Save summary
         summary = {
             "job_name": self._job_name,
             "agent": cfg.agent,
             # Which BenchFlow wrote this summary (DF-p4-upgrader-3), after the
-            # run and its agent (test_cli_ci reads those two first).
+            # run and its agent (test_cli_ci reads those two first), and which
+            # build of it (benchflow.build_info).
             "benchflow_version": _benchflow_version(),
+            "benchflow_build": benchflow_build(),
             "codex_apps_policy": cfg.codex_apps_policy,
             "model": cfg.model,
             # Its trials were never metered: their usage is agent-reported or
@@ -6796,9 +7640,21 @@ class Evaluation:
             "memory": memory,
             "memory_scores": memory_scores,
             **skill_invocation_summary(all_results),
-            **usage_summary(all_results),
+            # The agents' tokens and cost over each task's final attempt (the
+            # trial the score reads) and the trials stopped before they
+            # finished, which still spent; then the judges' over the same
+            # trials; then every attempt's, retries included, as budget.spent
+            # counts them.
+            **usage_summary(usage_rows),
+            **judge_usage_summary(usage_rows),
+            **_spend_all_attempts(job_dir),
             **loop_summary(all_results),
             **solve_rate_summary(all_results),
+            # Tasks refused before the turn: in the task count, unscored.
+            **refused_tasks_summary(all_results),
+            # Rewards outside the range kept as test.sh wrote them, with
+            # each trial's note (integrity audit or off).
+            **rewards_outside_range_summary(all_results),
             **tool_call_summary(all_results),
             # What the trials' model calls show beside the score: the tool
             # surfaces they ran on, efforts other than the one asked for.
@@ -6818,6 +7674,12 @@ class Evaluation:
             "planned": job_result.planned,
             "ran": job_result.total,
             "score_of_plan": job_result.score_of_plan,
+            # The entries of the tasks root its rule skipped, when any.
+            **(
+                {"tasks_root_skips": skips}
+                if (skips := getattr(self, "_tasks_root_skips", None))
+                else {}
+            ),
             **(
                 {"not_run": job_result.not_run, "not_run_tasks": not_run}
                 if not_run
@@ -6905,6 +7767,11 @@ class Evaluation:
         restart = _restart_record(job_dir)
         if restart is not None:
             summary["restarted_after_change"] = restart
+        # What test.sh needed before the agent's turn: trials refused, warned,
+        # and the wrong-0 candidates (task/test_sh_preflight.py).
+        from benchflow.task.test_sh_preflight import summary as test_sh_summary
+
+        summary["test_sh_preflight"] = test_sh_summary(all_results.values(), job_dir)
         # Each setting the trials ran, with the scoring rule's figures per
         # setting and the mixed-settings warning (benchflow.setting_groups); a
         # restart after a change reads as mixed.
@@ -6928,7 +7795,14 @@ class Evaluation:
         # Backward-compat: also write to jobs_dir root for tooling that
         # expects summary.json at the top level.
         write_text_atomic(self._jobs_dir / "summary.json", summary_text)
-        self._log_run_card_after(job_dir, job_result.run_checks, job_result.scoring)
+        self._log_run_card_after(
+            job_dir,
+            job_result.run_checks,
+            job_result.scoring,
+            usage={key: summary.get(key) for key in RUN_CARD_USAGE_FIELDS},
+            verifier_network_refusals=_refusal_count(summary),
+            network_policy_breaches=_breach_count(summary),
+        )
         # The job's report: per-task bars with intervals, tries, time, tokens
         # and the sampling the requests carried (benchflow.report).
         from benchflow.report import write_report
@@ -6973,6 +7847,42 @@ class Evaluation:
             count = counts.get(diag_cls.category, 0)
             if count > 0:
                 logger.warning(summary_warning(diag_cls, count, job_result.total))
+        # A step that failed after the agent's turn had ended the trial decides
+        # no category, so it is counted from the record itself, by kind: each
+        # row holds result.json's (_enrich_payload_with_persisted_timing).
+        from collections import Counter
+
+        later_kinds = Counter(
+            str(r["post_turn_failure_info"].get("kind") or "error")
+            for r in all_results.values()
+            if isinstance(r.get("post_turn_failure_info"), dict)
+        )
+        if later_kinds:
+            later = sum(later_kinds.values())
+            logger.warning(
+                f"{later} tasks ({later / job_result.total * 100:.0f}%) "
+                f"{PostTurnFailureDiagnostic.summary_description} ("
+                + ", ".join(f"{n} {kind}" for kind, n in sorted(later_kinds.items()))
+                + ") — each keeps that ending and is not retried; "
+                "post_turn_failure_info in result.json names the step"
+            )
+
+        refused = refused_tasks_summary(all_results)
+        if refused:
+            for row in refused["refused_before_turn"]["trials"]:
+                logger.warning(
+                    f"{row['task']}: refused before the turn, unscored: {row['reason']}"
+                )
+
+        outside = rewards_outside_range_summary(all_results)
+        if outside:
+            kept = outside["rewards_outside_range"]["count"]
+            logger.warning(
+                f"{kept} tasks had a reward outside 0-1 (or the task's "
+                "reward_range), recorded as test.sh wrote it: "
+                "summary.json rewards_outside_range and each result.json's "
+                "reward_out_of_range_info have the note"
+            )
 
         # dep-install failures don't have a structured diagnostic
         # yet — keep the standalone warning until they do.
@@ -6990,12 +7900,25 @@ class Evaluation:
             verifier_error_category_counts.get(category, 0)
             for category in (INFRA_ERROR, VERIFIER_INFRA)
         )
-        if infra_errored > 0:
+        # its check is infrastructure too, but scoring again meets it again.
+        unwritable = sum(
+            1
+            for r in all_results.values()
+            if is_output_unwritable(r.get("verifier_error"))
+        )
+        if infra_errored - unwritable > 0:
             logger.warning(
-                f"{infra_errored} task(s) lost the review or the verifier's sandbox "
-                "to an infrastructure failure: the trial's result.json names it, "
-                "and `bench eval score <trial> --tasks-root <tasks> --force` scores "
-                "it again"
+                f"{infra_errored - unwritable} task(s) lost the review or the "
+                "verifier's sandbox to an infrastructure failure: the trial's "
+                "result.json names it, and `bench eval score <trial> --tasks-root "
+                "<tasks> --force` scores it again"
+            )
+        if unwritable > 0:
+            logger.warning(
+                f"{unwritable} task(s) were not scored: their verifier runs as a "
+                "user other than root that cannot write its output file, which "
+                "BenchFlow made on the host before the test command. "
+                'Run the verifier as root ([verifier] user = "root")'
             )
         script_errored = max(0, scoring_fields["verifier_errored"] - infra_errored)
         if script_errored > 0:
@@ -7026,9 +7949,13 @@ class Evaluation:
                 f"mean_reward={job_result.mean_reward:.2f} (every trial; "
                 f"{scored_mean:.2f} over scored ones, 0.7's mean_reward), "
             )
+        from benchflow._utils.scoring import result_unscored_note
+
+        # Beside the score, what it does with unscored trials.
+        note = result_unscored_note(job_result)
         logger.info(
             f"Job complete: {job_result.passed}/{job_result.total} "
-            f"({job_result.score:.1%})"
+            f"({job_result.score:.1%}{'; ' + note if note else ''})"
             + (
                 f" run, {job_result.passed}/{job_result.planned} "
                 f"({job_result.score_of_plan:.1%}) of the plan"
@@ -7066,3 +7993,15 @@ class Evaluation:
 
 # What _make_warm_pool checks trials still run through (see there).
 _STOCK_RUN_SINGLE_TASK = Evaluation._run_single_task
+
+
+def _refusal_count(summary: dict[str, Any]) -> int:
+    """summary.json's count of trials that ended "verifier network refused"."""
+    count = summary.get("verifier_network_refusals")
+    return count if isinstance(count, int) else 0
+
+
+def _breach_count(summary: dict[str, Any]) -> int:
+    """summary.json's count of trials that ended "network policy breached"."""
+    count = summary.get("network_policy_breaches")
+    return count if isinstance(count, int) else 0

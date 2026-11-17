@@ -128,6 +128,7 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--codex-apps-policy": _sdk(f"{_EC}.codex_apps_policy"),
     "--sandbox-user": _sdk(f"{_EC}.sandbox_user"),
     "--sandbox-setup-timeout": _sdk(f"{_EC}.sandbox_setup_timeout"),
+    "--verifier-setup-timeout": _sdk(f"{_EC}.verifier_setup_timeout"),
     "--context-root": _sdk(f"{_EC}.context_root"),
     "--base-image-override": _sdk(f"{_EC}.base_image_override"),
     "--separate-verifier": _sdk(f"{_EC}.separate_verifier"),
@@ -204,6 +205,10 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--hf-prefix": _mod(f"{_HF}.publish_folder_to_hf(path_in_repo)"),
     "--hf-public-read-check": _mod(f"{_HF}.publish_folder_to_hf(public_read_check)"),
     "--publish-bucket": _mod(f"{_HF}.publish_folder_to_bucket(bucket_id)"),
+    "--public": _mod(
+        f"{_HF}.publish_folder_to_hf(private)",
+        "private=False; the same argument on publish_folder_to_bucket",
+    ),
     "--eval-results-model": _mod(f"{_HF}.open_eval_results_pr(model_repo)"),
     "--eval-results-dataset": _mod(f"{_HF}.open_eval_results_pr(dataset_id)"),
     "--eval-results-task": _mod(f"{_HF}.open_eval_results_pr(task_id)"),

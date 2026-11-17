@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from benchflow.sandbox.lockdown import setup_sandbox_user
+from tests._receipt_fakes import receipt_mock_sequence
 
 
 def _result(rc: int, stderr: str = "") -> MagicMock:
@@ -54,10 +55,20 @@ async def test_setup_raises_when_the_user_could_not_be_created() -> None:
 async def test_setup_tolerates_a_later_step_failing_once_the_user_exists() -> None:
     env = MagicMock()
     env.supports_system_shell = True
-    # Resolve the workspace, the user's setup, `id -u`, then the lock of the
-    # folders on PATH.
-    env.exec = AsyncMock(
-        side_effect=[_result(0), _result(1, "chown: read-only"), _result(0), _result(0)]
+    # Resolve the workspace, the user's setup, `id -u`, the three checks that
+    # the user has its workspace (root can write the root, the user can, the
+    # grant reached the entries under it), then the lock of the folders on
+    # PATH. Reads answer with receipts.
+    env.exec = receipt_mock_sequence(
+        [
+            _result(0),
+            _result(1, "chown: read-only"),
+            _result(0),
+            _result(0),
+            _result(0),
+            _result(0),
+            _result(0),
+        ]
     )
 
     assert await setup_sandbox_user(env, "agent", "/app") == "/app"
@@ -71,11 +82,14 @@ async def test_the_user_is_created_as_root_whatever_the_images_user() -> None:
     setup and the `id -u` check run as root."""
     env = MagicMock()
     env.supports_system_shell = True
-    env.exec = AsyncMock(
-        side_effect=[
+    env.exec = receipt_mock_sequence(
+        [
             _result(0),
             _result(1, "useradd: Permission denied"),
             _result(0),
+            _result(0),  # the workspace root: writable for root,
+            _result(0),  # and for the user,
+            _result(0),  # and the grant reached what is under it
             _result(0),
         ]
     )

@@ -23,6 +23,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal, cast, overload
 
+from benchflow._utils.attempt_decision import ATTEMPT_DECISION_FIELD, job_decisions
 from benchflow._utils.json_safe import scrub_non_finite
 from benchflow._utils.scoring import finite_reward
 from benchflow.diagnostics import RolloutDiagnostics
@@ -40,6 +41,7 @@ from benchflow.usage_tracking import (
     USAGE_SOURCE_AGENT_NATIVE_ACP,
     USAGE_SOURCE_AGENT_REPORTED,
     USAGE_SOURCE_NONE,
+    legacy_usage_source,
 )
 
 if TYPE_CHECKING:
@@ -744,7 +746,10 @@ def build_rollout_results_record(
     # model calls (agent-reported or none): no LLM trajectory is
     # expected, so its absence is not an export error.
     native_subscription_without_llm = bool(
-        (agent_result or {}).get("usage_source")
+        legacy_usage_source(
+            (agent_result or {}).get("usage_source"),
+            (agent_result or {}).get("usage_source_legacy"),
+        )
         in (
             USAGE_SOURCE_AGENT_NATIVE_ACP,
             USAGE_SOURCE_AGENT_REPORTED,
@@ -917,6 +922,10 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
 
     example_ids: dict[str, int] = {}
     skipped_errors: list[dict[str, Any]] = []
+    # What each attempt is among its task's: one final per task, the others
+    # retried or superseded (a row's own folder cannot say that by itself),
+    # over every attempt, a kept one with no row of its own included.
+    decisions = job_decisions(job_path, (src.parent for src in rollout_files))
     out = job_path / JOB_RESULTS_FILENAME
     with out.open("w", encoding="utf-8") as handle:
         for src in rollout_files:
@@ -971,6 +980,10 @@ def write_job_results_jsonl(job_dir: str | Path) -> Path | None:
                     continue
                 key = _job_example_key(row, src.parent)
                 row["example_id"] = example_ids.setdefault(key, len(example_ids))
+                decision = decisions.get(src.parent)
+                if decision is not None:
+                    # Only a "final" row is its trial's result.
+                    row[ATTEMPT_DECISION_FIELD] = decision
                 handle.write(_record_to_redacted_json_line(row) + "\n")
     _write_job_results_errors(job_path, skipped_errors)
     return out

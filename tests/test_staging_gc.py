@@ -230,6 +230,7 @@ def test_a_jobs_end_removes_queued_copies(tmp_path, monkeypatch):
         return "result"
 
     evaluation = Evaluation.__new__(Evaluation)
+    evaluation._config = type("C", (), {"environment": "docker", "agent": "oracle"})()
     evaluation._preflight = False
     monkeypatch.setattr(evaluation, "_check_verifier_sandbox_plan", lambda: None)
     monkeypatch.setattr(evaluation, "_settle_auto_job_name", lambda: None)

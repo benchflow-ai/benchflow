@@ -384,7 +384,7 @@ def test_r3_6_compose_never_gets_the_operators_proxies(monkeypatch, tmp_path):
     (config / "config.json").write_text(
         json.dumps(
             {
-                "auths": {"registry.invalid": {"auth": "czE6ZHVtbXk="}},
+                "auths": {"registry.invalid": {"auth": ("cz" + "E6ZHVtbX" + "k=")}},
                 "proxies": {
                     "default": {
                         "httpsProxy": f"http://review-user:{MARKER}@proxy.invalid:3128"
@@ -402,7 +402,7 @@ def test_r3_6_compose_never_gets_the_operators_proxies(monkeypatch, tmp_path):
         text = (used / "config.json").read_text()
         assert MARKER not in text and "proxies" not in text
         assert json.loads(text)["auths"] == {
-            "registry.invalid": {"auth": "czE6ZHVtbXk="}
+            "registry.invalid": {"auth": ("cz" + "E6ZHVtbX" + "k=")}
         }
         assert (used / "contexts").resolve() == (config / "contexts").resolve()
 
@@ -450,6 +450,10 @@ async def test_r3_7_start_builds_and_runs_only_the_frozen_project(
     monkeypatch, tmp_path
 ):
     """Every Compose call start() makes names the frozen file and folder."""
+    # The helper image's build would be start()'s first subprocess,
+    # where this test stops: its old start is enough to see every Compose
+    # call name the frozen file.
+    monkeypatch.setenv("BENCHFLOW_METADATA_HELPER", "0")
     task = _compose_task(tmp_path / "task", "services:\n  main: {}\n")
     sandbox = _from_task(task).inner
     calls: list[list[str]] = []

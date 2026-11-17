@@ -37,7 +37,21 @@ from benchflow.trajectories._capture import _parse_provider_tool_evidence
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.types import redact_trajectory_obj
 
-_MEMORY_BUDGET_MB = 48
+# The run reads 20 MB or less; one held copy of its 27 MB log reads 42 MB or more.
+_MEMORY_BUDGET_MB = 32
+# The measured process, and nothing else, runs with one malloc arena
+# (glibc reads MALLOC_ARENA_MAX). The capture works on pool threads
+# (asyncio.to_thread), and without the setting the peak followed how many of
+# them the pool had started, not what the run held. Measured on a 16 vCPU VM,
+# 2026-11-13, on the rc line before the redactor's left boundary changed:
+#   quiet, 2 threads started: 18 MB;
+#   64 CPU hogs, 5 threads: 33, 33 and 34 MB; 7 threads: 43 MB; 9 and 11
+#   threads: 52 MB twice; under a full suite's load: 20 to 54 MB;
+#   one arena, the same 64 hogs, 5 to 9 threads: 16 to 20 MB.
+# The setting hides no held log: with it, a capture made to keep every chunk
+# it reads, or every parsed record, reads 42 to 48 MB, and one made to keep
+# the raw, parsed and redacted copy of every record (what 0.9 did) 67 MB.
+_ONE_ARENA = {"MALLOC_ARENA_MAX": "1"}
 
 
 def _record(n: int, body: dict, *, usage: dict | None = None) -> dict:
@@ -302,7 +316,9 @@ def test_a_long_proxied_run_never_holds_its_log_in_memory(tmp_path):
             body = {"model": "m", "messages": conversation, "input": conversation}
             usage = {"prompt_tokens": 1000 * n, "completion_tokens": 10}
             out.write(json.dumps(_record(n, body, usage=usage)) + "\n")
-    assert 20e6 < source.stat().st_size < 35e6
+    # The budget is sized against this log (26.9 MB): a smaller one would let a
+    # held copy pass.
+    assert 26e6 < source.stat().st_size < 35e6
     script = textwrap.dedent(
         """
         import asyncio, contextlib, gc, json, sys, types
@@ -360,6 +376,7 @@ def test_a_long_proxied_run_never_holds_its_log_in_memory(tmp_path):
         text=True,
         timeout=600,
         check=False,
+        env={**os.environ, **_ONE_ARENA},
     )
     assert done.returncode == 0, done.stderr[-3000:]
     measured = json.loads(done.stdout.strip().splitlines()[-1])

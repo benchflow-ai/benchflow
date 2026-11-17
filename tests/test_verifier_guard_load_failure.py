@@ -264,6 +264,10 @@ async def test_missing_guard_copies_do_not_assign_blame(
 
     assert rewards == {"reward": 0.0}
     assert error is None
+    # This fake cannot answer the verifier uid read, so the reward's
+    # provenance is unverifiable (test_reward_provenance_*): its
+    # warning is not what this test counts.
+    warnings = [w for w in warnings if not w.startswith("Reward provenance")]
     assert len(warnings) == 1
     for warning in (caplog.text, warnings[0]):
         assert "pytest plugin guard not confirmed" in warning
@@ -334,7 +338,9 @@ async def test_registered_guard_leaves_quiet_verifiers_scored(tmp_path, source, 
     """Guards the marker fix for the guard import-failure detection's log-only detection.
 
     A guard pytest registered removes its marker, so a quiet verifier's
-    genuine pass or failure is still scored and nothing is left behind.
+    genuine pass or failure is still scored. At pytest's last cleanup the
+    guard leaves its end-of-session record, which the verifier copies to
+    verifier/ ((g2)).
     """
     guard, paths, rewards, error = await _run(
         tmp_path, source, guard_source=armed(), log=None
@@ -342,7 +348,7 @@ async def test_registered_guard_leaves_quiet_verifiers_scored(tmp_path, source, 
 
     assert error is None
     assert rewards == {"reward": reward}
-    assert _guard_markers(paths, guard) == []
+    assert [m.rpartition(".")[2] for m in _guard_markers(paths, guard)] == ["finished"]
 
 
 @pytest.mark.asyncio
@@ -446,4 +452,6 @@ async def test_a_solution_cannot_forge_the_guards_signals(tmp_path, monkeypatch)
         for path in Path(pytest_plugin_guard_markers_dir(guard)).iterdir()
         if ".2-deadbeef." not in path.name
     )
-    assert kinds == ["registered"]
+    # The guard's own pytest ran to its end: its end-of-session record, its
+    # registered marker taken away ((g2)).
+    assert kinds == ["finished"]

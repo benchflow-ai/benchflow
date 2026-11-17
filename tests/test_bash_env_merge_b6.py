@@ -155,6 +155,7 @@ async def test_activation_with_kept_services_precedes_every_ownership_change(
             "/app",
             restore_workspace=True,
             agent_paths=("/app",) if separate else None,
+            integrity="strict",
         )
     if separate:
         assert config.config.verifier.env["BASH_ENV"] == ""

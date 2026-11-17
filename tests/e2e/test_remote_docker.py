@@ -29,7 +29,6 @@ import pytest
 
 from tests.e2e import harness as h
 
-HOST_ENV = "BENCHFLOW_E2E_REMOTE_DOCKER_HOST"
 DIND_IMAGE = "docker:28.3.3-dind"
 
 NET_SOLVE = """#!/bin/bash
@@ -129,10 +128,10 @@ def _daytona_dind_host(root: Path) -> Iterator[RemoteHost]:
 
 
 @pytest.fixture(scope="module")
-def remote(sandbox: str, e2e_out: Path) -> Iterator[RemoteHost]:
+def remote(request: pytest.FixtureRequest, e2e_out: Path) -> Iterator[RemoteHost]:
     root = e2e_out / "remote-docker"
     root.mkdir(exist_ok=True)
-    configured = os.environ.get(HOST_ENV, "").strip()
+    configured = h.remote_docker_host()
     if configured:
         yield RemoteHost(
             url=configured,
@@ -141,6 +140,8 @@ def remote(sandbox: str, e2e_out: Path) -> Iterator[RemoteHost]:
             dedicated=False,
         )
         return
+    # The scenario's own host is a Daytona sandbox: the tier's backend.
+    request.getfixturevalue("sandbox")
     yield from _daytona_dind_host(root)
 
 
@@ -274,7 +275,11 @@ def test_remote_docker_refuses_an_oversized_task_and_an_unreachable_host(
                   surface="CLI", seconds=run.seconds)  # fmt: skip
     h.assert_exit(run, 1)
     assert "no job was created" in run.output
-    assert "Remote Docker host unreachable: ssh://***@127.0.0.1:1" in run.output
+    # Messages name the host by its opaque label (remote_docker.py, 0.9.1;
+    # BENCHFLOW_REMOTE_DOCKER_SHOW_ADDRESS=1 would show the address),
+    # never its ssh user or address.
+    assert "Remote Docker host unreachable: remote-docker[ssh]: " in run.output
+    assert "nobody" not in run.output and "127.0.0.1" not in run.output
     assert not gone.exists()
 
 

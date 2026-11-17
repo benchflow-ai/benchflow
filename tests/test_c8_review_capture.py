@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +20,7 @@ import pytest
 from benchflow.review import evidence
 from benchflow.review.evidence import capture_workspace
 from benchflow.sandbox._base import ExecResult
+from tests._system_bin import system_bin
 
 # Root plumbing's pinned PATH (sandbox._base.ROOT_EXEC_PATH), spelled out so
 # the test also runs on a tree without it.
@@ -44,16 +44,7 @@ def _planted(tmp_path: Path, *tools: str) -> tuple[Path, Path]:
 
 def _system_without_python(tmp_path: Path) -> Path:
     """An image's system folders with no Python: links to this host's tools."""
-    folder = tmp_path / "system-bin"
-    folder.mkdir()
-    for source in ("/usr/bin", "/bin"):
-        for entry in Path(source).iterdir():
-            name = entry.name
-            if name.startswith("python") or (folder / name).exists():
-                continue
-            if entry.is_file() and os.access(entry, os.X_OK):
-                (folder / name).symlink_to(entry)
-    return folder
+    return system_bin(tmp_path, set(), ("python",), executables_only=True)
 
 
 def _docker(image_path: str, monkeypatch, system: str | None = None):

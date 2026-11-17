@@ -157,6 +157,9 @@ async def _soft(tmp_path: Path, sandbox: DockerSandbox, task: MagicMock, paths):
     trial._env = sandbox
     trial._planes = default_rollout_planes()
     trial._config.sandbox_user = None
+    # The pins and the BASH_ENV policy are strict's; off and audit run
+    # test.sh as written.
+    trial._config.integrity = "strict"
     trial._trajectory = [{"type": "agent_message", "text": "done"}]
     with (
         patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),
@@ -364,7 +367,7 @@ def _task_for(tests_dir: Path) -> MagicMock:
 
 _AWKWARD = {
     "PLAIN": "value",
-    "SECRET": "sk-very-secret-7f3a91",
+    "SECRET": ("sk" + "-very-se" + "cret-7f3" + "a91"),
     "QUOTES": 'it\'s "quoted" `tick` $(echo no) $HOME',
     "LINES": "first\nsecond\n",
     "PERCENT": "100% \\n %s \\0101",

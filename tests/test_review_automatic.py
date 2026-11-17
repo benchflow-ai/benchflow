@@ -342,7 +342,9 @@ async def test_workspace_freezes_before_capture_and_keeps_actual_cwd(
     rollout = SimpleNamespace(
         _branch_child_active=False,
         _review_plan=object(),
-        _config=SimpleNamespace(purpose="task", sandbox_user="agent"),
+        _config=SimpleNamespace(
+            purpose="task", sandbox_user="agent", integrity="strict"
+        ),  # The turn-end kill and quiesce are strict's.
         _env=object(),
         _agent_env={},
         _planes=SimpleNamespace(quiesce_agent=stop),

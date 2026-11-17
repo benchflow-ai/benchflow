@@ -1,23 +1,28 @@
-"""The verifier honours the image's own pytest configuration where pytest
-itself would read it and while the agent left what pytest reads of it
-unchanged (V1p's finding, review round 1: V3-R1-A-1, V3-R1-A-2).
+"""Strict passes pytest the image's own configuration file, never the agent's
+(V1p's finding, review round 1: V3-R1-A-1, V3-R1-A-2;, the lead's
+13:57Z ruling on CIR's strict-boundary hole).
 
 The verifier ran pytest with ``-c /dev/null`` so that a configuration file the
 agent wrote or edited is never read. That also hid the image's own: pytest-dev's
 tox.ini ``[pytest] addopts = -ra -p pytester --strict-markers`` was dropped, so
 every test that takes ``testdir`` errored with "fixture 'testdir' not found"
 and the pytest-5809 and pytest-5840 oracles failed on 0.8 and on the fixes
-alike. Hardening now finds the file pytest would read in the image's copy of
-the workspace (``/testbed_verify``) and uses the workspace's one when its
-pytest section or table is the image's. Its ``-p`` plugins move after
-BenchFlow's plugin guard, which judges them: an ini's ``-p`` would load before
-the guard. A task whose tests live in the verifier package (``pytest
+alike. Without any ``-c`` (G13a) pytest read the agent's file, whose
+``addopts`` load before PYTEST_ADDOPTS: ``-p bf_evil`` ran the agent's module
+ahead of the plugin guard. Strict now always passes ``-c``: the file pytest
+would read, chosen on the image's copies in the root-only build snapshot and
+copied outside the workspace (SWT-bench's ``git add -A`` must not see it),
+its ``pythonpath`` passed absolute; else ``/dev/null``. ``--rootdir`` is the
+workspace, where pytest itself finds the image's file.
+The ini's ``-p`` plugins move after BenchFlow's plugin guard, which judges
+them. A task whose tests live in the verifier package (``pytest
 /tests/test_outputs.py``) keeps ``-c /dev/null``: pytest never reads the
 workspace's file for them.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -36,39 +41,44 @@ TOX_INI = (
     "[tox]\nenvlist = py\n\n[pytest]\naddopts = -ra -p pytester --strict-markers\n"
 )
 SWE_TEST_SH = "#!/bin/bash\ncd /testbed\npytest -rA testing/test_pastebin.py\n"
+GUARD = "_runtime_guard_"
+COPY = re.compile(r"[0-9a-f]{16}\.(ini|cfg|toml)")
 
 
-def _probe_stdout(marker: str, image: dict[str, str], work: dict[str, str]) -> str:
-    """What the probe prints for these image and workspace files (kind "file",
-    or the kind itself when the value is "<link>", "<other>", ...)."""
+def _probe_stdout(marker: str, image: dict[str, str]) -> str:
+    """What the probe prints for these files in the build snapshot (kind
+    "file", or the kind itself when the value is "<link>", "<big>", ...)."""
     out = ""
     for name in lockdown._PYTEST_CONFIG_NAMES:
-        for side, files in (("image", image), ("work", work)):
-            if name not in files:
-                continue
-            text = files[name]
-            if text.startswith("<") and text.endswith(">"):
-                out += f"{marker} {name} {side} {text[1:-1]}\n"
-            else:
-                out += f"{marker} {name} {side} file\n{text}\n"
+        if name not in image:
+            continue
+        text = image[name]
+        if text.startswith("<") and text.endswith(">"):
+            out += f"{marker} {name} image {text[1:-1]}\n"
+        else:
+            out += f"{marker} {name} image file\n{text}\n"
     return out
 
 
-def _ini_answer(image: dict[str, str], work: dict[str, str] | None = None):
-    """A sandbox whose ini probe finds *image* in /testbed_verify and *work*
-    (the same files by default) in the workspace; every other probe is quiet."""
+def _ini_answer(image: dict[str, str]):
+    """A sandbox whose snapshot holds *image*; every other exec is quiet."""
     probes: list[str] = []
+    copies: list[str] = []
 
     def side_effect(cmd, **kwargs):
         if "bf-pytest-ini" in cmd:
             probes.append(cmd)
             marker = shlex.split(cmd)[-1]
-            stdout = _probe_stdout(marker, image, image if work is None else work)
-            return SimpleNamespace(stdout=stdout, stderr="", exit_code=0)
+            return SimpleNamespace(
+                stdout=_probe_stdout(marker, image), stderr="", exit_code=0
+            )
+        if lockdown._PYTEST_CONFIG_DIR + "/" in cmd:
+            copies.append(cmd)
         return SimpleNamespace(stdout="", stderr="", exit_code=0)
 
     env = _make_env(side_effect=side_effect)
     env.probes = probes
+    env.copies = copies
     return env
 
 
@@ -84,131 +94,137 @@ def _task_with_package(tmp_path: Path, files: dict[str, str] | None = None):
     return task
 
 
+def _options(task) -> dict[str, str]:
+    args = shlex.split(task.config.verifier.env["PYTEST_ADDOPTS"])
+    return {
+        "-c": args[args.index("-c") + 1],
+        "rootdir": next(a for a in args if a.startswith("--rootdir=")).split("=", 1)[1],
+        "args": args,
+    }
+
+
+def _uses_dev_null(task, workspace: str) -> None:
+    options = _options(task)
+    assert options["-c"] == "/dev/null"
+    assert options["rootdir"] == workspace
+    args = options["args"]
+    assert args[-2] == "-p" and args[-1].startswith(GUARD)
+
+
+def _uses_the_images_copy(task, env, workspace: str, name: str, suffix: str) -> str:
+    """The -c file is BenchFlow's copy of the image's *name*, outside the
+    workspace, the rootdir the workspace; the copy comes from the snapshot,
+    and no probe looked at the workspace."""
+    options = _options(task)
+    path = options["-c"]
+    folder, base = path.rsplit("/", 1)
+    assert folder == lockdown._PYTEST_CONFIG_DIR and COPY.fullmatch(base)
+    assert path.endswith(suffix)
+    assert options["rootdir"] == workspace
+    [probe] = env.probes
+    assert workspace not in probe
+    [copy] = env.copies
+    assert f"cp {lockdown._SNAPSHOT_DIR}/{name} " in copy and path in copy
+    return path
+
+
 @pytest.mark.asyncio
-async def test_the_images_unchanged_ini_replaces_dev_null(tmp_path):
-    """pytest-dev's tox.ini reaches pytest, -p pytester last."""
+async def test_the_images_ini_replaces_dev_null(tmp_path):
+    """pytest-dev's tox.ini reaches pytest, its -p pytester after the guard."""
     task = _task_with_package(tmp_path)
+    env = _ini_answer({"tox.ini": TOX_INI})
     await harden_before_verify(
-        _ini_answer({"tox.ini": TOX_INI}),
+        env,
         task,
         sandbox_user="agent",
         workspace="/testbed",
+        integrity="strict",
     )
 
-    args = shlex.split(task.config.verifier.env["PYTEST_ADDOPTS"])
-    assert "/dev/null" not in args
-    assert args[args.index("-c") + 1] == "/testbed/tox.ini"
+    _uses_the_images_copy(task, env, "/testbed", "tox.ini", ".ini")
+    args = _options(task)["args"]
     assert args[args.index("-o") + 1] == "addopts=-ra --strict-markers"
-    # The ini's plugin comes after the guard, so the guard judges it.
-    plugins = [args[i + 1] for i, arg in enumerate(args) if arg == "-p"]
-    assert plugins[-1] == "pytester"
-    assert plugins.index("pytester") > next(
-        i for i, name in enumerate(plugins) if name.startswith("_runtime_guard_")
-    )
+    guard = next(i for i, a in enumerate(args) if a.startswith(GUARD))
+    assert args[guard + 1 :] == ["-p", "pytester"]
 
 
 @pytest.mark.asyncio
 async def test_an_ini_without_plugins_is_passed_as_it_is(tmp_path):
     task = _task_with_package(tmp_path)
+    env = _ini_answer({"pytest.ini": "[pytest]\naddopts = -ra\nmarkers = slow\n"})
     await harden_before_verify(
-        _ini_answer({"pytest.ini": "[pytest]\naddopts = -ra\nmarkers = slow\n"}),
+        env,
         task,
         sandbox_user="agent",
         workspace="/app",
+        integrity="strict",
     )
 
-    addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-    assert addopts.startswith("-c /app/pytest.ini ")
-    assert " -o " not in addopts
+    _uses_the_images_copy(task, env, "/app", "pytest.ini", ".ini")
+    assert " -o " not in task.config.verifier.env["PYTEST_ADDOPTS"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("image", "work"),
+    ("name", "text", "suffix"),
     [
-        ({}, {}),  # the image has no configuration file
-        ({"tox.ini": TOX_INI}, {}),  # the agent removed it
-        ({"tox.ini": TOX_INI}, {"tox.ini": "<link>"}),  # or made it a link
-        ({"tox.ini": "<open>"}, {"tox.ini": TOX_INI}),  # the agent could write the copy
-        ({"tox.ini": "<big>"}, {"tox.ini": TOX_INI}),
-        (
-            {"tox.ini": TOX_INI},
-            {"tox.ini": TOX_INI.replace("--strict-markers", "--deselect x")},
-        ),
-        # A second addopts in [pytest]: pytest's iniconfig refuses the file.
-        ({"tox.ini": TOX_INI}, {"tox.ini": TOX_INI + "addopts = -p evil\n"}),
-        ({"tox.ini": "[pytest]\naddopts = -vp evil\n"}, None),  # a hidden -p
-        # pyproject.toml's table changed; tox.ini is not pytest's choice then.
-        (
-            {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-q'\n"},
-            {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-p evil'\n"},
-        ),
-    ],
-    ids=[
-        "none",
-        "removed",
-        "link",
-        "open-copy",
-        "big",
-        "section-edited",
-        "duplicate-key",
-        "bundled-p",
-        "pyproject-table-edited",
-    ],
-)
-async def test_anything_else_keeps_dev_null(tmp_path, image, work):
-    task = _task_with_package(tmp_path)
-    await harden_before_verify(
-        _ini_answer(image, work), task, sandbox_user="agent", workspace="/testbed"
-    )
-
-    assert task.config.verifier.env["PYTEST_ADDOPTS"].startswith("-c /dev/null ")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("name", "image", "work"),
-    [
-        (
-            "tox.ini",
-            TOX_INI,
-            TOX_INI + "\n[testenv]\ndeps = hypothesis\ncommands = pytest\n",
-        ),
+        ("tox.ini", TOX_INI, ".ini"),
         (
             "setup.cfg",
             "[metadata]\nname = x\n[tool:pytest]\naddopts = -p pytester\n",
-            "[metadata]\nname = x\n[options]\ninstall_requires = attrs\n"
-            "[tool:pytest]\naddopts = -p pytester\n",
+            ".cfg",
         ),
         (
             "pyproject.toml",
             '[project]\nname = "x"\n[tool.pytest.ini_options]\naddopts = "-p pytester"\n',
-            '[project]\nname = "x"\ndependencies = ["attrs"]\n\n'
-            "[tool.pytest.ini_options]  # unchanged\naddopts = '-p pytester'\n",
+            ".toml",
         ),
     ],
-    ids=["tox-testenv", "setup-cfg-options", "pyproject-dependencies"],
+    ids=["tox-ini", "setup-cfg", "pyproject-toml"],
 )
-async def test_an_edit_outside_the_pytest_section_keeps_the_images_file(
-    tmp_path, name, image, work
+async def test_the_copy_keeps_the_kind_of_file_pytest_reads(
+    tmp_path, name, text, suffix
 ):
-    """Guards V3-R1-A-2: the whole-file compare dropped the image's file for
-    an edit pytest never reads (a gold patch adding a dependency), so two
-    correct answers, or the oracle and the nop, ran under different
-    configurations."""
+    """pytest reads a file given with -c by its suffix: [pytest] in .ini,
+    [tool:pytest] in .cfg, [tool.pytest.ini_options] in .toml."""
     task = _task_with_package(tmp_path)
+    env = _ini_answer({name: text})
     await harden_before_verify(
-        _ini_answer({name: image}, {name: work}),
+        env, task, sandbox_user="agent", workspace="/testbed", integrity="strict"
+    )
+
+    _uses_the_images_copy(task, env, "/testbed", name, suffix)
+    assert task.config.verifier.env["PYTEST_ADDOPTS"].endswith(" -p pytester")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "image",
+    [
+        {},  # the image has no configuration file
+        {"tox.ini": "<link>"},
+        {"tox.ini": "<other>"},
+        {"tox.ini": "<big>"},
+        # A second addopts in [pytest]: pytest's iniconfig refuses the file.
+        {"tox.ini": TOX_INI + "addopts = -p evil\n"},
+        {"tox.ini": "[pytest]\naddopts = -vp evil\n"},  # a hidden -p
+        {"pyproject.toml": "[tool.pytest.ini_options\n"},  # unreadable
+    ],
+    ids=["none", "link", "other", "big", "duplicate-key", "bundled-p", "bad-toml"],
+)
+async def test_anything_else_keeps_dev_null(tmp_path, image):
+    task = _task_with_package(tmp_path)
+    env = _ini_answer(image)
+    await harden_before_verify(
+        env,
         task,
         sandbox_user="agent",
         workspace="/testbed",
+        integrity="strict",
     )
 
-    args = shlex.split(task.config.verifier.env["PYTEST_ADDOPTS"])
-    assert args[args.index("-c") + 1] == f"/testbed/{name}"
-    assert [args[i + 1] for i, arg in enumerate(args) if arg == "-p"][-1] == (
-        "pytester"
-    )
+    _uses_dev_null(task, "/testbed")
+    assert env.copies == []
 
 
 @pytest.mark.asyncio
@@ -236,10 +252,62 @@ async def test_tests_outside_the_workspace_keep_dev_null(tmp_path, package):
         {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--cov=proj'\n"}
     )
 
-    await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+    await harden_before_verify(
+        env, task, sandbox_user="agent", workspace="/app", integrity="strict"
+    )
 
-    assert task.config.verifier.env["PYTEST_ADDOPTS"].startswith("-c /dev/null ")
+    _uses_dev_null(task, "/app")
     assert env.probes == []
+
+
+@pytest.mark.asyncio
+async def test_a_helper_a_python_runs_outside_the_workspace_keeps_the_image_ini(
+    tmp_path,
+):
+    """Guards SWT-bench's test.sh runs helpers by absolute path
+    (`python /root/test_command_generator.py`, `python /root/parser.py`) and
+    then the repository's own tests in /testbed. Those helpers are no test
+    pytest is pointed at, so the image's tox.ini, and with it `-p pytester`,
+    is used; pytest-7236 scored 0 under `-c /dev/null`. A test file pytest is
+    pointed at outside the workspace still keeps `-c /dev/null`
+    (test_tests_outside_the_workspace_keep_dev_null)."""
+    package = {
+        "test.sh": "#!/bin/bash\n"
+        "python /root/test_command_generator.py --test_patch_file /root/model_test.patch\n"
+        "rm -rf /testbed/* && cp -r /root/tmp_repo/* /testbed\n"
+        "bash /root/run_model_test_base_code.sh\n"
+        "python /root/parser.py > /root/parser_output.txt 2>&1\n"
+    }
+    task = _task_with_package(tmp_path, package)
+    env = _ini_answer(
+        {"tox.ini": "[pytest]\naddopts = -rfEX -p pytester --strict-markers\n"}
+    )
+
+    await harden_before_verify(
+        env, task, sandbox_user="agent", workspace="/testbed", integrity="strict"
+    )
+
+    _uses_the_images_copy(task, env, "/testbed", "tox.ini", ".ini")
+    assert task.config.verifier.env["PYTEST_ADDOPTS"].endswith(" -p pytester")
+
+
+@pytest.mark.parametrize(
+    ("line", "refused"),
+    [
+        ("pytest /tmp/check.py", True),
+        ("python -m pytest -q \\\n    /tmp/check.py", True),
+        ("py.test /opt/t.py", True),
+        ("python /root/parser.py", False),
+        ("python3 /root/trace.py --count", False),
+        ("cd /testbed && pytest tests/test_x.py", False),
+    ],
+)
+def test_only_a_test_pytest_is_pointed_at_counts(tmp_path, line, refused):
+    from benchflow.sandbox.lockdown import _pytest_may_read_the_workspace_config
+
+    task = _task_with_package(tmp_path, {"test.sh": "#!/bin/bash\n" + line + "\n"})
+
+    assert _pytest_may_read_the_workspace_config(task, "/testbed") is not refused
 
 
 @pytest.mark.asyncio
@@ -273,10 +341,11 @@ async def test_tests_in_the_package_pass_under_a_workspace_cov_addopts(
         task,
         sandbox_user="agent",
         workspace=str(app),
+        integrity="strict",
     )
     # The guard itself is not importable here; what comes before it is.
     addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
-    addopts = addopts.split(" -p _runtime_guard_")[0]
+    addopts = addopts.split(f" -p {GUARD}")[0]
     done = subprocess.run(
         [sys.executable, "-m", "pytest", str(tests / "test_outputs.py")],
         cwd=app,
@@ -313,26 +382,36 @@ def test_the_verifier_package_decides_where_pytest_reads_from(tmp_path):
 
 def test_the_probe_output_is_read_back_exactly():
     from benchflow.sandbox.lockdown import (
-        _choose_unchanged_pytest_config,
+        _choose_image_pytest_config,
         _parse_pytest_config_probe,
     )
 
     stdout = _probe_stdout(
         "M1",
-        {"pytest.ini": "<link>", "tox.ini": TOX_INI},
-        {"tox.ini": TOX_INI + "\n", "setup.cfg": "<other>"},
+        {"pytest.ini": "<link>", "tox.ini": TOX_INI, "setup.cfg": "<other>"},
     )
     records = _parse_pytest_config_probe(stdout, "M1")
     assert records == {
         ("pytest.ini", "image"): ("link", ""),
         ("tox.ini", "image"): ("file", TOX_INI),
-        ("tox.ini", "work"): ("file", TOX_INI + "\n"),
-        ("setup.cfg", "work"): ("other", ""),
+        ("setup.cfg", "image"): ("other", ""),
     }
     # The image's pytest.ini is a link: nothing is used.
-    assert _choose_unchanged_pytest_config(records) is None
+    assert _choose_image_pytest_config(records) is None
     del records["pytest.ini", "image"]
-    assert _choose_unchanged_pytest_config(records) == ("tox.ini", TOX_INI)
+    assert _choose_image_pytest_config(records) == ("tox.ini", TOX_INI)
+    # pytest's order: tox.ini has no [pytest], so setup.cfg's [tool:pytest].
+    assert _choose_image_pytest_config(
+        {
+            ("pyproject.toml", "image"): ("file", "[project]\nname = 'x'\n"),
+            ("tox.ini", "image"): ("file", "[tox]\nenvlist = py\n"),
+            ("setup.cfg", "image"): ("file", "[tool:pytest]\naddopts = -q\n"),
+        }
+    ) == ("setup.cfg", "[tool:pytest]\naddopts = -q\n")
+    # An empty pytest.ini is still pytest's choice.
+    assert _choose_image_pytest_config(
+        {("pytest.ini", "image"): ("file", ""), ("tox.ini", "image"): ("file", TOX_INI)}
+    ) == ("pytest.ini", "")
     # Output that does not start with the marker is not read.
     assert _parse_pytest_config_probe("x\n" + stdout, "M1") == {}
 
@@ -381,14 +460,24 @@ def test_ini_addopts_are_read_as_pytest_reads_them():
     assert _split_ini_plugins(["-p"]) is None
 
 
-def test_pytest_loads_the_inis_plugin_through_the_addopts(tmp_path):
-    """The built PYTEST_ADDOPTS give a real pytest the ini's options and its
-    plugin; ``-c /dev/null`` gives neither (the 0.8 failure)."""
+EVIL = "import pathlib\npathlib.Path(__file__).with_name('bf-evil-loaded').write_text('1')\n"
+
+
+def test_a_real_pytest_reads_the_images_copy_never_the_agents_file(tmp_path):
+    """The built PYTEST_ADDOPTS give a real pytest the image's options and
+    its plugin from BenchFlow's copy outside the project, with the project
+    as rootdir; the agent's tox.ini, whose addopts would load its own module
+    ahead of the guard (CIR's bf_evil), is never read, with the copy or with
+    ``-c /dev/null``."""
     from benchflow.sandbox.lockdown import ImagePytestIni, _build_pytest_addopts
 
     project = tmp_path / "testbed"
     (project / "testing").mkdir(parents=True)
-    (project / "tox.ini").write_text(TOX_INI)
+    (tmp_path / "cfg").mkdir()
+    copy = tmp_path / "cfg" / "0123456789abcdef.ini"
+    copy.write_text(TOX_INI)
+    (project / "tox.ini").write_text("[pytest]\naddopts = -p bf_evil\n")
+    (project / "bf_evil.py").write_text(EVIL)
     (project / "testing" / "test_uses_pytester.py").write_text(
         "def test_it(pytester):\n    assert pytester is not None\n"
     )
@@ -412,21 +501,73 @@ def test_pytest_loads_the_inis_plugin_through_the_addopts(tmp_path):
 
     honoured = run(
         ImagePytestIni(
-            path=str(project / "tox.ini"),
-            addopts="-ra --strict-markers",
-            plugins=("pytester",),
+            path=str(copy), addopts="-ra --strict-markers", plugins=("pytester",)
         )
     )
     assert honoured.returncode == 0, honoured.stdout + honoured.stderr
     assert "1 passed" in honoured.stdout
+    assert f"rootdir: {project}" in honoured.stdout
+    assert "configfile: ../cfg/0123456789abcdef.ini" in honoured.stdout
 
     hidden = run(None)
-    assert hidden.returncode != 0
-    assert "fixture 'pytester' not found" in hidden.stdout
+    assert "fixture 'pytester' not found" in hidden.stdout, hidden.stdout
+    assert f"rootdir: {project}" in hidden.stdout
+    assert not (project / "bf-evil-loaded").exists()
 
 
-# The probe itself, in a container (skipped without Docker): root's
-# /testbed_verify copy and the workspace as the agent left it.
+def test_the_copys_pythonpath_resolves_from_the_images_folder(tmp_path):
+    """pytest resolves ``pythonpath`` from the folder of the file it is
+    given: from BenchFlow's copy, ``pythonpath = src`` would name the copy's
+    folder. The -o override gives the image folder's (CIR's ``pythonpath =
+    .``, SWE-bench-style ``src`` layouts)."""
+    from benchflow.sandbox.lockdown import (
+        ImagePytestIni,
+        _build_pytest_addopts,
+        _ini_pythonpath,
+    )
+
+    project = tmp_path / "app"
+    (project / "src").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "src" / "mod.py").write_text("def answer():\n    return 42\n")
+    (project / "tests" / "test_mod.py").write_text(
+        "import mod\n\n\ndef test_mod():\n    assert mod.answer() == 42\n"
+    )
+    ini = "[pytest]\npythonpath = src\n"
+    (tmp_path / "cfg").mkdir()
+    copy = tmp_path / "cfg" / "0123456789abcdef.ini"
+    copy.write_text(ini)
+
+    def run(pythonpath):
+        addopts = _build_pytest_addopts(
+            str(project),
+            "",
+            verifier_confcutdir=str(project),
+            ini=ImagePytestIni(path=str(copy), pythonpath=pythonpath),
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", "tests/test_mod.py"],
+            cwd=project,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "PYTEST_ADDOPTS": addopts,
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    assert _ini_pythonpath("pytest.ini", ini, str(project)) == str(project / "src")
+    honoured = run(_ini_pythonpath("pytest.ini", ini, str(project)))
+    assert honoured.returncode == 0, honoured.stdout + honoured.stderr
+    assert "1 passed" in honoured.stdout
+    unresolved = run(None)
+    assert "No module named 'mod'" in unresolved.stdout, unresolved.stdout
+
+
+# The probe itself, in a container (skipped without Docker): root's build
+# snapshot and the workspace as the agent left it.
 
 
 def _docker_ready() -> bool:
@@ -486,11 +627,12 @@ def _write(name: str, path: str, text: str) -> None:
     assert done.returncode == 0, done.stderr
 
 
-def _sh(name: str, command: str) -> None:
+def _sh(name: str, command: str) -> str:
     done = subprocess.run(
         ["docker", "exec", name, "sh", "-c", command], capture_output=True, text=True
     )
     assert done.returncode == 0, done.stderr
+    return done.stdout
 
 
 IMAGE_FILES = {
@@ -499,54 +641,50 @@ IMAGE_FILES = {
     "tox.ini": TOX_INI,
     "setup.cfg": "[tool:pytest]\naddopts = -q\n",
 }
+SNAPSHOT = lockdown._SNAPSHOT_DIR
 
 
-def _image(name: str) -> None:
-    _sh(name, "mkdir -p /testbed")
-    for file, text in IMAGE_FILES.items():
+def _image(name: str, files=IMAGE_FILES) -> None:
+    """The image's workspace, and the snapshot _snapshot_build_config takes
+    of it before the agent's turn."""
+    _sh(name, f"mkdir -p /testbed {SNAPSHOT} && chmod 700 {SNAPSHOT}")
+    for file, text in files.items():
         _write(name, f"/testbed/{file}", text)
-    _sh(name, "cp -a /testbed /testbed_verify && chmod 700 /testbed_verify")
+        _write(name, f"{SNAPSHOT}/{file}", text)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("agent", "expected"),
+    ("agent", "used"),
     [
-        ("true", "/testbed/tox.ini"),
-        # A pytest.ini only the agent added is not read; the image's tox.ini is.
+        ("true", True),
+        # Whatever the agent did to the workspace, the image's tox.ini is used.
+        ("printf '[pytest]\\naddopts = -p evil\\n' > /testbed/pytest.ini", True),
+        ("printf 'addopts = -p evil\\n' >> /testbed/tox.ini", True),
+        ("rm /testbed/tox.ini && ln -s /etc/passwd /testbed/tox.ini", True),
+        ("rm /testbed/tox.ini /testbed/setup.cfg", True),
+        # No snapshot, or one that is not root's alone: -c /dev/null.
+        (f"rm -r {SNAPSHOT}", False),
+        (f"chmod 755 {SNAPSHOT}", False),
+        (f"chown 1000 {SNAPSHOT}", False),
         (
-            "printf '[pytest]\\naddopts = -p evil\\n' > /testbed/pytest.ini",
-            "/testbed/tox.ini",
+            f"rm {SNAPSHOT}/tox.ini && ln -s /testbed/setup.cfg {SNAPSHOT}/tox.ini",
+            False,
         ),
-        ("printf 'addopts = -p evil\\n' >> /testbed/tox.ini", None),
-        ("rm /testbed/tox.ini && ln -s /testbed_verify/tox.ini /testbed/tox.ini", None),
-        ("rm -r /testbed_verify", None),
-        # V3-R1-A-2: tox's own sections are not what pytest reads.
-        (
-            "printf '\\n[testenv]\\ndeps = attrs\\n' >> /testbed/tox.ini",
-            "/testbed/tox.ini",
-        ),
-        ("sed -i 's/--strict-markers/--deselect=x/' /testbed/tox.ini", None),
-        # V3-R1-B-2: a copy the agent user could have written is not the image's.
-        (
-            "chmod 755 /testbed_verify && chmod 666 /testbed_verify/tox.ini",
-            None,
-        ),
-        ("chmod 666 /testbed_verify/tox.ini", "/testbed/tox.ini"),
     ],
     ids=[
         "unchanged",
         "agent-added-pytest-ini",
         "edited",
         "replaced-by-link",
-        "no-copy",
-        "edited-outside-the-pytest-section",
-        "pytest-section-edited",
-        "copy-writable-by-others",
-        "closed-copy",
+        "removed",
+        "no-snapshot",
+        "open-snapshot",
+        "snapshot-not-roots",
+        "snapshot-link",
     ],
 )
-async def test_the_probe_reads_only_the_images_unchanged_file(box, agent, expected):
+async def test_the_probe_reads_only_the_images_file(box, agent, used):
     from benchflow.sandbox.lockdown import _image_pytest_ini
 
     _image(box)
@@ -554,11 +692,16 @@ async def test_the_probe_reads_only_the_images_unchanged_file(box, agent, expect
 
     ini = await _image_pytest_ini(ContainerEnv(box), "/testbed")
 
-    assert (ini.path if ini else None) == expected
-    if expected:
-        assert ini is not None
-        assert ini.plugins == ("pytester",)
-        assert ini.addopts == "-ra --strict-markers"
+    if not used:
+        assert ini is None
+        return
+    assert ini is not None
+    folder, base = ini.path.rsplit("/", 1)
+    assert folder == lockdown._PYTEST_CONFIG_DIR and COPY.fullmatch(base)
+    assert ini.plugins == ("pytester",)
+    assert ini.addopts == "-ra --strict-markers"
+    assert _sh(box, f"cat {ini.path}") == TOX_INI
+    assert _sh(box, f"stat -c '%u %a' {ini.path}").split() == ["0", "644"]
 
 
 @pytest.mark.asyncio
@@ -566,12 +709,83 @@ async def test_the_probe_follows_pytests_order(box):
     """With no pytest table in tox.ini either, setup.cfg's [tool:pytest] counts."""
     from benchflow.sandbox.lockdown import ImagePytestIni, _image_pytest_ini
 
-    IMAGE = dict(IMAGE_FILES, **{"tox.ini": "[tox]\nenvlist = py\n"})
-    _sh(box, "mkdir -p /testbed")
-    for file, text in IMAGE.items():
-        _write(box, f"/testbed/{file}", text)
-    _sh(box, "cp -a /testbed /testbed_verify")
+    _image(box, dict(IMAGE_FILES, **{"tox.ini": "[tox]\nenvlist = py\n"}))
 
     ini = await _image_pytest_ini(ContainerEnv(box), "/testbed")
 
-    assert ini == ImagePytestIni(path="/testbed/setup.cfg")
+    assert ini is not None and ini.path.endswith(".cfg")
+    assert ini == ImagePytestIni(path=ini.path)
+    assert _sh(box, "ls -A /testbed").split() == sorted(IMAGE_FILES)
+    assert _sh(box, f"cat {ini.path}") == IMAGE_FILES["setup.cfg"]
+
+
+# -- a pytest before 3.5 has no --rootdir (astropy-7166, R334) --------
+
+
+def _with_pytests(pytests):
+    from benchflow.sandbox._image_manifest import ImageManifest
+
+    return SimpleNamespace(
+        _benchflow_image_manifest=ImageManifest(taken="pre-transfer", pytests=pytests)
+    )
+
+
+@pytest.mark.parametrize(
+    ("pytests", "passed"),
+    [
+        ({}, True),
+        ({"/s/pytest-8.3.3.dist-info": "8.3.3"}, True),
+        ({"/s/pytest-3.5.0.dist-info": "3.5.0"}, True),
+        ({"/s/pytest-3.3.1-py3.6.egg-info": "3.3.1"}, False),
+        (
+            {
+                "/s/pytest-3.3.1-py3.6.egg-info": "3.3.1",
+                "/t/pytest-8.3.3.dist-info": "8.3.3",
+            },
+            True,
+        ),
+        ({"/s/pytest-dev.dist-info": "dev"}, True),
+    ],
+    ids=["no-pytest", "new", "3.5", "old", "mixed", "unreadable"],
+)
+def test_rootdir_is_left_out_only_when_every_image_pytest_predates_3_5(pytests, passed):
+    assert lockdown._image_pytests_take_rootdir(_with_pytests(pytests)) is passed
+
+
+def test_without_a_manifest_rootdir_is_passed():
+    assert lockdown._image_pytests_take_rootdir(SimpleNamespace()) is True
+
+
+def test_the_addopts_leave_rootdir_out_when_asked():
+    from benchflow.sandbox.lockdown import ImagePytestIni, _build_pytest_addopts
+
+    for ini in (None, ImagePytestIni(path="/cfg/x.ini")):
+        kept = shlex.split(_build_pytest_addopts("/testbed", "", ini=ini))
+        left = shlex.split(
+            _build_pytest_addopts("/testbed", "", ini=ini, rootdir=False)
+        )
+        assert "--rootdir=/testbed" in kept
+        assert not any(a.startswith("--rootdir") for a in left)
+        assert (
+            left[0] == "-c" and [a for a in kept if a != "--rootdir=/testbed"] == left
+        )
+
+
+@pytest.mark.asyncio
+async def test_strict_leaves_rootdir_out_for_an_old_image_pytest(tmp_path):
+    """The wiring: an image manifest that found only pytest 3.3.1."""
+    from benchflow.sandbox._image_manifest import ImageManifest
+
+    task = _task_with_package(tmp_path)
+    env = _ini_answer({})
+    env._benchflow_image_manifest = ImageManifest(
+        taken="pre-transfer", pytests={"/s/pytest-3.3.1-py3.6.egg-info": "3.3.1"}
+    )
+    await harden_before_verify(
+        env, task, sandbox_user="agent", workspace="/testbed", integrity="strict"
+    )
+
+    args = shlex.split(task.config.verifier.env["PYTEST_ADDOPTS"])
+    assert args[:2] == ["-c", "/dev/null"]
+    assert not any(a.startswith("--rootdir") for a in args)
+    assert args[-2] == "-p" and args[-1].startswith("_runtime_guard_")

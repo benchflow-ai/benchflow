@@ -7,7 +7,7 @@ bench run benchflow-ai/skillsbench/tasks/edit-pdf \
   --agent gemini --model gemini-3.5-flash-lite --sandbox daytona
 ```
 
-Sandboxes are `docker` (the default), `remote-docker`, `daytona`, `modal`, `agentcore` and `apple-container`.
+Sandboxes are `docker` (the default), `remote-docker`, `daytona`, `modal`, `agentcore` and `apple-container`. `modal`, `agentcore` and `apple-container` can't run BenchFlow's integrity check yet, so in the default mode a model agent's trial there is refused before its turn; use Docker or Daytona for model agents ([Sandboxes](../scale/sandboxes.md)).
 
 ## Featured
 

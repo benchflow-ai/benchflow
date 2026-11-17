@@ -9,6 +9,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from benchflow.rewards import judge_usage
+
 logger = logging.getLogger(__name__)
 
 #: The key an OpenAI-compatible judge call sends to an endpoint the task
@@ -262,6 +264,7 @@ async def _call_anthropic(
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
+    judge_usage.record_anthropic(model, response)
     # The response may have no content blocks, or lead with a non-text
     # block (e.g. a tool-use block).  Return the first text block's text,
     # or "" if none is present.
@@ -316,6 +319,7 @@ async def _call_openai(
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
+    judge_usage.record_openai(model, response)
     content = response.choices[0].message.content
     return content or ""
 
@@ -340,6 +344,7 @@ async def _call_google(
         raise RuntimeError("GOOGLE_API_KEY / GEMINI_API_KEY not set")
     client = genai.Client(api_key=api_key)
     response = await client.aio.models.generate_content(model=model, contents=prompt)
+    judge_usage.record_google(model, response)
     # ``response.text`` is ``None`` when the response has no text part
     # (e.g. content blocked by a safety filter, or a non-text part leads
     # the response).  Return "" so the ``-> str`` contract holds.

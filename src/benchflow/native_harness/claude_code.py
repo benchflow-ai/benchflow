@@ -33,6 +33,7 @@ import os
 import re
 from typing import Any
 
+from benchflow._utils.config import CLAUDE_EFFORT_LEVELS
 from benchflow.acp.types import McpServerSpec, StopReason
 from benchflow.native_harness.spec import (
     NativeLaunch,
@@ -47,7 +48,7 @@ CLI = "claude-code"
 THINKING_DISPLAY = "summarized"
 # The CLI's --effort values. BenchFlow's "none" and "minimal" have no Claude
 # Code equivalent; they are refused rather than silently widened.
-CLAUDE_CODE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+CLAUDE_CODE_EFFORTS = frozenset(CLAUDE_EFFORT_LEVELS)
 
 _BASE_ARGS = (
     "-p",
@@ -669,7 +670,7 @@ _PLAN_TOOLS = frozenset(
 )
 
 
-def claude_code_usage(usage: Any) -> dict[str, int] | None:
+def claude_code_usage(usage: Any) -> dict[str, int | None] | None:
     """A result's ``usage`` in ACP ``PromptResponse.usage`` fields.
 
     Like the adapter's, ``total_tokens`` sums input, output and both cache
@@ -682,13 +683,13 @@ def claude_code_usage(usage: Any) -> dict[str, int] | None:
         value = usage.get(key)
         return value if isinstance(value, int) and value >= 0 else 0
 
-    snapshot = {
+    snapshot: dict[str, int | None] = {
         "input_tokens": count("input_tokens"),
         "output_tokens": count("output_tokens"),
         "cached_read_tokens": count("cache_read_input_tokens"),
         "cached_write_tokens": count("cache_creation_input_tokens"),
     }
-    snapshot["total_tokens"] = sum(snapshot.values())
+    snapshot["total_tokens"] = sum(value or 0 for value in snapshot.values())
     return snapshot
 
 

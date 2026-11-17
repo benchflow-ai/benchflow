@@ -45,7 +45,10 @@ async def test_terminal_verification_preserves_scripted_output(
     monkeypatch.setattr(rollout_mod, "_verify_rollout", AsyncMock(side_effect=grade))
     rollout = Rollout.__new__(Rollout)
     rollout._config = SimpleNamespace(
-        primary_agent=agent, sandbox_user=None, task_path=Path("/tmp/task")
+        primary_agent=agent,
+        sandbox_user=None,
+        task_path=Path("/tmp/task"),
+        integrity="audit",
     )
     rollout._env = RecordingEnv()
     rollout._task = SimpleNamespace(config=None)

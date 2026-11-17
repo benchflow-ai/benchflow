@@ -7,13 +7,13 @@ BenchFlow is the `benchflow` package on PyPI. It installs one command under two 
 Install a fixed version, with the dependency versions its release was tested with:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.9.2' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
+uv tool install --python 3.12 'benchflow==0.9.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
 bench --version
 ```
 
 ```text
-benchflow 0.9.2
+benchflow 0.9.3
 ```
 
 uv fetches Python 3.12 if you don't have it. Keep `--python 3.12`: with an older Python, uv picks an old release that has no `bench` command and stops with `No executables are provided by package benchflow`. If your shell then says `bench: command not found`, run `uv tool update-shell` and open a new terminal.
@@ -29,10 +29,10 @@ bench doctor
 ```
 
 ```text
-BenchFlow doctor - benchflow 0.9.2, Linux x86_64, sandbox docker
+BenchFlow doctor - benchflow 0.9.3, Linux x86_64, sandbox docker
 
 Runtime
-  PASS  python                Python 3.12.15, benchflow 0.9.2 (...)
+  PASS  python                Python 3.12.15, benchflow 0.9.3 (...)
   PASS  uv                    uv 0.13.1 (x86_64-unknown-linux-gnu)
   PASS  bench on PATH         .../bin/bench, this install
   PASS  bfx                   bfx x86_64, aarch64 (pinned)
@@ -57,8 +57,8 @@ Agent credentials
 Docker needs nothing extra. Daytona, Modal and Amazon Bedrock AgentCore each need an extra, named in the install line:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.9.2' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.9.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
 ```
 
 The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `benchflow[sandbox-daytona,sandbox-modal]`. Each sandbox also needs its own login: see [Sandboxes](../scale/sandboxes.md).
@@ -68,26 +68,26 @@ The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `b
 To call BenchFlow from your own code, add it to that project's environment:
 
 ```bash
-uv add 'benchflow==0.9.2'
+uv add 'benchflow==0.9.3'
 ```
 
-`pip install 'benchflow==0.9.2'` works too, on Python 3.12 or newer.
+`pip install 'benchflow==0.9.3'` works too, on Python 3.12 or newer.
 
 ## Install the 0.10 prerelease
 
-Some pages in these docs need 0.10.0rc3, a release candidate; each says so in its first line, and the nav marks them (0.10). It's on PyPI as a pre-release, so name the version to get it; without the pin, uv and pip stay on 0.9.2:
+Some pages in these docs need a 0.10 release candidate; each says so in its first line, and the nav marks them (0.10). The latest, 0.10.0rc4, is on PyPI as a pre-release, so name the version to get it; without the pin, uv and pip stay on the 0.9 line:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.10.0rc3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.0rc3/constraints.txt
+uv tool install --python 3.12 'benchflow==0.10.0rc4' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.0rc4/constraints.txt
 bench --version
 ```
 
 ```text
-benchflow 0.10.0rc3
+benchflow 0.10.0rc4
 ```
 
-Extras go inside the quotes as above (`'benchflow[sandbox-daytona]==0.10.0rc3'`), and `pip install 'benchflow==0.10.0rc3'` works too. Its new commands and flags may still change before 0.10.0, and where 0.9.2 has another way to do a 0.10 page's job, the page says so. [What's in 0.10.0rc3](../versions/0.10.md) lists what it adds and what may still change. To go back, run the 0.9.2 install line above.
+Extras go inside the quotes as above (`'benchflow[sandbox-daytona]==0.10.0rc4'`), and `pip install 'benchflow==0.10.0rc4'` works too. Its new commands and flags may still change before 0.10.0, and where 0.9.3 has another way to do a 0.10 page's job, the page says so. [What's in the 0.10 release candidates](../versions/0.10.md) lists what it adds and what may still change. To go back, run the 0.9.3 install line above.
 
 ## Upgrade, go back or uninstall
 
@@ -107,7 +107,7 @@ BenchFlow's engine rewritten in Rust is a separate prerelease, [bench 0.8.1](htt
 
 | You type | Runs |
 |---|---|
-| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.9.2` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
+| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.9.3` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
 | `benchflow` | this package |
 | `~/.bench/bin/bench` | the Rust engine, installed as below |
 

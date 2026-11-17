@@ -107,9 +107,27 @@ def test_terminal_work_releases_after_caller_cancellation(
             and work == "close"
             and state["batches"] == batch
         ):
-            completion.add_done_callback(
-                lambda _: state["owner"].cancel("operator requested")
-            )
+            # The caller must be cancelled after this batch ends and before
+            # it resumes. A callback on the batch's own future cannot promise
+            # that on Python 3.13: run_in_executor returns it already done
+            # when the batch finished first (asyncio copies a finished job's
+            # state at once on the loop's thread), shield returns a done
+            # future as it is, and awaiting it does not yield, so the next
+            # batch was submitted before the callback ran. The caller gets a
+            # future of the test's instead, finished only after the cancel.
+            seen = loop.create_future()
+
+            def cancel_then_finish(done):
+                state["owner"].cancel("operator requested")
+                if done.cancelled():
+                    seen.cancel()
+                elif done.exception() is not None:
+                    seen.set_exception(done.exception())
+                else:
+                    seen.set_result(done.result())
+
+            completion.add_done_callback(cancel_then_finish)
+            return seen
         return completion
 
     monkeypatch.setattr(loop, "run_in_executor", submit)

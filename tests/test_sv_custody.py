@@ -1979,6 +1979,7 @@ VERIFIER_TASK_FIELDS: dict[str, str] = {
     # own image too; it is not an agent environment value.
     "verifier.required_tools": "carried",
     "verifier.optional_tools": "carried",
+    "verifier.setup_timeout_sec": "carried",
     "verifier.collect": "cleared",
     "verifier.collect.command": "cleared",
     "verifier.collect.service": "cleared",
@@ -2000,6 +2001,7 @@ VERIFIER_TASK_FIELDS: dict[str, str] = {
     "sandbox.blocked_urls": "carried",
     "sandbox.blocked_hosts": "carried",
     "sandbox.build_timeout_sec": "carried",
+    "sandbox.setup_timeout_sec": "carried",
     "sandbox.docker_image": "carried",
     "sandbox.os": "carried",
     "sandbox.cpus": "carried",

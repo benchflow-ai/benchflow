@@ -599,7 +599,9 @@ async def test_default_runner_quiesces_failed_child_before_restore(
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        with pytest.raises(RuntimeError) as raised:
+        with pytest.raises(
+            RuntimeError, match=r"^(execute|connect|verify) failed$"
+        ) as raised:
             await task
         assert raised.value is failure
     assert events == ["restore", "close", "restore"]
@@ -770,7 +772,9 @@ async def test_plain_task_branch_error_names_the_sandbox_layer(tmp_path: Path):
     async def run_child(child):
         return 0.0
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError, match=r"needs the Environment plane, and this rollout has none"
+    ) as excinfo:
         await rollout.branch(2, run_child=run_child)
     message = str(excinfo.value)
     assert "snapshot_layers={'sandbox'}" in message

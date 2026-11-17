@@ -2,12 +2,17 @@
 
 All attack cases fail at c278f22a6. Each oracle writes the program that the
 task's test.sh executes as the verifier user; no host result is forged.
+
+The plugin guard and its markers exist only in strict (audit, the
+default, runs test.sh as written), so every trial here runs in strict, which
+puts the verifier in its own sandbox.
 """
 
 import json
 
 import pytest
 
+from benchflow._utils.scoring import PLUGIN_GUARD_REJECTED
 from tests.exec_diet_fakes import docker_available
 from tests.test_acc_run2_docker import BASE, _run, _scored, _task
 
@@ -47,7 +52,7 @@ def mark(kind):
         ('mark("crashed")', "guard not confirmed"),
         ("time.sleep(40)", "timed out"),
         (
-            '[p.unlink() for p in pathlib.Path("/run/runtime").glob("verifier-started-*")]\ntime.sleep(40)',
+            '[p.unlink() for p in pathlib.Path("/run/runtime").glob("**/verifier-started-*")]\ntime.sleep(40)',
             "Verifier scored 0",
         ),
     ],
@@ -79,7 +84,17 @@ async def test_verifier_user_cannot_drop_the_trial(tmp_path, attack, reason):
         file.write_text(
             file.read_text().replace("timeout_sec = 300.0", "timeout_sec = 10.0", 1)
         )
-    result = await _run(task, "oracle")
+    result = await _run(task, "oracle", integrity="strict")
+    if reason == "guard not confirmed":
+        # R ((g2)): the host re-judges the guard's stop on the
+        # pristine image, which trusts everything, so the trial's own state
+        # stopped it: a recorded 0 that says so, never dropped.
+        assert result.rewards == {"reward": 0.0}, result.rewards
+        error = result.verifier_error or ""
+        assert error.startswith(PLUGIN_GUARD_REJECTED), error
+        assert "on the pristine image the pytest plugin guard trusts" in error
+        assert "scores 0" in error
+        return
     _scored(result, 0.0)
     warnings = json.loads((result.rollout_dir / "result.json").read_text()).get(
         "warnings", []
@@ -121,7 +136,7 @@ async def test_a_reward_file_test_sh_breaks_is_an_error_that_still_fails(
             "if python3 check.py; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n"
         ),
     )
-    result = await _run(task, "oracle")
+    result = await _run(task, "oracle", integrity="strict")
     assert result.error is None, result.error
     assert result.rewards is None
     assert result.verifier_error.startswith(NO_USABLE_REWARD), result.verifier_error

@@ -51,6 +51,7 @@ from benchflow._utils.reachable_write import (
 from benchflow._utils.text import describe_exception
 from benchflow.sandbox import (
     _bind_targets,
+    _bounded_exec,
     _direct_docker,
     _inert_bootstrap,
     _metadata_helper,
@@ -487,6 +488,7 @@ def route_exec_argv(
     cwd: str | None = None,
     shell_argv: list[str] | None = None,
     remove: Sequence[str] = (),
+    launch: tuple[str, ...] | None = None,
 ) -> list[str]:
     """``docker exec`` argv (after ``docker``, or after ``docker compose``
     with ``-T`` added by the caller) for one root step on *route* (C8).
@@ -504,6 +506,9 @@ def route_exec_argv(
     valued loader switches (LD_TRACE_LOADED_OBJECTS=1 listed the shell's
     libraries instead of running it, SCRIPT-AGENT-DOCKER-F1 round 2); the
     caller runs the client without them (they would be filled in from it).
+    *launch*: :func:`benchflow.sandbox._bounded_exec.launch_for` of the step,
+    once the agent's turn has started: bfx launch goes ahead of the
+    route's shell, or ``()`` puts the launch in the shell's own text.
     """
     if route.pin is None:
         raise ValueError("route_exec_argv is for root's plumbing routes")
@@ -526,10 +531,15 @@ def route_exec_argv(
                 ("HISTFILE", "/dev/null"),
             ):
                 argv.extend(["-e", f"{name}={value}"])
-        argv.extend(["-e", f"PATH={route.pin}", container, *shell_argv])
+        argv.extend(
+            ["-e", f"PATH={route.pin}", container, *(launch or ()), *shell_argv]
+        )
         _transport.sent("Docker", argv)
         return argv
-    argv.extend([container, route.shell, "-c", with_system_path(command, route.pin)])
+    inner = with_system_path(command, route.pin)
+    if launch == ():
+        inner = _bounded_exec.shell_launch(route.shell, inner, kit=route.kit)
+    argv.extend([container, *(launch or ()), route.shell, "-c", inner])
     # Its commands are constant scripts; the bound still holds here.
     _transport.sent("Docker", argv)
     return argv
@@ -946,6 +956,10 @@ class DockerSandboxEnvVars(BaseModel):
         )
 
 
+#: How many of main's last output lines a start that found it stopped quotes.
+MAIN_STOPPED_LOG_LINES = 20
+
+
 class DockerSandbox(BaseSandbox):
     agent_container_no_new_privileges = True
     _DOCKER_COMPOSE_BASE_PATH = COMPOSE_BASE_PATH
@@ -1347,6 +1361,7 @@ class DockerSandbox(BaseSandbox):
                 base=self._DOCKER_COMPOSE_BASE_PATH,
                 prebuilt=self._use_prebuilt,
                 mounts=self._mounts_compose_path,
+                rules_by_helper=self.rules_by_helper,
             )
             paths.extend(self._runtime_compose_inputs())
         # This private BenchFlow overlay contains only allocated IPAM subnets;
@@ -1628,6 +1643,7 @@ class DockerSandbox(BaseSandbox):
                 base=self._DOCKER_COMPOSE_BASE_PATH,
                 prebuilt=prebuilt,
                 mounts=self._mounts_compose_path,
+                rules_by_helper=self.rules_by_helper,
             )
         ]
         files.extend(
@@ -1701,6 +1717,34 @@ class DockerSandbox(BaseSandbox):
         refused += result.refused
         if refused or result.launch is None:
             raise TaskEnvNotAllowedError({self.environment_name: refused})
+        # Check what runs (the lead's 07:19Z and 07:25Z rulings): the
+        # network policy and main's namespace read the project Compose
+        # resolved for the run, the document the launch froze, never the raw
+        # file.
+        from benchflow.sandbox import cloud_metadata, service_cover
+
+        resolved_project = getattr(result, "project", None)
+        project_model = resolved_project if isinstance(resolved_project, dict) else {}
+        refusal = service_cover.powers_refusal(
+            getattr(self, "_network_policy", "") or "",
+            service_cover.network_powers(project_model.get("services")),
+        )
+        if refusal:
+            raise service_cover.ServiceCoverError(refusal)
+        if str(getattr(self, "_network_policy", "") or "") == "allowlist":
+            from benchflow.sandbox.egress_denylist import allowlist_outbound_refusal
+
+            allowlist_outbound_refusal(project_model)
+        topology = cloud_metadata.resolved_topology(project_model)
+        if topology.main_chain_end == "host":
+            raise service_cover.ServiceCoverError(
+                "sandbox startup refused: main joins the network namespace of "
+                f"service {topology.main_netns_owner!r} (network_mode: "
+                f"{topology.main_network_mode}), which is the host's own network, "
+                "where no rule of the trial's may go"
+            )
+        self._resolved_compose = project_model
+        self._resolved_topology = topology
         self._launch = result.launch
 
     def _compose_transport_env(self) -> dict[str, str]:
@@ -2635,6 +2679,7 @@ class DockerSandbox(BaseSandbox):
         # built), main starts without NET_ADMIN, decided before the first
         # launch freeze.
         self._prebuild_metadata_helper()
+        await self._decide_rules_by_helper()
         await self._decide_metadata_net_admin()
         # Ordinary startup and recovery both decide the kept-service freezer
         # here, from the Engine's report, before Compose creates anything
@@ -2792,8 +2837,16 @@ class DockerSandbox(BaseSandbox):
         self._start_metadata_helper()
         try:
             await self._pin_or_verify_bind_targets()
+            await self._cover_main_before_release()
+            await self._cover_services_before_release()
             await self._release_inert_bootstrap()
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                # A main that stopped right after its release (the release's
+                # readiness wait finds it gone): what it ran and said, read
+                # before the teardown below removes it (item 6).
+                with contextlib.suppress(Exception):
+                    self._main_stopped_record = await self.main_stopped()
             await self._close_metadata_helper()
             if self._direct is not None:
                 with contextlib.suppress(Exception):
@@ -3296,6 +3349,103 @@ class DockerSandbox(BaseSandbox):
         if len(ids) == 1:
             self._main_container = ids[0]
 
+    async def _decide_rules_by_helper(self) -> None:
+        """Whether BenchFlow's helper adds every rule of main's network
+        namespace from outside it, so main starts without NET_ADMIN and
+        NET_RAW under every policy (the lead's ruling): the helper on
+        and its image built for this daemon (the start waits for the build).
+        A build that fails, ``BENCHFLOW_METADATA_HELPER=0``,
+        ``BENCHFLOW_METADATA_MAIN_NET_ADMIN=1`` and a recovery start (which
+        keeps its baseline's capabilities) keep the old start, where main
+        holds NET_ADMIN: under allowlist, denylist and the offline shape they
+        refuse the start, naming why (:meth:`_refuse_main_net_admin`), and
+        so they do under every other restricted policy (plain no-network, a
+        verifier's own): the old start keeps NET_RAW, whose packet sockets go
+        around rules in main's namespace. Only an open network
+        keeps the old start."""
+        if getattr(self, "_rules_by_helper", None) is not None:
+            return
+        self._rules_by_helper = False
+        # Asked for by the sandbox factory, the path every run takes
+        # (setup.py); a sandbox built directly keeps the old start.
+        if getattr(self, "_wants_rules_by_helper", False) is not True:
+            return
+        keeps = _metadata_helper.old_start_reason() or (
+            "a recovery start (it keeps its baseline's capabilities)"
+            if getattr(self, "_recovery_baseline", None) is not None
+            else ""
+        )
+        if keeps:
+            # The old start: main holds NET_ADMIN wherever the policy needs
+            # rules in its namespace (allowlist, denylist, the offline shape
+            # kept open), which a root process there could remove (
+            # the rule). Open and plain no-network give main none.
+            self._refuse_main_net_admin(keeps)
+            return
+        try:
+            await _metadata_helper.ensure_image(
+                self._helper_docker, self._helper_daemon()
+            )
+        except _metadata_helper.HelperUnavailable as exc:
+            from benchflow.sandbox._compose import compose_needs_net_admin
+
+            config = getattr(self, "task_env_config", None)
+            needs_rules = (
+                getattr(self, "_main_metadata_rule", False) is True
+                or (config is not None and compose_needs_net_admin(config))
+                or bool(getattr(self, "_network_policy", ""))
+            )
+            if not needs_rules:
+                # An open task that opts out of the metadata block: no rule
+                # of the trial's is needed, so main starts as before.
+                return
+            raise RuntimeError(
+                "sandbox startup refused: BenchFlow's helper image could not be "
+                f"built ({exc}), so no network rule of the trial's could go in "
+                "from outside main, and its processes would have the cloud "
+                "metadata endpoints and the network open to them; only the "
+                "task's own opt-out (allow_cloud_metadata = true in its "
+                "[environment] table) on an open network starts it without them"
+            ) from exc
+        self._rules_by_helper = True
+
+    def _refuse_main_net_admin(self, why: str) -> None:
+        """Refuse a start whose policy needs rules in main's namespace when
+        *why* (an override, or a failed helper) leaves the old start, where
+        main holds NET_ADMIN and so could remove its own rules."""
+        from benchflow.sandbox._compose import compose_needs_net_admin
+
+        config = getattr(self, "task_env_config", None)
+        if config is None:
+            return
+        if compose_needs_net_admin(config):
+            mode = getattr(getattr(config, "network_mode", None), "value", None) or str(
+                getattr(config, "network_mode", "")
+            )
+            raise RuntimeError(
+                f"sandbox startup refused: the task's network policy ({mode}) needs "
+                "BenchFlow's helper container to add main's rules from outside it; "
+                f"{why} would leave main holding NET_ADMIN, able to remove its own "
+                "rules"
+            )
+        # Any other restricted policy, plain no-network and a verifier's own
+        # included (the factory's restricted_policy): the old start keeps
+        # NET_RAW in main, so it does not start.
+        policy = getattr(self, "_network_policy", "")
+        if isinstance(policy, str) and policy:
+            raise RuntimeError(
+                f"sandbox startup refused: the task's network policy ({policy}) "
+                "needs BenchFlow's helper container to add main's rules from "
+                f"outside it; {why} would leave main holding NET_RAW, whose packet "
+                "sockets go around rules in its namespace"
+            )
+
+    @property
+    def rules_by_helper(self) -> bool:
+        """Whether every rule of main's namespace comes from BenchFlow's
+        helper (main holds neither NET_ADMIN nor NET_RAW)."""
+        return getattr(self, "_rules_by_helper", None) is True
+
     async def _decide_metadata_net_admin(self) -> None:
         """Start main without NET_ADMIN where the metadata block is its one
         reason for it and the helper adds the block's rules from outside main:
@@ -3468,16 +3618,365 @@ class DockerSandbox(BaseSandbox):
         if self._metadata_helper is not None:
             self._metadata_helper.close()
 
+    async def metadata_service_targets(
+        self, *, include_main: bool = False
+    ) -> list[dict[str, Any]]:
+        """Every running container of the project but ``main`` (with it, when
+        *include_main*: its metadata rule), as
+        :mod:`benchflow.sandbox.service_cover` covers it: its service, id,
+        network mode, added capabilities, whether it is privileged, and the
+        subnets and gateways of the networks it is on. Raises when
+        the daemon cannot describe the project."""
+        listed = await self._docker_cli(
+            [
+                "ps",
+                "-q",
+                "--no-trunc",
+                "--filter",
+                f"label=com.docker.compose.project={self.compose_project_name}",
+            ],
+            check=False,
+            raw_output=True,
+        )
+        ids = [i.strip() for i in (listed.stdout or "").splitlines() if i.strip()]
+        if listed.return_code != 0 or not all(_CONTAINER_ID.fullmatch(i) for i in ids):
+            raise RuntimeError(
+                f"sandbox startup refused: docker ps could not list the trial's "
+                f"services (rc={listed.return_code})"
+            )
+        if not ids:
+            return []
+        inspected = await self._docker_cli(
+            ["inspect", *ids], check=False, raw_output=True
+        )
+        containers = (
+            json.loads(inspected.stdout or "[]") if inspected.return_code == 0 else None
+        )
+        if not isinstance(containers, list):
+            raise RuntimeError(
+                "sandbox startup refused: docker inspect could not describe the "
+                "trial's services"
+            )
+        network_ids = sorted(
+            {
+                str(net.get("NetworkID"))
+                for c in containers
+                for net in (
+                    (c.get("NetworkSettings") or {}).get("Networks") or {}
+                ).values()
+                if net.get("NetworkID")
+            }
+        )
+        networks: dict[str, Any] = {}
+        if network_ids:
+            nets = await self._docker_cli(
+                ["network", "inspect", *network_ids], check=False, raw_output=True
+            )
+            if nets.return_code == 0:
+                for record in json.loads(nets.stdout or "[]"):
+                    networks[str(record.get("Id"))] = record
+        targets: list[dict[str, Any]] = []
+        for c in containers:
+            labels = (c.get("Config") or {}).get("Labels") or {}
+            service = labels.get("com.docker.compose.service") or str(
+                c.get("Name", "")
+            ).lstrip("/")
+            if service == "main" and not include_main:
+                continue
+            host = c.get("HostConfig") or {}
+            subnets: list[str] = []
+            gateways: list[str] = []
+            for net in (
+                (c.get("NetworkSettings") or {}).get("Networks") or {}
+            ).values():
+                record = networks.get(str(net.get("NetworkID"))) or {}
+                for config in (record.get("IPAM") or {}).get("Config") or []:
+                    if config.get("Subnet"):
+                        subnets.append(str(config["Subnet"]))
+                    if config.get("Gateway") and not record.get("Internal"):
+                        gateways.append(str(config["Gateway"]))
+            targets.append(
+                {
+                    "service": service,
+                    "id": str(c.get("Id")),
+                    "network_mode": str(host.get("NetworkMode") or ""),
+                    "cap_add": list(host.get("CapAdd") or []),
+                    "privileged": bool(host.get("Privileged")),
+                    "subnets": subnets,
+                    "gateways": gateways,
+                    "started_at": str((c.get("State") or {}).get("StartedAt") or ""),
+                }
+            )
+        return targets
+
+    async def metadata_service_install(
+        self, container: str, command: str
+    ) -> tuple[Any, str] | None:
+        """Root's ``command`` from a helper joined to *container*'s namespace
+        (one helper per service), as :meth:`metadata_rules_install` for main."""
+        if not _metadata_helper.helper_enabled():
+            return None
+        helpers = getattr(self, "_service_metadata_helpers", None)
+        if helpers is None:
+            helpers = self._service_metadata_helpers = {}
+        helper = helpers.get(container)
+        if helper is None:
+            helper = helpers[container] = self._new_metadata_helper()
+        return await helper.installed(container, command, retry=True)
+
+    def metadata_service_unavailable(self, container: str) -> str:
+        """Why the helper joined to *container* could not serve ("" when it
+        could, or none was asked)."""
+        helper = (getattr(self, "_service_metadata_helpers", None) or {}).get(container)
+        return str(getattr(helper, "unavailable", "") or "")
+
+    async def metadata_service_run(
+        self, container: str, command: str, *, timeout_sec: int, user: str | None = None
+    ) -> tuple[Any, str]:
+        helper = (getattr(self, "_service_metadata_helpers", None) or {}).get(container)
+        if helper is None:
+            return None, "no metadata helper joined that service"
+        return await helper.run(command, timeout_sec=timeout_sec, user=user)
+
+    def metadata_service_close(self) -> None:
+        for helper in (getattr(self, "_service_metadata_helpers", None) or {}).values():
+            helper.close()
+
+    async def _cover_main_before_release(self, replacement: str | None = None) -> None:
+        """main's rules before its release: its cloud metadata rule for every
+        user (:meth:`_cover_main_metadata_before_release`), then, where the
+        run asks for it, the task's network policy on every process
+        (:meth:`_hold_main_before_release`)."""
+        # Through the class: a stand-in sandbox in a test passes as self.
+        await DockerSandbox._cover_main_metadata_before_release(self, replacement)
+        await DockerSandbox._hold_main_before_release(self, replacement)
+        await DockerSandbox._hold_agent_uid_before_release(self)
+
+    async def _hold_main_before_release(self, replacement: str | None = None) -> None:
+        """The task's network policy on every process of main, root's
+        included, from BenchFlow's helper while main still waits in the inert
+        bootstrap: its ENTRYPOINT and everything that starts it never
+        run outside the policy. Asked for by the rollout
+        (``_start_hold_mode``) for a run with nothing of BenchFlow's in main
+        that needs the network (the oracle, a ``script:`` agent, ``nop``) and
+        for a separate verifier sandbox; a model agent's main keeps the open
+        start its agent install and model proxy need."""
+        from benchflow.sandbox import service_cover
+        from benchflow.sandbox import verifier_network as vn
+
+        self._benchflow_start_hold = None
+        self._start_hold_record = None
+        mode = str(getattr(self, "_start_hold_mode", "") or "")
+        if mode not in vn.START_HOLD_MODES:
+            return
+        main = replacement or self._main_container or await self._main_container_id()
+        targets = await self.metadata_service_targets(include_main=True)
+        target = next(
+            (t for t in targets if t.get("service") == "main" and t.get("id") == main),
+            None,
+        )
+        if target is None:
+            raise service_cover.ServiceCoverError(
+                "sandbox startup refused: main was not running in the inert "
+                "bootstrap, so the task's network policy could not go in before "
+                "its own processes"
+            )
+        network = str(target.get("network_mode") or "")
+        if network == "none":
+            self._start_hold_record = {
+                "phase": "start",
+                "mode": mode,
+                "state": "no route",
+            }
+            return
+        try:
+            self._start_hold_record = await vn.arm_start_hold(
+                self,
+                target,
+                mode,
+                allow_networks=tuple(getattr(self, "_start_hold_allow", ()) or ()),
+            )
+        finally:
+            self.metadata_service_close()
+
+    async def _hold_agent_uid_before_release(self) -> None:
+        """A model agent's uid rules while main still waits in the inert
+        bootstrap (M1): a process of the agent's uid that main's
+        ENTRYPOINT starts is held from its first instruction. Asked for by
+        the rollout (``_start_uid_hold``) under no-network and denylist,
+        whose uid rules the task alone decides (an allowlist's name the task
+        services' addresses: they go in right after release). The sandbox
+        user is made first where the image lacks it; one that cannot be made
+        leaves the rules to the arm after release, and the user's setup
+        refuses the trial later."""
+        from benchflow.sandbox import lockdown
+
+        self._agent_uid_held_at_start = False
+        ask = getattr(self, "_start_uid_hold", None)
+        if not isinstance(ask, dict):
+            return
+        user = ask.get("user")
+        self._agent_uid_held_at_start = (
+            await lockdown.arm_agent_uid_before_its_proxy(
+                self,
+                user,
+                no_web=bool(ask.get("no_web")),
+                egress_denylist=ask.get("policy"),
+                create_user=bool(user),
+                timeout_sec=int(ask.get("timeout_sec") or 120),
+            )
+            is True
+        )
+
+    async def _cover_services_before_release(self) -> None:
+        """Every compose service but main covered from BenchFlow's helper while
+        it still waits in the inert bootstrap: its rules (the task's
+        policy, the cloud metadata rule) are in before any process of its own
+        runs. Asked for by the rollout (``_start_cover``) under a network
+        policy, where it holds every service (``_hold_every_service``); the
+        records go to the rollout's cover, which covers only what is new."""
+        args = getattr(self, "_start_cover", None)
+        if not isinstance(args, dict):
+            return
+        from benchflow.sandbox import service_cover
+
+        covered: dict[str, dict[str, Any]] = {}
+        await service_cover.cover_task_services(self, covered=covered, **args)
+        self._start_covered_services = covered
+
+    async def _cover_main_metadata_before_release(
+        self, replacement: str | None = None
+    ) -> None:
+        """main's cloud metadata rule for every user, root included, from
+        BenchFlow's helper while main still waits in the inert bootstrap: no
+        process of main's own (its entrypoint, a root service the task's
+        environment starts later) runs before it (the lead's 22:40Z
+        ruling). The record goes to the trial's service-network.json; a rule
+        that cannot be proven stops the start. *replacement*: the container a
+        snapshot restore made (:meth:`restore`), a new network namespace
+        without the rule, still inert."""
+        self._main_cover_record = None
+        # Set by the sandbox factory unless the task opts out (setup.py).
+        if getattr(self, "_main_metadata_rule", False) is not True:
+            return
+        from benchflow.sandbox import service_cover
+
+        main = replacement or self._main_container or await self._main_container_id()
+        # Never a rule in the host's namespace (RCI 03:59Z): a main on
+        # the host's network gets none, and the record says so.
+        docker_run = getattr(self, "_helper_docker", None)
+        where = (
+            await _metadata_helper.host_netns(docker_run, self._helper_daemon(), main)
+            if main and callable(docker_run)
+            else ("unread" if not main else "")
+        )
+        if where == "host":
+            self._main_cover_record = {
+                "service": "main",
+                "network_mode": "host",
+                "state": "host network",
+                "why": _metadata_helper.HOST_NETWORK.format(what="main"),
+                "proven": False,
+                "before_release": True,
+            }
+            return
+        if where:
+            raise service_cover.ServiceCoverError(
+                "sandbox startup refused: main's network namespace could not be "
+                "told from the host's, so its cloud metadata rule could not go in"
+            )
+        targets = await self.metadata_service_targets(include_main=True)
+        target = next(
+            (t for t in targets if t.get("service") == "main" and t.get("id") == main),
+            None,
+        )
+        if target is None:
+            raise service_cover.ServiceCoverError(
+                "sandbox startup refused: main was not running in the inert "
+                "bootstrap, so its cloud metadata rule could not go in before "
+                "its own processes"
+            )
+        try:
+            record = await service_cover._cover_main(self, target, True)
+        finally:
+            self.metadata_service_close()
+        # A recovery start can find main running already: say so. A restore's
+        # replacement waits in the inert bootstrap until it is released.
+        record["before_release"] = replacement is not None or "main" in (
+            getattr(self, "_bootstrap_services", None) or ()
+        )
+        self._main_cover_record = record
+
+    async def egress_container_start(
+        self, files: dict[str, bytes], argv: list[str], *, lifetime_sec: int
+    ) -> Any:
+        """Start the verifier phase's egress proxy in a container of its own
+        in main's network namespace (benchflow.sandbox._egress_container),
+        replacing an earlier one, and return it."""
+        from benchflow.sandbox._egress_container import (
+            EgressContainer,
+            EgressContainerError,
+        )
+
+        if not _metadata_helper.helper_enabled():
+            raise EgressContainerError(
+                f"{_metadata_helper.HELPER_ENV}=0 turns BenchFlow's helper image off"
+            )
+        old = getattr(self, "_egress_container", None)
+        if old is not None:
+            await old.aclose()
+        main = self._main_container or await self._main_container_id()
+        box = EgressContainer(
+            self._helper_docker,
+            daemon=self._helper_daemon(),
+            name=_sanitize_docker_image_name(f"{self.compose_project_name}-bf-egress"),
+            labels={OWNED_LABEL: OWNED_VALUE, PROCESS_LABEL: process_token()},
+        )
+        self._egress_container = box
+        await box.start(main, files, argv, lifetime_sec=lifetime_sec)
+        return box
+
     async def _close_metadata_helper(self) -> None:
         helpers = [
             *getattr(self, "_retired_metadata_helpers", ()),
             getattr(self, "_metadata_helper", None),
+            *(getattr(self, "_service_metadata_helpers", None) or {}).values(),
+            getattr(self, "_egress_container", None),
         ]
+        self._egress_container = None
+        self._service_metadata_helpers = {}
         self._retired_metadata_helpers = []
         self._metadata_helper = None
         for helper in helpers:
             if helper is not None:
                 await helper.aclose()
+
+    async def task_image_user(self) -> str | None:
+        """Config.User of the task image this sandbox started from, read on
+        the host (``docker image inspect``), nothing run in the sandbox; None
+        for a task's own Compose file (its files name main's image) or when
+        it cannot be read. Call after :meth:`start`."""
+        if self._uses_compose:
+            return None
+        ref = (
+            self.task_env_config.docker_image
+            if self._use_prebuilt
+            else f"{self._env_vars.main_image_name}:latest"
+        )
+        if not ref:
+            return None
+        read = await self._docker_cli(
+            ["image", "inspect", "--format", "{{json .Config.User}}", ref],
+            check=False,
+            raw_output=True,
+        )
+        if read.return_code != 0:
+            return None
+        try:
+            user = json.loads((read.stdout or "").strip() or "null")
+        except ValueError:
+            return None
+        return user if isinstance(user, str) else None
 
     async def _absent_task_image(self) -> str | None:
         """The prebuilt task image's ref when the daemon does not have it yet.
@@ -4565,12 +5064,13 @@ class DockerSandbox(BaseSandbox):
         target_parent = str(Path(target_path).parent)
         # ``/`` always exists: ``mkdir -p /`` would cost an exec and do nothing.
         if target_parent not in {"", ".", "/"}:
-            await exec_raw(
-                self.exec,
-                f"mkdir -p {shlex.quote(target_parent)}",
-                user="root",
-                system_shell=True,
-            )
+            mkdir = f"mkdir -p {shlex.quote(target_parent)}"
+            if _bounded_exec.bfx_delivered(self) and target_parent.startswith("/"):
+                # No program of the image runs for it.
+                mkdir = _bounded_exec.bfx_sh(
+                    "mkdir", target_parent, parents=True, mode=0o755
+                )
+            await exec_raw(self.exec, mkdir, user="root", system_shell=True)
         await self._copy(str(source_path), target_path, into=True)
         await self._apply_upload_mode(target_path, mode)
 
@@ -4582,9 +5082,18 @@ class DockerSandbox(BaseSandbox):
         ``service`` defaults to ``"main"``; pass a target service to land the
         directory in an additional vulhub-style container (#248).
         """
+        mkdir = f"mkdir -p {shlex.quote(target_dir)}"
+        if (
+            service == "main"
+            and _bounded_exec.bfx_delivered(self)
+            and target_dir.startswith("/")
+            and target_dir.rstrip("/")
+        ):
+            # No program of the image runs for it.
+            mkdir = _bounded_exec.bfx_sh("mkdir", target_dir, parents=True, mode=0o755)
         await exec_raw(
             self.exec,
-            f"mkdir -p {shlex.quote(target_dir)}",
+            mkdir,
             user="root",
             service=service,
             system_shell=True,
@@ -5147,6 +5656,10 @@ class DockerSandbox(BaseSandbox):
         try:
             await _inert_bootstrap.wait_ready(self, replacement)
             await self._verify_replacement_bind_targets(replacement, expected)
+            # A new network namespace, without main's metadata rule: it goes
+            # in again, proven, before the replacement's processes run
+            # (the rule ledger's start entry becomes the replacement's).
+            await self._cover_main_before_release(replacement)
             await self._docker_cli(["kill", "--signal", "USR1", replacement])
         except BaseException:
             await self._docker_cli(["rm", "-f", replacement], check=False)
@@ -5304,12 +5817,127 @@ class DockerSandbox(BaseSandbox):
             )
         return payload[0]
 
+    async def main_stopped(self) -> dict[str, Any] | None:
+        """main's container when it no longer runs after its start (its
+        image ENTRYPOINT exited): its exit status, the ENTRYPOINT and command
+        it ran (as the task's image and Compose file set them) and the last
+        lines of its output. None while it runs, or when main is not known.
+        What the start read before its own teardown removed main stands
+        (``_main_stopped_record``); else main's container in any state, as
+        Compose may never have kept a running one's id."""
+        recorded = getattr(self, "_main_stopped_record", None)
+        if isinstance(recorded, dict):
+            return recorded
+        cid = getattr(self, "_main_container", None) or (
+            await self._service_container_id("main", any_state=True)
+        )
+        if not cid:
+            return None
+        try:
+            inspected = await self._inspect_container(cid)
+        except RuntimeError:
+            return None
+        state = inspected.get("State") or {}
+        if state.get("Running") is not False:
+            return None
+        configs = getattr(self, "_bootstrap_configs", None)
+        config = configs.get("main") if isinstance(configs, dict) else None
+        if not isinstance(config, dict):
+            config = inspected.get("Config") or {}
+        logs = await self._docker_cli(
+            ["logs", "--tail", str(MAIN_STOPPED_LOG_LINES), cid],
+            check=False,
+            raw_output=True,
+        )
+        output = "\n".join(
+            part for part in (logs.stdout or "", logs.stderr or "") if part
+        )
+        return {
+            "exit_code": state.get("ExitCode"),
+            "entrypoint": [str(a) for a in config.get("Entrypoint") or []],
+            "command": [str(a) for a in config.get("Cmd") or []],
+            "output": [
+                line[:200]
+                for line in output.splitlines()[-MAIN_STOPPED_LOG_LINES:]
+                if line.strip()
+            ],
+        }
+
+    async def kill_main(self) -> None:
+        """SIGKILL main's PID 1 from the host, which ends main: for a trial
+        refused while a task process runs as PID 1, which nothing inside
+        main may kill (R1)."""
+        cid = getattr(self, "_main_container", None) or (
+            await self._main_container_id()
+        )
+        if cid:
+            await self._docker_cli(["kill", "--signal", "KILL", cid], check=False)
+
     async def _main_container_id(self) -> str | None:
         """Return the container id of the ``main`` compose service, or None."""
         return await self._service_container_id("main")
 
-    async def _service_container_id(self, service: str) -> str | None:
-        """Resolve a service in this trial's project on the selected daemon."""
+    async def pristine_image(self) -> str | None:
+        """The image ``main`` started from, by ID, for the plugin guard's
+        pristine re-judgment ((g2) R): BenchFlow's pre-agent image,
+        the task image or its agent layer. Never a recovery baseline, which
+        holds the solver's state. None when it cannot be read."""
+        if self._recovery_baseline is not None:
+            return None
+        container = await self._main_container_id()
+        if not container:
+            return None
+        result = await self._docker_cli(
+            ["inspect", "--format", "{{.Image}}", container],
+            check=False,
+            raw_output=True,
+        )
+        image = (result.stdout or "").strip()
+        return image if re.fullmatch(r"sha256:[0-9a-f]{64}", image) else None
+
+    async def run_pristine(
+        self, image: str, python: str, script: str, stdin: bytes, timeout_sec: float
+    ) -> ExecResult:
+        """``python -c script`` in a fresh container from *image*, by ID: no
+        network, as root, nothing mounted, removed when it ends; *stdin* is
+        its whole input ((g2) R)."""
+        from benchflow.task.compose_env import hermetic_docker_config
+
+        return await self._run_docker_process(
+            [
+                "docker",
+                "--config",
+                hermetic_docker_config(),
+                "run",
+                "--rm",
+                "-i",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--user",
+                "0:0",
+                "--label",
+                "benchflow.pristine-guard-judgment=1",
+                "--entrypoint",
+                python,
+                image,
+                "-c",
+                script,
+            ],
+            check=False,
+            timeout_sec=timeout_sec,
+            what="pristine guard judgment",
+            separate_stderr=True,
+            environment=_inert_bootstrap.client_env(self._docker_client_env()),
+            stdin_data=stdin,
+        )
+
+    async def _service_container_id(
+        self, service: str, *, any_state: bool = False
+    ) -> str | None:
+        """Resolve a service in this trial's project on the selected daemon:
+        its running container, or with *any_state* one that has stopped too."""
         try:
             # Avoid re-reading task compose files: their warnings can precede
             # the id. The raw CLI keeps stderr separate and routes to the same
@@ -5317,6 +5945,7 @@ class DockerSandbox(BaseSandbox):
             result = await self._docker_cli(
                 [
                     "ps",
+                    *(["-a"] if any_state else []),
                     "-q",
                     "--no-trunc",
                     "--filter",
@@ -5515,6 +6144,7 @@ class DockerSandbox(BaseSandbox):
             shell=(route.bash, "--noprofile", "--norc", "-p", "-c"),
             route=route,
             cwd=kwargs.get("cwd"),
+            launch=_bounded_exec.launch_for(self, route),
         )
         return await self._run_docker_compose_command(
             argv,
@@ -5534,11 +6164,13 @@ class DockerSandbox(BaseSandbox):
         )
 
         config = await self.identity_container_config(service)
+        route = await self.exec_route("root", system_shell=True, service=service)
         argv = protected_exec_argv(
             config,
             command,
             service=service,
-            route=await self.exec_route("root", system_shell=True, service=service),
+            route=route,
+            launch=_bounded_exec.launch_for(self, route, service),
         )
         return await self._run_docker_compose_command(
             argv,
@@ -5618,6 +6250,11 @@ class DockerSandbox(BaseSandbox):
         container = self._main_container if service == "main" else None
         exec_command: list[str] = ["exec"] if container else ["exec", "-T"]
         removed: list[str] = []
+        # once the agent's turn has started, root's exec into main
+        # starts through the bounded launch before any program of the image
+        # (benchflow.sandbox._bounded_exec): bfx launch ahead of the route's
+        # shell, or the shell text's own launch where bfx is not delivered.
+        launch = _bounded_exec.launch_for(self, route, service)
 
         if cwd:
             exec_command.extend(["-w", cwd])
@@ -5665,7 +6302,9 @@ class DockerSandbox(BaseSandbox):
             # ``trap``, ``base64 -d``, ``set -a``/``. file``) uses only POSIX
             # constructs. The shell is the route's: the protected kit's for
             # root once the sandbox has one (C8).
-            return [*exec_command, route.shell, "-c", inner]
+            if launch == ():
+                inner = _bounded_exec.shell_launch(route.shell, inner, kit=route.kit)
+            return [*exec_command, *(launch or ()), route.shell, "-c", inner]
 
         # The env goes on the exec's stdin (wrap_command_with_env_stdin): no
         # value on the host's or the container's command lines, no size limit
@@ -5696,7 +6335,7 @@ class DockerSandbox(BaseSandbox):
                 container=container,
                 user=user,
                 cwd=cwd,
-                argv=exec_command[-3:],
+                argv=exec_command[-(3 + len(launch or ())) :],
                 stdin_data=stdin_data,
                 timeout_sec=timeout_sec,
                 raw_output=raw_output,
@@ -6287,7 +6926,13 @@ class _DockerCredentialOps:
     async def run(self, command: str) -> ExecResult:
         route = await system_shell_route(self._sandbox)
         result = await self._sandbox._docker_cli(
-            route_exec_argv(route, command, container=self._container, user="0"),
+            route_exec_argv(
+                route,
+                command,
+                container=self._container,
+                user="0",
+                launch=_bounded_exec.launch_for(self._sandbox, route),
+            ),
             check=False,
             raw_output=True,
         )
@@ -6314,6 +6959,7 @@ class _DockerCredentialOps:
                 container=self._container,
                 user=f"{int(uid)}:{int(gid)}",
                 stdin=stdin is not None,
+                launch=_bounded_exec.launch_for(self._sandbox, route),
             )
             if route is not None
             else [

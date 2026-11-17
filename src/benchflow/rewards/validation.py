@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 RewardValue = float | int
 RewardMap = dict[str, Any]
@@ -21,6 +26,30 @@ DEFAULT_REWARD_RANGE: RewardRange = (0.0, 1.0)
 # outside the task's range (#1178); ``classify_verifier_error`` keys
 # the ``reward_out_of_range`` category on it.
 REWARD_OUT_OF_RANGE = "reward out of range:"
+
+# What a finite reward outside the task's range becomes. Under integrity
+# "audit" and "off" it is recorded as test.sh wrote it, with a note, and
+# nothing is rewritten to 0; "strict" keeps the old contract (scored 0, with
+# the note). Set for a trial's verify by :func:`out_of_range_reward_rule`.
+_KEEP_OUT_OF_RANGE_REWARD: ContextVar[bool] = ContextVar(
+    "benchflow_keep_out_of_range_reward", default=True
+)
+
+
+def keeps_out_of_range_reward() -> bool:
+    """True when a reward outside the range is recorded as written."""
+    return _KEEP_OUT_OF_RANGE_REWARD.get()
+
+
+@contextmanager
+def out_of_range_reward_rule(integrity: object) -> Iterator[None]:
+    """Apply the trial's integrity mode's rule for a reward outside the range."""
+    token = _KEEP_OUT_OF_RANGE_REWARD.set(integrity != "strict")
+    try:
+        yield
+    finally:
+        _KEEP_OUT_OF_RANGE_REWARD.reset(token)
+
 
 # Operator toggle for the lenient reward-map path. Default (unset/empty/``0``)
 # keeps the strict contract; any truthy value opts the classic
@@ -286,6 +315,7 @@ def validate_reward_map(
     aggregate_policy: Mapping[str, Any] | None = None,
     lenient: bool = False,
     reward_range: RewardRange | None = None,
+    keep_out_of_range_reward: bool = False,
 ) -> RewardMap:
     """Validate and normalize a verifier reward mapping.
 
@@ -319,20 +349,33 @@ def validate_reward_map(
 
     ``reward_range`` is the task's declared reward contract (see
     :func:`validate_declared_reward_range`); ``None`` keeps the canonical
-    strict [0, 1]. The range applies to every reward-valued number in the map
-    — the scalar ``reward``, top-level numeric metrics, and ``metrics``
-    entries — but NOT to ``rubric`` item scores, which are normalized
-    judge-criterion scores and always stay in [0, 1]. A finite number outside
-    it raises :class:`RewardOutOfRange` (a ``ValueError``) naming the key and
-    the raw value: the trial is unscored, never clamped. Lenient
-    mode raises it for the scalar ``reward`` too, rather than dropping the
-    score and reading a ``score`` alias in its place; it still drops an
-    out-of-range metric.
+    strict [0, 1]. The range applies to the numbers that decide the score —
+    the scalar ``reward``, ``metrics`` entries, and the top-level numbers an
+    aggregate turns into the reward (no ``reward``, or a declared
+    ``aggregate``/``aggregate_policy``) — but NOT to ``rubric`` item scores,
+    which are normalized judge-criterion scores and always stay in [0, 1]. A
+    finite number outside it raises :class:`RewardOutOfRange` (a
+    ``ValueError``) naming the key and the raw value: the trial is unscored,
+    never clamped. Lenient mode raises it for the scalar ``reward`` too,
+    rather than dropping the score and reading a ``score`` alias in its
+    place; it still drops an out-of-range metric.
+
+    Beside a numeric ``reward`` with no aggregate declared, the reward alone
+    decides the score: a finite top-level number outside the range (a count
+    such as DeepSWE's ``"f2p_total": 20``, KUMO's ``"seed": 3``) is a detail,
+    kept as written with a logged note, never scored and never a failure.
+
+    With ``keep_out_of_range_reward`` (integrity audit and off), a finite
+    scalar ``reward`` outside the range is returned as written instead of
+    raising; the caller records the note. Only that field is judged.
     """
     if rewards is None:
         raise ValueError(f"{source} returned no rewards")
 
-    if is_out_of_range_reward(rewards.get("reward"), reward_range=reward_range):
+    kept_reward = is_out_of_range_reward(
+        rewards.get("reward"), reward_range=reward_range
+    )
+    if kept_reward and not keep_out_of_range_reward:
         raise RewardOutOfRange("reward", rewards["reward"], reward_range, source=source)
 
     working: Mapping[str, Any] = rewards
@@ -354,8 +397,10 @@ def validate_reward_map(
                 f"{source} returned rewards without numeric 'reward': "
                 f"reward = {explicit!r} is not a finite number"
             )
-        if "reward" in mutable and not is_valid_reward_number(
-            mutable["reward"], reward_range=reward_range
+        if (
+            "reward" in mutable
+            and not kept_reward
+            and not is_valid_reward_number(mutable["reward"], reward_range=reward_range)
         ):
             dropped.append("reward")
             del mutable["reward"]
@@ -366,8 +411,10 @@ def validate_reward_map(
         working = mutable
 
     reward = working.get("reward")
-    if "reward" in working and not is_valid_reward_number(
-        reward, reward_range=reward_range
+    if (
+        "reward" in working
+        and not kept_reward
+        and not is_valid_reward_number(reward, reward_range=reward_range)
     ):
         # Unreachable in lenient mode (an unusable ``reward`` is dropped above).
         raise ValueError(
@@ -376,7 +423,22 @@ def validate_reward_map(
         )
 
     has_reward = "reward" in working
+    # Beside a reward, a top-level number outside the range is a detail (a
+    # count such as DeepSWE's f2p_total), declared aggregate or not: an
+    # aggregate makes or checks the reward only from the numbers in range
+    # (_aggregate_metrics), so it is never one of its components. Without a
+    # reward, the aggregate makes it from the top-level numbers, and one out
+    # of range still fails.
+    beside_reward = has_reward
+    # Kept as written, only the reward is judged: beside it, metrics are
+    # details too, held to being finite numbers, not to the range.
+    metrics_range: RewardRange | None = (
+        (-math.inf, math.inf)
+        if keep_out_of_range_reward and has_reward
+        else reward_range
+    )
     parsed: RewardMap = {}
+    details: list[str] = []
     has_numeric_metric = False
     for key, value in working.items():
         key = str(key)
@@ -397,14 +459,14 @@ def validate_reward_map(
         if key == "metrics":
             if lenient:
                 metrics = _lenient_metrics(
-                    value, dropped=dropped, reward_range=reward_range
+                    value, dropped=dropped, reward_range=metrics_range
                 )
                 if metrics is not None:
                     parsed[key] = metrics
                     has_numeric_metric = has_numeric_metric or bool(metrics)
                 continue
             parsed[key] = _validate_metrics(
-                value, source=source, reward_range=reward_range
+                value, source=source, reward_range=metrics_range
             )
             has_numeric_metric = bool(parsed[key])
             continue
@@ -459,6 +521,10 @@ def validate_reward_map(
                 )
             parsed[key] = value
             continue
+        if beside_reward and is_out_of_range_reward(value, reward_range=reward_range):
+            parsed[key] = value
+            details.append(f"{key} = {value!r}")
+            continue
         if not is_valid_reward_number(value, reward_range=reward_range):
             if lenient:
                 dropped.append(key)
@@ -480,6 +546,15 @@ def validate_reward_map(
             "missing numeric 'reward' or aggregate policy for multi-metric rewards"
         )
 
+    if details:
+        lo, hi = reward_range or DEFAULT_REWARD_RANGE
+        logger.info(
+            "%s: %s outside [%s, %s] kept as details beside the reward, not scored",
+            source,
+            ", ".join(details),
+            lo,
+            hi,
+        )
     if lenient and dropped:
         warnings.warn(
             f"{source} reward map parsed in lenient mode; dropped "

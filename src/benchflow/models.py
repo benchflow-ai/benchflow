@@ -11,7 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from benchflow.usage_tracking import UsageSource
+from benchflow.usage_tracking import (
+    UsageSource,
+    legacy_usage_source,
+    result_usage_source,
+)
 
 if TYPE_CHECKING:
     from benchflow._utils.reachable_write import ReachablePath
@@ -104,23 +108,47 @@ class RolloutResult:
                       trajectory events. Counts only ``tool_call`` events whose
                       structured ``kind`` is ``"skill"``.
         n_prompts:    Number of user prompts sent to the agent.
-        n_input_tokens: Cumulative provider prompt/input tokens, or None when
-                      provider telemetry was unavailable.
-        n_output_tokens: Cumulative provider completion/output tokens, or None
-                      when provider telemetry was unavailable.
+        n_input_tokens: Uncached input tokens (cache reads and writes
+                      are their own fields), or None when unknown.
+        n_output_tokens: Output tokens, reasoning included, or None when
+                      unknown.
         n_cache_read_tokens: Provider prompt-cache read tokens, or None when
                       provider telemetry was unavailable.
-        n_cache_creation_tokens: Provider prompt-cache creation tokens, or None
-                      when provider telemetry was unavailable.
-        total_tokens: Sum of input, output, cache-read, and cache-creation tokens,
-                      or None when provider telemetry was unavailable.
-        cost_usd:     Provider cost estimate in USD, or None when unavailable.
-        usage_source: Token telemetry source. One of "provider_response",
-                      "agent_native_acp", or "unavailable"; for an agent
-                      that routes its own model calls, "agent-reported" or
-                      "none" (never metered).
-        price_source: Pricing table version used for cost_usd, or None.
+        n_cache_creation_tokens: Alias of ``n_cache_write_tokens``, kept for
+                      one release.
+        n_cache_write_tokens: Prompt-cache write tokens, or None when the
+                      source reports none (OpenAI reports no cache writes).
+        n_cache_write_5m_tokens: The 5-minute part of the cache writes, where
+                      the source splits them (Anthropic), else None.
+        n_cache_write_1h_tokens: The 1-hour part, likewise.
+        total_tokens: Sum of the known parts (uncached input, output, cache
+                      reads and writes), or None when input or output is
+                      unknown.
+        cost_usd:     Cost in USD, or None when unknown.
+        usage_source: Where the tokens came from: "stream_log",
+                      "session_log", "end_of_turn", "proxy" or "provider";
+                      None when nothing counted them. The constructor also
+                      takes the earlier names and maps them.
+        usage_source_legacy: The earlier name ("provider_response",
+                      "agent_native_acp", "unavailable"; "agent-reported" or
+                      "none" for an agent that routes its own model calls,
+                      never metered).
+        cost_source:  "provider" (the provider's billed figure) or
+                      "list_price_estimate" (tokens at list prices), or None
+                      when cost_usd is None.
+        price_table_date: The date of the price table cost_usd used, when
+                      known.
+        price_source: Who priced cost_usd ("litellm", "agent_session_log",
+                      "list_price", "provider"), or None.
+        usage_incomplete: True when the tokens, and the cost priced from them,
+                      are those of some of the trial's calls only (a turn cut
+                      off before its usage report that no log counted), with
+                      ``usage_incomplete_reason``; None otherwise.
         usage_details: Optional source-specific telemetry details.
+        judge_usage:  The verifier's LLM judge calls: their tokens and cost in
+                      the token and cost fields above, never added to them
+                      (``benchflow.rewards.judge_usage``); None when no
+                      judge ran.
         error:        Error description string, or None on success.
         error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
@@ -181,9 +209,21 @@ class RolloutResult:
         n_cache_creation_tokens: int | None = None,
         total_tokens: int | None = None,
         cost_usd: float | None = None,
-        usage_source: UsageSource = "unavailable",
+        usage_source: UsageSource | None = "unavailable",
+        n_cache_write_tokens: int | None = None,
+        n_cache_write_5m_tokens: int | None = None,
+        n_cache_write_1h_tokens: int | None = None,
+        no_usage_reason: str | None = None,
+        cost_usd_provider: float | None = None,
+        n_calls_cost_estimated: int | None = None,
+        usage_incomplete: bool | None = None,
+        usage_incomplete_reason: str | None = None,
         price_source: str | None = None,
+        usage_source_legacy: str | None = None,
+        cost_source: str | None = None,
+        price_table_date: str | None = None,
         usage_details: dict[str, Any] | None = None,
+        judge_usage: dict[str, Any] | None = None,
         error: str | None = None,
         error_category: str | None = None,
         verifier_error: str | None = None,
@@ -205,6 +245,7 @@ class RolloutResult:
         harness_versions: dict[str, Any] | None = None,
         model_refusal: dict[str, Any] | None = None,
         trial_budget: dict[str, Any] | None = None,
+        integration_failure_info: dict[str, Any] | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -222,12 +263,36 @@ class RolloutResult:
         self.n_input_tokens = n_input_tokens
         self.n_output_tokens = n_output_tokens
         self.n_cache_read_tokens = n_cache_read_tokens
-        self.n_cache_creation_tokens = n_cache_creation_tokens
+        # One token split: n_cache_creation_tokens is an alias of
+        # n_cache_write_tokens for one release.
+        write = n_cache_write_tokens
+        if write is None:
+            write = n_cache_creation_tokens
+        self.n_cache_write_tokens = write
+        self.n_cache_creation_tokens = write
+        self.n_cache_write_5m_tokens = n_cache_write_5m_tokens
+        self.n_cache_write_1h_tokens = n_cache_write_1h_tokens
+        self.no_usage_reason = no_usage_reason
+        # The provider-billed part of cost_usd, and the calls priced at list
+        # price for want of a bill.
+        self.cost_usd_provider = cost_usd_provider
+        self.n_calls_cost_estimated = n_calls_cost_estimated
+        # The tokens (and cost) are those of some of the trial's calls only.
+        self.usage_incomplete = True if usage_incomplete is True else None
+        self.usage_incomplete_reason = (
+            usage_incomplete_reason if self.usage_incomplete else None
+        )
         self.total_tokens = total_tokens
         self.cost_usd = cost_usd
-        self.usage_source = usage_source
+        self.usage_source = result_usage_source(usage_source)
+        self.usage_source_legacy = legacy_usage_source(
+            usage_source, usage_source_legacy
+        )
+        self.cost_source = cost_source if cost_usd is not None else None
+        self.price_table_date = price_table_date
         self.price_source = price_source
         self.usage_details = usage_details
+        self.judge_usage = judge_usage
         self.error = error
         self.error_category = error_category
         self.verifier_error = verifier_error
@@ -257,6 +322,10 @@ class RolloutResult:
         # result.json's ``trial_budget``: the trial's budget, what it used and
         # what stopped it (benchflow.trial_budget); None without one.
         self.trial_budget = trial_budget
+        # result.json's ``integration_failure_info``: why the agent did
+        # nothing, when its integration broke and the reward was withheld
+        # (benchflow.integration_health), else None.
+        self.integration_failure_info = integration_failure_info
 
     @property
     def reward(self) -> float | None:
@@ -329,6 +398,8 @@ class RolloutResult:
             "total_tokens": self.total_tokens,
             "cost_usd": self.cost_usd,
             "usage_source": self.usage_source,
+            "cost_source": self.cost_source,
+            "price_table_date": self.price_table_date,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "duration_sec": duration,

@@ -346,6 +346,9 @@ class SandboxReplayProxy:
     stdout_path: str
     stderr_path: str
     live_exchanges: list[LLMExchange] = field(default_factory=list)
+    # stop() reads the live suffix once: read again after its folder was
+    # removed, it would be no live calls at all.
+    stopped: bool = False
 
     @property
     def base_url(self) -> str:
@@ -475,7 +478,10 @@ class SandboxReplayProxy:
         )
 
     async def stop(self) -> None:
+        if self.stopped:
+            return
         self.live_exchanges = await self._load_live_exchanges()
+        self.stopped = True
         with contextlib.suppress(Exception):
             await exec_raw(
                 self.sandbox.exec,

@@ -23,6 +23,7 @@ from tests.test_acc_run2_docker import (
     _run,
     _scored,
     _task,
+    harden_the_shared_verifier,
 )
 
 pytestmark = [pytest.mark.deterministic, pytest.mark.verifier_runtime]
@@ -32,6 +33,13 @@ pytestmark = [pytest.mark.deterministic, pytest.mark.verifier_runtime]
 def _needs_docker():
     if not docker_available():
         pytest.skip("needs a Docker daemon")
+
+
+@pytest.fixture(autouse=True)
+def _hardened_shared_verifier(monkeypatch):
+    """The runner and its stub are strict's: see
+    :func:`tests.test_acc_run2_docker.harden_the_shared_verifier`."""
+    harden_the_shared_verifier(monkeypatch)
 
 
 # The image's own grader calls the runner; test.sh only calls the grader.

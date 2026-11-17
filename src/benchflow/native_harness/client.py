@@ -280,7 +280,10 @@ class NativeCLIClient:
         self._cancel_at: float | None = None
         self._cancel_event: asyncio.Event | None = None
         self._totals: dict[str, int] = dict.fromkeys(_USAGE_FIELDS, 0)
-        self._last_total: dict[str, int] | None = None
+        # The counts some turn reported: one no turn reported stays None in
+        # the session's totals, not 0 (OpenAI reports no cache writes).
+        self._reported: set[str] = set()
+        self._last_total: dict[str, int | None] | None = None
         self._exit_code: int | None = None
         # A cancel's kill (it can outlive the prompt, see CANCEL_RETURN_SEC)
         # and the run it stops.
@@ -750,7 +753,7 @@ class NativeCLIClient:
             self._session.handle_update(update)
         return True
 
-    def _turn_usage(self, outcome: NativeTurnOutcome) -> dict[str, int] | None:
+    def _turn_usage(self, outcome: NativeTurnOutcome) -> dict[str, int | None] | None:
         """This turn's usage, from the turn's own report or consecutive totals.
 
         A client that resumed a session it did not start (a branch child)
@@ -765,11 +768,13 @@ class NativeCLIClient:
         previous = self._last_total or {}
         self._last_total = dict(total)
         return {
-            field: max(int(total.get(field) or 0) - int(previous.get(field) or 0), 0)
+            field: None
+            if total.get(field) is None
+            else max(int(total.get(field) or 0) - int(previous.get(field) or 0), 0)
             for field in _USAGE_FIELDS
         }
 
-    def _record_usage(self, usage: dict[str, int] | None) -> None:
+    def _record_usage(self, usage: dict[str, int | None] | None) -> None:
         """Add this turn's usage to the running totals the session reports.
 
         ``ACPSession.record_prompt_usage`` keeps cumulative snapshots (the
@@ -779,8 +784,15 @@ class NativeCLIClient:
         if not usage:
             return
         for field in _USAGE_FIELDS:
+            if usage.get(field) is not None:
+                self._reported.add(field)
             self._totals[field] += int(usage.get(field) or 0)
-        self._session.record_prompt_usage(dict(self._totals))
+        self._session.record_prompt_usage(
+            {
+                field: value if field in self._reported else None
+                for field, value in self._totals.items()
+            }
+        )
 
     def _write_stream(self, event: dict[str, Any]) -> None:
         if self._stream_file is None:

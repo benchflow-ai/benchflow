@@ -320,7 +320,8 @@ async def test_healthcheck_only_runs_after_all_services_have_release_handlers():
     )
     assert "SigCgt" in events[0][-1]
     assert events[1] == ["kill", "--signal", "USR1", "a" * 64]
-    assert events[2][-1].endswith("/usr/bin/env -- /workspace/health")
+    # The healthcheck, bounded by its timeout, after the release.
+    assert "/usr/bin/env -- /workspace/health & bf_p=" in events[2][-1]
 
 
 @pytest.mark.parametrize("key", SYSTEM_SHELL_UNSET_VARS)
@@ -422,6 +423,71 @@ async def test_unknown_startup_barriers_refuse_before_any_release(fault):
             else "\n".join(["a" * 64] * (2 if fault == "duplicate_service" else 1)),
         )
 
-    with pytest.raises(RuntimeError):
+    refusal = {
+        "prototype_running": r"^Bootstrap prototype is not stopped; start a fresh trial$",
+        "duplicate_service": r"^Cannot identify bootstrap service; use one replica$",
+        "missing_main": r"^Bootstrap has no main service; fix the task services$",
+        "post_start": r"^Compose lifecycle hooks cannot wait for bind verification",
+        "pre_stop": r"^Compose lifecycle hooks cannot wait for bind verification",
+    }[fault]
+    with pytest.raises(RuntimeError, match=refusal):
         await bootstrap.prepare(env, AsyncMock(side_effect=compose))
     env._docker_cli.assert_not_awaited()
+
+
+async def test_a_restored_main_is_covered_again_before_its_release(tmp_path):
+    """a restore makes main a new container in a new network namespace
+    (branch and checkpoint children). Its metadata rule goes in again, for the
+    replacement, while it still waits inert: before USR1 releases it."""
+    env = sandbox(tmp_path)
+    env._main_metadata_rule = True
+    env._main_container_id = AsyncMock(return_value="a" * 64)
+    env._inspect_container = AsyncMock(
+        return_value={
+            "HostConfig": {"NetworkMode": "none"},
+            "NetworkSettings": {"Networks": {"none": {}}},
+            "Mounts": [],
+            "Config": {"Env": [], "Entrypoint": ["/workspace/start"]},
+        }
+    )
+    env._snapshot_image_bind_baseline = AsyncMock(return_value={"main": {}})
+    env._verify_replacement_bind_targets = AsyncMock()
+    events = []
+
+    async def docker_cli(args, *a, **k):
+        if args[:3] == ["kill", "--signal", "USR1"]:
+            events.append(("release", args[3]))
+        return ExecResult(return_code=0, stdout="b" * 64, stderr="")
+
+    async def cover(replacement=None):
+        events.append(("cover", replacement))
+
+    env._docker_cli = docker_cli
+    env._cover_main_before_release = cover
+    await env.restore(SandboxImage(provider="docker", ref="snapshot"))
+    assert events == [("cover", "b" * 64), ("release", "b" * 64)]
+
+
+async def test_a_restore_records_the_replacements_cover(tmp_path, monkeypatch):
+    """The cover's record says the replacement was covered before release."""
+    from benchflow.sandbox import service_cover
+
+    env = sandbox(tmp_path)
+    env._main_metadata_rule = True
+    env.metadata_service_targets = AsyncMock(
+        return_value=[{"service": "main", "id": "b" * 64}]
+    )
+    env.metadata_service_close = lambda: None
+    covered = []
+
+    async def cover_main(sandbox_, target, every_user):
+        covered.append(target["id"])
+        return {"service": "main", "state": "covered"}
+
+    monkeypatch.setattr(service_cover, "_cover_main", cover_main)
+    monkeypatch.setattr(
+        "benchflow.sandbox._metadata_helper.host_netns", AsyncMock(return_value="")
+    )
+    await env._cover_main_before_release("b" * 64)
+    assert covered == ["b" * 64]
+    assert env._main_cover_record["before_release"] is True

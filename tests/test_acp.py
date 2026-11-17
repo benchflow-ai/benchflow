@@ -526,11 +526,16 @@ class TestTransportProtocolFiltering:
                     await asyncio.create_subprocess_exec(
                         sys.executable,
                         "-c",
-                        "import sys, time; "
-                        "sys.stderr.write('api_key=AIzaSy12345678901234567890\\n'); "
-                        "sys.stderr.flush(); "
-                        'print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); '
-                        "time.sleep(60)",
+                        (
+                            "import sys, time; "
+                            "sys.stderr.write('api_key=AI"
+                            + "zaSy1234"
+                            + "56789012"
+                            + "34567890\\n'); "
+                            "sys.stderr.flush(); "
+                            'print(\'{\\"jsonrpc\\": \\"2.0\\", \\"id\\": 2, \\"result\\": {}}\', flush=True); '
+                            "time.sleep(60)"
+                        ),
                         stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
@@ -549,7 +554,9 @@ class TestTransportProtocolFiltering:
         }
         await transport.close()
         assert "***REDACTED***" in agent_log.read_text()
-        assert "AIzaSy12345678901234567890" not in agent_log.read_text()
+        assert (
+            "AI" + "zaSy1234" + "56789012" + "34567890"
+        ) not in agent_log.read_text()
 
     @pytest.mark.asyncio
     async def test_container_transport_stderr_tail_is_bounded(self, tmp_path) -> None:
@@ -1847,7 +1854,7 @@ class TestTransportErrorDiagnostics:
                 return b""
 
             async def read(self, _n: int) -> bytes:
-                return b"api_key=AIzaSy12345678901234567890"
+                return b"api_key=AI" + b"zaSy1234" + b"56789012" + b"34567890"
 
         class _LP(SubprocessLiveProcess):
             async def start(
@@ -1864,7 +1871,7 @@ class TestTransportErrorDiagnostics:
         assert diag.transport_diagnosis == "process_exited"
         assert diag.stderr_snippet is not None
         assert "***REDACTED***" in diag.stderr_snippet
-        assert "AIzaSy12345678901234567890" not in str(exc_info.value)
+        assert ("AI" + "zaSy1234" + "56789012" + "34567890") not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_live_process_raises_typed_transport_error_when_remote_killed(

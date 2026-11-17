@@ -57,7 +57,11 @@ async def test_hardening_preserves_python_answers_in_temporary_workspaces(
     )
     env = _make_env()
     await lockdown.harden_before_verify(
-        env, _make_task(), sandbox_user=None, workspace=str(workspace)
+        env,
+        _make_task(),
+        sandbox_user=None,
+        workspace=str(workspace),
+        integrity="strict",
     )
     cleanup = next(
         c.args[0] for c in env.exec.call_args_list if "find /tmp /var/tmp" in c.args[0]

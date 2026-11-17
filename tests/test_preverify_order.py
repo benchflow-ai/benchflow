@@ -335,7 +335,8 @@ def _rollout(sandbox_user, *, keep=None, monkeypatch):
         _capture_partial_acp_trajectory=lambda: None,
         _collect_native_acp_usage=lambda: None,
         _acp_client=None,
-        _config=SimpleNamespace(sandbox_user=sandbox_user),
+        # The kill at the turn's end is strict's.
+        _config=SimpleNamespace(sandbox_user=sandbox_user, integrity="strict"),
         _connection_needs_quiescence=True,
         _muse_credentials_staged=False,
         _task=SimpleNamespace(config=SimpleNamespace()),

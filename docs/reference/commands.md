@@ -104,6 +104,8 @@ Each `bench` command and flag has its type, default and help here; `benchflow` i
 | [`bench sandbox release`](#bench-sandbox-release-010) (0.10) | Delete a sandbox kept with --keep-sandbox. |
 | [`bench sandbox cleanup`](#bench-sandbox-cleanup) | Clean up orphaned sandboxes and stale shared runtimes. |
 
+The [commands in no release yet](#commands-in-no-release-yet) are listed after these.
+
 ## bench
 
 The universal environment framework; run, author, and adopt agent benchmarks across any environment.
@@ -134,10 +136,12 @@ bench [OPTIONS] COMMAND [ARGS]...
 | [`assess`](#bench-assess-010) (0.10) | Blind pairwise human assessments of saved outputs, kept in an opt-in sidecar. |
 | [`preferences`](#bench-preferences-010) (0.10) | Human preferences and rubric scores on finished trials. |
 | [`bundle`](#bench-bundle-010) (0.10) | Write one zip of a run's evidence to share, redacted. |
+| [`backfill-cost`](#bench-backfill-cost-unreleased) (unreleased) | Fill the tokens and cost a job's trials lack, from the logs they left. |
 | [`skills`](#bench-skills) | Skill discovery and evaluation. |
 | [`traj`](#bench-traj) | Trajectory commands. |
 | [`train`](#bench-train) | Training data commands. |
 | [`hub`](#bench-hub) | Environment hubs: browse a hub's environments (list/show/inspect), check registry tasks (check), and publish datasets and push runs to a BenchFlow Hub (publish/push). |
+| [`hosted`](#bench-hosted-unreleased) (unreleased) | Hosted evals: run a benchmark on BenchFlow's servers instead of this machine (BENCHFLOW_HOSTED_URL, BENCHFLOW_HUB_KEY). |
 | [`daemon`](#bench-daemon) | Manage the opt-in warm local runtime. |
 | [`sandbox`](#bench-sandbox) | Daytona sandboxes: create, list and clean up (cleanup also removes leftover Docker containers). |
 
@@ -266,9 +270,10 @@ bench run [OPTIONS] [TARGETS]...
 | `--source-path` | `text` |  | Folder in the repo: one task (tasks/econ-detrending-correlation) or a folder of tasks (tasks). Only this folder is downloaded |
 | `--keep-sandbox` (0.10) | `text` |  | Keep a trial's sandbox: on-failure, always or never (default). `bench sandbox attach <trial>` opens a shell in it; `bench sandbox release <trial>` deletes it. |
 | `--accept-deviations` (0.10) | `text` |  | Why this run differs from its task set's run-reference.toml (a strict one refuses the run without it); kept in run-card.json. |
-| `--integrity` | `text` |  | off, audit (record what the agent did and check it against the task) or strict (audit, and the verifier in a separate sandbox). The verdict is in integrity/claim_verdict.json; rewards never change. |
-| `--max-cost-usd` | `number` |  | Job budget in USD, checked between starts, so a job can pass it by about one rollout's cost; at the cap running rollouts are cancelled. With --trials, each repeat has its own cap |
+| `--integrity` | `text` |  | audit (default: test.sh as written, the agent's actions checked), strict (also a hardened separate verifier; experimental: on a 170-task sample, 17-19% of honest reference runs score 0 in strict because of what strict transfers) or off. Verdict: integrity/claim_verdict.json. |
+| `--max-cost-usd` | `number` |  | Job budget in USD, judges' included, checked between starts, so a job can pass it by about one rollout's cost; at the cap running rollouts are cancelled. An unknown cost stops new starts. Per repeat with --trials |
 | `--max-tokens` | `integer` |  | Job budget in tokens, checked between starts like --max-cost-usd. With --trials, each repeat has its own cap |
+| `--sandbox-setup-timeout` | `integer` |  | Seconds for sandbox setup before the agent; wins over sandbox.setup_timeout_sec (default: that, else 600) |
 | `--trials` | `integer` | `1` | Run every task N times (pass@k); each repeat is a job of its own, in &lt;jobs dir&gt;/&lt;agent&gt;/trial-NN |
 | `--help-all` | flag |  | Show every flag, the run settings --help leaves out included |
 
@@ -294,7 +299,7 @@ bench run [OPTIONS] [TARGETS]...
 | `--environment-manifest` | `path` |  | Environment-plane manifest applied to every rollout: a path to an environment.toml, OR a 'name@version' registry spec resolved via $BENCHFLOW_ENV_REGISTRY when set, else the built-in registry shipped with benchflow (env0@prod, env0@outage). The manifest-declared stateful environment is provisioned, gated on readiness, and torn down. |
 | `--state` | `text` |  | The stateful environment to bind, apart from the task. Inline JSON with an optional tool subset (e.g. &#123;"name": "env0", "tools": ["gmail", "gcal"]&#125;), OR a name@version spec, OR a manifest path. Takes precedence over --environment-manifest. |
 | `--prompt` | `text (repeatable)` |  | Prompt(s) to send (default: the task prompt: the task.md body, or instruction.md for older tasks) |
-| `--config-override` | `text` |  | Deep-merge a config patch into each task's resolved config for this run. Inline JSON/YAML/TOML or an @file ref, e.g. --config-override '&#123;"agent":&#123;"timeout_sec":120&#125;&#125;'. Varies one knob (budget, skills, stopping rules) while the tasks, agent, model and environment stay fixed; recorded by content hash for replay. |
+| `--config-override` | `text` |  | Deep-merge a config patch into each task's resolved config for this run. Inline JSON/YAML/TOML or an @file ref, e.g. --config-override '&#123;"agent":&#123;"timeout_sec":120&#125;&#125;'. Varies one knob (budget, skills, stopping rules) while the tasks, agent, model and environment stay fixed. Recorded without the values that may be a credential, which a resume or regrade reads from BENCHFLOW_CONFIG_OVERRIDE. |
 | `--build-concurrency` | `integer` |  | Max concurrent docker image builds. Defaults to --concurrency. Set lower (e.g. 8) when --concurrency is high to avoid overwhelming the docker daemon with parallel builds. |
 | `--worker-concurrency` | `integer` |  | Run batch eval through isolated worker subprocesses, each with at most this many concurrent tasks; --concurrency remains the aggregate target. |
 | `--worker-retries` | `integer` | `1` | Retry a crashed worker shard this many times, resuming its jobs_dir. |
@@ -311,11 +316,11 @@ bench run [OPTIONS] [TARGETS]...
 | `--turn-budget` (0.10) | `integer` |  | Per-trial budget in turns, one turn being one model call through BenchFlow's model proxy (subagents' and side calls included); enforced like --token-budget. Replaces a task's [agent] turn_budget |
 | `--retry-resume-session` | flag |  | The retry resumes the failed trial's conversation at the checkpoint (ACP session/load; Claude Code) instead of a fresh session. |
 | `--restart-changed` (0.10) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
-| `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error (comma-separated or repeated) |
+| `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error, effort-mismatch (comma-separated or repeated) |
 | `--summary-out` | `path` |  | Write the run's benchflow.run-summary JSON (job dir, counts, gate) here |
 | `--codex-apps-policy` | `text` |  | Codex account Apps: disabled (scored-task default) or inherit (explicit opt-in). |
 | `--sandbox-user` | `text` | `agent` | Sandbox user (null for root) |
-| `--sandbox-setup-timeout` | `integer` |  | Timeout (seconds) for sandbox user setup inside the environment (default: 120; keeps the file's value with --config). |
+| `--verifier-setup-timeout` (unreleased) | `integer range` |  | Seconds each command that sets up the verifier may take (hardening, a separate verifier's runtime), more than 60; wins over the task's verifier.setup_timeout_sec (default: 180) |
 | `--context-root` | `path` |  | Repo/build-context root used to stage Dockerfile COPY sources for monorepo-authored local tasks. |
 | `--base-image-override` | `text` |  | Rewrite task Dockerfile FROM images on the runtime task copy. Use only for reproducing runs whose base image moved namespaces. |
 | `--separate-verifier` | flag |  | Run each verifier in a fresh sandbox built from the verifier image that receives only the frozen workspace, declared artifacts and /logs/artifacts, as if every task set \[verifier].sandbox_mode = 'separate'. Docker, remote-docker, Daytona and Modal. |
@@ -353,14 +358,15 @@ bench run [OPTIONS] [TARGETS]...
 | `--retry-policy` | `text` | `default` | Retry policy: default or unscored-only |
 | `--retry-attempts` | `integer` |  | Retries per task after a retryable failure (overrides the default of 2) |
 | `--retry-concurrency` | `integer` |  | Reserved retry concurrency |
-| `--publish-hf` | `text` |  | Upload final eval artifacts to a HF dataset repo |
+| `--publish-hf` | `text` |  | Upload final eval artifacts to a HF dataset repo (a new one is private unless --public) |
 | `--hf-prefix` | `text` |  | Path prefix in the HF repo |
 | `--hf-public-read-check` | flag |  | Verify public HF reads after upload |
-| `--publish-bucket` | `text` |  | Upload final eval artifacts to a HF bucket |
+| `--publish-bucket` | `text` |  | Upload final eval artifacts to a HF bucket (a new one is private unless --public) |
+| `--public` (unreleased) | flag |  | Make a new HF repo or bucket public: what --publish-hf and --publish-bucket create on Hugging Face is private unless this is given. A repo or bucket that already exists is not changed |
 | `--eval-results-model` | `text` |  | HF model repo to open a community eval-results PR on |
 | `--eval-results-dataset` | `text` |  | HF benchmark dataset id, e.g. org/benchmark |
 | `--eval-results-task` | `text` |  | Benchmark task_id from the dataset's eval.yaml |
-| `--matrix` | `path` |  | YAML file whose models: maps each alias to a model, or to &#123;model, agent, agent_env&#125;; &#123;agent: oracle&#125; for a control (docs/audit/compare-runs.md#choose-the-metric) |
+| `--matrix` | `path` |  | YAML file whose models: maps each alias to a model, or to &#123;model, agent, agent_env, reasoning_effort, harness&#125;; &#123;agent: oracle&#125; for a control (docs/audit/compare-runs.md#choose-the-metric) |
 | `--sample-seed` | `integer` |  | Seed for the --n-tasks random sample |
 | `--seeds` | `text` |  | Seeded rollouts: run every task once per seed, e.g. 0-4 or 0,3,7 (tasks in a task format that writes seeded variants, such as embodied tasks). summary.json gets pass@k and variance per task. |
 
@@ -402,7 +408,7 @@ bench branch [OPTIONS]
 | `--child-retries` | `integer range` | `1` | Retry a child this many times when it failed before its agent did anything (a provider hiccup such as a connect timeout). |
 | `--stop-on-child-failure` | flag |  | Stop a fork at the first child that fails for good (default: the other children still run and the fork is partial). |
 | `--concurrency` | `integer range` | `1` | Run up to this many children of a fork at once, each in its own sandbox created from the snapshot (implies --isolate-children). |
-| `--isolate-children` | flag |  | Run each child in its own sandbox created from the snapshot instead of restoring the parent's sandbox between children. Implied by --concurrency &gt; 1 and by nested children. |
+| `--isolate-children`, `--in-place-children` | flag |  | Run each child in its own sandbox created from the snapshot instead of restoring the parent's sandbox between children; the default with a sandbox-only snapshot, and implied by --concurrency &gt; 1 and by nested children. Each such child has its own result.json, build and integrity record. --in-place-children restores the parent's sandbox between children instead (they keep observation.json only). |
 | `--agent-env` | `text (repeatable)` |  | Agent env var (KEY=VALUE); repeatable |
 | `--include` | `text (repeatable)` |  | Only these task names; repeatable |
 | `--jobs-dir` | `path` | `jobs` | Output directory |
@@ -739,7 +745,7 @@ bench eval run [OPTIONS]
 | `--environment-manifest` | `path` |  | Environment-plane manifest applied to every rollout: a path to an environment.toml, OR a 'name@version' registry spec resolved via $BENCHFLOW_ENV_REGISTRY when set, else the built-in registry shipped with benchflow (env0@prod, env0@outage). The manifest-declared stateful environment is provisioned, gated on readiness, and torn down. |
 | `--state` | `text` |  | The stateful environment to bind, apart from the task. Inline JSON with an optional tool subset (e.g. &#123;"name": "env0", "tools": ["gmail", "gcal"]&#125;), OR a name@version spec, OR a manifest path. Takes precedence over --environment-manifest. |
 | `--prompt` | `text (repeatable)` |  | Prompt(s) to send (default: the task prompt: the task.md body, or instruction.md for older tasks) |
-| `--config-override` | `text` |  | Deep-merge a config patch into each task's resolved config for this run. Inline JSON/YAML/TOML or an @file ref, e.g. --config-override '&#123;"agent":&#123;"timeout_sec":120&#125;&#125;'. Varies one knob (budget, skills, stopping rules) while the tasks, agent, model and environment stay fixed; recorded by content hash for replay. |
+| `--config-override` | `text` |  | Deep-merge a config patch into each task's resolved config for this run. Inline JSON/YAML/TOML or an @file ref, e.g. --config-override '&#123;"agent":&#123;"timeout_sec":120&#125;&#125;'. Varies one knob (budget, skills, stopping rules) while the tasks, agent, model and environment stay fixed. Recorded without the values that may be a credential, which a resume or regrade reads from BENCHFLOW_CONFIG_OVERRIDE. |
 | `--concurrency`, `-j` | `integer` |  | Trials running at a time. On Docker a job also prepares up to --warm-pool sandboxes ahead (default 1 when this is 2 or more) |
 | `--build-concurrency` | `integer` |  | Max concurrent docker image builds. Defaults to --concurrency. Set lower (e.g. 8) when --concurrency is high to avoid overwhelming the docker daemon with parallel builds. |
 | `--warm-pool` | `integer` |  | Docker: how many sandboxes to prepare ahead of their trial's turn, beyond the --concurrency running ones (0 to --concurrency; default 1, or 0 when --concurrency is 1) |
@@ -754,11 +760,11 @@ bench eval run [OPTIONS]
 | `--accept-deviations` (0.10) | `text` |  | Why this run differs from its task set's run-reference.toml (a strict one refuses the run without it); kept in run-card.json. |
 | `--fresh-install` | flag |  | Install the model proxy and the agent in every trial instead of starting from their cached image layers (same as BENCHFLOW_FRESH_INSTALL=1) |
 | `--allow-cloud-metadata` | flag |  | Let the agent reach the cloud metadata endpoints under an open network (no block; each trial records the opt-out). Without it, or the task's allow_cloud_metadata = true, the agent starts only once the block is proven on |
-| `--integrity` | `text` |  | off, audit (record what the agent did and check it against the task) or strict (audit, and the verifier in a separate sandbox). The verdict is in integrity/claim_verdict.json; rewards never change. |
+| `--integrity` | `text` |  | audit (default: test.sh as written, the agent's actions checked), strict (also a hardened separate verifier; experimental: on a 170-task sample, 17-19% of honest reference runs score 0 in strict because of what strict transfers) or off. Verdict: integrity/claim_verdict.json. |
 | `--verifier-sandbox` | `text` |  | task (default: each task's own choice) or separate: every verifier in a fresh sandbox with only the workspace and the declared artifacts; a task that cannot run there refuses the run. |
 | `--retry-from-checkpoint` | `text` |  | on-failure, on-timeout, or both: when a trial fails or times out, fork one retry from its last --checkpoints snapshot, verified the same way. The trial's reward is kept; the retry's is reported next to it (result.json retry block, summary checkpoint_retries). |
 | `--retry-prompt` | `text` |  | Prompt for the retry, replacing the prompts after the checkpoint (the default). '@instruction' is the task instruction, '@verifier_feedback' the failed trial's reward and verifier output tail. |
-| `--max-cost-usd` | `number` |  | Job budget in USD, checked between starts, so a job can pass it by about one rollout's cost; at the cap running rollouts are cancelled. With --trials, each repeat has its own cap |
+| `--max-cost-usd` | `number` |  | Job budget in USD, judges' included, checked between starts, so a job can pass it by about one rollout's cost; at the cap running rollouts are cancelled. An unknown cost stops new starts. Per repeat with --trials |
 | `--max-sandbox-seconds` | `number` |  | Job budget in trial wall-clock seconds, running trials included and re-checked as they run; same stop/cancel behaviour as --max-cost-usd |
 | `--max-tokens` | `integer` |  | Job budget in tokens, checked between starts like --max-cost-usd. With --trials, each repeat has its own cap |
 | `--max-rollouts` | `integer` |  | Job budget in rollouts started, retries included: at the cap no rollout starts and running ones finish |
@@ -771,11 +777,12 @@ bench eval run [OPTIONS]
 | `--job-name` | `text` |  | Job folder name under --jobs-dir (resumed if it exists) |
 | `--restart-changed` (0.10) | flag |  | When the named job ran with other settings or task files, set those trials aside and run them again (default: refuse) |
 | `--fail-under` | `number` |  | Exit 1 when the pass rate (passed / planned tasks; one a budget kept from running counts as not passed) is below this, e.g. 0.8 |
-| `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error (comma-separated or repeated) |
+| `--fail-on` | `text (repeatable)` |  | Exit 1 when any trial ended this way: timeout, error, verifier-error, effort-mismatch (comma-separated or repeated) |
 | `--summary-out` | `path` |  | Write the run's benchflow.run-summary JSON (job dir, counts, gate) here |
 | `--codex-apps-policy` | `text` |  | Codex account Apps: disabled (scored-task default) or inherit (explicit opt-in). |
 | `--sandbox-user` | `text` | `agent` | Sandbox user (null for root) |
-| `--sandbox-setup-timeout` | `integer` |  | Timeout (seconds) for sandbox user setup inside the environment (default: 120; keeps the file's value with --config). |
+| `--sandbox-setup-timeout` | `integer` |  | Seconds for sandbox setup before the agent; wins over sandbox.setup_timeout_sec (default: that, else 600) |
+| `--verifier-setup-timeout` (unreleased) | `integer range` |  | Seconds each command that sets up the verifier may take (hardening, a separate verifier's runtime), more than 60; wins over the task's verifier.setup_timeout_sec (default: 180) |
 | `--context-root` | `path` |  | Repo/build-context root used to stage Dockerfile COPY sources for monorepo-authored local tasks. |
 | `--base-image-override` | `text` |  | Rewrite task Dockerfile FROM images on the runtime task copy. Use only for reproducing runs whose base image moved namespaces. |
 | `--separate-verifier` | flag |  | Run each verifier in a fresh sandbox built from the verifier image that receives only the frozen workspace, declared artifacts and /logs/artifacts, as if every task set \[verifier].sandbox_mode = 'separate'. Docker, remote-docker, Daytona and Modal. |
@@ -818,14 +825,15 @@ bench eval run [OPTIONS]
 | `--retry-policy` | `text` | `default` | Retry policy: default or unscored-only |
 | `--retry-attempts` | `integer` |  | Retries per task after a retryable failure (overrides the default of 2) |
 | `--retry-concurrency` | `integer` |  | Reserved retry concurrency |
-| `--publish-hf` | `text` |  | Upload final eval artifacts to a HF dataset repo |
+| `--publish-hf` | `text` |  | Upload final eval artifacts to a HF dataset repo (a new one is private unless --public) |
 | `--hf-prefix` | `text` |  | Path prefix in the HF repo |
 | `--hf-public-read-check` | flag |  | Verify public HF reads after upload |
-| `--publish-bucket` | `text` |  | Upload final eval artifacts to a HF bucket |
+| `--publish-bucket` | `text` |  | Upload final eval artifacts to a HF bucket (a new one is private unless --public) |
+| `--public` (unreleased) | flag |  | Make a new HF repo or bucket public: what --publish-hf and --publish-bucket create on Hugging Face is private unless this is given. A repo or bucket that already exists is not changed |
 | `--eval-results-model` | `text` |  | HF model repo to open a community eval-results PR on |
 | `--eval-results-dataset` | `text` |  | HF benchmark dataset id, e.g. org/benchmark |
 | `--eval-results-task` | `text` |  | Benchmark task_id from the dataset's eval.yaml |
-| `--matrix` | `path` |  | YAML file whose models: maps each alias to a model, or to &#123;model, agent, agent_env&#125;; &#123;agent: oracle&#125; for a control (docs/audit/compare-runs.md#choose-the-metric) |
+| `--matrix` | `path` |  | YAML file whose models: maps each alias to a model, or to &#123;model, agent, agent_env, reasoning_effort, harness&#125;; &#123;agent: oracle&#125; for a control (docs/audit/compare-runs.md#choose-the-metric) |
 | `--trials` | `integer` | `1` | Run every task N times (pass@k); each repeat is a job of its own, in &lt;jobs dir&gt;/&lt;agent&gt;/trial-NN |
 | `--limit`, `--n-tasks`, `-n` | `integer` |  | Run at most N tasks after --include/--exclude: the first N, or a seeded random sample with --sample-seed |
 | `--sample-seed` | `integer` |  | Seed for the --n-tasks random sample |
@@ -1082,7 +1090,7 @@ bench eval branch [OPTIONS]
 | `--child-retries` | `integer range` | `1` | Retry a child this many times when it failed before its agent did anything (a provider hiccup such as a connect timeout). |
 | `--stop-on-child-failure` | flag |  | Stop a fork at the first child that fails for good (default: the other children still run and the fork is partial). |
 | `--concurrency` | `integer range` | `1` | Run up to this many children of a fork at once, each in its own sandbox created from the snapshot (implies --isolate-children). |
-| `--isolate-children` | flag |  | Run each child in its own sandbox created from the snapshot instead of restoring the parent's sandbox between children. Implied by --concurrency &gt; 1 and by nested children. |
+| `--isolate-children`, `--in-place-children` | flag |  | Run each child in its own sandbox created from the snapshot instead of restoring the parent's sandbox between children; the default with a sandbox-only snapshot, and implied by --concurrency &gt; 1 and by nested children. Each such child has its own result.json, build and integrity record. --in-place-children restores the parent's sandbox between children instead (they keep observation.json only). |
 | `--agent-env` | `text (repeatable)` |  | Agent env var (KEY=VALUE); repeatable |
 | `--include` | `text (repeatable)` |  | Only these task names; repeatable |
 | `--jobs-dir` | `path` | `jobs` | Output directory |
@@ -1479,6 +1487,8 @@ bench review [OPTIONS] PATH
 | `--passing` | flag |  | Only review passing rollouts (reward 1.0) |
 | `--failing` | flag |  | Only review failing rollouts |
 | `--timeout-sec` | `integer` | `1800` | Reviewer agent timeout per rollout |
+| `--reasoning-effort` (unreleased) | `text` |  | Reviewer reasoning effort |
+| `--idle-timeout` (unreleased) | `text` |  | Abort a reviewer prompt after this many idle seconds (default: 600). Pass 0 or 'none' to disable the idle watchdog and leave --timeout-sec in charge. |
 | `--agent-env` | `text (repeatable)` |  | KEY=VALUE for the reviewer (repeatable) |
 | `--image` | `text` |  | Prebuilt sandbox image for reviewer rollouts |
 | `--tasks-root` | `path` |  | Trusted directory holding the reviewed tasks. Required to include task definitions in evidence: a task path recorded inside a rollout is untrusted input and is never read directly. Without this, reviews use run records only. |
@@ -2055,7 +2065,7 @@ bench traj upload [OPTIONS] [PATH]
 | `--source-id` | `text` |  | Stable contributor source identifier |
 | `--repo`, `--no-repo` | flag | `True` | Tag the upload with the session's repository (owner/name from its git remote) as the source id |
 | `--workspace`, `--no-workspace` | flag | `True` | Attach an explicitly selected workspace folder as a zip (use --workspace-dir or select a folder at the prompt; skipped over 1 GiB) |
-| `--workspace-dir` | `path` |  | Workspace folder to attach instead of auto-detection |
+| `--workspace-dir` | `path` |  | Workspace folder to attach instead of auto-detection. The folder is uploaded as it is, with nothing masked |
 | `--direct` | flag |  | Upload with local Azure credentials |
 | `--container-url` | `text` |  | Azure container URL for --direct |
 | `--dry-run` | flag |  | Validate and stage without uploading |
@@ -2248,12 +2258,13 @@ bench train run sft [OPTIONS]
 | `--message-tail-truncation` | `text` | `off` | Local Prime-SFT row truncation before Prime-RL tokenizes it: off, keep-first-user, or custom-trainer-pretokenized. The keep-first-user mode keeps the initial user instruction plus the longest final message suffix that fits data.seq_len * data.micro_batch_size. The custom-trainer-pretokenized mode renders rows like the historical custom trainer, keeps the exact token tail, and stages shifted input_ids/target_ids/loss_mask tensors. |
 | `--allow-unsafe-stack-flash-attn` | flag |  | Allow Qwen3.5 stack packing with flash attention despite known Prime-RL varlen-kernel risk |
 | `--force` | flag |  | Overwrite an existing &lt;work-dir&gt;/train-run.json manifest |
-| `--publish-model` | `text` |  | Upload trainer output to this HF model repo |
+| `--publish-model` | `text` |  | Upload trainer output to this HF model repo (a new one is private unless --public) |
 | `--model-tag` | `text` |  | Path prefix/tag for --publish-model upload |
 | `--model-card` | `text` |  | Model card mode; currently accepts 'auto' |
-| `--publish-artifacts` | `text` |  | Upload BenchFlow train run artifacts to this HF dataset repo |
+| `--publish-artifacts` | `text` |  | Upload BenchFlow train run artifacts to this HF dataset repo (a new one is private unless --public) |
 | `--hf-prefix` | `text` |  | Path prefix for --publish-artifacts |
 | `--hf-public-read-check` | flag |  | Verify public HF reads after upload |
+| `--public` (unreleased) | flag |  | Make a new HF repo public: what --publish-model and --publish-artifacts create on Hugging Face is private unless this is given. A repo that already exists is not changed |
 
 ## bench hub
 
@@ -2528,6 +2539,402 @@ bench sandbox cleanup [OPTIONS]
 | `--max-age` | `integer range` | `1440` | Delete sandboxes older than N minutes |
 | `--all` | flag |  | Delete every sandbox of BENCHFLOW_DAYTONA_OWNER, whatever its age or activity, except a STARTED one or one a live run still holds (a CI teardown step); others are never touched |
 | `--id` | `text (repeatable)` |  | Delete this Daytona sandbox (repeatable), even when a live run lease holds it; only sandboxes of your owner scope |
+
+## Commands in no release yet
+
+These commands are on the main line after 0.10.0rc3: neither 0.9.2 nor 0.10.0rc3 has them, and they can change before a release.
+
+## bench backfill-cost (unreleased)
+
+Fill the tokens and cost a job's trials lack, from the logs they left.
+
+Reads each trial's Claude Code session and stream logs, Codex session logs and the model proxy's log (zstd-compressed ones too), counts each model response once and prices it as a trial is priced at teardown. A provider's cost, and any cost already recorded, is kept; a 0 beside positive log usage is replaced. A kept cost without the cost labels gets them (usage_source, cost_source from the evidence, price_table_date), its numbers unchanged. Writes result.json (the earlier values under agent_result.backfill.original), trainer/atif.json, results.jsonl, the job's summary.json totals and run-card.json's after_run.usage. Run it on a copy of the job: a second run changes nothing. The report lists each trial as covered, tokens_filled, labelled, already_had_cost, uncovered (with the reason) or not_applicable.
+
+```text
+bench backfill-cost [OPTIONS] JOB_DIR
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `JOB_DIR` | `path` | yes | The job folder to backfill |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--dry-run` (unreleased) | flag |  | Write only the report; change no record |
+| `--report` (unreleased) | `path` |  | Where to write the report (default: &lt;JOB_DIR&gt;/backfill-report.json); each run's is also kept beside it, named by its UTC time |
+
+## bench hosted (unreleased)
+
+Hosted evals: run a benchmark on BenchFlow's servers instead of this machine (BENCHFLOW_HOSTED_URL, BENCHFLOW_HUB_KEY).
+
+```text
+bench hosted [OPTIONS] COMMAND [ARGS]...
+```
+
+| Command | What it does |
+|---|---|
+| [`run`](#bench-hosted-run-unreleased) (unreleased) | Queue a run of a hub version on the hosted service; print its id and page. |
+| [`submit`](#bench-hosted-submit-unreleased) (unreleased) | Queue a run: `bench hosted run` with the version as --version. |
+| [`estimate`](#bench-hosted-estimate-unreleased) (unreleased) | Ask what a run would likely take and whether it fits, without starting it (JSON). |
+| [`status`](#bench-hosted-status-unreleased) (unreleased) | Show a run's status, its trials so far and its mean reward. |
+| [`wait`](#bench-hosted-wait-unreleased) (unreleased) | Wait for a run to finish; exits 1 when it failed or was cancelled. |
+| [`results`](#bench-hosted-results-unreleased) (unreleased) | Show a finished run's rewards: the summary, each reward key, and each trial. |
+| [`trajectories`](#bench-hosted-trajectories-unreleased) (unreleased) | Save a run's trajectories, one JSON document per line, to a file. |
+| [`download`](#bench-hosted-download-unreleased) (unreleased) | Save a run's trajectories to a file: `bench hosted trajectories`. |
+| [`events`](#bench-hosted-events-unreleased) (unreleased) | Show what happened to a run, event by event. |
+| [`logs`](#bench-hosted-logs-unreleased) (unreleased) | Print a run's log. |
+| [`cancel`](#bench-hosted-cancel-unreleased) (unreleased) | Ask the service to stop a run. |
+| [`secret`](#bench-hosted-secret-unreleased) (unreleased) | Your workspace's own model keys on the service: a provider key, or an endpoint (a CLIProxyAPI you run) with its key. |
+
+## bench hosted run (unreleased)
+
+Queue a run of a hub version on the hosted service; print its id and page.
+
+```text
+bench hosted run [OPTIONS] VERSION
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `VERSION` | `text` | yes | The hub version to run, e.g. PKG-TERMINALBENCH-2-0 |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--agent`, `-a` (unreleased) | `text` | `oracle` | The agent (default: oracle, the reference solution) |
+| `--model`, `-m` (unreleased) | `text` |  | The agent's model |
+| `--n-tasks`, `-n` (unreleased) | `integer range` |  | Run at most N of the version's tasks |
+| `--include`, `-i` (unreleased) | `text (repeatable)` |  | Only these tasks, by name (comma-separated or repeated) |
+| `--trials` (unreleased) | `integer range` | `1` | Trials per task |
+| `--concurrency`, `-j` (unreleased) | `integer range` | `1` | Trials at a time (the service may lower it to fit its sandbox cap) |
+| `--name` (unreleased) | `text` |  | A name for the run |
+| `--max-sandbox-seconds` (unreleased) | `integer range` |  | Stop the run past this much sandbox time |
+| `--secret` (unreleased) | `text (repeatable)` |  | A secret stored on the service, by name, for the run's agent (repeatable) |
+| `--model-key` (unreleased) | `text (repeatable)` |  | Your own provider key for this run only, as KIND=SOURCE: KIND is anthropic, deepseek, kimi, zai or mimo; SOURCE is file:PATH, env:VAR or - (stdin), never the key itself. The service keeps it until the run ends and the sandbox never sees it (repeatable: keys of one kind are tried in turn) |
+| `--endpoint` (unreleased) | `text` |  | Your own model endpoint for this run only: a CLIProxyAPI you run, or any Anthropic-compatible https URL |
+| `--endpoint-key` (unreleased) | `text` |  | Where --endpoint's key is: file:PATH, env:VAR or - (stdin) |
+| `--max-cost-usd` (unreleased) | `float range` |  | The run's model budget: the service refuses its model calls past it (its own count) |
+| `--wait` (unreleased) | flag |  | Wait for the run to finish |
+| `--timeout` (unreleased) | `float range` |  | Stop waiting after this many seconds (the run goes on) |
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted submit (unreleased)
+
+Queue a run: `bench hosted run` with the version as --version.
+
+```text
+bench hosted submit [OPTIONS]
+```
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--version` (unreleased) | `text` |  | The hub version to run, e.g. PKG-TERMINALBENCH-2-0 Required. |
+| `--agent`, `-a` (unreleased) | `text` | `oracle` | The agent (default: oracle, the reference solution) |
+| `--model`, `-m` (unreleased) | `text` |  | The agent's model |
+| `--n-tasks`, `-n` (unreleased) | `integer range` |  | Run at most N of the version's tasks |
+| `--include`, `-i` (unreleased) | `text (repeatable)` |  | Only these tasks, by name (comma-separated or repeated) |
+| `--trials` (unreleased) | `integer range` | `1` | Trials per task |
+| `--concurrency`, `-j` (unreleased) | `integer range` | `1` | Trials at a time (the service may lower it to fit its sandbox cap) |
+| `--name` (unreleased) | `text` |  | A name for the run |
+| `--max-sandbox-seconds` (unreleased) | `integer range` |  | Stop the run past this much sandbox time |
+| `--secret` (unreleased) | `text (repeatable)` |  | A secret stored on the service, by name, for the run's agent (repeatable) |
+| `--model-key` (unreleased) | `text (repeatable)` |  | Your own provider key for this run only, as KIND=SOURCE: KIND is anthropic, deepseek, kimi, zai or mimo; SOURCE is file:PATH, env:VAR or - (stdin), never the key itself. The service keeps it until the run ends and the sandbox never sees it (repeatable: keys of one kind are tried in turn) |
+| `--endpoint` (unreleased) | `text` |  | Your own model endpoint for this run only: a CLIProxyAPI you run, or any Anthropic-compatible https URL |
+| `--endpoint-key` (unreleased) | `text` |  | Where --endpoint's key is: file:PATH, env:VAR or - (stdin) |
+| `--max-cost-usd` (unreleased) | `float range` |  | The run's model budget: the service refuses its model calls past it (its own count) |
+| `--wait` (unreleased) | flag |  | Wait for the run to finish |
+| `--timeout` (unreleased) | `float range` |  | Stop waiting after this many seconds (the run goes on) |
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted estimate (unreleased)
+
+Ask what a run would likely take and whether it fits, without starting it (JSON).
+
+```text
+bench hosted estimate [OPTIONS] VERSION
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `VERSION` | `text` | yes | The hub version to run, e.g. PKG-TERMINALBENCH-2-0 |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--agent`, `-a` (unreleased) | `text` | `oracle` | The agent (default: oracle, the reference solution) |
+| `--model`, `-m` (unreleased) | `text` |  | The agent's model |
+| `--n-tasks`, `-n` (unreleased) | `integer range` |  | Run at most N of the version's tasks |
+| `--include`, `-i` (unreleased) | `text (repeatable)` |  | Only these tasks, by name (comma-separated or repeated) |
+| `--trials` (unreleased) | `integer range` | `1` | Trials per task |
+| `--concurrency`, `-j` (unreleased) | `integer range` | `1` | Trials at a time (the service may lower it to fit its sandbox cap) |
+| `--max-sandbox-seconds` (unreleased) | `integer range` |  | Stop the run past this much sandbox time |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted status (unreleased)
+
+Show a run's status, its trials so far and its mean reward.
+
+```text
+bench hosted status [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted wait (unreleased)
+
+Wait for a run to finish; exits 1 when it failed or was cancelled.
+
+```text
+bench hosted wait [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--timeout` (unreleased) | `float range` |  | Stop waiting after this many seconds (the run goes on) |
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted results (unreleased)
+
+Show a finished run's rewards: the summary, each reward key, and each trial.
+
+```text
+bench hosted results [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted trajectories (unreleased)
+
+Save a run's trajectories, one JSON document per line, to a file.
+
+```text
+bench hosted trajectories [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--output`, `-o` (unreleased) | `path` |  | The file to write the trajectories to Required. |
+| `--format` (unreleased) | `text` | `atif` | atif (one ATIF document per line) or messages |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted download (unreleased)
+
+Save a run's trajectories to a file: `bench hosted trajectories`.
+
+```text
+bench hosted download [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--output`, `-o` (unreleased) | `path` |  | The file to write the trajectories to Required. |
+| `--format` (unreleased) | `text` | `atif` | atif (one ATIF document per line) or messages |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted events (unreleased)
+
+Show what happened to a run, event by event.
+
+```text
+bench hosted events [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted logs (unreleased)
+
+Print a run's log.
+
+```text
+bench hosted logs [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--tail` (unreleased) | `integer range` |  | Only the last N characters |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted cancel (unreleased)
+
+Ask the service to stop a run.
+
+```text
+bench hosted cancel [OPTIONS] RUN_ID
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `RUN_ID` | `text` | yes | The run id `bench hosted run` printed |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted secret (unreleased)
+
+Your workspace's own model keys on the service: a provider key, or an endpoint (a CLIProxyAPI you run) with its key. Runs name them with --secret; the service's key proxy uses them and the sandbox never sees them. Values are read from a file, a variable or stdin, never the command line.
+
+```text
+bench hosted secret [OPTIONS] COMMAND [ARGS]...
+```
+
+| Command | What it does |
+|---|---|
+| [`set`](#bench-hosted-secret-set-unreleased) (unreleased) | Store a provider key for your runs (name it in a run with --secret NAME). |
+| [`endpoint`](#bench-hosted-secret-endpoint-unreleased) (unreleased) | Store your own model endpoint with its key; the service sends a stored endpoint only the key stored with it. |
+| [`list`](#bench-hosted-secret-list-unreleased) (unreleased) | Your workspace's stored keys: names, kinds and hints, never values. |
+| [`rm`](#bench-hosted-secret-rm-unreleased) (unreleased) | Delete a stored key (an account key deletes what account keys stored). |
+
+## bench hosted secret set (unreleased)
+
+Store a provider key for your runs (name it in a run with --secret NAME).
+
+```text
+bench hosted secret set [OPTIONS] NAME
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `NAME` | `text` | yes | The key's name, e.g. DEEPSEEK |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--kind` (unreleased) | `text` |  | anthropic, deepseek, kimi, zai or mimo Required. |
+| `--from` (unreleased) | `text` | `-` | Where the value is: file:PATH, env:VAR or - (stdin, the default) |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted secret endpoint (unreleased)
+
+Store your own model endpoint with its key; the service sends a stored endpoint only the key stored with it.
+
+```text
+bench hosted secret endpoint [OPTIONS] NAME
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `NAME` | `text` | yes | A name; the service stores NAME_URL and NAME_KEY |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--url` (unreleased) | `text` |  | The endpoint, https (a CLIProxyAPI or any Anthropic-compatible URL) Required. |
+| `--from` (unreleased) | `text` | `-` | Where the value is: file:PATH, env:VAR or - (stdin, the default) |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted secret list (unreleased)
+
+Your workspace's stored keys: names, kinds and hints, never values.
+
+```text
+bench hosted secret list [OPTIONS]
+```
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--json` (unreleased) | flag |  | Print the service's JSON answer |
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
+
+## bench hosted secret rm (unreleased)
+
+Delete a stored key (an account key deletes what account keys stored).
+
+```text
+bench hosted secret rm [OPTIONS] NAME
+```
+
+| Argument | Type | Required | Help |
+|---|---|---|---|
+| `NAME` | `text` | yes | The stored key's name |
+
+**Options**
+
+| Option | Type | Default | Help |
+|---|---|---|---|
+| `--hub` (unreleased) | `text` |  | The hosted service's address (default: $BENCHFLOW_HOSTED_URL) |
+| `--key-file` (unreleased) | `path` |  | A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then ~/.config/benchflow/hub-key) |
 
 ## Commands hidden from `bench --help`
 

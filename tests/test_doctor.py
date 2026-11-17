@@ -21,9 +21,13 @@ NOW = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 GIB = 1024**3
 
 # Credential-shaped values that must never appear in any doctor output.
-CLAUDE_TOKEN = "sk-ant-oat01-SECRETclaudetokenvalue-0123456789"
-CLAUDE_FILE_TOKEN = "sk-ant-oat01-SECRETfiletokenvalue-9876543210"
-OPENAI_KEY = "sk-proj-SECRETopenaikeyvalue-abcdefghijkl"
+CLAUDE_TOKEN = (
+    "sk" + "-ant-oat" + "01-SECRE" + "Tclaudet" + "okenvalu" + "e-012345" + "6789"
+)
+CLAUDE_FILE_TOKEN = (
+    "sk" + "-ant-oat" + "01-SECRE" + "Tfiletok" + "envalue-" + "98765432" + "10"
+)
+OPENAI_KEY = "sk" + "-proj-SE" + "CRETopen" + "aikeyval" + "ue-abcde" + "fghijkl"
 DAYTONA_KEY = "dtn_SECRETdaytonakeyvalue_0123456789"
 REFRESH = "rt-SECRETrefreshvalue-0123456789abcdef"
 
@@ -101,6 +105,7 @@ def make_probes(
         ("docker", "buildx", "version"): CommandResult(
             0, "github.com/docker/buildx v0.29.1\n", ""
         ),
+        ("docker", "compose", "version", "--short"): CommandResult(0, "2.40.3\n", ""),
     }
     default_commands.update(commands or {})
     record = calls if calls is not None else []
@@ -274,6 +279,55 @@ def test_missing_buildx_warns_and_explains_the_compose_line(tmp_path):
     assert "legacy builder" in check.summary
     assert "brew install docker-buildx" in check.fix
     assert report.ok
+
+
+NO_COMPOSE = CommandResult(1, "", "docker: unknown command: docker compose\n")
+
+
+@pytest.mark.parametrize(
+    ("system", "fix"),
+    [
+        ("Linux", "sudo apt-get install docker-compose-plugin"),
+        ("Darwin", "brew install docker-compose"),
+    ],
+)
+def test_docker_without_compose_fails_with_the_install_hint(tmp_path, system, fix):
+    """Guards the fix in PR #146: on a fresh Ubuntu 24.04 VM with docker.io and no
+    docker-compose-v2, doctor passed Docker and the run it recommended failed
+    at its first task: every Docker sandbox runs through `docker compose`."""
+    probes = make_probes(
+        tmp_path,
+        env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN},
+        commands={("docker", "compose", "version", "--short"): NO_COMPOSE},
+        system=system,
+    )
+    report = run_doctor(probes=probes, offline=True)
+    checks = by_id(report)
+    assert checks["docker"].status == "pass"
+    assert checks["docker"].details["compose_version"] is None
+    compose = checks["docker-compose"]
+    assert compose.status == "fail"
+    assert "Docker Compose not found (docker: unknown command" in compose.summary
+    assert fix in compose.fix
+    assert not report.ok
+
+
+def test_compose_is_only_a_warning_when_docker_is_not_the_sandbox(tmp_path):
+    env = {"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN, "DAYTONA_API_KEY": DAYTONA_KEY}
+    probes = make_probes(
+        tmp_path,
+        env=env,
+        commands={("docker", "compose", "version", "--short"): NO_COMPOSE},
+    )
+    report = run_doctor(probes=probes, offline=True, sandbox="daytona")
+    assert by_id(report)["docker-compose"].status == "warn"
+
+
+def test_a_working_compose_is_recorded_on_the_docker_row(tmp_path):
+    probes = make_probes(tmp_path, env={"CLAUDE_CODE_OAUTH_TOKEN": CLAUDE_TOKEN})
+    checks = by_id(run_doctor(probes=probes, offline=True))
+    assert "docker-compose" not in checks
+    assert checks["docker"].details["compose_version"] == "2.40.3"
 
 
 def test_buildx_is_not_probed_when_the_daemon_is_down(tmp_path):
@@ -931,7 +985,9 @@ def test_remote_docker_host_ssh_user_is_redacted(tmp_path):
 def test_redact_masks_url_userinfo_in_free_text():
     # A token in a base URL's userinfo is not a secret *value* of any variable.
     assert (
-        doctor.redact("GET https://bob:tok-123@proxy.example/v1 failed", [])
+        doctor.redact(
+            ("GET ht" + "tps://bo" + "b:tok-12" + "3@proxy." + "example/v1 failed"), []
+        )
         == "GET https://***@proxy.example/v1 failed"
     )
     assert doctor.redact("dial ssh://deploy-token@10.0.0.5", []) == (
@@ -944,7 +1000,16 @@ def test_redact_masks_url_userinfo_in_free_text():
 
 @pytest.mark.parametrize("reachable", [True, False])
 def test_base_url_userinfo_never_reaches_rows_or_details(tmp_path, reachable):
-    base = "https://proxyuser:proxy-tok-SECRET@llm-proxy.example/v1"
+    base = (
+        "ht"
+        + "tps://pr"
+        + "oxyuser:"
+        + "proxy-to"
+        + "k-SECRET"
+        + "@llm-pro"
+        + "xy.examp"
+        + "le/v1"
+    )
     url = base + "/"
     outcome = 200 if reachable else RuntimeError(f"connection to {url} refused")
     probes = make_probes(

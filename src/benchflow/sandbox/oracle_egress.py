@@ -36,6 +36,7 @@ solution; it is not a sandbox for a hostile one.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import ipaddress
 import logging
 import shlex
@@ -271,6 +272,9 @@ class OracleEgress:
     gid: int | None
     #: The proxy and CA variables for the oracle's processes.
     env: dict[str, str] = field(default_factory=dict)
+    #: Every-process rules from BenchFlow's helper (v4, v6, nat), with the
+    #: proxy in its own container; None: the group or uid rules.
+    rules: tuple[list[str], list[str], list[str]] | None = None
 
     @property
     def allow_networks(self) -> tuple[str, ...] | None:
@@ -307,6 +311,8 @@ async def arm_oracle_egress(
     Raises ``RuntimeError`` (nothing left armed) when the policy cannot be
     enforced in this sandbox: the oracle never runs unconfined under a policy.
     """
+    if getattr(env, "rules_by_helper", False) is True:
+        return await _arm_every_process(env, policy)
     uid = await _oracle_uid(env, run_as)
     gid = ORACLE_EGRESS_GID if uid == 0 else None
     match = owner_match(gid=gid) if gid is not None else owner_match(uid=uid)
@@ -374,8 +380,79 @@ async def _check_group_join(
         )
 
 
+async def _arm_every_process(env: Any, policy: EgressDenylist) -> OracleEgress:
+    """The policy for every process of main during the oracle's turn: main
+    holds no NET_ADMIN (BenchFlow's helper adds every rule), so a root oracle
+    can neither remove the rules nor leave a matched group (RCI on
+    86fd158d6). The proxy runs in its own container; its marked sockets are
+    the only way out."""
+    from benchflow.sandbox import verifier_network as vn
+    from benchflow.sandbox.egress_denylist import start_egress_container
+
+    armed = OracleEgress(
+        policy=policy,
+        match="every process",
+        gid=None,
+        env={
+            key: value
+            for key, value in denylist_agent_env({}, policy).items()
+            if key not in _AGENT_ONLY_ENV
+        },
+    )
+    try:
+        try:
+            await start_egress_container(env, policy, lifetime_sec=4 * 3600)
+        except Exception as exc:
+            raise RuntimeError(
+                f"network_mode={policy.mode!r} applies to the oracle, but its "
+                f"egress proxy could not start: {exc}"
+            ) from exc
+        mode = "allowlist" if policy.allow_mode else "denylist"
+        armed = dataclasses.replace(
+            armed,
+            rules=await vn.arm_policy_agent_phase(
+                env, mode, tuple(policy.allow_networks) if policy.allow_mode else ()
+            ),
+        )
+    except BaseException:
+        with tempfile.TemporaryDirectory() as scratch:
+            await _disarm(env, armed, Path(scratch))
+        raise
+    logger.info("Oracle egress policy armed (%s, every process)", policy.mode)
+    return armed
+
+
+async def _disarm_every_process(
+    env: Any, armed: OracleEgress, rollout_dir: Path
+) -> int:
+    """Remove the every-process rules and stop the proxy's container, its
+    refusals kept in ``trajectory/egress_denylist.jsonl``."""
+    import json
+
+    from benchflow.sandbox import verifier_network as vn
+
+    code = 0
+    if armed.rules is not None:
+        code = 0 if await vn.remove_policy_agent_phase(env, armed.rules) else 1
+    box = getattr(env, "_egress_container", None)
+    if box is not None:
+        with contextlib.suppress(Exception):
+            refusals = await box.refusals()
+            if refusals:
+                target = rollout_dir / "trajectory" / "egress_denylist.jsonl"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("".join(json.dumps(r) + "\n" for r in refusals))
+        with contextlib.suppress(Exception):
+            await box.aclose()
+        with contextlib.suppress(AttributeError):
+            env._egress_container = None
+    return code
+
+
 async def _disarm(env: Any, armed: OracleEgress, rollout_dir: Path) -> int:
     """Remove the rules, then stop the proxy; the rules' exit status (-1: no answer)."""
+    if armed.match == "every process":
+        return await _disarm_every_process(env, armed, rollout_dir)
     code = -1
     with contextlib.suppress(Exception):
         result = await exec_raw(

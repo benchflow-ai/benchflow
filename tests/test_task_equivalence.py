@@ -546,6 +546,14 @@ def test_battery_builds_the_verifier_runtime_before_the_oracle(
         async def prepare_verifier_runtime(self, env, *, task, sandbox_user):
             calls.append("runtime")
 
+        async def lock_system_path(self, env, *, workspace, timeout_sec=120):
+            # As a trial does before its agent: the PATH lock, and
+            # its record in the report.
+            from benchflow._utils.path_lock_record import record_path_lock
+
+            calls.append("lock")
+            record_path_lock(["/usr/local/cargo/bin"], [])
+
     async def upload(*a, **k):
         calls.append("upload")
 
@@ -569,5 +577,8 @@ def test_battery_builds_the_verifier_runtime_before_the_oracle(
         equivalence.check_equivalence_async(task, sandbox_type="docker")
     )
 
-    assert calls == ["upload", "log dirs", "seed", "runtime", "oracle", "stop"]
+    assert calls == ["upload", "log dirs", "seed", "runtime", "lock", "oracle", "stop"]
     assert report.status == "oracle-fails"
+    assert report.locked_system_path is not None
+    assert report.locked_system_path["locked"] == ["/usr/local/cargo/bin"]
+    assert report.to_dict()["locked_system_path"]["state"] == "enforced"

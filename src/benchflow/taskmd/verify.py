@@ -210,8 +210,27 @@ echo "unknown: no iptables and no bash to check the network"; exit 1
 
 
 async def take_offline(sandbox: Any, probes: tuple[str, ...] = OFFLINE_PROBES) -> str:
-    """Make sure the verifier runs without a network; return how, or raise."""
+    """Make sure the verifier runs without a network; return how, or raise.
+
+    Where BenchFlow's helper already holds the verifier's network to
+    no-network (every process, from outside main, which has no
+    NET_ADMIN to add or remove a rule), that is how: no root iptables in
+    main. Elsewhere root takes the container offline, or the trial is not
+    scored."""
     from benchflow.sandbox.lockdown import _exec_return_code
+    from benchflow.sandbox.verifier_network import VerifierNetwork
+
+    held = getattr(sandbox, "_benchflow_verifier_network", None)
+    if (
+        isinstance(held, VerifierNetwork)
+        and held.mode == "no-network"
+        and held.match == "every process"
+        and str(held.state).startswith(("held", "no route"))
+    ):
+        return (
+            "offline: BenchFlow's helper holds the verifier's network "
+            f"(no-network, {held.state}, every process)"
+        )
 
     result = await root_exec(
         sandbox,
@@ -1745,7 +1764,8 @@ async def _verify_taskmd(verifier: Any, strategy: Any, fs_root: Path) -> Any:
         path = paths.verifier_dir / name
         if path.exists():
             path.rename_entry(f"script-{name}")
-    ctrf = paths.verifier_dir / "ctrf.json"
+    # As test.sh left it at its exit (read-back #3).
+    ctrf = verifier.output_at_exit("ctrf.json")
     report = grading.read_ctrf(ctrf.read_bytes() if ctrf.is_file() else None)
 
     values: dict[str, Any] = {}

@@ -23,7 +23,10 @@ not an infrastructure failure (#1134): only the agent phase is stopped, the
 lifecycle verifies and tears down within :func:`post_agent_grace_sec`, and the
 result keeps the verifier's reward with the ``timeout`` category. The
 whole-lifecycle kill (``INFRA_ERROR``) remains the backstop when the agent
-phase had already ended or the post-agent stages outlive that grace.
+phase had already ended or the post-agent stages outlive that grace; the
+rollout keeps an ending its agent's turn recorded before the kill (a prompt
+timeout, the trial budget, ...) and records the kill beside it
+(``Rollout._run_with_scoring``).
 
 Override with ``BENCHFLOW_ROLLOUT_HARD_DEADLINE`` (seconds; ``off``/``none``/
 ``0`` or any non-positive number disables the backstop entirely).

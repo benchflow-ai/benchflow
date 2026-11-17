@@ -61,6 +61,7 @@ async def test_mutable_or_unknown_ancestry_refuses_grading(
             _make_task(),
             sandbox_user="agent",
             workspace=str(workspace),
+            integrity="strict",
         )
     build.assert_not_awaited()
     assert (workspace / "answer.txt").read_text() == "dummy answer\n"

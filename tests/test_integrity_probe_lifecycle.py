@@ -75,5 +75,7 @@ async def test_no_probe_is_taken_with_integrity_off(tmp_path, monkeypatch):
     stand_in._config = RolloutConfig.from_legacy(
         task_path=tmp_path / "task", agent="claude-agent-acp", prompts=[None]
     )
+    # An unset integrity is audit now; off is only ever explicit.
+    stand_in._config.integrity = "off"
     await _probe_integrity_access(stand_in, "pre")
     called.assert_not_awaited()

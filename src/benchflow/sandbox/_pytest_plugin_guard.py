@@ -28,12 +28,12 @@ hook leaves a ``refused`` marker holding the refusal, and the verifier reports
 an error instead of a score: pytest stopped before any test ran,
 so test.sh's 0 would score the guard, not the solution. Any other exception
 from a guard hook is the guard failing (a bug, a pytest API it did not
-expect); the hook leaves a ``crashed`` marker holding the traceback, still
-stops pytest, and the verifier reports an error too. Inspecting plugin files
-and metadata is a refusal, not a crash: an agent can plant those, and a
-malformed ``entry_points.txt`` line alone makes CPython 3.12's
-importlib.metadata raise TypeError, so any error while inspecting them is a
-``Rejected``.
+expect); the hook leaves a ``guard_error`` verdict and a ``crashed`` marker
+holding the traceback, still stops pytest, and the verifier reports an error
+too. Inspecting plugin files and metadata is a refusal, not a crash: an agent
+can plant those, and a malformed ``entry_points.txt`` line alone makes CPython
+3.12's importlib.metadata raise TypeError, so any error while inspecting them
+is a ``Rejected``.
 
 Where the armed guard lets plugin code come from: BenchFlow's
 protected verifier runtime, a root-only tree built before the agent's turn
@@ -141,7 +141,7 @@ try:
     # Python 3.7 has no importlib.metadata (pytest brings importlib_metadata);
     # a Python built without _ctypes has no statx (_statx then says so).
     with contextlib.suppress(ImportError):
-        import importlib.metadata
+        import importlib.metadata  # novermin
     with contextlib.suppress(ImportError):
         import ctypes
 finally:
@@ -231,6 +231,11 @@ _BENCHFLOW_AGENT_GIDS = None  # type: tuple[int, ...] | None
 # when there is none (a separate verifier sandbox).
 _BENCHFLOW_WORKSPACE = ""
 _BENCHFLOW_SNAPSHOT = ""
+# The image manifest BenchFlow wrote back, root's alone, before it armed the
+# guard: every conftest.py and Python file in the image with its sha256,
+# recorded before the agent's turn (or the transfer). Empty when there is none
+# it may trust.
+_BENCHFLOW_MANIFEST = ""
 # True in the guard hardening wrote, whose own change time marks when the
 # agent had stopped; discovery before the verifier has no such time.
 _BENCHFLOW_ARMED = False
@@ -342,18 +347,70 @@ class Rejected(RuntimeError):
     """The guard refuses a plugin; pytest stops and the run is not scored."""
 
 
+class GuardError(RuntimeError):
+    """The guard's own code failed while judging a file: a bug, or a Python
+    or pytest it does not handle. Never a refusal. It stops pytest through the
+    ``crashed`` marker, so the run is not scored, and names the file."""
+
+    # The file being judged, and the failure ("TypeError: ...").
+    path = ""
+    cause = ""
+
+
+# What a file's own bytes can make the guard's file checks raise; those
+# checks then answer "not trusted". Anything else is the guard's failure
+# (GuardError): a TypeError from code newer than the Python running it once
+# refused astropy's own plugins on Python 3.6 (astropy-7166).
+_CONTENT_ERRORS = (
+    OSError,
+    ValueError,
+    EOFError,
+    SyntaxError,
+    UnicodeError,
+    RecursionError,
+    MemoryError,
+    OverflowError,
+)
+
+
+def _guard_error(exc, path):
+    cause = type(exc).__name__ + ": " + str(exc)[:300]
+    error = GuardError("guard_error: " + cause + " while judging " + str(path))
+    error.path = str(path)
+    error.cause = cause
+    return error
+
+
+# The Python this guard runs in, on every record entry.
+_PYTHON = ".".join(str(part) for part in sys.version_info[:3])
+
+
 def _stopping(exc):
     """Record why this guard, not a failure to load it, is stopping pytest.
 
-    A refusal leaves a ``refused`` marker, any other failure a ``crashed``
-    one. An optional plugin failing to import is that plugin's failure, as
-    with ``-p``, so it leaves neither (see _load_optional). The record is
-    written before the ``loading`` and ``checking`` markers go, so a process
-    killed in between still leaves one of them.
+    A refusal leaves a ``refused`` marker. Any other failure is the guard's
+    own, wherever it raised (a hook, preparse, an optional plugin's loading):
+    it leaves a ``guard_error`` verdict, naming the file the guard was judging
+    when it was judging one, and a ``crashed`` marker, so pytest's stop is
+    never scored as the solution's 0. Only an optional plugin's own code
+    failing as it imports is that plugin's failure, as with ``-p``, and
+    leaves neither (_optional_failure). The record is written before the
+    ``loading`` and ``checking`` markers go, so a process killed in between
+    still leaves one of them.
     """
     if isinstance(exc, Rejected):
         _mark("refused", str(exc))
     elif exc is not _OPTIONAL_FAILURE:
+        if isinstance(exc, GuardError):
+            path, cause = exc.path, exc.cause or str(exc)
+        else:
+            path, cause = "", type(exc).__name__ + ": " + str(exc)[:300]
+        # Recording must not replace the failure pytest stops with.
+        with suppress(Exception):
+            _mark(
+                "verdicts",
+                json.dumps([_entry("guard_error", path, cause, "guard_error")]),
+            )
         _mark(
             "crashed",
             "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
@@ -496,8 +553,218 @@ def _image_bytes(path):
                     return False
                 if not chunk:
                     return True
-    except Exception:
+    except (_ProofOutOfTime, *_CONTENT_ERRORS):
         return False
+    except Exception as exc:
+        raise _guard_error(exc, path) from exc
+
+
+_MANIFEST = []  # [files] once read: {path: (sha256, size)}, or None
+
+
+def _private_file(path):
+    """Whether *path* is a regular file only root may read or write."""
+    st = os.lstat(path)
+    return stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077
+
+
+def _manifest():
+    """The image manifest's files, ``{path: (sha256, size)}``, or None.
+
+    None without a path, or when the file is not root's alone (a regular
+    file no other user may read or write, in a folder only root may enter) or
+    not the schema BenchFlow writes (version 1). Read once.
+    """
+    if not _MANIFEST:
+        files = None
+        path = _BENCHFLOW_MANIFEST
+        try:
+            if (
+                path
+                and os.path.realpath(path) == path
+                and _private_to_root(os.path.dirname(path))
+                and _private_file(path)
+            ):
+                with open(path, "rb") as handle:
+                    files = _manifest_files(json.loads(handle.read().decode("utf-8")))
+        except (KeyError, AttributeError, TypeError, *_CONTENT_ERRORS):
+            files = None
+        _MANIFEST.append(files)
+    return _MANIFEST[0]
+
+
+def _manifest_files(data):
+    """The files of a manifest BenchFlow wrote (version 1), ``{path: (sha256,
+    size)}``, or None for any other schema."""
+    listed = data.get("files") if data.get("version") == 1 else None
+    if not isinstance(listed, dict):
+        return None
+    return {
+        str(key): (entry["sha256"], entry["size"])
+        for key, entry in listed.items()
+        if isinstance(entry.get("sha256"), str) and type(entry.get("size")) is int
+    }
+
+
+# What the image manifest leaves out by design: its pruned trees (the armed
+# source's policy sets these from _image_manifest.PRUNED; this default is
+# for a guard without one) and the Python installation trees. It says nothing
+# of a path there.
+_MANIFEST_PRUNED = (
+    "/proc",
+    "/sys",
+    "/dev",
+    "/var/lib/benchflow",
+    "/var/lib/benchflow-image",
+    "/opt/runtime/verifier",
+    "/opt/benchflow/verifier",
+    "/logs",
+    "/tmp",
+    "/root/.cache",
+)
+
+
+def _outside_manifest(path):
+    parts = path.split("/")
+    if "site-packages" in parts or "dist-packages" in parts:
+        return True
+    if any(under(path, prefix) for prefix in _MANIFEST_PRUNED):
+        return True
+    for i in range(1, len(parts)):
+        name = parts[i]
+        if parts[i - 1] == "lib" and name.startswith("python") and name[6:7].isdigit():
+            return True
+        if name == "pkgs" and os.path.isdir("/".join(parts[:i]) + "/conda-meta"):
+            return True
+    return False
+
+
+def _manifest_verdict(path):
+    """What the image manifest says of *path*: ``"identical"`` (a regular file
+    with the size and sha256 it records there; a directory it records files
+    under), ``"changed"``, ``"new"`` (nothing recorded there), or None (no
+    manifest). Keys are paths as the walk found them, without following a
+    link, so *path* is looked up as spelled and must not be a link."""
+    files = _manifest()
+    if files is None or _outside_manifest(path):
+        return None
+    try:
+        st = os.lstat(path)
+        if stat.S_ISDIR(st.st_mode):
+            prefix = path.rstrip("/") + "/"
+            return "identical" if any(k.startswith(prefix) for k in files) else "new"
+        entry = files.get(path)
+        if entry is None:
+            return "new"
+        if not stat.S_ISREG(st.st_mode) or st.st_size != entry[1]:
+            return "changed"
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                # A huge file must not carry the proof past its deadline; a
+                # raise here is "not the image's", so tainted.
+                _check_proof_deadline()
+                chunk = handle.read(1 << 16)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return "identical" if digest.hexdigest() == entry[0] else "changed"
+    except (_ProofOutOfTime, *_CONTENT_ERRORS):
+        return "changed" if path in (files or {}) else "new"
+
+
+def _digest(path):
+    """The sha256 of the regular file at *path* (not following a link), or
+    "" for anything else or a file that cannot be read."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return ""
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                _check_proof_deadline()
+                chunk = handle.read(1 << 16)
+                if not chunk:
+                    return digest.hexdigest()
+                digest.update(chunk)
+    except (_ProofOutOfTime, *_CONTENT_ERRORS):
+        return ""
+
+
+def _entry(kind, path, why, verdict):
+    """One entry of the ``verdicts`` record (the fields the verifier reads)."""
+    return {
+        "v": 1,
+        "guard": __name__,
+        "kind": kind,
+        "path": path,
+        "sha256": _digest(path) if path else "",
+        "why": str(why)[:300],
+        "verdict": verdict,
+        "python": _PYTHON,
+        "executable": sys.executable,
+    }
+
+
+def _record_verdicts(paths, why=""):
+    """Leave the ``verdicts`` record: each refused file, with *why* (the
+    refusal) and what the image manifest says of it (``no-manifest`` without
+    one), so the verifier can tell a file the image never had from the
+    image's own."""
+    seen = []
+    for path in paths:
+        caches = []
+        if path and path.endswith(".py"):
+            # The byte-code caches Python would read in the source's place:
+            # a refusal can be theirs.
+            for optimize in ("", 1, 2):
+                try:
+                    pyc = importlib.util.cache_from_source(path, optimization=optimize)
+                except (NotImplementedError, *_CONTENT_ERRORS):
+                    continue
+                if os.path.lexists(pyc):
+                    caches.append(pyc)
+        for each in [path, *caches]:
+            if each and each not in seen:
+                seen.append(each)
+    if seen:
+        _mark(
+            "verdicts",
+            json.dumps(
+                [
+                    _entry(
+                        "rejected",
+                        path,
+                        why,
+                        _manifest_verdict(path) or "no-manifest",
+                    )
+                    for path in seen
+                ]
+            ),
+        )
+
+
+def _module_files(module):
+    """The files and folders importing *module* reaches, as trusted_module
+    looks them up (empty when it cannot be found)."""
+    found = []
+    parts = module.split(".")
+    search = _BENCHFLOW_SEARCH_PATH
+    try:
+        for i in range(len(parts)):
+            spec = PathFinder.find_spec(".".join(parts[: i + 1]), path=search)
+            if spec is None:
+                break
+            if (spec.origin or "").startswith("/"):
+                found.append(spec.origin)
+            locations = [str(p) for p in (spec.submodule_search_locations or [])]
+            found.extend(locations)
+            search = locations
+            if not search:
+                break
+    except (ImportError, *_CONTENT_ERRORS):
+        pass
+    return found
 
 
 def _identity(st):
@@ -781,8 +1048,11 @@ def _arm_time():
     """When hardening armed this guard: its key file's change time, or None.
 
     Hardening writes that file in the exec that arms the guard, after the
-    agent's processes are gone and before test.sh starts.
+    agent's processes are gone and before test.sh starts. In ``--judge`` it
+    is when the judgment started: a pristine image's files are all older.
     """
+    if _JUDGE_ARM:
+        return _JUDGE_ARM[0]
     try:
         return os.stat(_BENCHFLOW_KEY_FILE).st_ctime if _BENCHFLOW_KEY_FILE else None
     except OSError:
@@ -894,8 +1164,11 @@ def _same_code(cached, compiled):
     code = type(compiled)
     inner = [c for c in cached.co_consts if isinstance(c, code)]
     expected = [c for c in compiled.co_consts if isinstance(c, code)]
+    # No zip(strict=True): the guard runs on the task's Python, 3.6 and later
+    # (strict is 3.10's), and the lengths are compared first.
     return len(inner) == len(expected) and all(
-        _same_code(a, b) for a, b in zip(inner, expected, strict=True)
+        _same_code(a, b)
+        for a, b in zip(inner, expected)  # noqa: B905
     )
 
 
@@ -918,9 +1191,23 @@ def _pyc_matches(pyc, source, optimize):
             text = handle.read()
         header = 16 if sys.version_info >= (3, 7) else 12
         compiled = compile(text, source, _MODULE, dont_inherit=True, optimize=optimize)
-        return _same_code(marshal.loads(data[header:]), compiled)
-    except Exception:
+    except _CONTENT_ERRORS:
         return False
+    except Exception as exc:
+        raise _guard_error(exc, pyc) from exc
+    try:
+        cached = marshal.loads(data[header:])
+    except Exception:
+        # Whatever these bytes hold, they are not the source's compilation.
+        return False
+    if not isinstance(cached, type(compiled)):
+        return False
+    try:
+        return _same_code(cached, compiled)
+    except _CONTENT_ERRORS:
+        return False
+    except Exception as exc:
+        raise _guard_error(exc, pyc) from exc
 
 
 def _caches_harmless(spelling, source, blocked):
@@ -939,7 +1226,14 @@ def _caches_harmless(spelling, source, blocked):
     try:
         for optimize in ("", 1, 2):
             pyc = importlib.util.cache_from_source(spelling, optimization=optimize)
-            if not os.path.lexists(pyc) or _image_owned(pyc, blocked):
+            if (
+                not os.path.lexists(pyc)
+                or _image_owned(pyc, blocked)
+                # The image's own cache, though not its source's compilation
+                # (a stale one shipped in the image); the source is judged by
+                # itself.
+                or _manifest_verdict(pyc) == "identical"
+            ):
                 continue
             if not _pyc_matches(pyc, source, optimize or 0):
                 return False
@@ -953,13 +1247,21 @@ def _caches_harmless(spelling, source, blocked):
         if cache_dir is not None:
             directory = str(cache_dir(pathlib.Path(spelling)))
         elif getattr(sys, "pycache_prefix", None):
-            directory = sys.pycache_prefix + os.path.dirname(spelling)
+            directory = sys.pycache_prefix + os.path.dirname(spelling)  # novermin
         else:
             directory = os.path.join(os.path.dirname(spelling), "__pycache__")
         cached = os.path.join(directory, os.path.basename(spelling)[:-3] + tail)
-        return not os.path.lexists(cached) or _image_owned(cached, blocked)
-    except Exception:
+        return (
+            not os.path.lexists(cached)
+            or _image_owned(cached, blocked)
+            or _manifest_verdict(cached) == "identical"
+        )
+    except GuardError:
+        raise
+    except _CONTENT_ERRORS:
         return False
+    except Exception as exc:
+        raise _guard_error(exc, spelling) from exc
 
 
 def _in_runtime(path):
@@ -975,7 +1277,11 @@ def _in_runtime(path):
 
 
 def _running_pytest(path):
-    """Whether *path* is in the pytest package this process is running."""
+    """Whether *path* is in the pytest package this process is running. In
+    ``--judge``, which runs no pytest, the image's own: the one this Python
+    would import."""
+    if _JUDGE_PYTEST:
+        return bool(_JUDGE_PYTEST[0]) and under(path, _JUDGE_PYTEST[0])
     module = sys.modules.get("_pytest")
     origin = getattr(module, "__file__", None)
     return bool(origin) and under(path, os.path.dirname(os.path.realpath(origin)))
@@ -1026,7 +1332,13 @@ class _RuntimeFinder:
         name = getattr(context, "name", None)
         if not _BENCHFLOW_RUNTIME_SITE or not name:
             return iter(())
-        import importlib.metadata as metadata
+        try:
+            import importlib.metadata as metadata  # novermin
+        except ImportError:  # Python 3.6 and 3.7: the backport pytest brings
+            try:
+                import importlib_metadata as metadata
+            except ImportError:
+                return iter(())
 
         return iter(
             list(
@@ -1088,7 +1400,7 @@ def _bf_record_distribution(manager, plugin, name, folders):
     ``required_plugins`` finds a pinned release BenchFlow registered itself.
     Only *folders* (the protected runtime's) are read; nothing else is."""
     try:
-        import importlib.metadata as metadata
+        import importlib.metadata as metadata  # novermin
 
         from pluggy._manager import DistFacade
     except ImportError:
@@ -1232,11 +1544,28 @@ def _installed_by_verifier(path):
             return False
         root = _install_root(path, record)
         return root is not None and _project_inputs_new(root, record)
+    except GuardError:
+        raise
     except Exception:
         return False
 
 
 def untrusted_reason(path, blocked):
+    """Why pytest must not load code from *path*, or None when it may
+    (:func:`_untrusted_reason`). What *path*'s own files make the checks
+    raise is a reason not to trust it; any other failure is the guard's own
+    (GuardError), never a refusal."""
+    try:
+        return _untrusted_reason(path, blocked)
+    except GuardError:
+        raise
+    except _CONTENT_ERRORS as exc:
+        return str(path) + " cannot be judged (" + type(exc).__name__ + ")"
+    except Exception as exc:
+        raise _guard_error(exc, path) from exc
+
+
+def _untrusted_reason(path, blocked):
     """Why pytest must not load code from *path*, or None when it may.
 
     *path* is judged as Python imports it and as what it reaches: the
@@ -1258,7 +1587,9 @@ def untrusted_reason(path, blocked):
     if _BENCHFLOW_ARMED and (_in_runtime(real) or _running_pytest(real)):
         return None
     for candidate in dict.fromkeys((path, real)):
-        image = _BENCHFLOW_ARMED and _image_bytes(candidate)
+        image = _BENCHFLOW_ARMED and (
+            _image_bytes(candidate) or _manifest_verdict(candidate) == "identical"
+        )
         for prefix in blocked:
             if under(candidate, prefix) and not image:
                 return candidate + " is under " + prefix + ", " + _blocked_why()
@@ -1305,34 +1636,99 @@ def trusted(path, blocked):
 
 
 def trusted_module(module, blocked):
+    return _module_verdict(module, blocked)[0] == "trusted"
+
+
+def _module_verdict(module, blocked):
+    """``(kind, why)`` for *module*, looked up without importing it:
+    ``"trusted"``; ``"absent"`` when nothing by that name is on the search
+    path; or ``"rejected"`` with the reason. A failure of the guard's own
+    code is a GuardError."""
     parts = module.split(".")
     if not parts or not all(part.isidentifier() for part in parts):
-        return False
+        return "rejected", repr(module) + " is not a module name"
     search = _BENCHFLOW_SEARCH_PATH
     for i in range(len(parts)):
+        name = ".".join(parts[: i + 1])
         try:
-            spec = PathFinder.find_spec(".".join(parts[: i + 1]), path=search)
-        except Exception:
-            return False
+            spec = PathFinder.find_spec(name, path=search)
+        except (ImportError, *_CONTENT_ERRORS) as exc:
+            return "rejected", name + " cannot be looked up (" + type(
+                exc
+            ).__name__ + ")"
+        except Exception as exc:
+            raise _guard_error(exc, name) from exc
         if spec is None:
-            return False
+            return "absent", name + " is not on the search path"
         # A namespace package has no origin, only search locations; a
         # builtin has a non-path origin. Requiring at least one real path
         # keeps both from passing by vacuous truth.
         locations = [spec.origin] if (spec.origin or "").startswith("/") else []
         locations += [str(p) for p in (spec.submodule_search_locations or [])]
-        if not locations or not all(trusted(p, blocked) for p in locations):
-            return False
+        if not locations:
+            return "rejected", name + " has no file or folder to judge"
+        for location in locations:
+            if not trusted(location, blocked):
+                why = untrusted_reason(location, blocked)
+                return "rejected", why or str(location) + " is not trusted"
         search = [str(p) for p in (spec.submodule_search_locations or [])]
         if i < len(parts) - 1 and not search:
-            return False
-    return True
+            return "absent", name + " is not a package"
+    return "trusted", ""
+
+
+class _ScannedEntryPoint:
+    group = "pytest11"
+
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+
+def _scanned_registrations(search=None):
+    """``(entry point, distribution folder)`` for every pytest11 line in the
+    entry_points.txt of each ``.dist-info`` or ``.egg-info`` folder on
+    *search* (sys.path when None). For a Python with neither
+    importlib.metadata nor its backport (pytest 3 reads entry points through
+    pkg_resources; discovery's system Python 3.6 has neither): a file that
+    cannot be read lists none."""
+    found = []
+    for entry in sys.path if search is None else search:
+        folder = os.path.abspath(entry or ".")
+        try:
+            names = sorted(os.listdir(folder))
+        except _CONTENT_ERRORS:
+            continue
+        for name in names:
+            if not name.endswith((".dist-info", ".egg-info")):
+                continue
+            dist = os.path.join(folder, name)
+            try:
+                with open(os.path.join(dist, "entry_points.txt"), "rb") as handle:
+                    lines = handle.read().decode("utf-8").splitlines()
+            except _CONTENT_ERRORS:
+                continue
+            section = None
+            for line in lines:
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip()
+                elif section == "pytest11" and "=" in line and line[:1] not in "#;":
+                    key, _, value = line.partition("=")
+                    found.append((_ScannedEntryPoint(key.strip(), value.strip()), dist))
+    return found
 
 
 def registrations():
     """Return ``(entry point, dist-info path or None)`` for every pytest11 entry."""
     if _BENCHFLOW_SEARCH_PATH is not None:
-        from importlib.metadata import distributions
+        try:
+            from importlib.metadata import distributions  # novermin
+        except ImportError:  # Python 3.6 and 3.7: the backport pytest brings
+            try:
+                from importlib_metadata import distributions
+            except ImportError:  # nor that: read entry_points.txt
+                return _scanned_registrations(_BENCHFLOW_SEARCH_PATH)
 
         return [
             (ep, getattr(dist, "_path", None))
@@ -1341,9 +1737,12 @@ def registrations():
             if ep.group == "pytest11"
         ]
     try:
-        from importlib.metadata import entry_points
+        from importlib.metadata import entry_points  # novermin
     except ImportError:  # Python 3.7: pytest itself requires the backport there
-        from importlib_metadata import entry_points
+        try:
+            from importlib_metadata import entry_points
+        except ImportError:  # pytest 3 on Python 3.6 has neither
+            return _scanned_registrations()
 
     try:
         # Discovery's search path is data: only distributions() takes one.
@@ -1361,7 +1760,7 @@ def registrations():
     # Before Python 3.10 an entry point does not name its distribution, so take
     # each one from the distribution that declares it, as pluggy loads them.
     try:
-        from importlib.metadata import distributions
+        from importlib.metadata import distributions  # novermin
     except ImportError:
         from importlib_metadata import distributions
     search = {} if _BENCHFLOW_SEARCH_PATH is None else {"path": _BENCHFLOW_SEARCH_PATH}
@@ -1505,6 +1904,8 @@ def _installed_during_verification(
                     return []
             evidence.extend(untrusted)
         return evidence
+    except GuardError:
+        raise
     except Exception:
         return []
 
@@ -1544,12 +1945,15 @@ def _unrecorded(names, entry_points, blocked, builtin_names):
                     return None
             evidence.extend(untrusted)
         return why, evidence
+    except GuardError:
+        raise
     except Exception:
         return None
 
 
 def _why_refused(name, entry_points, blocked, builtin_names):
-    """Say what made the guard refuse *name*; never raise."""
+    """Say what made the guard refuse *name*. Raises only a GuardError (the
+    guard's own failure, which stops pytest as itself, not as a refusal)."""
     try:
         if entry_points:
             found = [reg for ep, reg in registrations() if ep.name == name]
@@ -1567,8 +1971,28 @@ def _why_refused(name, entry_points, blocked, builtin_names):
             if not trusted(path, blocked):
                 return untrusted_reason(path, blocked) or path + " is not trusted"
         return "not trusted"
+    except GuardError:
+        raise
     except Exception as exc:
         return "cannot inspect: " + type(exc).__name__
+
+
+def _judged_module(name, blocked):
+    """:func:`trusted_module`, where a failure of the guard's own code is a
+    GuardError. A module name is judged by the files it reaches, and the
+    checks of those files turn whatever their bytes cause into "not trusted"
+    (``_CONTENT_ERRORS``), so anything else raised here is the guard's: on
+    Python 3.6 a TypeError from newer code refused astropy's own plugins
+    (astropy-7166). Entry points (``-p``) are judged from metadata the agent
+    can plant, so a failure there stays a refusal (see _validate)."""
+    try:
+        return trusted_module(name, blocked)
+    except GuardError:
+        raise
+    except _CONTENT_ERRORS:
+        return False
+    except Exception as exc:
+        raise _guard_error(exc, name) from exc
 
 
 def _validate(names, *, entry_points=True):
@@ -1599,7 +2023,9 @@ def _validate(names, *, entry_points=True):
         else:
             # pytest_plugins / PYTEST_PLUGINS import module names directly; a
             # same-named trusted entry point does not authorize that module.
-            refused = {name for name in modules if not trusted_module(name, blocked)}
+            refused = {name for name in modules if not _judged_module(name, blocked)}
+    except GuardError:
+        raise
     except Exception as exc:
         # Files and metadata on sys.path may be planted; what cannot be
         # inspected cannot be trusted.
@@ -1625,6 +2051,10 @@ def _validate(names, *, entry_points=True):
             + "; ".join(reasons)
             + ")"
         )
+        if not entry_points:
+            _record_verdicts(
+                [p for name in refused for p in _module_files(name)], message
+            )
         installed = _installed_during_verification(
             refused, entry_points, blocked, builtin_plugins
         )
@@ -1724,7 +2154,7 @@ def _keep_byte_code_out():
             "Verifier plugin trust: " + folder + " exists; the guard reads byte "
             "code only from a folder that is never made"
         )
-    sys.pycache_prefix = folder
+    sys.pycache_prefix = folder  # novermin
 
 
 def pytest_addhooks(pluginmanager):
@@ -1795,20 +2225,48 @@ def _present(name):
         return True
 
 
+def _optional_names():
+    """Discovery's optional plugins, then every other pytest11 registration
+    of this pytest that the guard trusts.
+
+    Discovery reads the Python on the hardening PATH. A Python test.sh
+    switches to (SWE-bench's conda testbed) was never on it, so its plugins
+    loaded nowhere: pytest ran without them, and an ini addopts one owns
+    (astropy's --doctest-rst, pytest-doctestplus's) stopped it with a usage
+    error that test.sh scored 0. A registration the guard trusts (the
+    image's, by discover's rule) now loads as an optional plugin; one it does
+    not trust stays unloaded, as before. A plugin test.sh itself installs is
+    decided before test.sh runs, never here.
+    """
+    names = list(_BENCHFLOW_OPTIONAL)
+    try:
+        from _pytest.config import builtin_plugins
+
+        blocked = tuple(
+            candidate
+            for path in _BENCHFLOW_BLOCKED
+            for candidate in (os.path.abspath(path), os.path.realpath(path))
+        )
+        trusted_names = discover(blocked, (), builtin_plugins)["plugins"]
+    except Exception:
+        return names
+    return names + [name for name in trusted_names if name not in names]
+
+
 def _load_optional(pluginmanager, disabled=()):
     """Load each optional plugin this pytest has installed, refusing untrusted ones (#1175).
 
-    As ``-p`` would, by its entry point name first, once pytest has
-    registered the guard with all its hooks (so a loaded plugin's own
-    ``pytest_plugins`` are checked too) and before any plugin of the
-    command line. One the command line blocks (``-p no:<name>``, in
+    As this pytest loads an entry point (_load_entry_point before pytest
+    4.4), once pytest has registered the guard with all its hooks (so a
+    loaded plugin's own ``pytest_plugins`` are checked too) and before any
+    plugin of the command line. One the command line blocks (``-p no:<name>``, in
     *disabled* or already applied), one already loaded, and one absent from
     this pytest are skipped.
     """
     import_plugin = pluginmanager.import_plugin
     code = getattr(import_plugin, "__code__", None)
     by_entry_point = code is not None and "consider_entry_points" in code.co_varnames
-    for name in _BENCHFLOW_OPTIONAL:
+    for name in _optional_names():
         if name in _BENCHFLOW_RUNTIME_PLUGINS:
             continue  # registered from the protected runtime (_load_runtime)
         if name in disabled or pluginmanager.is_blocked(name):
@@ -1818,16 +2276,135 @@ def _load_optional(pluginmanager, disabled=()):
         if not _present(name):
             continue
         _validate([name])
+        if not by_entry_point:
+            _load_entry_point(pluginmanager, name)
+            continue
         try:
-            if by_entry_point:
-                import_plugin(name, consider_entry_points=True)
-            else:
-                # pytest before 4.4 has no such argument.
-                import_plugin(name)
+            import_plugin(name, consider_entry_points=True)
         except Exception as exc:
-            global _OPTIONAL_FAILURE
-            _OPTIONAL_FAILURE = exc
+            # pytest imports the name itself when pluggy finds no such entry
+            # point.
+            modules, path = _entry_module(name)
+            _optional_failure(exc, _asked(name, *modules), path)
             raise
+
+
+def _registration(name):
+    """The pytest11 entry point *name* and its distribution folder, the
+    first in search-path order as pytest's entry-point loading takes it, or
+    ``(None, None)``."""
+    for ep, folder in registrations():
+        if ep.name == name:
+            return ep, folder
+    return None, None
+
+
+def _entry_module(name):
+    """The module entry point *name* names, as a tuple (empty when it cannot
+    be read), and the file that registers it (*name* when unknown), for the
+    words of a failure only."""
+    try:
+        ep, folder = _registration(name)
+    except Exception:
+        return (), name
+    if ep is None:
+        return (), name
+    return (
+        (_bf_entry_parts(ep.value)[0],),
+        os.path.join(str(folder), "entry_points.txt") if folder else name,
+    )
+
+
+def _asked(*modules):
+    """What Python imports to import each dotted name in *modules*: the
+    module and every package above it."""
+    names = set()
+    for module in modules:
+        parts = str(module).split(".")
+        names.update(".".join(parts[: i + 1]) for i in range(len(parts)))
+    return names
+
+
+def _not_found(exc, asked):
+    """Whether *exc*, or an exception it was raised from or while handling,
+    is Python finding no module named in *asked*."""
+    seen = []
+    while exc is not None and not any(exc is earlier for earlier in seen):
+        seen.append(exc)
+        if isinstance(exc, ModuleNotFoundError) and exc.name in asked:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _optional_failure(exc, asked, path):
+    """Decide whose failure *exc*, raised while an optional plugin loaded,
+    is; the caller re-raises it.
+
+    A refusal stays one. Python finding no module the guard asked for
+    (*asked*: the entry point's module and the packages above it, or the name
+    pytest imports when pluggy finds no entry point) is the guard's own
+    failure, a GuardError naming *path*, which _stopping records: the guard
+    took a plugin for one this pytest has that it cannot import. On pytest
+    3.3.1 it asked for the entry point's name, ``hypothesispytest``; pytest
+    stopped before it read its arguments, and with no record astropy-7166's
+    oracle scored a silent 0. Anything else is the plugin's own code failing
+    as it imports, as with ``-p``: pytest stops with it, and test.sh scores
+    the run.
+    """
+    if isinstance(exc, Rejected):
+        return
+    if _not_found(exc, asked):
+        raise _guard_error(exc, path) from exc
+    global _OPTIONAL_FAILURE
+    _OPTIONAL_FAILURE = exc
+
+
+class _Distribution:
+    """A plugin's distribution as pytest before 4.4 reads it (the header's
+    ``plugins:`` line, ``--version``), named as pkg_resources names it from
+    its metadata folder: ``pytest_cov-2.5.1.dist-info`` is pytest-cov 2.5.1."""
+
+    def __init__(self, folder):
+        folder = str(folder)
+        name, _, version = os.path.basename(folder).rsplit(".", 1)[0].partition("-")
+        self.project_name = name.replace("_", "-")
+        self.version = version.partition("-")[0]
+        self.location = os.path.dirname(folder)
+
+
+def _load_entry_point(manager, name):
+    """Load optional plugin *name* in a pytest before 4.4 as that pytest
+    loads an entry point (pluggy's load_setuptools_entrypoints): the module
+    the entry point's value names, imported, the object it names there,
+    registered under the entry point's name, and its distribution recorded.
+    That pytest's import_plugin imports a module by the name it is given,
+    and an entry point's name need not be one: hypothesis's
+    ``hypothesispytest`` is ``hypothesis.extra.pytestplugin``.
+    """
+    ep, folder = _registration(name)
+    if ep is None:
+        raise _guard_error(LookupError("no pytest11 entry point " + name), name)
+    module_name, attributes = _bf_entry_parts(ep.value)
+    path = os.path.join(str(folder), "entry_points.txt") if folder else name
+    asked = _asked(module_name)
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        _optional_failure(exc, asked, path)
+        raise
+    try:
+        plugin = _bf_entry_object(module, attributes)
+    except Exception as exc:
+        raise _guard_error(exc, path) from exc
+    try:
+        manager.register(plugin, name)
+    except Exception as exc:
+        _optional_failure(exc, asked, path)
+        raise
+    known = getattr(manager, "_plugin_distinfo", None)
+    if folder and isinstance(known, list):
+        known.append((plugin, _Distribution(folder)))
 
 
 def _check_registered(plugin, manager):
@@ -1853,6 +2430,10 @@ def _check_registered(plugin, manager):
     )
     reason = untrusted_reason(str(origin), blocked)
     if reason:
+        _record_verdicts(
+            [str(origin)],
+            "Verifier plugin trust rejected: " + name + " (" + reason + ")",
+        )
         raise Rejected("Verifier plugin trust rejected: " + name + " (" + reason + ")")
 
 
@@ -1864,8 +2445,10 @@ def pytest_plugin_registered(plugin, manager):
             # pytest calls this for the guard itself only after pluggy
             # accepted every one of its hooks. The ``checking`` marker is
             # already there, so the run is never left with ``registered``
-            # alone while plugins are still being inspected.
-            _mark("registered")
+            # alone while plugins are still being inspected. A pytest a test
+            # runs leaves none: its end is that test's (_nested).
+            if not _nested():
+                _mark("registered")
             _unmark("loading")
             _load_runtime(manager)
             _load_optional(manager, _DISABLED)
@@ -1882,48 +2465,529 @@ def pytest_plugin_registered(plugin, manager):
         raise
 
 
-if __name__ == "__main__":
-    prefixes = json.loads(sys.argv[1])
+# The end-of-session record ((g2), the lead's 15:41Z ruling):
+# each pytest config's session, by the config's id.
+_SESSIONS = {}  # type: dict
+
+
+def _nested():
+    """Whether this pytest is the subject of a test another pytest runs
+    (pytest sets PYTEST_CURRENT_TEST while a test runs, in its own process
+    and so in every process it starts): its end is that test's to judge."""
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
+def pytest_cmdline_main(config):
+    """Leave the end-of-session record at pytest's own last cleanup."""
+    if not _nested():
+        config.add_cleanup(lambda: _finished(config))
+
+
+def pytest_sessionstart(session):
+    _SESSIONS[id(session.config)] = session
+
+
+def _finished(config):
+    """The ``finished`` marker: whether a session ran, pytest's exit status
+    and its counts. This process's ``registered`` marker then goes, so one
+    left behind is a pytest that ended before its own cleanup."""
+    session = _SESSIONS.pop(id(config), None)
+    record = {}
+    record["session"] = session is not None
+    if session is not None:
+        for key, name in (
+            ("exitstatus", "exitstatus"),
+            ("collected", "testscollected"),
+            ("failed", "testsfailed"),
+        ):
+            value = getattr(session, name, None)
+            record[key] = int(value) if isinstance(value, int) else None
+        stats = getattr(
+            config.pluginmanager.get_plugin("terminalreporter"), "stats", None
+        )
+        record["passed"] = (
+            sum(1 for r in stats.get("passed", ()) if getattr(r, "when", "") == "call")
+            if isinstance(stats, dict)
+            else None
+        )
+    _mark("finished", json.dumps(record))
+    _unmark("registered")
+
+
+# In --judge: when the judgment started (_arm_time), and the folder of the
+# image's own pytest package, "" without one (_running_pytest).
+_JUDGE_ARM = []  # type: list[float]
+_JUDGE_PYTEST = []  # type: list[str]
+
+
+# >>> judge: the host's alone (lockdown.pytest_plugin_guard_judge_source)
+# The host's re-judgment (R). BenchFlow runs the armed source it
+# installed, with this section and ``--judge`` appended, in a fresh container
+# of the task image, as root and with no network, and reads one JSON list
+# from stdout. That image is as it was before any agent, so whatever the
+# guard refuses there is its own policy refusing the image's code, never the
+# trial's doing. Nothing the trial wrote reaches the judgment: the host
+# derives the request itself. This section never goes into the sandbox:
+# lockdown strips it from discovery's script and the armed guard, which go
+# there inside one sh -c argument (Linux caps one at 128 KiB).
+
+
+def _stdlib_import(name):
+    """Import *name* from this Python's standard library alone, as the
+    guard's own imports are (V2-REDESIGN-R3-2)."""
+    saved = sys.path[:]
+    sys.path[:] = [
+        f"{sys.base_prefix}/lib/python{sys.version_info[0]}{sys.version_info[1]}.zip",
+        _STDLIB,
+        _STDLIB + "/lib-dynload",
+    ]
+    try:
+        module = importlib.import_module(name)
+    finally:
+        sys.path[:] = saved
+    if not _standard_origin(module):
+        raise ImportError(name + " is not this Python's standard library")
+    return module
+
+
+def _conftest_plugins(path):
+    """The modules a conftest.py names in a literal top-level
+    ``pytest_plugins`` (a string, comma-separated as pytest reads one, or a
+    list or tuple of them), read with ast and never run. Anything else, or a
+    file this Python cannot parse, names none."""
+    ast = _stdlib_import("ast")
+    try:
+        with open(path, "rb") as handle:
+            tree = ast.parse(handle.read(), path)
+    except _CONTENT_ERRORS:
+        return []
+    names = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "pytest_plugins" for t in targets
+        ):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (TypeError, *_CONTENT_ERRORS):
+            continue
+        specs = [value] if isinstance(value, str) else value
+        if not isinstance(specs, (list, tuple)):
+            continue
+        for spec in specs:
+            if isinstance(spec, str):
+                names.extend(part.strip() for part in spec.split(",") if part.strip())
+    return names
+
+
+def _cache_check(path):
+    """None, or why the guard's cache check fails on *path*'s own
+    compilation. In the trial, the caches test.sh's install writes take the
+    guard through :func:`_pyc_matches` (astropy-7166's 3.6 failure was
+    there); a pristine image without caches would never reach it, so the
+    judge compiles *path* into a folder of its own and judges that cache.
+    Source this Python cannot compile is not the guard's to judge."""
+    tempfile = _stdlib_import("tempfile")
+    py_compile = _stdlib_import("py_compile")
+    folder = tempfile.mkdtemp()
+    pyc = os.path.join(folder, "cache.pyc")
+    try:
+        try:
+            py_compile.compile(path, cfile=pyc, doraise=True)
+        except (py_compile.PyCompileError, *_CONTENT_ERRORS):
+            return None
+        try:
+            matches = _pyc_matches(pyc, path, 0)
+        except GuardError as exc:
+            # Named for the source: the cache is the judge's own.
+            raise _guard_error(exc.__cause__ or exc, path) from exc
+        if not matches:
+            return path + ": the guard does not take its own compilation for it"
+        return None
+    finally:
+        with suppress(OSError):
+            os.remove(pyc)
+        with suppress(OSError):
+            os.rmdir(folder)
+
+
+def _judge_path(path, blocked):
+    if not os.path.lexists(path):
+        return "absent", path + " is not in the image"
+    reason = untrusted_reason(path, blocked)
+    if not reason and path.endswith(".py"):
+        reason = _cache_check(path)
+    return ("rejected", reason) if reason else ("trusted", "")
+
+
+def _judge_module(module, blocked):
+    """As pytest's import of a plugin by name finds it (a short name of its
+    own, ``pytester``, is ``_pytest.<name>``), then the cache check on each
+    of its sources (:func:`_cache_check`)."""
+    name = module
+    if "." not in module and _module_verdict("_pytest." + module, blocked)[0] != (
+        "absent"
+    ):
+        name = "_pytest." + module
+    kind, why = _module_verdict(name, blocked)
+    if kind == "trusted":
+        for path in _module_paths(name):
+            if path.endswith(".py"):
+                why = _cache_check(path) or ""
+                if why:
+                    return "rejected", why
+    return kind, why
+
+
+def _judged(key, item, judge, blocked, origin):
+    """One row of the judgment. The guard's own failure on *item* is that
+    row's ``guard_error``, never the judgment's end."""
+    try:
+        kind, why = judge(item, blocked)
+    except GuardError as exc:
+        kind, why = "guard_error", str(exc)
+    except Exception as exc:
+        kind, why = "guard_error", str(_guard_error(exc, item))
+    return {
+        key: item,
+        "kind": kind,
+        "why": str(why)[:300],
+        "python": _PYTHON,
+        "from": origin,
+    }
+
+
+def _judge_discovered(blocked, files, guard):
+    """What a pytest on this image registers that is known without the trial:
+    every pytest11 entry point (its distribution folder, that folder's
+    entry_points.txt, its module), the ``-p`` names of the policy, the
+    literal ``pytest_plugins`` of every conftest.py in the agent's trees the
+    manifest lists, and the ``-p`` names in the ``addopts`` of the ini files
+    there (:func:`_image_inis`; an entry point's name stands for its module).
+    The protected runtime's names are left out: the armed guard serves them
+    from there, never from the image."""
+    rows = []
+
+    def runtime(name):
+        return name in _BENCHFLOW_RUNTIME_PLUGINS or (
+            name.partition(".")[0] in _BENCHFLOW_RUNTIME_TOP
+        )
+
+    try:
+        try:
+            found = registrations()
+        except ImportError:
+            found = _scanned_registrations()
+    except Exception as exc:
+        kind = "rejected" if isinstance(exc, _CONTENT_ERRORS) else "guard_error"
+        why = (
+            "pytest11 entry points cannot be read: "
+            + type(exc).__name__
+            + ": "
+            + str(exc)
+        )
+        rows.append(
+            {
+                "module": "pytest11",
+                "kind": kind,
+                "why": why[:300],
+                "python": _PYTHON,
+                "from": "entry_point",
+            }
+        )
+        found = []
+    counts = {}
+    for ep, _ in found:
+        counts[ep.name] = counts.get(ep.name, 0) + 1
+    for ep, registration in found:
+        origin = "entry_point:" + ep.name
+        module = ep.value.split(":")[0].strip()
+        if runtime(ep.name) or runtime(module):
+            continue
+        if counts[ep.name] != 1:
+            why = str(counts[ep.name]) + " pytest11 entry points are named " + ep.name
+            rows.append(
+                {
+                    "module": module,
+                    "kind": "rejected",
+                    "why": why,
+                    "python": _PYTHON,
+                    "from": origin,
+                }
+            )
+            continue
+        if registration is None:
+            why = "the entry point " + ep.name + " names no distribution folder"
+            rows.append(
+                {
+                    "module": module,
+                    "kind": "rejected",
+                    "why": why,
+                    "python": _PYTHON,
+                    "from": origin,
+                }
+            )
+            continue
+        folder = os.path.abspath(str(registration))
+        for path in (folder, os.path.join(folder, "entry_points.txt")):
+            rows.append(_judged("path", path, _judge_path, blocked, origin))
+        rows.append(_judged("module", module, _judge_module, blocked, origin))
+    for name in _BENCHFLOW_REQUESTED:
+        if name != guard and not runtime(name):
+            rows.append(_judged("module", name, _judge_module, blocked, "requested"))
+    for conftest in sorted(files or {}):
+        if os.path.basename(conftest) != "conftest.py" or not any(
+            under(conftest, prefix) for prefix in blocked
+        ):
+            continue
+        for name in _conftest_plugins(conftest):
+            if not runtime(name):
+                rows.append(
+                    _judged(
+                        "module", name, _judge_module, blocked, "conftest:" + conftest
+                    )
+                )
+    aliases = {
+        ep.name: ep.value.split(":")[0].strip()
+        for ep, _ in found
+        if counts[ep.name] == 1
+    }
+    for ini in _image_inis(blocked, files):
+        try:
+            names = _ini_plugins(ini)
+        except Exception as exc:
+            why = str(_guard_error(exc, ini))[:300]
+            rows.append(
+                {
+                    "path": ini,
+                    "kind": "guard_error",
+                    "why": why,
+                    "python": _PYTHON,
+                    "from": "ini:" + ini,
+                }
+            )
+            continue
+        for name in names:
+            if name != guard and not runtime(name):
+                module = aliases.get(name, name)
+                rows.append(
+                    _judged("module", module, _judge_module, blocked, "ini:" + ini)
+                )
+    return rows
+
+
+_INI_NAMES = ("pytest.ini", ".pytest.ini", "tox.ini", "setup.cfg", "pyproject.toml")
+
+
+def _image_inis(blocked, files):
+    """The ini files in the agent's trees pytest could take options from:
+    each the manifest lists, then each at the top of a tree."""
+    found = [
+        path
+        for path in sorted(files or {})
+        if os.path.basename(path) in _INI_NAMES
+        and any(under(path, prefix) for prefix in blocked)
+    ]
+    for prefix in blocked:
+        for name in _INI_NAMES:
+            path = os.path.join(prefix, name)
+            if path not in found and os.path.isfile(path):
+                found.append(path)
+    return found
+
+
+def _ini_plugins(path):
+    """The plugins an ini file's ``addopts`` loads with ``-p NAME`` or
+    ``-pNAME`` (never ``-p no:NAME``): ``[pytest]`` in pytest.ini,
+    .pytest.ini and tox.ini, ``[tool:pytest]`` in setup.cfg,
+    ``[tool.pytest.ini_options]`` in pyproject.toml. Read, never run; a file
+    that cannot be read names none."""
+    configparser = _stdlib_import("configparser")
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read().decode("utf-8")
+        if path.endswith(".toml"):
+            value = _toml_addopts(text)
+        else:
+            parser = configparser.ConfigParser(interpolation=None)
+            parser.read_string(text, path)
+            section = "tool:pytest" if path.endswith("setup.cfg") else "pytest"
+            value = parser.get(section, "addopts", fallback="")
+        if isinstance(value, str):
+            args = shlex.split(value)
+        elif isinstance(value, list):
+            args = [arg for arg in value if isinstance(arg, str)]
+        else:
+            args = []
+    except (configparser.Error, AttributeError, TypeError, *_CONTENT_ERRORS):
+        return []
+    names = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == "-p" and i < len(args):
+            name = args[i]
+            i += 1
+        elif arg.startswith("-p") and len(arg) > 2:
+            name = arg[2:]
+        else:
+            continue
+        if not name.startswith("no:"):
+            names.append(name)
+    return names
+
+
+def _toml_addopts(text):
+    """``addopts`` in pyproject.toml's ``[tool.pytest.ini_options]``: through
+    tomllib where this Python has it, else read from that table as a string
+    or an array of strings that Python's own literals spell the same way."""
+    try:
+        tomllib = _stdlib_import("tomllib")
+    except ImportError:
+        tomllib = None
+    if tomllib is not None:
+        table = tomllib.loads(text).get("tool", {}).get("pytest", {})
+        return table.get("ini_options", {}).get("addopts", "")
+    ast = _stdlib_import("ast")
+    lines = text.splitlines()
+    table = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]") and "=" not in stripped:
+            table = stripped.strip("[]").strip()
+            continue
+        key, equals, value = stripped.partition("=")
+        if table != "tool.pytest.ini_options" or not equals or key.strip() != "addopts":
+            continue
+        value = value.strip()
+        j = i
+        while value.count("[") > value.count("]") and j + 1 < len(lines):
+            j += 1
+            value += " " + lines[j].strip()
+        return ast.literal_eval(value)
+    return ""
+
+
+def _judge_main():
+    """``--judge``: the request ``{"paths": [...], "modules": [...],
+    "manifest": <the host's image manifest, JSON text or null>}`` from stdin;
+    one JSON list on stdout, a row per item asked for and per item of
+    :func:`_judge_discovered`, then exit 0. Each row: ``"path"`` or
+    ``"module"``, ``"kind"`` (``trusted``, ``rejected``, ``guard_error`` or
+    ``absent``), ``"why"``, ``"python"`` and ``"from"`` (``request``,
+    ``entry_point:<name>``, ``requested``, ``conftest:<path>`` or
+    ``ini:<path>``). It writes
+    no marker and reads no key, record or proof; the manifest is the
+    request's. A request it cannot read exits 2."""
+    global _BENCHFLOW_MARKERS, _BENCHFLOW_KEY_FILE, _BENCHFLOW_RECORD
+    global _BENCHFLOW_INPUT_PROOF, _BENCHFLOW_WORKSPACE, _BENCHFLOW_SNAPSHOT
+    guard = os.path.basename(_BENCHFLOW_MARKERS)
+    try:
+        request = json.loads(sys.stdin.read())
+        paths = request.get("paths") or []
+        modules = request.get("modules") or []
+        listed = request.get("manifest")
+        if isinstance(listed, str):
+            listed = json.loads(listed)
+        files = None if listed is None else _manifest_files(listed)
+        if listed is not None and files is None:
+            raise ValueError("the manifest is not BenchFlow's version 1")
+        if not (isinstance(paths, list) and isinstance(modules, list)) or not all(
+            isinstance(item, str) for item in paths + modules
+        ):
+            raise ValueError("paths and modules must be lists of strings")
+    except (KeyError, AttributeError, TypeError, *_CONTENT_ERRORS) as exc:
+        sys.stderr.write(
+            "the plugin guard's judge refuses its request: "
+            + type(exc).__name__
+            + ": "
+            + str(exc)
+            + "\n"
+        )
+        raise SystemExit(2) from exc
+    _BENCHFLOW_MARKERS = _BENCHFLOW_KEY_FILE = _BENCHFLOW_RECORD = ""
+    _BENCHFLOW_INPUT_PROOF = ""
+    _BENCHFLOW_WORKSPACE = _BENCHFLOW_SNAPSHOT = ""
+    _MANIFEST[:] = [files]
+    _JUDGE_ARM[:] = [time.time()]
+    try:
+        origin = str(getattr(PathFinder.find_spec("_pytest"), "origin", "") or "")
+    except Exception:
+        origin = ""
+    _JUDGE_PYTEST[:] = [
+        os.path.dirname(os.path.realpath(origin)) if origin.startswith("/") else ""
+    ]
     blocked = tuple(
         candidate
-        for path in prefixes
+        for path in _BENCHFLOW_BLOCKED
         for candidate in (os.path.abspath(path), os.path.realpath(path))
     )
-    try:
-        requested = json.loads(sys.argv[2]) if len(sys.argv) > 2 else []
-        # argv[3]: the policy the armed guard gets from hardening.
-        policy = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
-        _BENCHFLOW_OWNERSHIP = bool(policy.get("ownership", True))
-        if "_bf_paths" in globals():
-            pythonpath = policy.get("pythonpath")
-            if pythonpath is None:
-                pythonpath = sys.argv[4] if len(sys.argv) > 4 else ""
-            # integ's policy carries the trusted PYTHONPATH as a list of
-            # entries, PT's as one string; both are data, never sys.path.
-            entries = (
-                [p for p in pythonpath if isinstance(p, str)]
-                if isinstance(pythonpath, list)
-                else [p for p in pythonpath.split(":") if p]
-            )
-            # The pre-agent search path of the Python test.sh will run (the
-            # first on the verifier's PATH with a record), else root's
-            # python3's (PT-R13-A-2).
-            recorded = globals()["_bf_paths"]
-            if "verifier_path" in policy and "_bf_paths_for" in globals():
-                recorded = globals()["_bf_paths_for"](policy["verifier_path"])
-            _BENCHFLOW_SEARCH_PATH = list(dict.fromkeys(entries + recorded["path"]))
-        elif "pythonpath" in policy:
-            # Without PT's pre-agent record (no protected kit), integ's rule:
-            # the verifier's PYTHONPATH entries first, as in its interpreter;
-            # this interpreter's own sys.path stays as -I left it.
-            _BENCHFLOW_SEARCH_PATH = [
-                entry for entry in policy["pythonpath"] if entry.startswith("/")
-            ] + sys.path
-        if policy.get("agent_gids") is not None:
-            _BENCHFLOW_AGENT_GIDS = tuple(int(g) for g in policy["agent_gids"])
-        print(
-            json.dumps(discover(blocked, requested, ignore_blocked_registrations=True))
+    rows = [_judged("path", path, _judge_path, blocked, "request") for path in paths]
+    rows += [
+        _judged("module", name, _judge_module, blocked, "request") for name in modules
+    ]
+    rows += _judge_discovered(blocked, files, guard)
+    sys.stdout.write(json.dumps(rows) + "\n")
+    sys.stdout.flush()
+
+
+# <<< judge
+
+
+if __name__ == "__main__":
+    # ``--judge`` is the host's judge source's: its last lines judge, after
+    # its policy (lockdown.pytest_plugin_guard_judge_source).
+    if sys.argv[1:2] != ["--judge"]:
+        prefixes = json.loads(sys.argv[1])
+        blocked = tuple(
+            candidate
+            for path in prefixes
+            for candidate in (os.path.abspath(path), os.path.realpath(path))
         )
-    except Exception as exc:
-        print(json.dumps({"error": str(exc)}), file=sys.stderr)
-        sys.exit(1)
+        try:
+            requested = json.loads(sys.argv[2]) if len(sys.argv) > 2 else []
+            # argv[3]: the policy the armed guard gets from hardening.
+            policy = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+            _BENCHFLOW_OWNERSHIP = bool(policy.get("ownership", True))
+            if "_bf_paths" in globals():
+                pythonpath = policy.get("pythonpath")
+                if pythonpath is None:
+                    pythonpath = sys.argv[4] if len(sys.argv) > 4 else ""
+                # integ's policy carries the trusted PYTHONPATH as a list of
+                # entries, PT's as one string; both are data, never sys.path.
+                entries = (
+                    [p for p in pythonpath if isinstance(p, str)]
+                    if isinstance(pythonpath, list)
+                    else [p for p in pythonpath.split(":") if p]
+                )
+                # The pre-agent search path of the Python test.sh will run (the
+                # first on the verifier's PATH with a record), else root's
+                # python3's (PT-R13-A-2).
+                recorded = globals()["_bf_paths"]
+                if "verifier_path" in policy and "_bf_paths_for" in globals():
+                    recorded = globals()["_bf_paths_for"](policy["verifier_path"])
+                _BENCHFLOW_SEARCH_PATH = list(dict.fromkeys(entries + recorded["path"]))
+            elif "pythonpath" in policy:
+                # Without PT's pre-agent record (no protected kit), integ's rule:
+                # the verifier's PYTHONPATH entries first, as in its interpreter;
+                # this interpreter's own sys.path stays as -I left it.
+                _BENCHFLOW_SEARCH_PATH = [
+                    entry for entry in policy["pythonpath"] if entry.startswith("/")
+                ] + sys.path
+            if policy.get("agent_gids") is not None:
+                _BENCHFLOW_AGENT_GIDS = tuple(int(g) for g in policy["agent_gids"])
+            print(
+                json.dumps(
+                    discover(blocked, requested, ignore_blocked_registrations=True)
+                )
+            )
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            sys.exit(1)

@@ -9,7 +9,7 @@ from benchflow.traces.models import ParsedTrace, ToolCall, TraceStep
 
 
 def test_tasks_generate_help_uses_long_options_only() -> None:
-    """Guards ENG-96: task-generation help stays on long options."""
+    """task-generation help stays on long options."""
     result = CliRunner().invoke(app, ["tasks", "generate", "--help"])
 
     assert result.exit_code == 0
@@ -37,7 +37,7 @@ def test_tasks_generate_help_uses_long_options_only() -> None:
 def test_tasks_generate_rejects_removed_short_options(
     alias: str, value: str, tmp_path: Path
 ) -> None:
-    """Guards ENG-96: removed task-generation short options stay rejected."""
+    """removed task-generation short options stay rejected."""
     result = CliRunner().invoke(
         app,
         [

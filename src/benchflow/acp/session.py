@@ -193,6 +193,20 @@ def _without_long_strings(value: object, limit: int) -> object:
     return value
 
 
+# pi-acp's bash snapshot is Pi's output tail, at most this window (Pi 1.0.0's
+# truncate DEFAULT_MAX_LINES / DEFAULT_MAX_BYTES); Pi's final text adds a
+# truncation notice and the exit status, a few lines and bytes more.
+_PI_WINDOW_LINES = 2000
+_PI_WINDOW_BYTES = 50 * 1024
+_PI_NOTICE_LINES = 4
+_PI_NOTICE_BYTES = 1024
+
+
+def _line_count(text: str) -> int:
+    """Lines as Pi counts them: a trailing newline opens none."""
+    return text.count("\n") + (0 if not text or text.endswith("\n") else 1)
+
+
 class _RecordedOutputState:
     """Compare serialized output without joining the growing stream per update.
 
@@ -399,12 +413,39 @@ class ToolCallRecord:
         if not isinstance(meta, dict):
             return
         chunk = meta.get("terminal_output_delta")
+        snapshot = meta.get("terminal_output")
         if isinstance(chunk, dict) and isinstance(chunk.get("data"), str):
             self._terminal_output.append(chunk["data"])
             self._terminal_output_chars += len(chunk["data"])
+        elif isinstance(snapshot, dict) and isinstance(snapshot.get("data"), str):
+            self._absorb_snapshot_delta(snapshot["data"], "terminal_exit" in meta)
         terminal_exit = meta.get("terminal_exit")
         if isinstance(terminal_exit, dict):
             self._terminal_exit = terminal_exit
+
+    def _absorb_snapshot_delta(self, data: str, final: bool) -> None:
+        """Fold one pi-acp ``_meta.terminal_output`` chunk (Zed's name).
+
+        pi-acp 0.0.34 sends the new part of each bash snapshot when it extends
+        the last one, else the whole snapshot; past Pi's window the snapshot
+        drops lines at its head and so arrives whole. A chunk that takes the
+        text past the window (plus Pi's notices on the final update) replaces
+        it, any other is appended, so the record ends as Pi's final text, the
+        one its model read. A replacement is a new list, never the old one
+        emptied: :class:`_RecordedOutputState` reads the list as append-only.
+        """
+        joined = "".join(self._terminal_output) + data
+        lines = _PI_WINDOW_LINES + (_PI_NOTICE_LINES if final else 0)
+        size = _PI_WINDOW_BYTES + (_PI_NOTICE_BYTES if final else 0)
+        if (
+            _line_count(joined) <= lines
+            and len(joined.encode("utf-8", "surrogatepass")) <= size
+        ):
+            self._terminal_output.append(data)
+            self._terminal_output_chars += len(data)
+        else:
+            self._terminal_output = [data]
+            self._terminal_output_chars = len(data)
 
     def recorded_state(self) -> tuple:
         """The mutable fields a trajectory serializes, for change detection."""

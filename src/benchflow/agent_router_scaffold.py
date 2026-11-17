@@ -190,7 +190,13 @@ async def main() -> None:
     job = Evaluation.from_yaml(str(_HERE / "{{NAME}}.yaml"))
     job._tasks_dir = tasks_dir  # type: ignore[attr-defined]
     result = await job.run()
-    print(f"Score: {result.passed}/{result.total} ({result.score:.1%})")
+    from benchflow._utils.scoring import result_unscored_note
+
+    note = result_unscored_note(result)
+    print(
+        f"Score: {result.passed}/{result.total} "
+        f"({result.score:.1%}{'; ' + note if note else ''})"
+    )
 
 
 if __name__ == "__main__":

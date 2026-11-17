@@ -76,6 +76,13 @@
           "kind": "guide"
         },
         {
+          "path": "evaluate/hosted-evals",
+          "title": "Hosted evals",
+          "job": "Run a benchmark on BenchFlow's servers instead of your machine, follow it, and fetch its rewards and trajectories.",
+          "since": null,
+          "kind": "guide"
+        },
+        {
           "path": "evaluate/read-results",
           "title": "Read the results",
           "job": "Read a job's score, each trial's outcome and reward, what the agent did and what it cost, from the shell, the browser or Python.",

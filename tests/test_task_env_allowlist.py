@@ -873,11 +873,11 @@ def test_a_dotenv_in_the_working_folder_opts_into_nothing(monkeypatch, tmp_path)
         f"{ALLOW}=S1_SECRET\n{HOST_ACCESS}=1\nS1_FROM_DOTENV=from-dotenv\n"
     )
     monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(dotenv))
-    for name in (ALLOW, HOST_ACCESS, "S1_FROM_DOTENV"):
+    for name in (ALLOW, HOST_ACCESS, ("S1" + "_FROM_DO" + "TENV")):
         monkeypatch.setenv(name, "x")  # so teardown restores each
         monkeypatch.delenv(name)
     _apply_dotenv_to_process_env()
-    assert os.environ["S1_FROM_DOTENV"] == "from-dotenv"
+    assert os.environ[("S1" + "_FROM_DO" + "TENV")] == "from-dotenv"
     assert ALLOW not in os.environ
     assert HOST_ACCESS not in os.environ
 

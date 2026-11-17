@@ -94,7 +94,10 @@ async def test_a_refused_model_names_the_offered_ones_and_is_not_retried(tmp_pat
 
 async def test_a_timeout_is_not_called_a_refusal(tmp_path):
     acp = _acp(TimeoutError())
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"Failed to set ACP model config option 'model'='claude-sonnet-9' for agent 'claude-agent-acp': $",
+    ) as caught:
         await _connect(tmp_path, acp, "claude-sonnet-9")
     assert not isinstance(caught.value, AgentModelNotOfferedError)
     assert "Failed to set ACP model config option" in str(caught.value)
@@ -128,7 +131,10 @@ async def test_other_config_errors_stay_retryable(tmp_path, error, model):
     """Review finding: every -32603 on the model option became a permanent,
     never retried agent_model failure that also trips the circuit breaker."""
     acp = _acp(error)
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"Failed to set ACP model config option 'model'=.* ACP error -32603: Internal error",
+    ) as caught:
         await _connect(tmp_path, acp, model)
     assert not isinstance(caught.value, AgentModelNotOfferedError)
     assert RetryConfig().should_retry(str(caught.value)) is True

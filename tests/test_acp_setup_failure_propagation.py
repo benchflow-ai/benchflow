@@ -222,12 +222,18 @@ async def test_initialize_timeout_is_transport_failure_not_agent_timeout(
     mock_acp.close.assert_awaited()
 
 
-async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) -> None:
-    """Guards PR #921: bootstrap first, then fail-closed egress isolation."""
+async def test_no_web_firewall_runs_before_the_agent_connects(tmp_path) -> None:
+    """Fail-closed egress isolation first, then the agent's bootstrap: the
+    firewall holds the agent from its launch. PR #921 had moved it
+    after session/new, which left the agent's process on the network until
+    then."""
     from benchflow.acp.runtime import connect_acp
 
     events: list[str] = []
     mock_acp = _stock_acp_mock()
+
+    async def connect(*args, **kwargs):
+        events.append("connect")
 
     async def session_new(*args, **kwargs):
         events.append("session_new")
@@ -236,6 +242,7 @@ async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) ->
     async def enforce(*args, **kwargs):
         events.append("firewall")
 
+    mock_acp.connect = AsyncMock(side_effect=connect)
     mock_acp.session_new = AsyncMock(side_effect=session_new)
     mock_env = AsyncMock()
 
@@ -263,7 +270,7 @@ async def test_no_web_firewall_runs_after_session_new_before_return(tmp_path) ->
             agent_cwd="/app",
         )
 
-    assert events == ["session_new", "firewall"]
+    assert events == ["firewall", "connect", "session_new"]
     mock_firewall.assert_awaited_once_with(
         mock_env,
         "agent",

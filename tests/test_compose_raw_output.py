@@ -151,7 +151,9 @@ async def test_diagnostics_still_redact_at_display_boundary(
         "cli": env._docker_cli,
     }[runner]
     if check:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError, match=r"failed for '\*\*\*' at remote-docker\[ssh\]"
+        ) as caught:
             await method(["build"], raw_output=raw_output)
         assert "worker" not in str(caught.value)
         assert "builder.example.test" not in str(caught.value)

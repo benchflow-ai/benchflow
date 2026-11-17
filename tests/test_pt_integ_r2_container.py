@@ -27,6 +27,7 @@ from tests.test_pt_r16_hooks_container import (
     _dx,
     _marks,
     _plant,
+    _remove,
     _setup,
 )
 
@@ -45,7 +46,9 @@ RUN useradd -m -u 1000 agent && chown agent /app \\
 
 @pytest.fixture(scope="module")
 def app_pythonpath(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-integ-r2-app-pythonpath:test", APP_PYTHONPATH)
+    tag = _build(tmp_path_factory, "pt-integ-r2-app-pythonpath:test", APP_PYTHONPATH)
+    yield tag
+    _remove(tag)
 
 
 def _root_python(name: str) -> str:

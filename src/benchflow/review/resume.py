@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 from types import EllipsisType
 from typing import Any
 
-from benchflow._utils.task_authoring import task_digest
+from benchflow._utils.task_authoring import task_digest, tasks_root_entry_folder
 from benchflow.budget import JOB_BUDGET_RECORDS, Budget, BudgetGuard
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import scoring_from_result
@@ -41,15 +41,24 @@ def _read_object(path: Path) -> dict[str, Any]:
 
 
 def _trusted_task(rollout_dir: Path, solver: dict[str, Any], tasks_root: Path) -> Path:
-    """Resolve only inside an operator-supplied root and pin every task file."""
+    """Resolve only inside an operator-supplied root and pin every task file.
+
+    An entry of the root is taken by ``bench run``'s rule, through
+    ``tasks_root_entry_folder`` as ``bench review --tasks-root`` takes it: a
+    folder, or a link to a folder of the same name, resolved once and judged
+    again on the folder used, whose files the digest then pins.
+    """
     recorded = solver.get("task_name")
     if not isinstance(recorded, str) or not recorded:
         raise ReviewResumeError("solver.json has no task_name")
     name = PurePosixPath(recorded.replace("\\", "/")).name
     root = tasks_root.resolve(strict=True)
-    candidate = root if root.name == name else (root / name).resolve()
-    if not candidate.is_relative_to(root) or not candidate.is_dir():
-        raise ReviewResumeError(f"Task {name!r} is not inside --tasks-root {root}")
+
+    candidate, refusal = tasks_root_entry_folder(root, name)
+    if candidate is None:
+        raise ReviewResumeError(
+            f"Task {name!r} in --tasks-root {root} is refused: {refusal}"
+        )
     expected = solver.get("task_digest")
     if not isinstance(expected, str) or not expected.startswith("sha256:"):
         raise ReviewResumeError("solver.json has no valid task_digest")
@@ -169,6 +178,23 @@ async def resume_review(
 
 
 @contextmanager
+def _rollout_pinned(path: Path) -> Iterator[None]:
+    """Hold *path* pinned for the block, as a run's ``RolloutPaths`` does.
+
+    BenchFlow reads and writes below a pinned root without crossing a mount,
+    and pins ``/``, the cwd and TMPDIR at import: without this pin a rollout
+    on another mount (jobs on ``/mnt/docker``) was refused as "another mount"
+    when the review read its evidence."""
+    from benchflow._utils.reachable_write import pin_destination
+
+    held = pin_destination(path)
+    try:
+        yield
+    finally:
+        del held
+
+
+@contextmanager
 def _scoring_budget(
     job_dir: Path, supplied: BudgetGuard | None | EllipsisType
 ) -> Iterator[BudgetGuard | None]:
@@ -226,7 +252,7 @@ async def _resume_review(
     )
     from benchflow.task import Task
 
-    with scoring_lock(path):
+    with _rollout_pinned(path), scoring_lock(path):
         current_path = path / "result.json"
         if current_path.is_file():
             current = _read_object(current_path)
@@ -309,7 +335,9 @@ async def resume_pending_reviews(
             )
         return
 
-    best: dict[str, tuple[tuple[bool, float, str], Path]] = {}
+    from benchflow._utils.attempt_decision import final_attempt
+
+    found: dict[str, list[tuple[tuple[bool, float, str], Path]]] = {}
     for snapshot in job_dir.glob("*/solver.json"):
         solver = _read_object(snapshot)
         task_name = solver.get("task_name")
@@ -338,9 +366,21 @@ async def resume_pending_reviews(
                 result_payload.get("verifier_error")
             )
         rank = (complete, snapshot.stat().st_mtime, str(snapshot))
-        previous = best.get(task_name)
-        if previous is None or rank > previous[0]:
-            best[task_name] = (rank, snapshot.parent)
+        found.setdefault(task_name, []).append((rank, snapshot.parent))
+    # The attempt the run kept, never one it retried; with no record of
+    # either, a completed score, then the newest.
+    best = {
+        task_name: pick
+        for task_name, attempts in found.items()
+        if (
+            pick := final_attempt(
+                attempts,
+                folder=lambda attempt: attempt[1],
+                earlier_rule=lambda left: max(left, key=lambda attempt: attempt[0]),
+            )
+        )
+        is not None
+    }
 
     async def score(path: Path) -> None:
         try:

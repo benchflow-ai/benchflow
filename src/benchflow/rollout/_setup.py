@@ -33,7 +33,8 @@ import re
 import shlex
 import stat
 import tempfile
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -43,7 +44,11 @@ from uuid import uuid4
 from benchflow._utils import kill_record as kill_record_module
 from benchflow._utils import timing_spans
 from benchflow._utils.reachable_write import ReachablePath, destination
-from benchflow._utils.scoring import NO_USABLE_REWARD
+from benchflow._utils.scoring import (
+    NO_USABLE_REWARD,
+    PLUGIN_GUARD_REJECTED,
+    PLUGIN_GUARD_UNSCORED,
+)
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import report_trial_warning
 from benchflow._utils.trusted_path import (
@@ -60,19 +65,25 @@ from benchflow.diagnostics import (
     VerifierTimeoutDiagnostic,
 )
 from benchflow.environment.manifest import EnvironmentManifest, resolve_manifest_image
+from benchflow.integrity.constants import hardens_verifier
 from benchflow.rewards.validation import (
     REWARD_OUT_OF_RANGE,
     RewardOutOfRange,
     declared_reward_range,
+    is_out_of_range_reward,
+    keeps_out_of_range_reward,
     reward_lenient_from_env,
     validate_reward_map,
 )
+from benchflow.rollout import _reward_provenance
+from benchflow.rollout._grading_outcome import Attempt, final_outcome
 from benchflow.rollout._results import _DIAG_TRUNCATE
 from benchflow.sandbox import _inert_bootstrap
 from benchflow.sandbox._compose import docker_daemon_unreachable_reason
 from benchflow.sandbox._exec_merge import kept_default_identity
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox._exec_receipt import receipt_exec
+from benchflow.sandbox._guard_rejudge import rejudge as rejudge_guard_stop
 from benchflow.sandbox._hooks import sandbox_hook
 from benchflow.sandbox._in_order import in_order
 from benchflow.sandbox._locked_path_validation import _validate_locked_path
@@ -88,22 +99,39 @@ from benchflow.sandbox.oracle_egress import (
     disarm_oracle_egress,
     join_group_prefix,
 )
+from benchflow.sandbox.policy_reproof import (
+    NETWORK_POLICY_RECORD,
+)
 from benchflow.sandbox.protocol import (
     EnvironmentStartTimeoutError,
     ExecTimeoutError,
     SandboxStartupError,
+    ended_by_time_limit,
 )
+from benchflow.sandbox.verifier_network import (
+    VERIFIER_LAUNCH_REFUSED_ERROR,
+    VERIFIER_NETWORK_REFUSED,
+    VERIFIER_NETWORK_UNHELD,
+)
+from benchflow.task._document_parse import converted_from_task_toml
 from benchflow.task.verifier_errors import (
+    VERIFIER_TOOLS_REFUSED_ERROR,
+    NetworkPolicyBreachedError,
     PluginGuardLoadError,
     PluginGuardMarkersUnreadableError,
+    PluginGuardRejectedError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
     RewardFileParseError,
     VerifierExecutionError,
     VerifierInfrastructureError,
+    VerifierLaunchRefusedError,
+    VerifierNetworkRefusedError,
+    VerifierNetworkUnheldError,
     VerifierOutputParseError,
     VerifierSetupError,
     VerifierStartUnconfirmedError,
+    VerifierToolsRefusedError,
     verifier_failure_reason,
     verifier_infrastructure_failure,
 )
@@ -307,7 +335,7 @@ def _validate_agent_workdir(workdir: str) -> None:
         raise ValueError("sandbox.workdir must be an absolute non-root path")
 
 
-def trust_workspace_repos_cmd(workspace: str) -> str:
+def trust_workspace_repos_cmd(workspace: str, *, report: bool = False) -> str:
     """Shell that adds the workspace and every git repository in it, and
     nothing else, to the running user's ``safe.directory`` list.
 
@@ -322,12 +350,16 @@ def trust_workspace_repos_cmd(workspace: str) -> str:
     ``*.git`` folder, or a bare folder of any name, known by its ``HEAD``
     file beside ``objects/`` and ``refs/``) is listed. Links are not
     followed. Paths outside the resolved workspace are never added, and a
-    workspace of ``/`` adds only itself. The verifier
-    reads no global git config but its own (``GIT_CONFIG_GLOBAL`` is
-    ``/dev/null``, or for a root verifier an empty file made after the agent
-    stopped) and runs after the workspace's folders are chowned back to
-    root, so it is unaffected. A task's collect hooks get no such trust: they
-    run as the agent's account (``_collect_hooks.agent_account``).
+    workspace of ``/`` adds only itself. In strict the verifier reads no
+    global git config but its own (``GIT_CONFIG_GLOBAL`` is ``/dev/null``,
+    or for a root verifier an empty file made after the agent stopped) and
+    runs after the workspace's folders are chowned back to root, so it needs
+    none of this. In off and audit nothing is chowned back, so BenchFlow runs
+    the same command before test.sh for every agent, not only the oracle
+    (:func:`trust_verifier_workspace_repos`). A task's collect hooks
+    get no such trust: they run as the agent's account
+    (``_collect_hooks.agent_account``). *report* prints each path added
+    (``bf-trusted <path>``), for the trial's record.
     """
     q = shlex.quote(workspace)
     return (
@@ -335,7 +367,9 @@ def trust_workspace_repos_cmd(workspace: str) -> str:
         f"[ -d {q} ] || exit 0; "
         f"ws=$(cd -P {q} && pwd) || exit 0; "
         "trust() { git config --global --get-all safe.directory 2>/dev/null "
-        '| grep -qxF -- "$1" || git config --global --add safe.directory "$1"; }; '
+        '| grep -qxF -- "$1" || { git config --global --add safe.directory "$1"'
+        + (' && echo "bf-trusted $1"' if report else "")
+        + "; }; }; "
         f"trust {q}; "
         '[ "$ws" = / ] && exit 0; '
         'trust "$ws"; '
@@ -349,6 +383,55 @@ def trust_workspace_repos_cmd(workspace: str) -> str:
         'case "$d" in "$ws"/*) trust "$d" ;; esac; '
         "done; exit 0"
     )
+
+
+async def trust_verifier_workspace_repos(
+    env: Any, workspace: str, task: Any
+) -> list[dict[str, Any]]:
+    """In integrity off and audit (the lead's 12:53Z ruling), before
+    test.sh: the sandbox-user grant chowned the workspace to the agent user,
+    so a repository in it (at its root, as SWE-bench's /testbed, or inside
+    it, as TB2's /app/repo) is no longer owned by root, and test.sh's git
+    refuses with "detected dubious ownership". Strict chowns the workspace
+    back; off and audit leave the agent's files as they are, so BenchFlow
+    trusts exactly the paths it handed over again, for every user test.sh
+    may run as (root, and a string ``[verifier] user`` naming another), on
+    the task route test.sh's git reads. Nothing outside the workspace.
+    Returns what it added, for the trial's record."""
+    users = ["root"]
+    declared = getattr(
+        getattr(getattr(task, "config", None), "verifier", None), "user", None
+    )
+    if isinstance(declared, str) and declared not in ("", "root"):
+        users.append(declared)
+    added: list[dict[str, Any]] = []
+    for user in users:
+        try:
+            with as_task_command(env):
+                result = await exec_raw(
+                    env.exec,
+                    trust_workspace_repos_cmd(workspace, report=True),
+                    user=user,
+                    timeout_sec=60,
+                )
+        except Exception:
+            logger.warning(
+                "Trusting the git repositories in %s for %s failed; test.sh's git "
+                "may refuse them as of dubious ownership",
+                workspace,
+                user,
+                exc_info=True,
+            )
+            continue
+        stdout = getattr(result, "stdout", "")
+        paths = [
+            line[len("bf-trusted ") :]
+            for line in (stdout if isinstance(stdout, str) else "").splitlines()
+            if line.startswith("bf-trusted ")
+        ]
+        if paths:
+            added.append({"user": user, "safe_directory": paths})
+    return added
 
 
 async def trust_workspace_repos(env: Any, workspace: str, task: Any) -> None:
@@ -745,6 +828,10 @@ async def _start_env_and_upload(
     task_path: Path,
     timing: dict,
     *,
+    task: Any,
+    agent: str | None,
+    verifier_only: bool = False,
+    agent_uid: dict[str, Any] | None = None,
     skip_start: bool = False,
     on_started: Callable[[], Awaitable[None] | None] | None = None,
     uploads: dict[str, str] | None = None,
@@ -753,6 +840,12 @@ async def _start_env_and_upload(
     image_holds_agent_bytes: bool = False,
 ) -> None:
     """Start environment and upload task files.
+
+    The start is :func:`benchflow.sandbox.service_cover.start_sandbox`'s,
+    under the start holds: *task* is the task the sandbox runs,
+    *agent* what runs in main (``oracle``, ``nop``, a ``script:`` agent, or
+    None for a model agent), *verifier_only* a rollout that only grades,
+    *agent_uid* a model agent's uid rules before main's release (M1).
 
     ``image_holds_agent_bytes``: the image was built with agent-derived bytes
     in it (a learner store's skills baked in), so the sandbox is admitted as
@@ -795,21 +888,28 @@ async def _start_env_and_upload(
             if isinstance(sandbox_config, SandboxConfig)
             else None
         )
+        from benchflow.sandbox.service_cover import start_sandbox
+
         try:
-            if deadline is None:
-                await env.start(force_build=False)
-            else:
-                # A YAML job config's build phase: the whole start is
-                # bounded by one deadline, including image preparation and
-                # sandbox startup.
-                try:
-                    await asyncio.wait_for(env.start(force_build=False), deadline)
-                except TimeoutError as exc:
-                    raise EnvironmentStartTimeoutError(
-                        f"the environment did not start within {deadline:g}s, the "
-                        "environment build budget (environment.build_timeout_sec "
-                        "times the job's build timeout multiplier)"
-                    ) from exc
+            # A YAML job config's build phase bounds the whole start by one
+            # deadline, including image preparation and sandbox startup.
+            try:
+                await start_sandbox(
+                    env,
+                    task,
+                    agent=agent,
+                    verifier_only=verifier_only,
+                    timeout_sec=deadline,
+                    agent_uid=agent_uid,
+                )
+            except TimeoutError as exc:
+                if deadline is None:
+                    raise
+                raise EnvironmentStartTimeoutError(
+                    f"the environment did not start within {deadline:g}s, the "
+                    "environment build budget (environment.build_timeout_sec "
+                    "times the job's build timeout multiplier)"
+                ) from exc
         except SandboxStartupError:
             raise
         except RuntimeError as exc:
@@ -877,6 +977,40 @@ async def _start_env_and_upload(
             )
 
 
+#: The head of the error a start ends with when main stopped right after it.
+MAIN_STOPPED_HEADER = "sandbox startup failed: main stopped right after its release"
+
+
+async def main_stopped_error(env: Any) -> RuntimeError | None:
+    """The error that ends a start whose main stopped right after its
+    release (its image ENTRYPOINT exited: TasksMiner's strict
+    network_lock.sh, exit 4 without NET_ADMIN), or None while main runs.
+    It names the ENTRYPOINT, its exit status and the last lines of its
+    output. The task's image decides it, so it is never retried, and the
+    trial is unscored (sandbox_setup), whatever a later step reported
+    (an install failure, the protected runtime's sealing). Docker
+    sandboxes only (``main_stopped``)."""
+    probe = getattr(type(env), "main_stopped", None)
+    if not callable(probe):
+        return None
+    try:
+        stopped = await probe(env)
+    except Exception:
+        return None
+    if not stopped:
+        return None
+    ran = " ".join(stopped.get("entrypoint") or stopped.get("command") or [])
+    output = " | ".join(stopped.get("output") or []) or "(none)"
+    return RuntimeError(
+        f"{MAIN_STOPPED_HEADER}: its image ENTRYPOINT ({ran[:200] or 'none'}) "
+        f"exited with status {stopped.get('exit_code')}, so the trial has "
+        "nothing to run in. The task's image decides this, so it is not "
+        "retried: its ENTRYPOINT must exec its command and keep running in "
+        "BenchFlow's sandbox, which applies the task's network policy itself. "
+        f"Its last output: {output}"
+    )
+
+
 def oracle_run_user(task: Any) -> str | None:
     """The user name the oracle runs solve.sh as when no sandbox user is
     passed (the rollout passes none): the task's ``[agent].user`` when it is
@@ -908,6 +1042,33 @@ class OracleTimeoutError(TimeoutError):
         super().__init__(
             f"{label} timed out after {timeout_sec:g}s, the task's agent timeout"
         )
+
+
+async def _link_legacy_solution_mount(
+    env: Any, oracle_dir: PurePosixPath, legacy_dir: PurePosixPath
+) -> None:
+    """Alias the legacy ``/solution`` onto the native ``/oracle``.
+
+    ``bench import --remove-legacy`` moves a task.toml task's ``solution/`` to
+    ``oracle/``, which is uploaded to ``/oracle``, while its solve.sh still
+    names ``/solution/...`` (Terminal-Bench 4.1's ``python3
+    /solution/solve.py``). As the verifier's ``/tests``
+    (``Verifier._link_legacy_verifier_mount``), ``/solution`` becomes a link to
+    the oracle folder only when the sandbox has nothing there; best effort.
+    """
+    src, dst = shlex.quote(str(oracle_dir)), shlex.quote(str(legacy_dir))
+    try:
+        result = await exec_raw(
+            env.exec,
+            f"[ -e {dst} ] || [ -L {dst} ] || ln -s {src} {dst}",
+            user="root",
+            timeout_sec=30,
+        )
+    except Exception as e:
+        logger.debug("legacy solution link skipped: %s", e)
+        return
+    if getattr(result, "return_code", 0) not in (0, None):
+        logger.debug("legacy solution link (%s -> %s) failed", legacy_dir, oracle_dir)
 
 
 async def _run_oracle(
@@ -960,6 +1121,34 @@ async def _run_oracle(
     # The account solve.sh runs as below, root when neither names one
     # (keep_services.run_identity, DT2-R9-2).
     await keep_services.prepare_identities(env, task, sandbox_user, inherit=True)
+    offline_held = False
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+    from benchflow.sandbox.service_cover import sandbox_network_mode
+
+    agent_offline_online_sandbox = (
+        sandbox_network_mode(agent_network_sandbox_config(task.config)) == "no-network"
+        and getattr(getattr(task.config, "sandbox", None), "allow_internet", True)
+        is not False
+        and getattr(env, "rules_by_helper", False) is True
+    )
+    if (
+        getattr(getattr(env, "task_env_config", None), "_offline_by_rules", False)
+        is True
+        or agent_offline_online_sandbox
+    ):
+        # An offline task whose main keeps a network for its verifier, or an
+        # [agent] no-network over an online sandbox (S1: a root
+        # oracle was not held): the oracle's turn is offline by every-process
+        # rules.
+        from benchflow.sandbox.verifier_network import arm_offline_agent_phase
+
+        held = await arm_offline_agent_phase(env)
+        offline_held = True
+        if rollout_dir is not None:
+            with contextlib.suppress(OSError):
+                (rollout_dir / "agent-network.json").write_text(
+                    json.dumps(held, sort_keys=True) + "\n"
+                )
     workdir = _configured_task_workdir(task)
     if sandbox_user and sandbox_user == declared_user:
         # The oracle dir is uploaded root-owned; let the declared user run it.
@@ -969,6 +1158,10 @@ async def _run_oracle(
             user="root",
             timeout_sec=30,
         )
+    if task.paths.uses_native_oracle_dir and converted_from_task_toml(task):
+        # Only a task converted from task.toml: its solve.sh still names
+        # /solution. A task.md written as one gets no link.
+        await _link_legacy_solution_mount(env, oracle_dir, sandbox_paths.solution_dir)
     oracle_env: dict[str, str] = {"DEBIAN_FRONTEND": "noninteractive"}
     if task.config.solution.env:
         oracle_env.update(resolve_env_vars(task.config.solution.env))
@@ -985,6 +1178,13 @@ async def _run_oracle(
             ),
         )
     armed = None
+    # An earlier step's rules not yet handed to a verifier (a multi-step task
+    # without one between): out before this turn's go in.
+    pending = getattr(env, "_benchflow_oracle_egress", None)
+    if isinstance(pending, tuple) and len(pending) == 2:
+        with contextlib.suppress(AttributeError):
+            env._benchflow_oracle_egress = None
+        await disarm_oracle_egress(env, *pending)
     if policy is not None:
         with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
             armed = await arm_oracle_egress(env, policy, run_as=sandbox_user)
@@ -1017,7 +1217,17 @@ async def _run_oracle(
     # /logs/agent/oracle.txt nor write the workspace, both the sandbox
     # user's after setup: solve.sh never ran (rc 2, no output).
     exec_kwargs["user"] = "root"
+    # A root oracle under a policy: its processes are stopped when solve.sh
+    # ends, every process of main's container started from this tick on
+    # (RCI on 011d84c9f).
+    stop_from = (
+        await _oracle_start_tick(env)
+        if (armed is not None or offline_held)
+        and (not sandbox_user or sandbox_user == "root")
+        else None
+    )
     admit(env, "main", IngressKind.ORACLE_LAUNCH)
+    started = time.monotonic()
     try:
         if keep_services.kept_by_identity(task) is not None:
             # A service solve.sh starts without a redirect of its own inherits
@@ -1047,14 +1257,26 @@ async def _run_oracle(
                 result = await exec_raw(
                     env.exec, f"{cmd} > /logs/agent/oracle.txt 2>&1", **exec_kwargs
                 )
+        if ended_by_time_limit(result, timeout, time.monotonic() - started):
+            # Daytona and Modal answer the same overrun with an exit status.
+            raise ExecTimeoutError(timeout)
     except ExecTimeoutError:
         # solve.sh ran out of the agent budget it was given: the agent
         # timeout, never retried, not a sandbox failure (DF-p5-cli-craft-1).
         raise OracleTimeoutError(oracle_command_label, timeout) from None
     finally:
         if armed is not None:
-            with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
-                await disarm_oracle_egress(env, armed, rollout_dir)
+            if getattr(armed, "match", None) == "every process":
+                # The rules stay until the verifier's network replaces them,
+                # under the handover's hold (lockdown._arm_verifier_network):
+                # main is never unheld between the turn and test.sh.
+                with contextlib.suppress(AttributeError):
+                    env._benchflow_oracle_egress = (armed, rollout_dir)
+            else:
+                with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
+                    await disarm_oracle_egress(env, armed, rollout_dir)
+        if stop_from is not None:
+            await _stop_oracle_processes(env, task, stop_from, rollout_dir)
     if result.return_code != 0:
         logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
     preview = await exec_raw(
@@ -1567,6 +1789,137 @@ def _write_host_file(path: ReachablePath, text: str) -> None:
     path.write(payload)
 
 
+async def _oracle_start_tick(env: Any) -> int | None:
+    """The kernel's clock tick (1/100 s since boot, as /proc's start times
+    count) right before solve.sh starts; None where the sandbox has no
+    /proc/uptime to read (the stop is then recorded as not made)."""
+    result = await exec_raw(
+        env.exec,
+        'read -r bf_up bf_rest < /proc/uptime; echo "BF oracle-start $bf_up"',
+        user="root",
+        timeout_sec=30,
+    )
+    found = re.search(
+        r"BF oracle-start (\d+)\.(\d\d)", getattr(result, "stdout", "") or ""
+    )
+    if not found:
+        logger.warning(
+            "The oracle's start could not be read from /proc/uptime: the "
+            "processes solve.sh leaves will not be stopped when it ends"
+        )
+        return None
+    return int(found[1]) * 100 + int(found[2])
+
+
+# Root's script (builtins only, no program of the image): freeze, then kill,
+# every process of main's container that started at or after __T0__ (clock
+# ticks since boot); never this exec's own tree (the highest ancestor of $$
+# that started after __T0__, and everything under it: the receipt's
+# subshells and encoder), zombies, or another container's processes (another
+# cgroup: a sidecar sharing main's pid namespace, a host's); then report what
+# was killed and what is left.
+_STOP_ORACLE_PROCS = r"""t0=__T0__; rp=') '
+read -r bf_cg < /proc/$$/cgroup
+top=$$; p=$$; n=0
+while [ "$n" -lt 64 ]; do
+  line=; read -r line < /proc/$p/stat 2>/dev/null || break
+  set -- ${line##*"$rp"}
+  [ "${20:-0}" -ge "$t0" ] 2>/dev/null && top=$p
+  p=$2
+  case $p in ''|0) break;; esac
+  n=$((n + 1))
+done
+bf_ours() {
+  q=$1; m=0
+  while [ "$m" -lt 64 ]; do
+    [ "$q" = "$top" ] && return 0
+    line=; read -r line < /proc/$q/stat 2>/dev/null || return 1
+    set -- ${line##*"$rp"}; q=$2
+    case $q in ''|0) return 1;; esac
+    m=$((m + 1))
+  done
+  return 1
+}
+bf_cands() {
+  c=
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    bf_ours "$p" && continue
+    cg=; read -r cg < "$d/cgroup" 2>/dev/null || continue
+    [ "$cg" = "$bf_cg" ] || continue
+    line=; read -r line < "$d/stat" 2>/dev/null || continue
+    set -- ${line##*"$rp"}
+    [ "$1" = Z ] && continue
+    [ "${20:-0}" -ge "$t0" ] 2>/dev/null && c="$c $p"
+  done
+}
+frozen=" "; i=0
+while [ "$i" -lt 64 ]; do
+  bf_cands; new=
+  for p in $c; do case $frozen in *" $p "*) ;; *) new="$new $p";; esac; done
+  [ -z "$new" ] && break
+  kill -s STOP $new 2>/dev/null
+  frozen="$frozen${new# } "; i=$((i + 1))
+done
+bf_cands; killed=0; for p in $c; do killed=$((killed + 1)); done
+i=0
+while [ -n "$c" ] && [ "$i" -lt 100 ]; do
+  kill -s KILL $c 2>/dev/null; i=$((i + 1)); bf_cands
+done
+printf 'BF oracle-stop killed=%s left=%s\n' "$killed" "${c# }"
+"""
+
+
+async def _stop_oracle_processes(
+    env: Any, task: Any, tick: int, rollout_dir: Path | None
+) -> None:
+    """Stop every process a root oracle's solve.sh left in main (setsid'd and
+    double-forked daemons included): main's container's processes started
+    from *tick* on, never a sidecar's. A task that keeps the services
+    solve.sh starts (``x-keep-services``) keeps them. The record goes to
+    ``oracle-processes.json``; a process left alive fails the trial."""
+    from benchflow.task import keep_services
+
+    if keep_services.kept_by_identity(task) is not None:
+        record: dict[str, Any] = {
+            "stopped": False,
+            "why": "the task keeps the services solve.sh starts (x-keep-services)",
+        }
+        left: list[str] = []
+    else:
+        # The receipt exec itself (lockdown's _read_exec), never lockdown: the
+        # rollout kernel imports no concrete plane.
+        from benchflow.sandbox._exec_receipt import receipt_exec
+
+        result = await receipt_exec(
+            env,
+            _STOP_ORACLE_PROCS.replace("__T0__", str(int(tick))),
+            user="root",
+            timeout_sec=120,
+        )
+        found = re.search(
+            r"BF oracle-stop killed=(\d+) left=([0-9 ]*)",
+            getattr(result, "stdout", "") or "",
+        )
+        if not found:
+            raise RuntimeError(
+                "the processes solve.sh left in main could not be stopped (no "
+                "answer from the stop)"
+            )
+        left = found[2].split()
+        record = {"stopped": True, "killed": int(found[1]), "left": left}
+    if rollout_dir is not None:
+        with contextlib.suppress(OSError):
+            (Path(rollout_dir) / "oracle-processes.json").write_text(
+                json.dumps(record, sort_keys=True) + "\n"
+            )
+    if left:
+        raise RuntimeError(
+            "processes solve.sh left in main survived the stop after its turn "
+            f"(pids {' '.join(left)})"
+        )
+
+
 async def _publish_trajectory_for_verifier(
     env,
     trajectory: list[dict],
@@ -1647,7 +2000,7 @@ async def _publish_trajectory_for_verifier(
             # before the stage mkdir needs it.
             if await _publish_step(
                 env,
-                f"mkdir -p /logs/agent; mkdir -m 755 {stage}{owner}",
+                _publish_stage_command(env, stage, owner),
                 "root",
                 failures=failures,
             ):
@@ -1689,7 +2042,9 @@ async def _publish_trajectory_for_verifier(
             for tmp_path in tmp_paths.values():
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(tmp_path)
-        if await _required_publish_step(env, f"chmod 644 {stage}/*", "root"):
+        if await _required_publish_step(
+            env, _publish_modes_command(env, stage, files), "root"
+        ):
             # Each file on its own: one that cannot be placed (the agent made
             # a folder of its name) does not keep the other from the verifier.
             copy = "; ".join(
@@ -1713,7 +2068,36 @@ async def _publish_trajectory_for_verifier(
         ) from exc
     finally:
         for attempted in stages:
-            await _publish_step(env, f"rm -rf {attempted}", "root")
+            await _publish_step(env, _publish_rm_command(env, attempted), "root")
+
+
+# where bfx is delivered, the publish's root steps after the agent's
+# turn make, set and remove with bfx, not the image's mkdir, chmod and rm.
+def _publish_stage_command(env: Any, stage: str, owner: str) -> str:
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if not bfx_delivered(env):
+        return f"mkdir -p /logs/agent; mkdir -m 755 {stage}{owner}"
+    return (
+        f"{bfx_sh('mkdir', '/logs/agent', parents=True, mode=0o755)}; "
+        f"{bfx_sh('mkdir', stage, mode=0o755)}{owner}"
+    )
+
+
+def _publish_modes_command(env: Any, stage: str, files: Mapping[str, Any]) -> str:
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if not bfx_delivered(env) or not files:
+        return f"chmod 644 {stage}/*"
+    return " && ".join(bfx_sh("chmod", f"{stage}/{name}", mode=0o644) for name in files)
+
+
+def _publish_rm_command(env: Any, stage: str) -> str:
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if not bfx_delivered(env):
+        return f"rm -rf {stage}"
+    return bfx_sh("remove", stage, recursive=True, missing_ok=True)
 
 
 async def _required_publish_step(env: Any, command: str, user: str) -> bool:
@@ -1783,6 +2167,21 @@ async def _verifier_started(env: Any, verifier: Any) -> bool | None:
     path, service = receipt
     quoted = shlex.quote(path)
     abandoned = shlex.quote(f"{path}.abandoned")
+    if getattr(verifier, "agent_processes_alive", False):
+        from benchflow.task._read_back import ReadBackRefused, read_back
+
+        uid = getattr(verifier, "_verifier_uid_read", None)
+        owners = (0, int(uid)) if isinstance(uid, str) and uid.isdigit() else (0,)
+        try:
+            await read_back(
+                env, str(PurePosixPath(path).parent), owners=owners, service=service
+            )
+        except ReadBackRefused as exc:
+            # The receipt's folder is not BenchFlow's own: whether the tests
+            # ended cannot be known (unscored, never retried).
+            raise _TestEndUnknown(
+                f"the start receipt is not read back: {exc}"
+            ) from None
     try:
         probe = await asyncio.wait_for(
             exec_raw(
@@ -1794,7 +2193,9 @@ async def _verifier_started(env: Any, verifier: Any) -> bool | None:
             ),
             timeout=15,
         )
-        return probe.return_code == 0 and probe.stdout.strip() == "started"
+        # Docker's exec gives None for a command that printed nothing, as
+        # the probe of a missing receipt does.
+        return probe.return_code == 0 and (probe.stdout or "").strip() == "started"
     except Exception as exc:
         # A failed probe says nothing about the verifier. Keep waiting and
         # probe again rather than cancelling a verifier that may be running.
@@ -2101,6 +2502,180 @@ async def _end_kept_services(
     _write_kill_record(record_dir, record)
 
 
+def _write_verifier_inputs(
+    env: Any, record_dir: str | Path | None, rollout_paths: Any
+) -> None:
+    """The detector's record, when hardening made one, into the
+    trial's integrity folder (*record_dir*, else the rollout's); it never
+    changes the reward."""
+    record = getattr(env, "_benchflow_verifier_inputs", None)
+    if not isinstance(record, dict):
+        return
+    if record_dir is None:
+        record_dir = getattr(rollout_paths, "rollout_dir", None)
+    if not isinstance(record_dir, (str, Path)):
+        return
+    from benchflow.sandbox._image_manifest import write_detector_record
+
+    try:
+        write_detector_record(record_dir, record)
+    except Exception:
+        logger.debug("verifier-inputs record not written", exc_info=True)
+
+
+async def _remove_output_links(env: Any) -> dict[str, Any]:
+    """Before test.sh: the links the agent made during its turn into the
+    verifier's output folder, removed and flagged in the trial's integrity
+    record and warnings ((c)3); the image's own stay. The check's
+    record (:func:`_verifier_links.remove_turn_links`)."""
+    from benchflow._utils.trial_warnings import report_trial_warning
+    from benchflow.sandbox import _verifier_links
+
+    try:
+        found = await _verifier_links.remove_turn_links(
+            env, timeout_sec=_verifier_links.setup_timeout_sec()
+        )
+    except Exception as exc:
+        logger.warning("the links into /logs/verifier could not be looked for: %s", exc)
+        return {"ran": False, "why": f"the walk failed: {exc}", "links": []}
+    if not found.get("ran"):
+        logger.warning(
+            "the links into /logs/verifier could not all be looked for: %s",
+            found.get("why"),
+        )
+    inputs = getattr(env, "_benchflow_verifier_inputs", None)
+    for row in found.get("links") or ():
+        text = _verifier_links.removed_flag(row)
+        logger.warning(text)
+        report_trial_warning(text)
+        if isinstance(inputs, dict):
+            inputs.setdefault("flags", []).append(
+                {
+                    "where": "links",
+                    "path": row.get("path"),
+                    "kind": "link",
+                    "category": _verifier_links.CATEGORY,
+                    "before": None,
+                    "after": {
+                        key: row[key]
+                        for key in ("target", "resolved", "removed", "error")
+                        if key in row
+                    },
+                    "why": text,
+                }
+            )
+    return found
+
+
+async def _list_turn_processes(env: Any) -> None:
+    """Off's detector does not walk: for a root agent's provenance, the walk
+    after the turn lists the processes born in it and alive as grading
+    starts (``processes_at_grading``; (c)1)."""
+    from benchflow.sandbox import _image_manifest, _image_trees, _verifier_links
+
+    inputs = getattr(env, "_benchflow_verifier_inputs", None)
+    before = _image_manifest.kept(env)
+    if not isinstance(inputs, dict) or before is None:
+        return
+    after = await _image_manifest.walk_after(
+        env, timeout_sec=_verifier_links.setup_timeout_sec()
+    )
+    if after is None:
+        return
+    flags, changes, _ = _image_trees.diff_processes(
+        before, after, {"own_processes": _image_trees.own_processes(env)}
+    )
+    inputs["processes_at_grading"] = [*flags, *changes]
+
+
+async def _record_reward_provenance(
+    env: Any,
+    verifier: Any,
+    *,
+    integrity: str | None,
+    agent: str | None,
+    sandbox_user: str | None,
+    links_before: dict[str, Any] | None,
+    record_dir: str | Path | None,
+    rollout_paths: Any,
+    scored: bool,
+) -> dict[str, Any] | None:
+    """The reward's provenance (:mod:`_reward_provenance`), after grading,
+    into the trial's integrity record, and a warning when a reward that was
+    scored is unverifiable. It never changes the reward. A verify given no
+    agent (the SDK's, a separate verifier's, a regrade's) is not assessed; a
+    recovery's is, for the trial's agent."""
+    if agent is None:
+        return None
+    from benchflow._utils.trial_warnings import report_trial_warning
+    from benchflow.sandbox import _verifier_links
+    from benchflow.sandbox._image_manifest import DETECTOR_SCHEMA
+
+    try:
+        try:
+            after = await _verifier_links.links_after_grading(
+                env, timeout_sec=_verifier_links.setup_timeout_sec()
+            )
+        except Exception as exc:
+            after = {"ran": False, "why": f"the walk failed: {exc}", "links": []}
+        inputs = getattr(env, "_benchflow_verifier_inputs", None)
+        found = _reward_provenance.verdict(
+            agent=agent,
+            sandbox_user=sandbox_user,
+            record=inputs,
+            outputs_closed=getattr(verifier, "outputs_closed", None),
+            outputs_open_why=getattr(verifier, "outputs_open_why", None),
+            outputs_close_applies=getattr(verifier, "outputs_close_due", True)
+            is not False,
+            links_before=links_before,
+            links_after=after,
+            freeze=getattr(verifier, "freeze_record", None),
+        )
+        found["walker"] = _verifier_links.walker_record(env)
+    except Exception as exc:
+        # A fault in the provenance code is a check that did not run, never
+        # one skipped (fail-closed).
+        logger.warning("the reward's provenance could not be decided", exc_info=True)
+        fault = f"{type(exc).__name__}: {exc}"
+        found = {
+            "verdict": _reward_provenance.UNVERIFIABLE,
+            "reasons": [f"the reward's provenance could not be decided ({fault})"],
+            "checks": [
+                {"check": "provenance", "ran": False, "passed": False, "why": fault}
+            ],
+            "root_agent": sandbox_user is None and agent not in (None, "oracle"),
+            "processes": [],
+            "links_removed_before_test": [],
+            "links_after_grading": [],
+            "links_checked": False,
+            "fault": fault,
+        }
+        freeze = getattr(verifier, "freeze_record", None)
+        if isinstance(freeze, dict):
+            found["freeze"] = freeze
+        inputs = getattr(env, "_benchflow_verifier_inputs", None)
+    kept: dict[str, Any]
+    if isinstance(inputs, dict):
+        kept = inputs
+    else:
+        kept = {
+            "schema": DETECTOR_SCHEMA,
+            "mode": integrity or "audit",
+            "status": "unchecked",
+            "flags": [],
+            "changes": [],
+        }
+        with contextlib.suppress(AttributeError):
+            env._benchflow_verifier_inputs = kept
+    kept["provenance"] = found
+    _write_verifier_inputs(env, record_dir, rollout_paths)
+    text = _reward_provenance.warning(found) if scored else None
+    if text:
+        logger.warning(text)
+        report_trial_warning(text)
+    return found
+
+
 def _write_kill_record(record_dir: str | Path, record: dict[str, Any]) -> None:
     """Write the record of the kill before grading into the trial folder."""
     try:
@@ -2120,8 +2695,10 @@ async def _verify_rollout(
     *,
     recovery_eligible: bool = False,
     agent_paths: tuple[str, ...] | None = None,
+    integrity: str | None = None,
     kill_record: dict[str, Any] | None = None,
     record_dir: str | Path | None = None,
+    agent: str | None = None,
 ) -> tuple[dict | None, str | None, Diagnostic | None]:
     """Run verifier with pre-verification hardening (:func:`_verify_hardened`).
 
@@ -2131,8 +2708,14 @@ async def _verify_rollout(
     a timed-out test command and the backends' own helpers would otherwise
     run a program the agent planted in an image PATH folder it could write,
     as root.
+
+    The task's verifier-setup budget (``verifier.setup_timeout_sec``, which
+    the run's --verifier-setup-timeout replaced at setup) bounds every
+    hardening and kept-service command of the verify.
     """
-    with contextlib.ExitStack() as root_path:
+    from benchflow._verifier_setup import verifier_setup_timeout_for
+
+    with contextlib.ExitStack() as root_path, verifier_setup_timeout_for(task):
         return await _verify_hardened(
             env,
             task,
@@ -2143,9 +2726,11 @@ async def _verify_rollout(
             workspace,
             recovery_eligible=recovery_eligible,
             agent_paths=agent_paths,
+            integrity=integrity,
             kill_record=kill_record,
             record_dir=record_dir,
             root_path=root_path,
+            agent=agent,
         )
 
 
@@ -2160,9 +2745,11 @@ async def _verify_hardened(
     *,
     recovery_eligible: bool,
     agent_paths: tuple[str, ...] | None,
+    integrity: str | None = None,
     kill_record: dict[str, Any] | None = None,
     record_dir: str | Path | None = None,
     root_path: contextlib.ExitStack,
+    agent: str | None = None,
 ) -> tuple[dict | None, str | None, Diagnostic | None]:
     """Run verifier with pre-verification hardening.
 
@@ -2176,7 +2763,7 @@ async def _verify_hardened(
     Every script verifier's command writes a start receipt (#1136): a command
     whose start cannot be confirmed is retried once in place, then scores 0
     with a warning (:func:`_await_verifier`). Recovery-eligible tasks skip the
-    in-place retry. The verifier user can remove or forge the receipt.
+    in-place retry. The verifier user can remove or forge the receipt; the agent cannot: each attempt's receipt is in a folder only root (or a verifier user of its own) can write, in every mode.
 
     ``agent_paths`` marks a separate verifier sandbox and lists the paths its
     transfer wrote; hardening distrusts only those there.
@@ -2195,10 +2782,19 @@ async def _verify_hardened(
     timeout_budget = task.config.verifier.timeout_sec
     verifier = None
     path_reports: list[Any] = []
+    # The links into the output folder the walk before test.sh found
+    # ((c)3), for the reward's provenance after grading.
+    links_before: dict[str, Any] | None = None
+    # Whether the reward is test.sh's own, read from its outputs and still
+    # standing: only such a reward waits on the link check. An earlier ending
+    # (a crash, a wedge, a breach, a setup failure, a tools refusal,
+    # BenchFlow's own 0) keeps its own error, diagnostic and category.
+    test_sh_reward = False
     try:
         harden: dict[str, Any] = {"workspace": workspace}
         if agent_paths is not None:
             harden["agent_paths"] = agent_paths
+        harden["integrity"] = integrity
         # Each hardening step records its sub-key; total is the whole call.
         # The kill before grading records whom it stopped and how many it
         # killed (K1), added to what the quiesce before a capture killed; a
@@ -2224,6 +2820,34 @@ async def _verify_hardened(
                 if record_dir is None:
                     record_dir = rollout_paths.rollout_dir
                 _write_kill_record(record_dir, kill_counts)
+        if sandbox_user and workspace and not hardens_verifier(integrity):
+            undone = await trust_verifier_workspace_repos(env, workspace, task)
+            inputs = getattr(env, "_benchflow_verifier_inputs", None)
+            if undone and isinstance(inputs, dict):
+                # BenchFlow undoing its own chown, not a change of the agent's.
+                inputs["benchflow_undone"] = [
+                    {
+                        "what": "git safe.directory",
+                        "why": "BenchFlow chowned the workspace to the sandbox "
+                        "user; its repositories are trusted again for test.sh",
+                        **row,
+                    }
+                    for row in undone
+                ]
+        if _reward_provenance.assessed(integrity) and agent is not None:
+            # Off and audit grade beside the agent's processes: links it
+            # made into the output folder go before test.sh, flagged
+            # ((c)3), and in off, where the detector does not walk,
+            # a root agent's processes are listed for the reward's
+            # provenance ((c)1).
+            links_before = await _remove_output_links(env)
+            if (
+                integrity == "off"
+                and sandbox_user is None
+                and agent not in (None, "oracle")
+            ):
+                await _list_turn_processes(env)
+        _write_verifier_inputs(env, record_dir, rollout_paths)
         _warn_verifier_dropped_image_env(env, task)
         # The sandbox's own writes so far go to disk while the tests run, not
         # in its teardown (PERF-SBX); a backend without it does nothing.
@@ -2240,6 +2864,19 @@ async def _verify_hardened(
         # task.md's omitted workdir means the workspace resolved at startup,
         # including an image cwd or the runtime's fallback directory.
         verifier.taskmd_workdir = workspace
+        if sandbox_user and not hardens_verifier(integrity):
+            # Off and audit grade beside the agent's processes (S2): the
+            # verifier treats them as alive, so its env goes by a file only
+            # root can read, never a command line they could read.
+            verifier.agent_processes_alive = True
+        if not hardens_verifier(integrity):
+            # Off and audit: held still from test.sh's exit until its outputs
+            # are copied (Q3, verifier_freeze).
+            verifier.freeze_at_exit = True
+        # Unreachable today: the kept services' freeze, their release
+        # before test.sh and the tests closed to them run only after a kill
+        # before grading, which only strict makes, and strict refuses a task
+        # that keeps services (DF-4); off and audit grade beside them. Not a protection that is on.
         kept_pids = tuple(
             int(row["pid"]) for row in kill_counts.get("kept_services") or ()
         )
@@ -2256,6 +2893,9 @@ async def _verify_hardened(
                 kill_counts,
                 record_dir,
             )
+            # Their verifier is root: its receipt folder is root's
+            # without the uid read.
+            verifier.receipt_root_only = True
         # While kept services run beside root's commands, exec adds no
         # persistent env and copy-out changes no owner in the sandbox
         # .
@@ -2270,6 +2910,11 @@ async def _verify_hardened(
                     env, verifier, timeout_budget, retry_in_place=not recovery_eligible
                 )
             finally:
+                # Nothing stays stopped past grading (Q3): a verify
+                # that ended before its copy still lets the sandbox go on.
+                thaw = getattr(verifier, "thaw_after_test", None)
+                if inspect.iscoroutinefunction(thaw):
+                    await thaw()
                 if sandbox_user and "kept_services_released" in kill_counts:
                     # Nothing kept lives past grading (K2-R3-A-1).
                     assert record_dir is not None
@@ -2279,10 +2924,12 @@ async def _verify_hardened(
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         try:
             rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
+            verifier_diagnostic = _reward_recorded_as_written(rewards, task)
         except RewardOutOfRange:
             raise
         except ValueError as e:
             raise RewardFileParseError(f"Invalid verifier rewards: {e}") from e
+        test_sh_reward = True
         label = getattr(task, "step_label", None)
         logger.info(
             f"Rewards of the final verify ({label}): {rewards}"
@@ -2293,13 +2940,34 @@ async def _verify_hardened(
         elapsed = (datetime.now() - t0).total_seconds()
         timing["verifier"] = elapsed
         verifier_error = f"verifier timed out after {timeout_budget}s"
+        clearing = getattr(env, "_benchflow_outputs_clearing", None)
+        held = isinstance(clearing, str) and bool(clearing)
+        if held:
+            # The deadline landed while the output folder was being cleared or
+            # closed beside the agent's live processes: the folder was held
+            # (C), the verifier's failure, counted, never retried.
+            from benchflow.task.verifier_core import _OUTPUTS_HELD
+
+            with contextlib.suppress(AttributeError):
+                env._benchflow_outputs_clearing = None
+            verifier_error = (
+                f"verifier crashed: VerifierOutputsHeldError: {_OUTPUTS_HELD} "
+                f"({clearing} did not finish in the verifier's {timeout_budget}s)"
+            )
         # Tests still running at the deadline score 0: a timeout test.sh's
         # code can cause never discards the assessment. When the sandbox did
         # not answer whether they had ended, the outcome is unknown and stays
         # unscored, a verifier timeout that is never retried.
-        scored = not isinstance(exc, _TestEndUnknown) and (
-            getattr(env, "_benchflow_test_command_issued", False) is True
-            or (verifier is not None and getattr(verifier, "test_command_issued", True))
+        scored = (
+            not held
+            and not isinstance(exc, _TestEndUnknown)
+            and (
+                getattr(env, "_benchflow_test_command_issued", False) is True
+                or (
+                    verifier is not None
+                    and getattr(verifier, "test_command_issued", True)
+                )
+            )
         )
         verifier_diagnostic = VerifierTimeoutDiagnostic(
             timeout_budget_sec=timeout_budget,
@@ -2307,12 +2975,26 @@ async def _verify_hardened(
             task_name=task.name,
             scored=scored,
         )
-        if scored:
-            rewards = _verifier_zero(verifier_error)
-            verifier_error = None
+        if held:
+            verifier_diagnostic = None
+            rewards = None
+            logger.error(verifier_error)
+        elif scored:
             await _keep_timed_out_output(
                 env, task, verifier, rollout_paths, verifier_diagnostic
             )
+            # The tests are stopped: BenchFlow's rules are proven again, as at
+            # the end of a test command that returned. A breach is
+            # its own ending, unscored, never this timeout's 0; the timeout's
+            # diagnostic goes, or its category would name the ending.
+            breach = await _timed_out_breach(verifier)
+            if breach is not None:
+                verifier_diagnostic = None
+                verifier_error = _network_policy_breached(breach, rollout_paths)
+                rewards = None
+            else:
+                rewards = _verifier_zero(verifier_error)
+                verifier_error = None
         else:
             if isinstance(exc, _TestEndUnknown):
                 verifier_error += (
@@ -2326,7 +3008,15 @@ async def _verify_hardened(
         # the task does not allow. Never clamped, never retried.
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         verifier_diagnostic = RewardOutOfRangeDiagnostic.from_error(e)
-        rewards = _verifier_zero(f"{REWARD_OUT_OF_RANGE} {e}")
+        if keeps_out_of_range_reward():
+            # Integrity audit or off: nothing is rewritten to 0. This number
+            # is not the reward (a metric the reward would be made from),
+            # so it cannot be recorded as the score: unscored, named.
+            verifier_error = f"{REWARD_OUT_OF_RANGE} {e}"
+            rewards = None
+            logger.error(verifier_error)
+        else:
+            rewards = _verifier_zero(f"{REWARD_OUT_OF_RANGE} {e}")
     except PluginGuardMarkersUnreadableError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         # BenchFlow's own read failed, or its output says the markers are
@@ -2336,14 +3026,78 @@ async def _verify_hardened(
             f"pytest plugin guard not confirmed: {e}; test.sh's reward is not "
             "used. See verifier/test-stdout.txt"
         )
+    except NetworkPolicyBreachedError as e:
+        # BenchFlow's network rules no longer held at the end of the agent's
+        # turn or of test.sh: an ending of its own, unscored and loud.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = _network_policy_breached(e, rollout_paths)
+        rewards = None
+    except VerifierNetworkRefusedError as e:
+        # The verifier's network refused test.sh something and it failed: an
+        # ending of its own, unscored.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_NETWORK_REFUSED}{e}"
+        if _reward_provenance.processes(
+            getattr(env, "_benchflow_verifier_inputs", None)
+        ):
+            # Whose packets they were is not known.
+            verifier_error += _reward_provenance.NETWORK_ALIVE
+        rewards = None
+        logger.error(verifier_error)
+    except VerifierLaunchRefusedError as e:
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_LAUNCH_REFUSED_ERROR}{e}"
+        rewards = None
+        logger.error(verifier_error)
+    except VerifierToolsRefusedError as e:
+        # Hardening refused the tools test.sh would find on PATH: the image
+        # and the task decided it, so test.sh did not run. An ending of its
+        # own, unscored and never retried, not a verifier crash.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_TOOLS_REFUSED_ERROR}{e}"
+        rewards = None
+        logger.error(verifier_error)
+    except VerifierNetworkUnheldError as e:
+        # The verifier's network could not be held: test.sh did not run open
+        # instead. An ending of its own, unscored.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_NETWORK_UNHELD}{e}"
+        rewards = None
+        logger.error(verifier_error)
+    except PluginGuardRejectedError as e:
+        # The guard's verdicts record names a file it refused that the image
+        # does not have as it is ((g2)): a 0 that names it, in the
+        # trial's verifier error, whatever pytest's exit.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        rejudged = await _rejudged_guard_stop(env, verifier, str(e), integrity)
+        if rejudged is not None and rejudged.outcome == "unscored":
+            verifier_error, rewards = _guard_rejudgment_ending(rejudged)
+        else:
+            verifier_error = f"{PLUGIN_GUARD_REJECTED}{e}"
+            rewards = _verifier_zero(verifier_error)
     except PluginGuardLoadError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
-        rewards = _verifier_zero(
-            "pytest plugin guard not confirmed: it may have failed to load, "
-            "stopped or refused a plugin; code run by test.sh can also print "
-            "the diagnostic or change the markers. See verifier/test-stdout.txt "
-            "and verifier/_runtime_guard_*" + e.guard_copy_diagnostic
+        rejudged = (
+            await _rejudged_guard_stop(
+                env,
+                verifier,
+                getattr(e, "record", "") or "the pytest plugin guard stopped pytest",
+                integrity,
+            )
+            if getattr(e, "rejudge", False)
+            else None
         )
+        if rejudged is not None:
+            verifier_error, rewards = _guard_rejudgment_ending(rejudged)
+        else:
+            rewards = _verifier_zero(
+                "pytest plugin guard not confirmed: it may have failed to load, "
+                "stopped or refused a plugin; code run by test.sh can also print "
+                "the diagnostic or change the markers. See verifier/test-stdout.txt "
+                "and verifier/_runtime_guard_*"
+                + e.guard_copy_diagnostic
+                + _guard_record_note(e)
+            )
     except VerifierSetupError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         if getattr(
@@ -2404,9 +3158,49 @@ async def _verify_hardened(
             verifier_error = f"verifier crashed: {verifier_failure_reason(e)}"
             rewards = None
             logger.error(verifier_error)
+    provenance: dict[str, Any] | None = None
+    if _reward_provenance.assessed(integrity):
+        provenance = await _record_reward_provenance(
+            env,
+            verifier,
+            integrity=integrity,
+            agent=agent,
+            sandbox_user=sandbox_user,
+            links_before=links_before,
+            record_dir=record_dir,
+            rollout_paths=rollout_paths,
+            scored=rewards is not None,
+        )
+    if sandbox_user and not hardens_verifier(integrity):
+        # Off and audit kept the sandbox user's processes through grading
+        # (the lead's 11:25Z ruling): they end now, after it.
+        try:
+            await planes.quiesce_agent(env, sandbox_user)
+        except Exception as exc:
+            logger.warning(
+                f"Ending the sandbox user's processes after grading failed: {exc}"
+            )
+        else:
+            # The quiesce the staged logins waited for (18:40Z): the
+            # rollout's next disconnect removes them.
+            with contextlib.suppress(AttributeError):
+                env._benchflow_quiesced_after_grading = True
+    # test.sh's outputs at its exit, back over verifier/ now that nothing the
+    # agent left is running: the saved outputs are what was scored.
+    from benchflow.task import verifier_outputs
+
+    verifier_outputs.put_back_and_record(
+        record_dir
+        if record_dir is not None
+        else getattr(rollout_paths, "rollout_dir", None),
+        env,
+    )
     report = path_reports[-1] if path_reports else None
     if report is not None and (
-        report.dropped or report.kept_other or report.omitted_tools
+        report.dropped
+        or report.kept_other
+        or report.omitted_tools
+        or report.absent_root_only
     ):
         refused = await _refused_programs_run(env, report)
         missed = _verifier_missed_a_program(verifier, rollout_paths)
@@ -2433,6 +3227,7 @@ async def _verify_hardened(
             )
             if verifier_error is None:
                 rewards = _verifier_zero(warning)
+                test_sh_reward = False
             else:
                 logger.warning(warning)
                 report_trial_warning(warning)
@@ -2444,7 +3239,86 @@ async def _verify_hardened(
                 "; the verifier's PATH left out these folders of the image's "
                 f"PATH: {report.dropped_text()}"
             )
-    return rewards, verifier_error, verifier_diagnostic
+    # The one decision of the ending (_grading_outcome): nothing after it
+    # sets the error, the rewards or the diagnostic.
+    ending = final_outcome(
+        Attempt(
+            rewards=rewards,
+            verifier_error=verifier_error,
+            diagnostic=verifier_diagnostic,
+            test_sh_reward=test_sh_reward,
+            provenance=provenance,
+            agent=agent,
+            sandbox_user=sandbox_user,
+        )
+    )
+    if provenance is not None and "outcome" in provenance:
+        _write_verifier_inputs(env, record_dir, rollout_paths)
+    return ending
+
+
+def _guard_record_note(error: Exception) -> str:
+    """What the guard's verdicts record says of its stop, for the 0's warning
+    ((g2)): the record's neutral words, never the error's text."""
+    record = getattr(error, "record", "")
+    return (
+        f". The guard's record: {record}" if isinstance(record, str) and record else ""
+    )
+
+
+async def _rejudged_guard_stop(
+    env: Any, verifier: Any, stop: str, integrity: str | None
+) -> Any:
+    """The pristine re-judgment of the plugin guard's stop ((g2) R),
+    or None: the trial is not ``--integrity strict`` (R is strict's alone:
+    the lead's 09:58Z ruling), this sandbox cannot start a pristine
+    container, or it gave no whole answer, and the trial's record decides
+    alone."""
+    nominated = getattr(verifier, "_guard_nominated", None)
+    if not hardens_verifier(integrity) or not isinstance(nominated, tuple):
+        return None
+    guard, nomination = nominated
+    try:
+        return await rejudge_guard_stop(env, guard, nomination, stop)
+    except Exception as e:  # never the trial's ending: the record's 0 stands
+        logger.warning(
+            "The pristine re-judgment of the pytest plugin guard's stop could "
+            "not run: %s: %s",
+            type(e).__name__,
+            e,
+        )
+        return None
+
+
+def _guard_rejudgment_ending(rejudged: Any) -> tuple[str, dict[str, float] | None]:
+    """The verifier error and rewards of a pristine re-judgment."""
+    if rejudged.outcome == "unscored":
+        verifier_error = f"{PLUGIN_GUARD_UNSCORED}{rejudged.reason}"
+        logger.error(verifier_error)
+        return verifier_error, None
+    verifier_error = f"{PLUGIN_GUARD_REJECTED}{rejudged.reason}"
+    return verifier_error, _verifier_zero(verifier_error)
+
+
+def _reward_recorded_as_written(
+    rewards: dict, task: Any
+) -> RewardOutOfRangeDiagnostic | None:
+    """The note on a reward outside the task's range kept as test.sh wrote
+    it (integrity audit or off), or None when the reward is in range."""
+    reward_range = declared_reward_range(task)
+    value = rewards.get("reward")
+    if not isinstance(value, int | float) or not is_out_of_range_reward(
+        value, reward_range=reward_range
+    ):
+        return None
+    note = RewardOutOfRangeDiagnostic.from_error(
+        RewardOutOfRange("reward", value, reward_range)
+    )
+    note.recorded_as_written = True
+    warning = note.note()
+    logger.warning(warning)
+    report_trial_warning(warning)
+    return note
 
 
 def _verifier_zero(reason: str) -> dict[str, float]:
@@ -2588,6 +3462,34 @@ def _write_trusted_path_record(
         )
     except OSError:
         logger.warning("could not write verifier/trusted-path.json", exc_info=True)
+    if report.absent_root_only:
+        _record_absent_root_only(rollout_paths, report.absent_root_only)
+
+
+def _record_absent_root_only(rollout_paths: Any, absent: tuple[str, ...]) -> None:
+    """Add the absent PATH entries the verifier kept to the trial's
+    locked-system-path.json, beside what the lock before the agent did: each
+    was absent at grading time, and only root could ever have made it."""
+    from benchflow._utils.path_lock_record import LOCKED_SYSTEM_PATH_RECORD
+
+    folder = getattr(rollout_paths, "rollout_dir", None)
+    if folder is None:
+        return
+    path = Path(folder) / LOCKED_SYSTEM_PATH_RECORD
+    try:
+        record = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError):
+        record = {}
+    record["absent_root_only"] = list(absent)
+    record["absent_root_only_note"] = (
+        "kept on the verifier's PATH though absent when it was checked: every "
+        "part of each that exists is root's alone, with no link another user "
+        "controls, so only root could ever make it"
+    )
+    try:
+        path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        logger.warning("could not write locked-system-path.json", exc_info=True)
 
 
 # POSIX sh that sets ``$held`` to the processes around a running test
@@ -2842,6 +3744,51 @@ async def _keep_timed_out_output(
     diagnostic.partial_output_bytes = size
 
 
+async def _timed_out_breach(verifier: Any) -> NetworkPolicyBreachedError | None:
+    """The network verdict of tests stopped at their deadline
+    (:meth:`Verifier.timed_out_network_verdict`): its breach, or None. Where
+    the verdict itself fails the timeout's 0 stands, as a failure after a
+    returned test command scores 0."""
+    judge = getattr(verifier, "timed_out_network_verdict", None)
+    if not callable(judge):
+        return None
+    try:
+        await judge()
+    except NetworkPolicyBreachedError as e:
+        return e
+    except Exception as exc:
+        logger.warning(
+            "The timed-out verifier's network verdict failed: "
+            + describe_exception(exc)
+        )
+    return None
+
+
+def _network_policy_breached(
+    error: NetworkPolicyBreachedError, rollout_paths: Any
+) -> str:
+    """The verifier error of the ending "network policy breached",
+    or "network policy not proven" where the check could not be made and
+    nothing showed a breach, logged, with its record in
+    ``verifier/network-policy.json``."""
+    from benchflow.sandbox.policy_reproof import ending_head
+
+    verifier_error = f"{ending_head(error)}{error}"
+    logger.error(verifier_error)
+    _write_network_policy_record(error.record, rollout_paths)
+    return verifier_error
+
+
+def _write_network_policy_record(record: dict[str, Any], rollout_paths: Any) -> None:
+    """A breach's record, ``verifier/network-policy.json``."""
+    try:
+        destination(rollout_paths.verifier_dir / NETWORK_POLICY_RECORD).write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n"
+        )
+    except (OSError, TypeError, ValueError):
+        logger.warning("could not write verifier/network-policy.json", exc_info=True)
+
+
 _OUTPUT_COUNT_LIMIT = 100_000
 
 
@@ -2876,6 +3823,8 @@ def _verifier_output_size(rollout_paths: Any) -> tuple[int, int]:
 
 
 def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict:
+    # A reward outside the range stays as written under integrity audit and
+    # off (keeps_out_of_range_reward); strict still refuses it.
     # Honour the same BENCHFLOW_REWARD_LENIENT toggle and task-declared
     # ``[verifier] reward_range`` (BF-8) as the reward.json parse path so the
     # final canonicalization gate stays consistent with how the verifier
@@ -2885,6 +3834,7 @@ def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict
         source="verifier",
         lenient=reward_lenient_from_env(),
         reward_range=declared_reward_range(task),
+        keep_out_of_range_reward=keeps_out_of_range_reward(),
     )
 
 

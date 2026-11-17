@@ -13,6 +13,6 @@ from __future__ import annotations
 VERSION = "0.1.0"
 
 SHA256 = {
-    "x86_64": "0cc62aa585473d1d5ffb07fb6b28faf5c67d0dae3a2d19d28f7f2cb68d3054d6",
-    "aarch64": "931c67ce049297d209db493ae354e6f7d69537ae3237ed99834a395d42c09a32",
+    "x86_64": "3a196c9189c1114be4f0eaa4368717115ca08e1b78844df785eae606b88e4253",
+    "aarch64": "4e2c0cea6409fce86909dea85bb62680dcc2af6bbf32dc60aa028a3589645a27",
 }

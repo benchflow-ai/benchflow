@@ -41,11 +41,17 @@ def write_allowlist_task(root: Path, *, compose: bool = False) -> Path:
     environment = task / "environment"
     environment.mkdir(parents=True)
     if compose:
+        # The sidecar only on an internal network main shares: under
+        # allowlist a task service with a route out fails closed
+        # (test_en240_allowlist_integration), at the start since that change L1.
         (environment / "docker-compose.yaml").write_text(
             "services:\n"
+            "  main:\n    networks: [default, svc]\n"
             "  sidecar:\n"
             "    image: python:3.12-slim\n"
             '    command: ["python", "-m", "http.server", "8080"]\n'
+            "    networks: [svc]\n"
+            "networks:\n  svc:\n    internal: true\n"
         )
     (environment / "Dockerfile").write_text(
         "FROM python:3.12-slim\n"

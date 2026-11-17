@@ -27,7 +27,19 @@ from tests.test_r5_release_contract import observe
 from tests.test_verifier_own_failures import _assess
 
 
-def native(tmp_path, monkeypatch, prior, *, ids=("prints-42",), samples=1, minimum=1):
+def native(
+    tmp_path,
+    monkeypatch,
+    prior,
+    *,
+    ids=("prints-42",),
+    samples=1,
+    minimum=1,
+    timeout="1s",
+):
+    """A native agent-judge task whose sessions each get *timeout* (1 s by
+    default, which the deadline tests here run out; tests of what a judge
+    reaches pass a budget a loaded machine cannot spend)."""
     from tests.test_taskmd_agent_judge import FIXTURE
     from tests.test_taskmd_verify import _Sandbox
 
@@ -42,7 +54,7 @@ def native(tmp_path, monkeypatch, prior, *, ids=("prints-42",), samples=1, minim
     document.write_text(
         document.read_text().replace(
             'timeout = "3m"',
-            'timeout = "1s"\nper = "criterion"\n'
+            f'timeout = "{timeout}"\nper = "criterion"\n'
             f"samples = {samples}\nmin_samples = {minimum}",
         )
     )

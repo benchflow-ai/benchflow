@@ -40,17 +40,37 @@ from tests.test_deterministic_integration import (  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.deterministic
 
+# The allowlisted task, its fake on the host (docker_bridge_host): a task
+# whose compose file overrides main gets no cached layer, and a fake declared
+# in main beside the allowlisted agent is refused before the turn.
+# Its environment still provisions (a manifest that declares no service), as
+# the agent-layer check below needs.
+PROXY_LAYER_VARIANT = h.TaskVariant(
+    "codex-allowlist",
+    "hello-pass",
+    allowed_hosts=("example.com",),
+    fake_on_host=True,
+    keep_environment=True,
+)
+
 
 @pytest.fixture(scope="session")
 def proxy_layer_trials(det_root, fake_url, request) -> dict[str, Path]:  # noqa: F811
     image = _pinned_task_image(det_root, request) if SANDBOX == "docker" else None
     runs = {}
+    if image is not None:
+        # The in-sandbox proxy reaches the fake on the host.
+        fake = h.host_fake_llm(
+            det_root / "proxy-layer-fake-llm.jsonl", host=h.docker_bridge_host()
+        )
+        fake_url = fake.__enter__()
+        request.addfinalizer(lambda: fake.__exit__(None, None, None))
     for name, extra in (
         ("fresh", ["--fresh-install"]),
         ("layer-1", []),
         ("layer-2", []),
     ):
-        route = "codex-in-sandbox"
+        route = "codex" if image is not None else "codex-in-sandbox"
         extra = ["--retry-attempts", "0", "--harness", "acp", *extra]
         if image is None:
             run = _run(
@@ -64,7 +84,7 @@ def proxy_layer_trials(det_root, fake_url, request) -> dict[str, Path]:  # noqa:
             )
         else:
             root = det_root / f"proxy-layer-{name}"
-            task = h.materialize_task(ALLOWLIST_VARIANT, root / "tasks")
+            task = h.materialize_task(PROXY_LAYER_VARIANT, root / "tasks")
             task_md = task / "task.md"
             text = task_md.read_text()
             assert "sandbox:\n" in text
@@ -87,7 +107,7 @@ def proxy_layer_trials(det_root, fake_url, request) -> dict[str, Path]:  # noqa:
 def _pinned_task_image(base: Path, request) -> str:
     """The template task's image, built once from its Dockerfile: its ID."""
     root = base / "proxy-layer-image"
-    context = h.materialize_task(ALLOWLIST_VARIANT, root) / "environment"
+    context = h.materialize_task(PROXY_LAYER_VARIANT, root) / "environment"
     tag = f"benchflow-test-proxy-layer-{uuid.uuid4().hex[:12]}"
     iidfile = root / "task-image.id"
     subprocess.run(

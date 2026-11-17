@@ -39,7 +39,8 @@ def test_rollout_config_round_trips_integrity() -> None:
     config = RolloutConfig(task_path=TASK, agent="oracle", integrity="STRICT")
     assert config.integrity == "strict"
     assert RolloutConfig.from_dict(config.to_dict()).integrity == "strict"
-    assert RolloutConfig(task_path=TASK, agent="oracle").integrity == "off"
+    # audit is the default (the lead's 10:01Z ruling).
+    assert RolloutConfig(task_path=TASK, agent="oracle").integrity == "audit"
     with pytest.raises(ValueError, match="integrity must be one of"):
         RolloutConfig(task_path=TASK, agent="oracle", integrity="paranoid")
 
@@ -307,3 +308,56 @@ def test_a_broken_audit_fails_closed_without_raising(
     assert verdict.verdict == "Rejected" and not verdict.exploited
     assert "integrity audit failed" in verdict.reason
     assert result.rewards == {"reward": 1.0}
+
+
+def test_no_flag_means_audit_on_every_entry_point(tmp_path: Path, monkeypatch) -> None:
+    """A run that names no integrity mode is audited, the
+    detector included, whichever way it starts; off only when asked for."""
+    import yaml
+
+    from benchflow.eval_sharding import EvalShard, _config_payload
+    from benchflow.eval_worker import _evaluation_config
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run(self):
+        seen["config"] = self._config
+        raise SystemExit(0)
+
+    monkeypatch.setattr(bf.Evaluation, "run", fake_run)
+    # bench run with no --integrity
+    CliRunner().invoke(
+        cli_main.app,
+        [
+            "eval",
+            "run",
+            "--tasks-dir",
+            str(TASK.parent),
+            "--agent",
+            "oracle",
+            "--sandbox",
+            "docker",
+            "--jobs-dir",
+            str(tmp_path / "jobs"),
+        ],
+    )
+    assert seen["config"].integrity == "audit"
+    # a --config file that does not name it, and one that asks for off
+    for written, expected in (({}, "audit"), ({"integrity": "off"}, "off")):
+        seen.clear()
+        path = tmp_path / f"job-{expected}.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {"tasks_dir": str(TASK.parent), "agent": "oracle", **written}
+            )
+        )
+        CliRunner().invoke(cli_main.app, ["eval", "run", "--config", str(path)])
+        assert seen["config"].integrity == expected, written
+    # the SDK and a sharded worker's payload without the key
+    assert bf.EvaluationConfig(agent="oracle").integrity == "audit"
+    payload = _config_payload(
+        bf.EvaluationConfig(agent="oracle"),
+        shard=EvalShard(index=0, task_names=("task",), concurrency=1),
+    )
+    payload.pop("integrity", None)
+    assert _evaluation_config(payload).integrity == "audit"

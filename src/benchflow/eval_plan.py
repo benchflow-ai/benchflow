@@ -33,6 +33,7 @@ from benchflow.agents.registry import parse_agent_spec
 from benchflow.budget import Budget
 from benchflow.errors import UserError
 from benchflow.evaluation import DEFAULT_AGENT, EvaluationConfig, effective_model
+from benchflow.integrity.constants import normalize_integrity_mode
 from benchflow.loop_strategies import (
     SINGLE_SHOT,
     LoopStrategySpec,
@@ -157,6 +158,7 @@ class EvalCreateRequest:
     # an explicit default or root sentinel overrides YAML just like any value.
     sandbox_user_explicit: bool = field(default=False, kw_only=True)
     sandbox_setup_timeout: int | None = None
+    verifier_setup_timeout: int | None = None
     context_root: Path | None = None
     base_image_override: str | None = None
     separate_verifier: bool = False
@@ -187,6 +189,7 @@ class EvalCreateRequest:
     hf_prefix: str | None = None
     hf_public_read_check: bool = False
     publish_bucket: str | None = None
+    public: bool = False
     eval_results_model: str | None = None
     eval_results_dataset: str | None = None
     eval_results_task: str | None = None
@@ -286,8 +289,36 @@ class EvalPlan:
         """
         req = self.request
         return EvaluationConfig(
-            agent=self.eval_agent,
+            **self.eval_config_settings(
+                source_provenance=source_provenance,
+                dataset_name=dataset_name,
+                dataset_version=dataset_version,
+                dataset_task_digests=dataset_task_digests,
+                include_tasks=include_tasks,
+                exclude_tasks=exclude_tasks,
+            ),
             model=effective_model(self.eval_agent, req.model, self.parsed_env),
+            # The model above is resolved: only the request says whether
+            # --model named it (the run card's "given").
+            model_given=bool(req.model),
+        )
+
+    def eval_config_settings(
+        self,
+        source_provenance: dict[str, Any] | None = None,
+        dataset_name: str | None = None,
+        dataset_version: str | None = None,
+        dataset_task_digests: dict[str, str] | None = None,
+        include_tasks: set[str] | None = None,
+        exclude_tasks: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """:meth:`make_eval_config`'s EvaluationConfig arguments but the model,
+        as the flags give them, before EvaluationConfig checks them together
+        (a ``--config`` run checks them with its file's: cli.main._flag_settings).
+        """
+        req = self.request
+        return dict(
+            agent=self.eval_agent,
             reasoning_effort=self.eval_reasoning_effort,
             harness=self.eval_harness,
             environment=self.eval_environment,
@@ -304,7 +335,7 @@ class EvalPlan:
             accept_deviations=req.accept_deviations,
             fresh_install=req.fresh_install,
             allow_cloud_metadata=req.allow_cloud_metadata,
-            integrity=req.integrity or "off",
+            integrity=normalize_integrity_mode(req.integrity),
             verifier_sandbox=req.verifier_sandbox or "task",
             retry_from_checkpoint=req.retry_from_checkpoint,
             retry_prompt=req.retry_prompt,
@@ -318,6 +349,8 @@ class EvalPlan:
             sandbox_setup_timeout=(
                 120 if req.sandbox_setup_timeout is None else req.sandbox_setup_timeout
             ),
+            sandbox_setup_timeout_given=req.sandbox_setup_timeout is not None,
+            verifier_setup_timeout=req.verifier_setup_timeout,
             context_root=str(req.context_root) if req.context_root else None,
             base_image_override=req.base_image_override,
             separate_verifier=req.separate_verifier,
@@ -349,9 +382,6 @@ class EvalPlan:
             extra_instruction=req.extra_instruction,
             # no --agent means DEFAULT_AGENT; the CLI warns once.
             agent_defaulted=req.agent is None,
-            # The model above is resolved: only the request says whether
-            # --model named it (the run card's "given").
-            model_given=bool(req.model),
         )
 
 
@@ -412,7 +442,7 @@ def _refuse_unknown_bare_agent(name: str) -> None:
 _AGENT_NAME_NEXT = "pass -a with a name `bench agents` lists"
 _EXTRA_NEXT = "run that install command, then `bench doctor` checks this machine"
 
-FAIL_ON_CHOICES = ("timeout", "error", "verifier-error")
+FAIL_ON_CHOICES = ("timeout", "error", "verifier-error", "effort-mismatch")
 
 
 def split_fail_on(values: list[str] | None) -> list[str]:
@@ -527,8 +557,36 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError("--retry-attempts must be >= 0")
     if request.retry_concurrency is not None and request.retry_concurrency < 1:
         raise EvalPlanError("--retry-concurrency must be >= 1")
+    if request.source_env:
+        # The publish step runs after a job's trials; a hosted run has none, so
+        # these would upload nothing and say nothing: refuse them first.
+        publish = [
+            flag
+            for flag, value in (
+                ("--publish-hf", request.publish_hf),
+                ("--publish-bucket", request.publish_bucket),
+                ("--public", request.public),
+                ("--hf-prefix", request.hf_prefix),
+                ("--hf-public-read-check", request.hf_public_read_check),
+            )
+            if value not in (None, False)
+        ]
+        if publish:
+            one = len(publish) == 1
+            raise EvalPlanError(
+                f"{', '.join(publish)} {'is' if one else 'are'} not supported with "
+                "--source-env: a --source-env run is never published, so nothing "
+                "would be uploaded",
+                hint="run it without the publish flags. No bench command publishes "
+                "a --source-env run; in Python, publish_folder_to_hf or "
+                "publish_folder_to_bucket (benchflow.publish.huggingface) takes its "
+                "folder, <jobs-dir>/hosted-env/<run>, and leaves its raw "
+                "hosted_env/ output out",
+            )
     if request.hf_prefix and not (request.publish_hf or request.publish_bucket):
         raise EvalPlanError("--hf-prefix requires --publish-hf or --publish-bucket")
+    if request.public and not (request.publish_hf or request.publish_bucket):
+        raise EvalPlanError("--public requires --publish-hf or --publish-bucket")
     if request.eval_results_model and not (
         request.eval_results_dataset and request.eval_results_task
     ):
@@ -678,27 +736,19 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
     from benchflow.agents.registry import is_operator_script
-    from benchflow.agents.scripts import validate_script_user
+    from benchflow.agents.scripts import (
+        ScriptBackendError,
+        refuse_script_backend,
+        validate_script_user,
+    )
 
     if is_operator_script(eval_agent):
-        from benchflow._utils.sandbox_providers import (
-            OPERATOR_SCRIPT_PROVIDERS,
-            SANDBOX_PROVIDERS,
-        )
-
-        if eval_environment not in OPERATOR_SCRIPT_PROVIDERS:
+        try:
             # Refused here, not once the sandbox is up: the runner check used to
             # fail only after a Daytona sandbox had started.
-            raise EvalPlanError(
-                "script: runs only on "
-                + ", ".join(
-                    n for n in SANDBOX_PROVIDERS if n in OPERATOR_SCRIPT_PROVIDERS
-                )
-                + f": its runner needs a trusted root transport the {eval_environment} "
-                "backend does not have",
-                hint="use --sandbox docker, or run the logic as an ACP agent "
-                "(docs/agents/custom-agent.md)",
-            )
+            refuse_script_backend(eval_agent, eval_environment)
+        except ScriptBackendError as exc:
+            raise EvalPlanError(str(exc), hint=exc.hint) from None
         try:
             validate_script_user(sandbox_user)
         except ValueError as exc:
@@ -723,7 +773,13 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"--build-concurrency must be >= 1 (got {request.build_concurrency})"
         )
-    if request.warm_pool is not None and not 0 <= request.warm_pool <= eval_concurrency:
+    if request.warm_pool is not None and not 0 <= request.warm_pool <= (
+        # A --config file can set the concurrency: the pool is checked
+        # against it once the file loads (evaluation.check_warm_pool).
+        request.warm_pool
+        if request.config_file and request.concurrency is None
+        else eval_concurrency
+    ):
         raise EvalPlanError(
             f"--warm-pool must be from 0 to --concurrency ({eval_concurrency}) "
             f"(got {request.warm_pool})"
@@ -819,6 +875,25 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    if request.config_file is None:
+        # Before any sandbox: every way of asking counts, two that
+        # differ are refused, and so is a level the model cannot take.
+        from benchflow.effort_request import EffortRequestError, settle_effort
+
+        try:
+            # Refusals name the agent as the run named it.
+            eval_reasoning_effort = settle_effort(
+                eval_agent,
+                request.model,
+                eval_reasoning_effort,
+                parsed_env,
+                named_as=request.agent,
+            ).effort
+        except EffortRequestError as exc:
+            raise EvalPlanError(
+                f"Refused before launch: {exc}",
+                hint=exc.hint or "ask for a level the model takes, in one way",
+            ) from None
     from benchflow.native_harness.harnesses import check_harness, normalize_harness
 
     try:
@@ -948,6 +1023,19 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         except (OSError, ValueError) as exc:
             raise EvalPlanError(f"Invalid --config-override: {exc}") from None
 
+    if (request.publish_hf or request.publish_bucket) and not (
+        request.config_file or request.source_env
+    ):
+        # The job folder the publish packages, as far as it is known before
+        # the run: a raw folder would only be refused once the run is spent.
+        from benchflow._utils.raw_evidence import raw_evidence_refusal
+
+        jobs = Path(output_jobs_dir)
+        refusal = raw_evidence_refusal(jobs / job_name if job_name else jobs)
+        if refusal is not None:
+            raise EvalPlanError(
+                refusal, hint="pass another --jobs-dir or --job-name", exit_code=1
+            )
     return EvalPlan(
         request=request,
         eval_agent=eval_agent,

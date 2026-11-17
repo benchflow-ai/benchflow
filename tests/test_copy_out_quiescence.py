@@ -26,7 +26,10 @@ async def test_all_final_collections_stop_writers_before_the_copy(
         _branch_child_active=False,
         _review_plan=object() if capture_requested else None,
         _config=SimpleNamespace(
-            purpose="task", sandbox_user="agent", freeze_workspace=False
+            purpose="task",
+            sandbox_user="agent",
+            freeze_workspace=False,
+            integrity="strict",  # in audit a late writer may finish
         ),
         _planes=SimpleNamespace(quiesce_agent=stop),
         _env=object(),
@@ -54,7 +57,11 @@ async def test_failed_quiescence_cannot_admit_artifacts_or_verification(
     trial = SimpleNamespace(
         _branch_child_active=False,
         _review_plan=object() if capture_requested else None,
-        _config=SimpleNamespace(purpose="task", sandbox_user="agent"),
+        _config=SimpleNamespace(
+            purpose="task",
+            sandbox_user="agent",
+            integrity="strict",  # in audit a late writer may finish
+        ),
         _planes=SimpleNamespace(
             quiesce_agent=AsyncMock(side_effect=RuntimeError("live writer"))
         ),
@@ -74,11 +81,18 @@ async def test_failed_quiescence_cannot_admit_artifacts_or_verification(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("integrity", ["strict", "audit"])
 @pytest.mark.parametrize("copy_timeout", [False, True])
 async def test_a_slow_or_timed_out_collection_cannot_complete_a_late_answer(
-    tmp_path, monkeypatch, copy_timeout
+    tmp_path, monkeypatch, copy_timeout, integrity
 ):
-    """Guards 12f002dc through verify(), not just the evidence helper."""
+    """Guards 12f002dc through verify(), not just the evidence helper.
+
+    In strict the writer is stopped before the copy and the late answer never
+    lands. In audit nothing the agent left is stopped before verify
+    (S2, the lead's 12:36Z ruling: strict is the boundary), so it lands; the
+    kill after grading is _verify_rollout's (test_faithful_default's
+    test_the_kill_runs_before_grading_only_in_strict)."""
     from benchflow.rollout import Rollout, RolloutConfig
     from benchflow.task import RolloutPaths, Task
 
@@ -86,7 +100,9 @@ async def test_a_slow_or_timed_out_collection_cannot_complete_a_late_answer(
     task.mkdir()
     (task / "task.toml").write_text('version = "1.0"\n')
     (task / "instruction.md").write_text("Produce an answer.")
-    trial = Rollout(RolloutConfig(task_path=task, sandbox_user="agent"))
+    trial = Rollout(
+        RolloutConfig(task_path=task, sandbox_user="agent", integrity=integrity)
+    )
     trial._task = Task(task)
     trial._rollout_dir = tmp_path / "trial"
     trial._rollout_dir.mkdir()
@@ -106,7 +122,10 @@ async def test_a_slow_or_timed_out_collection_cannot_complete_a_late_answer(
 
     writer = asyncio.create_task(late_writer())
 
+    stops = []
+
     async def stop(*args):
+        stops.append("stop")
         writer.cancel()
         await asyncio.gather(writer, return_exceptions=True)
 
@@ -118,7 +137,10 @@ async def test_a_slow_or_timed_out_collection_cannot_complete_a_late_answer(
         if copy_timeout:
             trial._artifact_manifest = {"collections": [{"status": "error"}]}
 
+    seen = {}
+
     async def verify(*args, **kwargs):
+        seen.update(kwargs, stopped_before=list(stops))
         return {"reward": float(answer)}, None, None
 
     monkeypatch.setattr("benchflow.rollout.collect_rollout_artifacts", collect)
@@ -127,7 +149,10 @@ async def test_a_slow_or_timed_out_collection_cannot_complete_a_late_answer(
         "benchflow.rollout._publish_trajectory_for_verifier", AsyncMock()
     )
     try:
-        assert await trial.verify() == {"reward": 0.0}
+        strict = integrity == "strict"
+        assert await trial.verify() == {"reward": 0.0 if strict else 1.0}
+        assert seen["stopped_before"] == (["stop"] if strict else [])
+        assert seen["integrity"] == integrity and seen["sandbox_user"] == "agent"
     finally:
         writer.cancel()
         await asyncio.gather(writer, return_exceptions=True)

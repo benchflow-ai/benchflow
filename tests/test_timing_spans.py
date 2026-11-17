@@ -20,6 +20,7 @@ import pytest
 
 from benchflow._utils import timing_spans
 from benchflow.rollout import Role, Rollout, RolloutConfig
+from benchflow.sandbox import lockdown
 from tests._receipt_fakes import receipt_aware
 
 
@@ -68,7 +69,7 @@ def test_a_span_adds_its_seconds_and_a_step_is_a_sub_key(clock):
 def test_a_span_records_the_seconds_before_a_failure(clock):
     timing: dict = {}
     with (
-        pytest.raises(RuntimeError),
+        pytest.raises(RuntimeError, match=r"^install failed$"),
         timing_spans.span("install_agent", into=timing),
     ):
         clock.advance(4.0)
@@ -480,7 +481,33 @@ async def test_every_hardening_step_has_its_sub_key(monkeypatch, clock):
     monkeypatch.setattr(
         _delegate_disarm, "restore_disarmed_delegates", _ticking(clock, 0.25, [])
     )
+    # A sandbox with BenchFlow's metadata helper: root is refused the cloud
+    # metadata endpoints before test.sh.
+    monkeypatch.setattr(lockdown, "_cloud_metadata_verifier_applies", lambda *_: True)
+    monkeypatch.setattr(
+        lockdown, "cover_cloud_metadata_for_verifier", _ticking(clock, 0.125)
+    )
+
+    async def armed_network(_env, _task, seconds, **_kwargs):
+        # A task whose verifier runs under a policy.
+        with lockdown._prep_timing(seconds, "verifier_network"):
+            clock.advance(0.375)
+
+    monkeypatch.setattr(lockdown, "_arm_verifier_network", armed_network)
+    # BenchFlow's rules from sandbox start, proven again at the end of the
+    # agent's turn.
+    from benchflow.sandbox import policy_reproof, rule_ledger
+
+    monkeypatch.setattr(
+        policy_reproof, "require_held_at_end_of_agent", _ticking(clock, 0.75)
+    )
+    # The detector walks the sandbox after the kill.
+    from benchflow.sandbox import _image_manifest
+
+    monkeypatch.setattr(_image_manifest, "detect", _ticking(clock, 0.625, {}))
     env = _hardening_env(clock)
+    env._benchflow_image_manifest = _image_manifest.ImageManifest(taken="pre-agent")
+    env._benchflow_rule_ledger = [rule_ledger.InstalledRules("main", "start")]
     setattr(
         env, _delegate_disarm.DISARMED_ATTR, {"stripped": [{"path": "/usr/bin/su"}]}
     )
@@ -492,11 +519,15 @@ async def test_every_hardening_step_has_its_sub_key(monkeypatch, clock):
             "agent",
             workspace="/app",
             restore_workspace=True,
+            integrity="strict",
         )
     assert timing == {
         "harden_before_verify": {
             "kill_sandbox_user_procs": 1.0,
+            "network_policy_reproof": 0.75,
             "restore_disarmed_delegates": 0.25,
+            "cloud_metadata_verifier": 0.125,
+            "detect_verifier_inputs": 0.625,
             "clear_verifier_output": 2.0,
             "prepare_app_dir": 3.0,
             "reclaim_disk": 4.0,
@@ -504,6 +535,7 @@ async def test_every_hardening_step_has_its_sub_key(monkeypatch, clock):
             "freeze_workspace": 6.0,
             "cleanup_conftests": 0.5,
             "build_verifier_env": 7.0,
+            "verifier_network": 0.375,
         }
     }
     assert tuple(timing["harden_before_verify"]) == timing_spans.HARDEN_STEPS
@@ -517,10 +549,14 @@ async def test_hardening_steps_that_do_not_run_have_no_sub_key(monkeypatch, cloc
     timing: dict = {}
     with timing_spans.recording_into(timing):
         # No sandbox user (nothing to kill), no workspace (nothing to freeze).
-        await harden_before_verify(_hardening_env(clock), _hardening_task(), None)
+        await harden_before_verify(
+            _hardening_env(clock), _hardening_task(), None, integrity="strict"
+        )
     steps = timing["harden_before_verify"]
     assert "kill_sandbox_user_procs" not in steps
     assert "restore_disarmed_delegates" not in steps  # nothing was disarmed
+    assert "cloud_metadata_verifier" not in steps  # no metadata helper
+    assert "verifier_network" not in steps  # an open verifier
     assert "restore_workspace" not in steps
     assert "freeze_workspace" not in steps
     assert set(steps) == {

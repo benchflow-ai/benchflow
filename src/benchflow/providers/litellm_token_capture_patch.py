@@ -115,10 +115,13 @@ def is_sglext_only_chunk(chunk: Any) -> bool:
 def _patch_stream_wrapper() -> None:
     try:
         from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch 'token_capture': its target moved: {exc}"
+        ) from exc
 
     original = CustomStreamWrapper.chunk_creator
+    _require("token_capture", original, ("self", "chunk"))
 
     def chunk_creator(self: Any, chunk: Any) -> Any:
         if capture_enabled():
@@ -140,6 +143,27 @@ def _patch_stream_wrapper() -> None:
     setattr(  # noqa: B010 - avoids static type narrowing on monkey-patched vendor API
         CustomStreamWrapper, "chunk_creator", chunk_creator
     )
+
+
+def _require(patch: str, target: Any, params: tuple[str, ...]) -> None:
+    """Fail the proxy's start, naming the patch, when LiteLLM moved the
+    target it wraps: a silent no-op would quietly drop what it adds."""
+    import inspect
+
+    try:
+        names = tuple(inspect.signature(target).parameters)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target's signature is "
+            f"unreadable: {exc}"
+        ) from exc
+    missing = [name for name in params if name not in names]
+    if missing:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target "
+            f"{getattr(target, '__qualname__', target)} no longer takes "
+            + ", ".join(missing)
+        )
 
 
 _patch_stream_wrapper()

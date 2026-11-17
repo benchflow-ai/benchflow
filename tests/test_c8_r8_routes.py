@@ -103,6 +103,17 @@ OWN_IMAGE_EXECS = {
     "sandbox/_metadata_helper.py": {
         "MetadataHelper.run": "/bin/sh of the pinned helper image (HELPER_TAG)",
     },
+    # The verifier's egress proxy in a container of its own, from the same
+    # pinned helper image (test.sh cannot signal it there). The lead
+    # approved it (2026-11-15 01:5xZ). The image is the one this process
+    # builds from _metadata_helper.HELPER_DOCKERFILE, FROM alpine:3.24@sha256:
+    # 294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 with
+    # pinned packages (HELPER_RECIPE), run by the image ID its build gave:
+    # test_the_egress_container_runs_only_the_pinned_helper_image.
+    "sandbox/_egress_container.py": {
+        "EgressContainer.start": "tar of the pinned helper image, into its tmpfs",
+        "EgressContainer.run": "/bin/sh of the pinned helper image (HELPER_TAG)",
+    },
 }
 COMPARES = {
     "_heredoc_is_shell_script",
@@ -781,7 +792,10 @@ async def test_a_daytona_branch_child_never_starts_a_root_shell_with_the_preload
             },
         )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError,
+        match=r"Daytona startup state is missing or unsupported for this checkpoint",
+    ):
         child.start_from_snapshot(
             SandboxImage(
                 provider="daytona", ref="ckpt", meta={_TOOLBOX_STARTUP_META: "{}"}
@@ -805,7 +819,11 @@ def test_own_image_execs_are_only_the_metadata_helper():
     """The category holds only the metadata helper's exec;
     adding to it needs a lead decision."""
     assert {rel: set(names) for rel, names in OWN_IMAGE_EXECS.items()} == {
-        "sandbox/_metadata_helper.py": {"MetadataHelper.run"}
+        "sandbox/_metadata_helper.py": {"MetadataHelper.run"},
+        "sandbox/_egress_container.py": {
+            "EgressContainer.start",
+            "EgressContainer.run",
+        },
     }
 
 
@@ -842,6 +860,12 @@ async def test_the_metadata_helper_execs_only_the_pinned_container_it_started():
             out = ""
             if args[:1] == ["build"]:
                 out = image_id + "\n"
+            elif args[:1] == ["inspect"] and "{{.HostConfig.NetworkMode}}" in args:
+                out = "bf_default\n"
+            elif args[:1] == ["run"] and "stat" in args:
+                # The netns probes: main's namespace is its own.
+                host = args[args.index("--network") + 1] == "host"
+                out = ("4026531992" if host else "4026532900") + "\n"
             elif args[:1] == ["run"]:
                 out = run_prints + "\n"
             return SimpleNamespace(stdout=out, stderr="", return_code=0)
@@ -858,7 +882,12 @@ async def test_the_metadata_helper_execs_only_the_pinned_container_it_started():
         assert build[build.index("--tag") + 1].startswith(
             f"{helper_mod.HELPER_TAG}-build-"
         )
-        (run,) = [c for c in calls if c[:1] == ["run"]]
+        # The helper's run (its netns probes, ``--entrypoint stat``, aside).
+        (run,) = [
+            c
+            for c in calls
+            if c[:1] == ["run"] and c[c.index("--entrypoint") + 1] != "stat"
+        ]
         assert run[run.index("--entrypoint") + 2] == image_id
         execs = [c for c in calls if c[:1] == ["exec"]]
         assert all(c[1] != main for c in execs)

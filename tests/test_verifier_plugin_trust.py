@@ -556,6 +556,8 @@ async def test_exit127_is_not_treated_as_missing_python_without_absence_proof(
 _PYTEST_7_HOOK_ARGUMENTS = {
     "pytest_addhooks": {"pluginmanager"},
     "pytest_plugin_registered": {"plugin", "manager"},
+    "pytest_cmdline_main": {"config"},
+    "pytest_sessionstart": {"session"},
 }
 _BUILTIN_GENERICS = {"dict", "frozenset", "list", "set", "tuple", "type"}
 
@@ -864,16 +866,23 @@ def test_guard_crash_is_recorded_for_the_verifier(monkeypatch, tmp_path):
 
     Reading a pytest API that is not there (one such case was fixed earlier) is
     the guard failing, not a plugin being refused: the hook records a
-    ``crashed`` marker with the traceback and still stops pytest.
+    ``crashed`` marker with the traceback, and a ``guard_error`` verdict
+    naming the failure (any failure of the guard's own code, R334), and still
+    stops pytest.
     """
     markers = _armed_markers(monkeypatch, tmp_path)
 
     with pytest.raises(AttributeError):
         guard.pytest_addhooks(SimpleNamespace(get_plugin=lambda name: None))
 
-    (marker,) = markers.iterdir()
-    assert marker.name.endswith(".crashed")
-    assert "_origargs" in marker.read_text()
+    by_kind = {path.name.rsplit(".", 1)[1]: path for path in markers.iterdir()}
+    assert sorted(by_kind) == ["crashed", "verdicts"]
+    assert "_origargs" in by_kind["crashed"].read_text()
+    body = by_kind["verdicts"].read_text().split("\t", 1)[1]
+    (entry,) = json.loads(json.loads(body))
+    assert entry["kind"] == entry["verdict"] == "guard_error"
+    assert entry["why"].startswith("AttributeError: ")
+    assert "_origargs" in entry["why"]
 
 
 def test_unreadable_plugin_metadata_is_a_rejection_not_a_crash(monkeypatch, tmp_path):
@@ -1202,9 +1211,11 @@ def test_guard_writes_its_loading_marker_only_under_pytests_plugin_loader(tmp_pa
         timeout=60,
     )
     assert run.returncode == 0, run.stdout + run.stderr
+    # pytest ran to its own cleanup: the guard's end-of-session record, its
+    # registered marker taken away ((g2)).
     (marker,) = markers.iterdir()
-    assert marker.name.endswith(".registered")
+    assert marker.name.endswith(".finished")
     (signed,) = lockdown.parse_pytest_plugin_guard_markers(
         f"{marker.name}\t{marker.read_text()}", guard_name
     )
-    assert signed.kind == "registered"
+    assert signed.kind == "finished"

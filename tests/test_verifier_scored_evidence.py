@@ -149,6 +149,9 @@ async def test_bad_reward_evidence_is_an_error_that_counts_as_a_failure(
     assert summary["unusable_rewards"] == 1
 
 
+# Integrity strict keeps the old contract: a number outside the task's range is
+# the verifier's verdict, named and scored 0 (#1178). Audit and off record it
+# as written (next test).
 @pytest.mark.parametrize(
     "files,reason",
     [
@@ -157,13 +160,31 @@ async def test_bad_reward_evidence_is_an_error_that_counts_as_a_failure(
         ({"reward.json": '{"reward": 2}'}, "reward.json"),
     ],
 )
+@pytest.mark.usefixtures("strict_reward_rule")
 async def test_an_out_of_range_reward_scores_zero(tmp_path, monkeypatch, files, reason):
-    """A number outside the task's range is the verifier's verdict, named and
-    scored 0 (#1178), not an unusable file."""
+    """Under strict, not an unusable file: scored 0 with the named warning."""
     rewards, error, warnings, _ = await run(tmp_path, monkeypatch, files)
     assert error is None
     assert rewards == {"reward": 0.0}
     assert any(reason in warning and "scored 0" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "files,written",
+    [
+        ({"reward.txt": "2"}, 2.0),
+        ({"reward.txt": "-1"}, -1.0),
+        ({"reward.json": '{"reward": 2}'}, 2),
+    ],
+)
+async def test_an_out_of_range_reward_is_recorded_as_written(
+    tmp_path, monkeypatch, files, written
+):
+    rewards, error, warnings, _ = await run(tmp_path, monkeypatch, files)
+    assert error is None
+    assert rewards == {"reward": written}
+    assert any("recorded as test.sh wrote it" in warning for warning in warnings)
+    assert not any("scored 0" in warning for warning in warnings)
 
 
 async def test_a_marker_that_fails_validation_cannot_leave_a_pass(
@@ -350,7 +371,7 @@ async def test_separate_verifier_preserves_its_named_zero_warning(
     rollout = SimpleNamespace(
         _trajectory=[],
         _planes=SimpleNamespace(),
-        _config=SimpleNamespace(primary_agent="oracle"),
+        _config=SimpleNamespace(primary_agent="oracle", integrity="off"),
     )
     paths = RolloutPaths(tmp_path / "trial")
     paths.mkdir()

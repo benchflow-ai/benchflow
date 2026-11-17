@@ -37,7 +37,10 @@ from benchflow.native_harness.session import NativeSession
 from benchflow.native_harness.spec import NativeHarness
 from benchflow.providers.litellm_config import LITELLM_MASTER_KEY_ENV
 from benchflow.sandbox._exec_output import exec_raw
-from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+from benchflow.sandbox.lockdown import (
+    enforce_agent_egress_firewall,
+    refuse_task_processes_before_launch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +181,8 @@ async def connect_native(
         # Claude Code refuses bypassPermissions as root unless told it is in
         # a sandbox, which it is.
         launch_env.setdefault("IS_SANDBOX", "1")
+    # R1: main is quiet before the agent's process starts.
+    await refuse_task_processes_before_launch(env, launch_env)
     await enforce_agent_egress_firewall(env, sandbox_user, launch_env)
     client = NativeCLIClient(
         env=env,
@@ -192,9 +197,10 @@ async def connect_native(
         mcp_servers=tuple(mcp_servers or ()),
         resume_id=resume_session_id,
     )
-    # The CLI takes the effort as given (--effort, or Codex's
-    # model_reasoning_effort): what it sends is in the trial's model calls.
-    client.session.effort_applied = reasoning_effort
+    # The CLI says nothing of the effort it runs at: applied stays unknown,
+    # never the request echoed back; what it sends is in the
+    # trial's model calls.
+    client.session.effort_applied = None
     logger.info(
         "Native harness: %s (%s)%s",
         harness.cli,

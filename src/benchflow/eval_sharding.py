@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.config_redaction import _should_record_env_entry
+from benchflow._utils.evaluation_results import merge_usage_summaries
 from benchflow._utils.scoring import pass_rate, pass_rate_excl_errors
+from benchflow.build_info import benchflow_build
 from benchflow.evaluation import (
     EmptyTaskSelectionError,
     Evaluation,
@@ -141,6 +143,7 @@ def _config_payload(
         "agent": config.agent,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
+        "reasoning_effort_source": config.reasoning_effort_source,
         "harness": config.harness,
         "environment": config.environment,
         "concurrency": shard.concurrency,
@@ -157,6 +160,8 @@ def _config_payload(
         "sandbox_user": config.sandbox_user,
         "sandbox_locked_paths": config.sandbox_locked_paths,
         "sandbox_setup_timeout": config.sandbox_setup_timeout,
+        "sandbox_setup_timeout_given": config.sandbox_setup_timeout_given,
+        "verifier_setup_timeout": config.verifier_setup_timeout,
         "skip_agent_install": config.skip_agent_install,
         "agent_idle_timeout": config.agent_idle_timeout,
         # Whether the run set its idle limit: a worker given 600 at effort
@@ -234,6 +239,12 @@ def _redacted_config_payload(config_payload: dict[str, Any]) -> dict[str, Any]:
             if _should_record_env_entry(str(key), str(value))
         }
         artifact_payload["agent_env_keys"] = sorted(str(key) for key in agent_env)
+    override = artifact_payload.get("config_override")
+    if isinstance(override, dict) and override:
+        # As config.json keeps it: no value that may be a credential.
+        from benchflow._utils.config_override import overlay_record
+
+        artifact_payload["config_override"] = overlay_record(override)
     reviewer = artifact_payload.get("reviewer")
     if isinstance(reviewer, dict):
         from benchflow.review.options import ReviewerConfig
@@ -402,6 +413,7 @@ def _aggregate_result(
     plan: EvalShardPlan,
     shard_results: list[dict[str, Any]],
     elapsed_sec: float,
+    tasks_root_skips: dict[str, Any] | None = None,
 ) -> EvaluationResult:
     # The workers' run checks are judged together, as one job's would be
     # (benchflow.run_checks.pool): a worker alone sees only its shard. Each
@@ -440,6 +452,7 @@ def _aggregate_result(
     )
     summary = {
         "job_name": result.job_name,
+        "benchflow_build": benchflow_build(),
         "total": result.total,
         "passed": result.passed,
         "failed": result.failed,
@@ -456,6 +469,12 @@ def _aggregate_result(
         "planned": result.planned,
         "not_run": result.not_run,
         "score_of_plan": result.score_of_plan,
+        # Tokens and cost, the judges' and every attempt's spend, added up
+        # over the shards as one job's summary has them.
+        **merge_usage_summaries([r.get("usage") or {} for r in shard_results]),
+        # The entries of the tasks root its rule skipped, as the discovery
+        # listed them (no worker lists them), when any.
+        **({"tasks_root_skips": tasks_root_skips} if tasks_root_skips else {}),
         "elapsed_sec": result.elapsed_sec,
         "concurrency": plan.total_concurrency,
         "worker_concurrency": plan.worker_concurrency,
@@ -491,6 +510,10 @@ async def run_sharded_evaluation(
         )
     discovery = Evaluation(tasks_dir=tasks_dir, jobs_dir=jobs_dir, config=config)
     task_dirs = discovery._get_task_dirs()
+    # Only this listing sees what the tasks-root rule skipped: each worker is
+    # given its shard's names. The aggregate summary.json and every shard's
+    # card and summary.json carry it, as an unsharded run's records do.
+    tasks_root_skips = getattr(discovery, "_tasks_root_skips", None)
     task_names = [task_dir.name for task_dir in task_dirs]
     plan = plan_eval_shards(
         task_names,
@@ -498,7 +521,9 @@ async def run_sharded_evaluation(
         worker_concurrency=worker_concurrency,
     )
     if not plan.shards:
-        raise EmptyTaskSelectionError(discovery._empty_selection_message())
+        error = EmptyTaskSelectionError(discovery._empty_selection_message())
+        error.hint = discovery._empty_selection_hint()
+        raise error
     # The workers each get an exact shard list, so only this discovery sees
     # the user's patterns.
     discovery.warn_unmatched_selection()
@@ -591,6 +616,7 @@ async def run_sharded_evaluation(
                 if pinned
                 else None
             ),
+            **({"tasks_root_skips": tasks_root_skips} if tasks_root_skips else {}),
         }
         payload_path.write_text(
             json.dumps(_worker_payload_artifact(payload), indent=2) + "\n"
@@ -641,6 +667,7 @@ async def run_sharded_evaluation(
         plan=plan,
         shard_results=shard_results,
         elapsed_sec=elapsed,
+        tasks_root_skips=tasks_root_skips,
     )
     stopped = [r["usage_limit"] for r in shard_results if r.get("usage_limit")]
     if stopped:

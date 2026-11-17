@@ -196,7 +196,7 @@ async def test_memory_scorer_recall_and_precision_both_below_one():
 
 
 async def test_memory_scorer_spurious_only_with_expected_scores_zero():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Guards the follow-up on v0.5-integration@ffef85d."""
     node = RolloutNode(
         id="leaf",
         state={
@@ -212,7 +212,7 @@ async def test_memory_scorer_spurious_only_with_expected_scores_zero():
 
 
 async def test_memory_scorer_rewards_expected_skill_removal():
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Guards the follow-up on v0.5-integration@ffef85d."""
     node = RolloutNode(
         id="leaf",
         state={

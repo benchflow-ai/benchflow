@@ -63,6 +63,15 @@ _SCRUB_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_", "OPENAI_", "CODEX_", "GEMINI_")
 _SCRUB_KEYS = {"BENCHFLOW_PROVIDER_BASE_URL", "BENCHFLOW_PROVIDER_API_KEY"}
 
 
+E2E_REMOTE_DOCKER_HOST_ENV = "BENCHFLOW_E2E_REMOTE_DOCKER_HOST"
+
+
+def remote_docker_host() -> str:
+    """An existing ``ssh://`` Docker host for test_remote_docker.py, whose
+    scenarios then need no sandbox backend; empty when unset."""
+    return os.environ.get(E2E_REMOTE_DOCKER_HOST_ENV, "").strip()
+
+
 def select_sandbox() -> tuple[str | None, str]:
     requested = os.environ.get(SANDBOX_ENV, "").strip().lower()
     if requested != "daytona":

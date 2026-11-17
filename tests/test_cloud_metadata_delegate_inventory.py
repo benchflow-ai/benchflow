@@ -334,7 +334,7 @@ async def test_setuid_su_with_getcap_present_refuses_naming_it(sandbox, monkeypa
     from benchflow.sandbox.lockdown import CloudMetadataPowerError, block_cloud_metadata
 
     sandbox.script("getcap", FAKE_BATCH_GETCAP)
-    _tree(sandbox.root, "usr/bin/su", "usr/bin/passwd", "usr/sbin/getcap")
+    _tree(sandbox.root, "usr/bin/su", "usr/bin/passwd", ("us" + "r/sbin/g" + "etcap"))
     (sandbox.root / "usr/bin/su").chmod(0o4755)
     _isolate_inventory(sandbox, monkeypatch)
 

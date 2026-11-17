@@ -24,6 +24,15 @@ RESULT_STATE_FIELDS = (
     "_diagnostics",
     "_native_usage_metrics",
     "_native_usage_checkpoint",
+    # What the list price prices and the salvage reads: a child's
+    # turns only, the parent's back when the fork restores it.
+    "_native_usage_slices",
+    "_native_usage_reported",
+    "_usage_slices",
+    "_usage_report_missing",
+    "_usage_salvaged",
+    "_turn_cut",
+    "_last_usage_update",
     "_error",
     "_export_error",
     "_evolved_skills",
@@ -88,6 +97,13 @@ def scope_child_result_state(rollout: Any) -> None:
     rollout._diagnostics = RolloutDiagnostics()
     rollout._native_usage_metrics = _zero_native_acp_usage_metrics()
     rollout._usage_metrics = _zero_native_acp_usage_metrics()
+    rollout._native_usage_slices = {}
+    rollout._native_usage_reported = set()
+    rollout._usage_slices = None
+    rollout._usage_report_missing = False
+    rollout._usage_salvaged = False
+    rollout._turn_cut = None
+    rollout._last_usage_update = None
 
 
 def write_child_observation(
@@ -98,13 +114,29 @@ def write_child_observation(
     error: BaseException | None,
     trajectory_start: int,
     lineage: dict[str, Any] | None = None,
+    usage_incomplete_reason: str | None = None,
 ) -> None:
     """Persist genuine observations, including failed/unscored children.
 
     ``lineage`` (parent rollout, fork id, parent node, index, label) keeps a
     child archive locatable in the tree when it is copied out of the run.
+    ``usage_incomplete_reason``: why the child's count may miss calls; its
+    ``native_usage`` then says so, as a result.json does.
     """
+    from benchflow._utils.result_metadata import incomplete_usage_fields
+
     child_dir.mkdir(parents=True, exist_ok=True)
+    native_usage = copy.deepcopy(rollout._native_usage_metrics)
+    if usage_incomplete_reason and isinstance(native_usage, dict):
+        native_usage.update(
+            incomplete_usage_fields(
+                {
+                    **native_usage,
+                    "usage_incomplete": True,
+                    "usage_incomplete_reason": usage_incomplete_reason,
+                }
+            )
+        )
     observation = {
         "kind": "branch-child",
         "node_id": child.id,
@@ -114,7 +146,7 @@ def write_child_observation(
         "verifier_error": rollout._verifier_error,
         "export_error": rollout._export_error,
         "timing": copy.deepcopy(rollout._timing),
-        "native_usage": copy.deepcopy(rollout._native_usage_metrics),
+        "native_usage": native_usage,
         "trajectory": copy.deepcopy(rollout._trajectory[trajectory_start:]),
     }
     write_json_atomic(

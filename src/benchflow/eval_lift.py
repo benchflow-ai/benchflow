@@ -270,7 +270,32 @@ def _load_rollouts(job_dir: Path) -> list[LiftRollout]:
                 else None,
             )
         )
-    return sorted(rollouts, key=lambda row: (row.task_id, str(row.rollout_dir)))
+    return sorted(
+        _trial_results(rollouts), key=lambda row: (row.task_id, str(row.rollout_dir))
+    )
+
+
+def _trial_results(rollouts: list[LiftRollout]) -> list[LiftRollout]:
+    """*rollouts* without the attempts the run's records rule out as a trial's
+    result (:mod:`benchflow._utils.attempt_decision`): one the run retried
+    never is, whatever reward it carries, and where the run kept an attempt
+    of a task, that attempt alone is. Rollouts with no record are all kept."""
+    from benchflow._utils.attempt_decision import kept_attempt, not_retried
+
+    chains: dict[tuple[Path, str], list[LiftRollout]] = {}
+    for rollout in rollouts:
+        chains.setdefault((rollout.rollout_dir.parent, rollout.task_id), []).append(
+            rollout
+        )
+    results: list[LiftRollout] = []
+    for chain in chains.values():
+        kept = kept_attempt(chain, folder=lambda r: r.rollout_dir)
+        results.extend(
+            [kept]
+            if kept is not None
+            else not_retried(chain, folder=lambda r: r.rollout_dir)
+        )
+    return results
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

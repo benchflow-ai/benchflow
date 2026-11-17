@@ -126,12 +126,15 @@ def own_model_route_refusal(
 def validate_agent_transport(*, sandbox: str, agent: str, harness: str) -> None:
     """Check one selected connection without resolving credentials or a proxy."""
     from benchflow.agents.registry import is_scripted_agent, session_factory_entrypoint
+    from benchflow.agents.scripts import refuse_script_backend
     from benchflow.sandbox.providers import PROVIDERS_BY_NAME
     from benchflow.task.runtime_capabilities import (
         UnsupportedTaskFeature,
         UnsupportedTaskFeatureError,
     )
 
+    # An operator script's connection is the backend's trusted root runner.
+    refuse_script_backend(agent, sandbox)
     provider = PROVIDERS_BY_NAME.get(sandbox)
     if (
         provider is not None
@@ -167,6 +170,7 @@ def validate_task_plan(
     disallow_web_tools: bool = False,
     execute_solution: bool | None = None,
     usage_tracking: UsageTrackingConfig | str | None = None,
+    integrity: str | None = None,
 ) -> dict[str, object] | None:
     """Refuse a task this run cannot honor, without creating a sandbox.
 
@@ -178,6 +182,8 @@ def validate_task_plan(
     ``usage_tracking`` is the run's setting (``BENCHFLOW_USAGE_TRACKING``
     when unset): an agent that routes its own model calls cannot honor
     ``required`` (own_model_route_refusal).
+    ``integrity`` is the run's mode (None is ``audit``): only ``strict``
+    refuses the pytest plugins test.sh installs ((c)).
     Return the proxy install record the run persists; native-login routes
     return None and do not check extras for a proxy they do not use.
     """
@@ -196,6 +202,41 @@ def validate_task_plan(
     # can raise a context-free error for the first individual env table.
     if isinstance(task.config, TaskConfig):
         check_task_env(task.config, task=task_dir.name)
+
+    # A pytest plugin test.sh installs unpinned: never loaded, so refused here,
+    # from the task's own files, before any sandbox. And plugin
+    # releases whose dependencies nobody pins: refused here too, so the dry
+    # run refuses what the run would.
+    # Plugin blocking is strict's alone: off and audit run test.sh as its
+    # authors wrote it, as other harnesses do.
+    from benchflow.integrity.constants import normalize_integrity_mode
+    from benchflow.task.verifier_plugin_installs import (
+        closure_refusal,
+    )
+    from benchflow.task.verifier_plugin_installs import (
+        refusal as plugin_install_refusal,
+    )
+
+    why = (
+        plugin_install_refusal(task) or closure_refusal(task)
+        if normalize_integrity_mode(integrity) == "strict"
+        else None
+    )
+    if why is not None:
+        from benchflow.task.runtime_capabilities import (
+            UnsupportedTaskFeature,
+            UnsupportedTaskFeatureError,
+        )
+
+        raise UnsupportedTaskFeatureError(
+            [
+                UnsupportedTaskFeature(
+                    path="verifier.pytest_plugin_releases",
+                    reason=why,
+                    sandbox=sandbox,
+                )
+            ]
+        )
 
     # Sandbox env is needed at creation. A setup capture only exists after
     # its command succeeds: never admit a forward/self dependency, or fake a

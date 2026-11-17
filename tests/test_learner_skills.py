@@ -104,7 +104,7 @@ def test_skill_memory_delta_carries_expected_when_given() -> None:
 
 
 def test_skill_memory_delta_preserves_empty_expected_fixture() -> None:
-    """Guards the ENG-125 follow-up on v0.5-integration@ffef85d."""
+    """Guards the follow-up on v0.5-integration@ffef85d."""
     delta = skill_memory_delta(before={"a": "v1"}, after={"a": "v1"}, expected=[])
     assert delta["expected"] == []
 

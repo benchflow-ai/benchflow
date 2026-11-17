@@ -25,17 +25,26 @@ HANDOFF_SCHEMA_VERSION = "benchflow.integrity.handoff.v0"
 type IntegrityMode = Literal["off", "audit", "strict"]
 INTEGRITY_MODES: tuple[IntegrityMode, ...] = ("off", "audit", "strict")
 
+# What --integrity strict is, in its help and on the run-start line. The
+# measured share changes when the strict gate is run again: it is written
+# here alone.
+STRICT_EXPERIMENTAL = (
+    "experimental: on a 170-task sample, 17-19% of honest reference runs score "
+    "0 in strict because of what strict transfers"
+)
+
 
 def normalize_integrity_mode(value: Any) -> str:
-    """``off``, ``audit`` or ``strict``; None and False mean ``off``.
+    """``off``, ``audit`` or ``strict``; None means ``audit``, the default
+    (the lead's 10:01Z ruling), and False means ``off``.
 
     Here, with the vocabulary, so a run with integrity off (every config
     normalizes the mode) does not import the audit pipeline.
     """
 
-    if value is None or value is False:
+    if value is False:
         return "off"
-    if value is True:
+    if value is None or value is True:
         return "audit"
     text = str(value).strip().lower()
     if text in INTEGRITY_MODES:
@@ -43,6 +52,14 @@ def normalize_integrity_mode(value: Any) -> str:
     raise ValueError(
         f"integrity must be one of {', '.join(INTEGRITY_MODES)}, got {value!r}"
     )
+
+
+def hardens_verifier(value: Any) -> bool:
+    """Whether the run's integrity mode hardens the verifier: ``strict``
+    alone. In ``off`` and ``audit`` test.sh runs as its authors wrote it and
+    the sandbox user's processes live through grading (the lead's
+    09:58Z and 11:25Z rulings)."""
+    return normalize_integrity_mode(value) == "strict"
 
 
 type ActorClass = Literal["Agent", "TrustedHost", "Verifier"]

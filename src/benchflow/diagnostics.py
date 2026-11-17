@@ -25,6 +25,7 @@ exceptions without pulling Daytona/Modal SDKs.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar, Literal
 
@@ -85,6 +86,15 @@ class AgentPromptTimeoutError(TimeoutError):
         self.n_tool_calls = diagnostic.n_tool_calls
         self.terminal_trajectory_complete = diagnostic.terminal_trajectory_complete
         self.executed_prompts = executed_prompts or []
+
+
+class AgentDeadlineTimeoutError(TimeoutError):
+    """The host hard deadline stopped a still-running agent phase.
+
+    For a task with no agent ``timeout_sec`` that deadline is the agent's only
+    clock, so the agent ran out of time as under
+    :class:`AgentPromptTimeoutError`.
+    """
 
 
 @dataclass
@@ -257,7 +267,8 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
     """BenchFlow hit the prompt wall-clock budget and wrote timeout evidence."""
 
     reason: Literal["wall_clock_timeout"] = DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT
-    timeout_sec: float = 0.0
+    # None when the budget is unknown (a fallback record).
+    timeout_sec: float | None = 0.0
     n_tool_calls: int = 0
     pending_tool_call_ids: list[str] = field(default_factory=list)
     terminal_event_recorded: bool = False
@@ -286,6 +297,81 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
             f"{task_name}: agent wall-clock timeout after "
             f"{self.timeout_sec}s ({complete}, {self.n_tool_calls} tool calls, "
             f"{pending} pending)"
+        )
+
+
+@dataclass
+class PhaseTimeoutDiagnostic(Diagnostic):
+    """A step of the trial that is not the agent's turn ran out of time.
+
+    ``step`` is the step (setup, start, install, agent set-up, step set-up,
+    soft verify, agent tear-down, verify). ``timeout_sec`` is the limit of the operation that timed out when its
+    exception carries one, else None: a bare ``TimeoutError`` does not say.
+    ``elapsed_sec`` is the trial's seconds at the timeout, None when the
+    trial's clock had not started.
+    """
+
+    step: str = ""
+    timeout_sec: float | None = None
+    elapsed_sec: float | None = None
+
+    field: ClassVar[str] = "phase_timeout_info"
+    category: ClassVar[str | None] = "phase_timeout"
+    summary_description: ClassVar[str] = (
+        "had a step other than the agent's turn time out"
+    )
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = (
+        ("timeout_sec", "nonnegative_number"),
+        ("elapsed_sec", "nonnegative_number"),
+    )
+
+    def format_issue(self, task_name: str) -> str:
+        when = (
+            f"after {self.elapsed_sec:g}s of the trial"
+            if self.elapsed_sec is not None
+            else "after an unknown time"
+        )
+        limit = (
+            f" (limit {self.timeout_sec:g}s)" if self.timeout_sec is not None else ""
+        )
+        return (
+            f"{task_name}: the {self.step or 'unknown'} step timed out {when}"
+            f"{limit} — infrastructure, retried"
+        )
+
+
+@dataclass
+class PostTurnFailureDiagnostic(Diagnostic):
+    """A step after the agent's turn failed once the turn had ended the trial.
+
+    The turn's ending (its time limit, the host deadline that stopped it, the
+    trial budget, a model refusal, an output-cap ending, a script stopped at
+    its limit) stays the trial's ``error`` and ``error_category``, and the
+    trial is not retried: another attempt would run and pay for the agent
+    again. Its reward stays when the verify step had recorded one, else the
+    trial is unscored. ``step`` is the step that failed (verify, cleanup,
+    agent tear-down), ``kind`` what ended it (``timeout``, ``exec_timeout``,
+    ``connection_lost``, ``host_deadline``, ``verifier_crash``, ``error``)
+    and ``detail`` its text, masked as result.json's error text is. It
+    decides no category.
+    """
+
+    step: str = ""
+    kind: str = ""
+    detail: str = ""
+
+    field: ClassVar[str] = "post_turn_failure_info"
+    summary_description: ClassVar[str] = (
+        "had a step fail after the agent's turn ended the trial"
+    )
+    # Only the channel reaches trainer artifacts; the fields are free text.
+    results_jsonl_fields: ClassVar[tuple[tuple[str, ResultsJsonlFieldKind], ...]] = ()
+
+    def format_issue(self, task_name: str) -> str:
+        return (
+            f"{task_name}: the {self.step or 'unknown'} step failed "
+            f"({self.kind or 'error'}) after the agent's turn ended the trial "
+            "— the trial keeps that ending, not retried"
         )
 
 
@@ -477,6 +563,9 @@ class RewardOutOfRangeDiagnostic(Diagnostic):
     reward_range: tuple[float, float] = (0.0, 1.0)
     declared: bool = False
     file: str | None = None
+    # Integrity audit or off: the reward is the number as test.sh wrote it
+    # and this is its note; strict scores 0 (False).
+    recorded_as_written: bool = False
 
     field: ClassVar[str] = "reward_out_of_range_info"
     category: ClassVar[str | None] = "reward_out_of_range"
@@ -498,7 +587,18 @@ class RewardOutOfRangeDiagnostic(Diagnostic):
             file=getattr(error, "file", None),
         )
 
+    def note(self) -> str:
+        """The trial's note on a reward recorded as written."""
+        lo, hi = self.reward_range
+        where = f"the task's reward_range [{lo}, {hi}]" if self.declared else "0-1"
+        return (
+            f"reward outside {where}: {self.key} = {self.value!r}, "
+            "recorded as test.sh wrote it"
+        )
+
     def format_issue(self, task_name: str) -> str:
+        if self.recorded_as_written:
+            return f"{task_name}: {self.note()}"
         lo, hi = self.reward_range
         return (
             f"{task_name}: reward out of range ({self.key}={self.value!r}, "
@@ -749,12 +849,14 @@ DIAGNOSTIC_REGISTRY: tuple[type[Diagnostic], ...] = (
     IntegrationFailureDiagnostic,
     IdleTimeoutDiagnostic,
     AgentPromptTimeoutDiagnostic,
+    PhaseTimeoutDiagnostic,
     SandboxStartupDiagnostic,
     TransportClosedDiagnostic,
     VerifierTimeoutDiagnostic,
     RewardOutOfRangeDiagnostic,
     ProviderApiErrorDiagnostic,
     SuspectedApiErrorDiagnostic,
+    PostTurnFailureDiagnostic,
 )
 
 # field_name → Diagnostic class, for check_results lookup.
@@ -861,10 +963,17 @@ class RolloutDiagnostics:
         """Return the flat ``{field_name: dict|None}`` view for result.json.
 
         Includes every registered diagnostic field — absent ones serialize
-        to ``None`` so the result schema stays stable.
+        to ``None`` so the result schema stays stable. Free text in them (a
+        transport's ``raw_message`` and ``stderr_snippet``, a probe's output
+        and traceback, a startup or verifier error, integration evidence, a
+        usage limit's detail) can quote a provider's answer or a command
+        line: every value is masked as the trajectory is
+        (``redact_trajectory_obj``), as result.json's ``error`` is.
         """
+        from benchflow.trajectories.types import redact_trajectory_obj
+
         return {
-            d.field: self._events[d.field].to_dict()
+            d.field: redact_trajectory_obj(self._events[d.field].to_dict())
             if d.field in self._events
             else None
             for d in DIAGNOSTIC_REGISTRY
@@ -1005,6 +1114,23 @@ class TransientSandboxTransportError(ConnectionError):
 # Summary / check_results helpers driven by the registry
 
 
+def rewards_outside_range_summary(
+    results: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """summary.json's note on the trials whose reward is outside the range,
+    recorded as test.sh wrote it (integrity audit or off); {} when none."""
+    rows = []
+    for name, result in sorted(results.items()):
+        info = result.get(RewardOutOfRangeDiagnostic.field)
+        if not isinstance(info, Mapping) or info.get("recorded_as_written") is not True:
+            continue
+        note = RewardOutOfRangeDiagnostic.format_issue_from_dict(str(name), dict(info))
+        rows.append({"task": str(name), "reward": info.get("value"), "note": note})
+    if not rows:
+        return {}
+    return {"rewards_outside_range": {"count": len(rows), "trials": rows}}
+
+
 def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) -> str:
     """Format the one-line warning the job summary emits for a diagnostic."""
     pct = (count / total * 100) if total else 0.0
@@ -1032,6 +1158,8 @@ def format_issue_for_field(
 __all__ = [
     "Diagnostic",
     "IdleTimeoutDiagnostic",
+    "PhaseTimeoutDiagnostic",
+    "PostTurnFailureDiagnostic",
     "SandboxStartupDiagnostic",
     "TransportClosedDiagnostic",
     "VerifierTimeoutDiagnostic",

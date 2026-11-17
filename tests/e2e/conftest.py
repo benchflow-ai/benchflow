@@ -29,7 +29,11 @@ def sandbox() -> str:
 
 
 @pytest.fixture(scope="session")
-def e2e_out(sandbox: str) -> Path:
+def e2e_out(request: pytest.FixtureRequest) -> Path:
+    # The tier needs its sandbox backend, except for remote-docker's
+    # scenarios on a host of their own (h.remote_docker_host()).
+    if not h.remote_docker_host():
+        request.getfixturevalue("sandbox")
     configured = os.environ.get(h.OUT_ENV)
     out = Path(configured) if configured else Path(tempfile.mkdtemp(prefix="bf-e2e-"))
     out.mkdir(parents=True, exist_ok=True)

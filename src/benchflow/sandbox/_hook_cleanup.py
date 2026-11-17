@@ -1085,6 +1085,26 @@ async def unchanged_in_workspace(
     return None
 
 
+async def image_identical(
+    facts: _Facts,
+    path: str,
+    entry: Mapping[str, Any],
+    manifest: Mapping[str, str] | None,
+) -> bytes | None:
+    """The bytes of the conftest.py at *path* when they are the image's own:
+    a regular file whose sha256 is what the image manifest (the host's copy)
+    records at the same absolute path, inside or outside the workspace. ``read`` follows no link at any level. None otherwise."""
+    if not manifest or entry.get("type") != "file":
+        return None
+    want = manifest.get(path)
+    if not want:
+        return None
+    data = await facts.read(path)
+    if data is None or hashlib.sha256(data).hexdigest() != want:
+        return None
+    return data
+
+
 async def _workspace_roots(
     facts: _Facts, workspace: str | None, aliases: tuple[str, ...]
 ) -> list[str]:
@@ -1105,6 +1125,7 @@ async def remove_conftests(
     workspace: str | None = None,
     workspace_aliases: tuple[str, ...] = (),
     baseline: str | None = None,
+    manifest: Mapping[str, str] | None = None,
 ) -> None:
     prunes = ["/proc", "/sys", "/dev", verifier_dir, *keep]
 
@@ -1127,6 +1148,8 @@ async def remove_conftests(
         if await package_owned(facts, path, entry, roots, cache):
             continue
         data = await unchanged_in_workspace(facts, path, entry, roots, baseline)
+        if data is None:
+            data = await image_identical(facts, path, entry, manifest)
         if data is None:
             doomed.append((path, entry))
         else:
@@ -1439,10 +1462,13 @@ async def run(
     deadline: float,
     agent_user: bool = False,
     baseline: str | None = None,
+    conftest_manifest: Mapping[str, str] | None = None,
 ) -> Report:
     """The whole clean-up over *call* (one ``bfx serve`` session), by
     *deadline* (the event loop's clock). Raises :class:`HookCleanupError`
-    when it did not complete; returns what it skipped without failing."""
+    when it did not complete; returns what it skipped without failing.
+    *conftest_manifest*: path -> sha256 of the image's own conftest.py
+    files, from the host's copy of the image manifest."""
     facts = _Facts(call, deadline)
     changes = _Changes(facts)
     try:
@@ -1455,6 +1481,7 @@ async def run(
                 workspace,
                 workspace_aliases,
                 baseline if agent_user else None,
+                manifest=conftest_manifest,
             )
         await remove_tmp_py(facts, changes, workspace, workspace_aliases)
         await clean_site_hooks(

@@ -90,7 +90,7 @@ From an OpenCode trial on DeepSeek, whose trajectory holds 1 user message, 14 th
 | `trajectory/acp_trajectory.jsonl` | what the agent reported, one event per line: `user_message`, `agent_thought`, `tool_call`, `agent_message` | debugging, and auditing what the agent did |
 | `trajectory/llm_trajectory.jsonl` | each model request and response as BenchFlow's proxy saw them, with timing and token usage | exactly what the model saw and returned; training data |
 | `trainer/atif.json` | the trial in ATIF, the Agent Trajectory Interchange Format, version `ATIF-v1.7` | other tools that read ATIF |
-| `trainer/verifiers.jsonl` | one row: `prompt`, `completion`, `reward`, `metrics`, `is_truncated` | trainers that read verifiers-style rows |
+| `trainer/verifiers.jsonl` | one row: `prompt`, `completion`, `reward`, `metrics`, `is_truncated`; for an unscored trial (no verdict, an agent or verifier error) `reward` is null and `is_completed` false, never 0.0 | trainers that read verifiers-style rows (skip a null reward) |
 | `trainer/adp.jsonl` | the same trial as ADP (Agent Data Protocol) records | tools that read ADP |
 
 The job folder adds `results.jsonl`, one line per trial with its reward, timing and token usage. When an agent's model calls don't go through the proxy, as with a subscription login, `llm_trajectory.jsonl` can't record them, and `acp_trajectory.jsonl` is the full record.

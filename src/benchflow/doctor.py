@@ -1072,6 +1072,11 @@ def check_docker(
         return checks
 
     version = str(info.get("ServerVersion"))
+    # Every Docker sandbox runs through Compose (the direct path too reads
+    # `docker compose config`); Docker Engine alone, as Ubuntu's docker.io
+    # installs it, has no Compose and a run fails at its first task.
+    compose = probes.run(["docker", "compose", "version", "--short"], PROBE_TIMEOUT_SEC)
+    compose_version = compose.stdout.strip() if compose.returncode == 0 else None
     ncpu = info.get("NCPU")
     mem = info.get("MemTotal")
     mem_text = _fmt_bytes(mem) if isinstance(mem, int) else "? GiB"
@@ -1090,6 +1095,7 @@ def check_docker(
         "os": info.get("OperatingSystem"),
         "root_dir": root or None,
         "free_bytes": free,
+        "compose_version": compose_version,
     }
     disk_text = f", {_fmt_bytes(free)} free in {root}" if free is not None else ""
     checks.append(
@@ -1111,6 +1117,27 @@ def check_docker(
                 {"root_dir": root, "free_bytes": free},
             )
         )
+    if compose_version is None:
+        compose_row = _checker("sandbox", "docker compose", "docker-compose")
+        reason = (
+            _first_line(compose.stderr, secrets=secret_values(probes.environ))
+            or "no answer from `docker compose version`"
+        )
+        fix = (
+            "sudo apt-get install docker-compose-plugin (Docker's apt repository) "
+            "or docker-compose-v2 (Ubuntu's docker.io); other distributions: "
+            "https://docs.docker.com/compose/install/linux/"
+            if linux
+            else "Docker Desktop and OrbStack include it; with Colima, run "
+            "`brew install docker-compose` and add "
+            '"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"] '
+            "to ~/.docker/config.json"
+        )
+        summary = (
+            f"Docker Compose not found ({reason}): every Docker sandbox runs "
+            "through `docker compose`, so a run fails at its first task"
+        )
+        checks.append(compose_row(bad, summary, fix))
     buildx_result = (
         probes.run(["docker", "buildx", "version"], PROBE_TIMEOUT_SEC)
         if buildx
@@ -1125,8 +1152,9 @@ def check_docker(
             "heredocs)"
         )
         fix = (
-            "sudo apt-get install docker-buildx-plugin (Debian/Ubuntu; other "
-            "distributions: https://docs.docker.com/build/install-buildx/)"
+            "sudo apt-get install docker-buildx-plugin (Docker's apt repository) "
+            "or docker-buildx (Ubuntu's docker.io); other distributions: "
+            "https://docs.docker.com/build/install-buildx/"
             if linux
             else "Docker Desktop and OrbStack include it; with Colima, run "
             "`brew install docker-buildx` and add "

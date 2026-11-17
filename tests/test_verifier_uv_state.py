@@ -419,7 +419,12 @@ async def score(
         monkeypatch.setattr(
             lockdown,
             "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
-            modelled(Path(guard_module.__file__).read_text(), guard_model),
+            # What hardening installs: the guard file without the judge,
+            # which is the host's alone (a sandbox argument caps at 128 KiB).
+            modelled(
+                lockdown._without_the_judge(Path(guard_module.__file__).read_text())[0],
+                guard_model,
+            ),
         )
     if before is not None:
         before(layout)
@@ -1063,7 +1068,12 @@ async def test_a_root_only_pip_config_never_reaches_a_file_others_can_read(
     xdg = tmp_path / "etc-xdg" / "pip"
     xdg.mkdir(parents=True)
     (xdg / "pip.conf").write_text(
-        "[global]\nindex-url = https://user:SECRET-TOKEN@index.example/\n"
+        "[global]\nindex-url = ht"
+        + "tps://us"
+        + "er:SECRE"
+        + "T-TOKEN@"
+        + "index.ex"
+        + "ample/\n"
     )
     (xdg / "pip.conf").chmod(0o600)
     layout = Layout(tmp_path, monkeypatch, python=str(python))

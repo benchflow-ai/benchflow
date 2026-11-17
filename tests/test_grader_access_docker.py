@@ -7,9 +7,10 @@ BenchFlow publishes, writes a log in the workspace, and scores 1 whenever
 anything the agent left behind ran, or reached what it read, while it graded.
 Every planted file is inert: run, it only creates a marker in
 ``/tmp/gi-canary``, which the grader empties first. The agent is a script
-(``script:``) that writes a wrong answer, plants one class of files and runs
+(``script:``, under ``--integrity strict``) that writes a wrong answer, plants one class of files and runs
 each plant once itself ("live"), or reports the write refused; its job runs
-under ``--integrity audit``. The oracle runs the same tasks as the control;
+under ``--integrity strict``, the hardened grader's mode since the faithful
+default (09:58Z). The oracle runs the same tasks as the control;
 classes that touch the workspace also run with the verifier in its own sandbox
 (``verifier.sandbox_mode: separate``).
 
@@ -458,7 +459,7 @@ def _trials(jobs: Path, output: str) -> dict[str, Path]:
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory) -> dict:
-    """One job of the planting agent, one of the oracle, and the host canary."""
+    """One job of the planting agent and one of the oracle, both strict, and the host canary."""
     if SANDBOX != "docker":
         pytest.skip(SKIP_REASON if SANDBOX is None else "Docker only")
     keep = os.environ.get("BENCHFLOW_GI_KEEP")
@@ -476,16 +477,38 @@ def runs(tmp_path_factory) -> dict:
     plant = root / "plant.sh"
     plant.write_text(PLANT_SH)
     plant.chmod(0o755)
+    # Strict, both jobs: the hardened grader these tests check is strict's alone since
+    # the faithful default (the lead, 09:58Z; S2 12:36Z): audit runs
+    # test.sh as written beside the agent's processes. What audit keeps, the
+    # reward's provenance, is tests/test_reward_provenance_docker.py's.
     planted = _run(
-        tasks, root / "jobs-plant", f"script:{plant}", "--integrity", "audit"
+        tasks, root / "jobs-plant", f"script:{plant}", "--integrity", "strict"
     )
-    oracle = _run(tasks, root / "jobs-oracle", "oracle")
+    oracle = _run(tasks, root / "jobs-oracle", "oracle", "--integrity", "strict")
+    # Audit, for the host-side detector (R330D, 20:47Z): audit runs test.sh as
+    # written, and its record of these plants is integrity/verifier-inputs.json.
+    audited = _run(
+        tasks, root / "jobs-audit", f"script:{plant}", "--integrity", "audit"
+    )
     return {
         "plant": _trials(root / "jobs-plant", planted),
         "oracle": _trials(root / "jobs-oracle", oracle),
+        "audit": _trials(root / "jobs-audit", audited),
         "canary": canary,
         "token": token,
     }
+
+
+# What the detector flags in audit, by vector (the pass-D table).
+DETECTOR_FLAGS = {
+    "image-env": ("/app/lib/sitecustomize.py",),
+    "pytest-config": (
+        "/app/pyproject.toml",
+        "/app/pytest.ini",
+        "/app/setup.cfg",
+        "/app/tox.ini",
+    ),
+}
 
 
 def _result(trial: Path) -> dict:
@@ -632,3 +655,20 @@ def test_the_agents_folders_neither_forge_the_trajectory_nor_reach_the_host(runs
         if f.is_file() and not f.is_symlink() and token in f.read_bytes()
     ]
     assert leaked == [], leaked
+
+
+def _flagged(trial: Path) -> tuple[str, set[str]]:
+    record = json.loads((trial / "integrity" / "verifier-inputs.json").read_text())
+    return record["status"], {str(f.get("path")) for f in record.get("flags") or ()}
+
+
+@pytest.mark.parametrize(("vector", "planted"), DETECTOR_FLAGS.items())
+def test_audit_names_the_plant_in_the_detector_record(runs, vector, planted):
+    """Audit grades test.sh as written (the faithful default 09:58Z; S2): the
+    host-side detector's record flags the plant by path, shared and
+    separate. The other vectors' plants are not flagged today (status
+    checked, no flags), a named gap in the pass-D table."""
+    for name in (vector, f"{vector}-sep"):
+        status, paths = _flagged(runs["audit"][name])
+        assert status == "flagged", (name, status)
+        assert set(planted) <= paths, (name, sorted(paths))

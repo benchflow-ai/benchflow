@@ -248,7 +248,7 @@ class TestGenerateTask:
     def test_solution_sh_replays_file_writes(
         self, simple_trace: ParsedTrace, tmp_path: Path
     ) -> None:
-        """Guards ENG-93 trace-generated tasks include oracle evidence."""
+        """Guards trace-generated tasks include oracle evidence."""
         task_dir = generate_task(simple_trace, tmp_path)
         solve_sh = TaskPaths(task_dir).solution_dir / "solve.sh"
 
@@ -305,7 +305,7 @@ class TestGenerateTask:
         assert "/logs/verifier" in content
 
     def test_dockerfile_keeps_full_github_url(self, tmp_path: Path) -> None:
-        """Guards ENG-91 P1 dogfood full GitHub URL clone regression."""
+        """Guards P1 dogfood full GitHub URL clone regression."""
         trace = ParsedTrace(
             trace_id="full-url",
             session_id="s",
@@ -344,7 +344,7 @@ class TestGenerateTask:
         assert issues == [], f"bench tasks check found issues: {issues}"
 
     def test_test_sh_fallback_when_no_files(self, tmp_path: Path) -> None:
-        """Guards ENG-91 P0: unverifiable traces do not auto-pass."""
+        """Guards unverifiable traces do not auto-pass."""
         trace = ParsedTrace(
             trace_id="no-files",
             session_id="s",
@@ -568,7 +568,7 @@ class TestGenerateTasksFromTraces:
         assert len(results) == 0
 
     def test_filters_bash_only_traces_without_file_edits(self, tmp_path: Path) -> None:
-        """Guards ENG-91 P0: Bash-only traces do not become false positives."""
+        """Guards Bash-only traces do not become false positives."""
         bash_trace = ParsedTrace(
             trace_id="bash-only",
             session_id="s-bash",

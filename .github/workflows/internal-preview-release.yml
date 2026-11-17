@@ -132,6 +132,13 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
 
+      # A snapshot rate past its vendor's announced change would price
+      # every such call at the old rate; the unit tests never read
+      # the clock, so the release checks it.
+      - name: Price snapshot is current
+        if: steps.version.outputs.publish == 'true'
+        run: uv run --no-project python tools/check_price_snapshot.py
+
       - name: Build distributions
         if: steps.version.outputs.publish == 'true'
         run: uv build --no-sources

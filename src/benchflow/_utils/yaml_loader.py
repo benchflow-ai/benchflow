@@ -121,6 +121,8 @@ def rollout_config_from_dict(
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=raw.get("sandbox_setup_timeout", 120),
+        sandbox_setup_timeout_given="sandbox_setup_timeout" in raw,
+        verifier_setup_timeout=raw.get("verifier_setup_timeout"),
         job_name=raw.get("job_name"),
         rollout_name=raw.get("rollout_name"),
         jobs_dir=raw.get("jobs_dir", "jobs"),
@@ -176,6 +178,13 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         if raw.get(key) is not None:
             out[key] = raw[key]
+    if out.get("config_override") is not None:
+        # A saved config may hold the override's record (to_dict).
+        from benchflow._utils.config_override import recorded_overlay
+
+        out["config_override"] = recorded_overlay(
+            out["config_override"], what="loading this config"
+        )
     if isinstance(raw.get("prompts"), list):
         out["prompts"] = raw["prompts"]
     manifest = raw.get("environment_manifest")
@@ -204,7 +213,10 @@ def _checkpoint_spec(policy: Any) -> str | None:
 
 
 def rollout_config_to_dict(
-    config: RolloutConfig, *, include_agent_env: bool = False
+    config: RolloutConfig,
+    *,
+    include_agent_env: bool = False,
+    include_config_override: bool = False,
 ) -> dict[str, Any]:
     """``config`` in the shape :func:`rollout_config_from_dict` reads.
 
@@ -217,6 +229,7 @@ def rollout_config_to_dict(
     """
     import json
 
+    from benchflow._utils.config_override import exported_override
     from benchflow.loop_strategies import LoopStrategySpec
 
     blocked = [
@@ -292,7 +305,18 @@ def rollout_config_to_dict(
             "codex_apps_policy": config.codex_apps_policy,
             "sandbox_user": config.sandbox_user,
             "sandbox_locked_paths": config.sandbox_locked_paths,
-            "sandbox_setup_timeout": config.sandbox_setup_timeout,
+            # Only a value the run named: a written default would read back
+            # as named and win over the task's sandbox.setup_timeout_sec.
+            **(
+                {"sandbox_setup_timeout": config.sandbox_setup_timeout}
+                if config.sandbox_setup_timeout_given
+                else {}
+            ),
+            **(
+                {"verifier_setup_timeout": config.verifier_setup_timeout}
+                if config.verifier_setup_timeout is not None
+                else {}
+            ),
             "job_name": config.job_name,
             "rollout_name": config.rollout_name,
             "jobs_dir": str(config.jobs_dir),
@@ -316,7 +340,9 @@ def rollout_config_to_dict(
             "reviewer": reviewer,
             **config.usage_tracking.to_mapping(),
             "services": config.services,
-            "config_override": config.config_override,
+            "config_override": exported_override(
+                config.config_override, include=include_config_override
+            ),
             "max_user_rounds": config.max_user_rounds,
             "allow_document_user": config.allow_document_user,
             "oracle_access": config.oracle_access,

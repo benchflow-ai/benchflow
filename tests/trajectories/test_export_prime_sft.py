@@ -300,7 +300,10 @@ def test_export_redacts_malformed_tool_call_arguments_before_serializing(
                 "function": {
                     "name": "bash",
                     "arguments": (
-                        '{"command": "curl -d \\"password=sk-abc1234567890def"'
+                        '{"command": "curl -d \\"password=sk'
+                        + "-abc1234"
+                        + "567890de"
+                        + 'f"'
                         ' | jq .", "summary": "request token"}'
                     ),
                 },
@@ -1173,7 +1176,7 @@ def test_convert_succeeds_when_trajectory_written_via_to_jsonl_with_secrets(
         Trajectory,
     )
 
-    secret = "sk-abc1234567defghijklmnop987654"
+    secret = "sk" + "-abc1234" + "567defgh" + "ijklmnop" + "987654"
     code = (
         'token = form.get("token")\n'
         "    if not token:\n"

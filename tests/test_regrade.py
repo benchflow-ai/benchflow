@@ -642,3 +642,34 @@ def test_move_script_swaps_directory_contents_in_place(tmp_path):
         check=True,
     )
     assert (tmp_path / "out" / "one.txt").read_text() == "x\n"
+
+
+@pytest.mark.asyncio
+async def test_a_trial_from_before_the_integrity_modes_is_regraded_as_written_and_says_so(
+    job,
+):
+    """a config.json without ``integrity`` is re-verified in audit
+    (test.sh as written), and the regrade record says so; a trial that
+    recorded its mode keeps it and gets no note."""
+    from benchflow.eval_regrade import PRE_INTEGRITY_NOTE
+
+    job, tasks = job
+    trial = job / "t2__b"
+    config = json.loads((trial / "config.json").read_text())
+    config["integrity"] = "off"
+    (trial / "config.json").write_text(json.dumps(config))
+
+    await aregrade(
+        job,
+        tasks_dir=tasks,
+        runner=_runner({"t1__a": {"reward": 1.0}, "t2__b": {"reward": 1.0}}, []),
+    )
+
+    [old] = json.loads((job / "t1__a" / REGRADE_FILE).read_text())["regrades"]
+    assert old["integrity"] == "audit"
+    assert old["integrity_note"] == PRE_INTEGRITY_NOTE
+    assert PRE_INTEGRITY_NOTE == (
+        "re-verified faithful (audit); the original verify used the shared hardening from before the integrity modes"
+    )
+    [recorded] = json.loads((trial / REGRADE_FILE).read_text())["regrades"]
+    assert recorded["integrity"] == "off" and "integrity_note" not in recorded

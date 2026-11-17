@@ -20,6 +20,7 @@ from benchflow.agents.env import (
     validate_aws_bedrock_env,
 )
 from benchflow.agents.registry import AGENTS, AgentConfig
+from tests.test_en374_login_by_contents import login_file_text
 
 # auto_inherit_env
 
@@ -456,10 +457,12 @@ class TestCheckSubscriptionAuth:
 
         monkeypatch.setattr(Path, "expanduser", fake)
 
-    def test_returns_true_when_file_exists(self, monkeypatch, tmp_path):
+    def test_returns_true_when_a_login_file_exists(self, monkeypatch, tmp_path):
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
-        (creds_dir / ".credentials.json").write_text("{}")
+        (creds_dir / ".credentials.json").write_text(
+            login_file_text(".credentials.json", "dummy")
+        )
         self._patch_expanduser(monkeypatch, tmp_path)
         assert check_subscription_auth("claude-agent-acp", "ANTHROPIC_API_KEY") is True
 
@@ -471,7 +474,9 @@ class TestCheckSubscriptionAuth:
         """subscription_auth.replaces_env must match required_key."""
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
-        (creds_dir / ".credentials.json").write_text("{}")
+        (creds_dir / ".credentials.json").write_text(
+            login_file_text(".credentials.json", "dummy")
+        )
         self._patch_expanduser(monkeypatch, tmp_path)
         # claude-agent-acp replaces ANTHROPIC_API_KEY, not OPENAI_API_KEY
         assert check_subscription_auth("claude-agent-acp", "OPENAI_API_KEY") is False
@@ -491,7 +496,7 @@ class TestCheckSubscriptionAuth:
     def test_codex_auth(self, monkeypatch, tmp_path):
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
         assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is True
 
@@ -561,7 +566,9 @@ class TestResolveAgentEnvNoModel:
             monkeypatch.delenv(k, raising=False)
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
-        (creds_dir / ".credentials.json").write_text('{"claudeAiOauth": {}}')
+        (creds_dir / ".credentials.json").write_text(
+            login_file_text(".credentials.json", "dummy")
+        )
         self._patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(agent_env={})
@@ -594,7 +601,7 @@ class TestResolveAgentEnvNoModel:
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(agent="codex-acp", agent_env={})
@@ -608,7 +615,7 @@ class TestResolveAgentEnvNoModel:
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(
@@ -779,26 +786,21 @@ class TestResolveAgentEnvAzureFoundry:
             == "https://example-resource.services.ai.azure.com/anthropic"
         )
 
-    def test_azure_openai_rejects_anthropic_agent_protocol(self, monkeypatch):
-        """Guards PR #422: unsupported agent/provider protocol pairs fail fast."""
+    def test_azure_openai_serves_the_anthropic_agent_through_the_gateway(
+        self, monkeypatch
+    ):
+        """Guards PR #422, and a downstream harness patch: Claude Code calls the
+        gateway, which calls Azure OpenAI's chat completions, so the pair is not
+        refused; the proxy wiring replaces the URL and key resolved here."""
         monkeypatch.setenv("AZURE_API_KEY", "az-test")
         monkeypatch.setenv(
             "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
         )
 
-        with pytest.raises(
-            ValueError,
-            match=(
-                r"claude-agent-acp.*requires provider protocol "
-                r"'anthropic-messages'.*azure-foundry-openai.*only supports "
-                r"openai-completions, openai-responses"
-            ),
-        ):
-            resolve_agent_env(
-                "claude-agent-acp",
-                "azure-foundry-openai/gpt-5.5",
-                {},
-            )
+        env = resolve_agent_env("claude-agent-acp", "azure-foundry-openai/gpt-5.5", {})
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-openai"
+        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "anthropic-messages"
 
     def test_azure_anthropic_rejects_openai_agent_protocol(self, monkeypatch):
         """Guards PR #422: fallback must not send OpenAI traffic to Anthropic."""
@@ -1167,7 +1169,7 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
     ):
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         result = resolve_agent_env("codex-acp", "openai/gpt-5.4-mini", {})
@@ -1189,7 +1191,7 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
         """
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         result = resolve_agent_env("codex-acp", "openai/gpt-5.5", {})
@@ -1202,7 +1204,7 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
         """Regional endpoint is not the canonical api.openai.com — host auth must not apply."""
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
@@ -1212,7 +1214,7 @@ class TestResolveAgentEnvCodexOpenAIPrefix:
         """Custom OpenAI-compatible endpoints keep rejecting subscription auth."""
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text("{}")
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         self._patch_expanduser(monkeypatch, tmp_path)
 
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):

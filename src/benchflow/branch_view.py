@@ -79,6 +79,7 @@ def _cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         seconds += cost.get("children_sandbox_seconds") or 0.0
         if fork.get("rollout") not in child_nodes:
             seconds += cost.get("parent_sandbox_seconds") or 0.0
+    partial = [cost for _, cost in costs if cost.get("usage_incomplete") is True]
     return {
         "tokens": sum(cost.get("tokens") or 0 for _, cost in costs),
         "usd": round(math.fsum(u for u in usds if isinstance(u, int | float)), 6)
@@ -86,6 +87,19 @@ def _cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         else None,
         "usd_known": known,
         "sandbox_seconds": round(seconds, 3),
+        # A fork whose children counted only some of their calls.
+        **(
+            {
+                "usage_incomplete": True,
+                **(
+                    {"cost_incomplete": True}
+                    if any(cost.get("cost_incomplete") is True for cost in partial)
+                    else {}
+                ),
+            }
+            if partial
+            else {}
+        ),
     }
 
 
@@ -430,6 +444,12 @@ def build_branch_view(
                 if scored
                 and isinstance(_obj(branches_cost).get("sandbox_seconds"), int | float)
                 else None,
+                # A floor when the totals are.
+                **{
+                    key: True
+                    for key in ("usage_incomplete", "cost_incomplete")
+                    if _obj(branches_cost).get(key) is True
+                },
             },
         },
         "pricing": prices,
@@ -495,6 +515,8 @@ BRANCH_VIEW_SCHEMA: dict[str, Any] = {
                         "usd": _NULL_NUM,
                         "usd_estimate": _NULL_NUM,
                         "sandbox_seconds": _NULL_NUM,
+                        "usage_incomplete": {"type": "boolean"},
+                        "cost_incomplete": {"type": "boolean"},
                     },
                 },
             },

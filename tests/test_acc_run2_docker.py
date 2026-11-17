@@ -68,20 +68,22 @@ def _task(tmp_path, name, *, dockerfile, solve, test, tests_py=None):
     return task
 
 
-async def _run(task, agent):
+async def _run(task, agent, **fields):
+    """One real trial; *fields* (e.g. ``integrity="strict"``) are set on the
+    RolloutConfig."""
     from benchflow.rollout import Rollout, RolloutConfig
 
-    return await Rollout(
-        RolloutConfig(
-            task_path=task,
-            agent=agent,
-            environment="docker",
-            sandbox_user="agent",
-            jobs_dir=task.parent / "jobs",
-            job_name=f"{task.name}-{agent}",
-            rollout_name=f"{task.name}__{agent}",
-        )
-    ).run()
+    config = RolloutConfig(
+        task_path=task,
+        agent=agent,
+        environment="docker",
+        sandbox_user="agent",
+        jobs_dir=task.parent / "jobs",
+        job_name=f"{task.name}-{agent}",
+        rollout_name=f"{task.name}__{agent}",
+        **fields,
+    )
+    return await Rollout(config).run()
 
 
 def _scored(result, reward):
@@ -94,6 +96,30 @@ def _scored(result, reward):
 def _needs_docker():
     if not docker_available():
         pytest.skip("needs a Docker daemon")
+
+
+def harden_the_shared_verifier(monkeypatch) -> None:
+    """Give the trial's shared verifier strict's hardening.
+
+    These trials check what that hardening does in the agent's sandbox. An
+    unset integrity is audit now, which runs test.sh as written, and
+    strict through RolloutConfig moves the verifier into its own sandbox,
+    where the turn's root changes outside the workspace do not exist. So the
+    trial stays audit and its verifier, in the agent's sandbox, is hardened
+    as strict hardens it."""
+    import benchflow.rollout as rollout_mod
+
+    plain = rollout_mod._verify_rollout
+
+    async def strict(*args, **kwargs):
+        return await plain(*args, **{**kwargs, "integrity": "strict"})
+
+    monkeypatch.setattr(rollout_mod, "_verify_rollout", strict)
+
+
+@pytest.fixture(autouse=True)
+def _hardened_shared_verifier(monkeypatch):
+    harden_the_shared_verifier(monkeypatch)
 
 
 # -- start-up hooks: largest-eigenval ------------------------------------------

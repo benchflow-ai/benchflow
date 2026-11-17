@@ -46,7 +46,7 @@ A broken test scores the trial 0 and counts it as a failure, with a `Verifier sc
 |---|---|---|
 | exited with an error and wrote no reward | scored, reward 0 | `Verifier scored 0: verifier exited with rc=1; no reward file found at ...` |
 | ran past `verifier.timeout_sec`, set in the task's `task.md` | scored, reward 0 | `Verifier scored 0: verifier timed out after 10.0s` |
-| wrote a reward outside 0 to 1, or outside the task's `verifier.reward_range` | scored, reward 0; `result.json` keeps the value in `reward_out_of_range_info` | `Verifier scored 0: reward out of range: verifier/reward.txt: reward = 2.0 is outside [0.0, 1.0]` |
+| wrote a reward outside 0 to 1, or outside the task's `verifier.reward_range` | scored as written under integrity `audit` and `off`, noted in `reward_out_of_range_info` and summary.json's `rewards_outside_range`; under `--integrity strict`, reward 0 | `reward outside 0-1: reward = 2.0, recorded as test.sh wrote it`; strict: `Verifier scored 0: reward out of range: verifier/reward.txt: reward = 2.0 is outside [0.0, 1.0]` |
 | wrote something that isn't a number | scored, reward 0 | `Verifier scored 0: Failed to parse rewards from text file ...` |
 
 What the test printed is in the trial's `verifier/test-stdout.txt`. Fix the test before you count such a trial against the agent.

@@ -12,7 +12,12 @@ from benchflow.providers.litellm_config import (
     litellm_proxy_config,
     resolve_litellm_route,
 )
-from benchflow.providers.pricing_snapshot import PRICES, VALID_THROUGH
+from benchflow.providers.pricing_snapshot import (
+    PRICES,
+    SNAPSHOT_DATE,
+    VALID_THROUGH,
+    rates_past_their_change,
+)
 
 ENV = {"XIAOMI_BASE_URL": "https://api.xiaomimimo.com/v1"}
 
@@ -128,12 +133,22 @@ def test_haiku_5_5_over_100k_tokens_costs_its_higher_rates_at_the_gateway():
     )
 
 
-def test_no_snapshot_rate_is_past_the_vendors_announced_change():
+def test_every_dated_rate_was_current_on_the_snapshot_date():
     """Google doubles Gemini 4 Argon's rates on 2026-12-01 and Gemini 3.8
-    Flash's on 2027-01-01: after that the snapshot needs a dated refresh."""
-    for key, last_day in VALID_THROUGH.items():
-        assert key in PRICES
-        assert date.today() <= date.fromisoformat(last_day), (
-            f"{key} rates ended {last_day}; read the vendor's pricing page "
-            "and update pricing_snapshot.PRICES, VALID_THROUGH and this date"
-        )
+    Flash's on 2027-01-01. The test reads the snapshot as of the day it was
+    read, never the clock: from 2026-12-01 a clock-based test failed every
+    PR. Whether a rate has since passed its change is the release
+    gate's check (tools/check_price_snapshot.py)."""
+    assert set(VALID_THROUGH) <= set(PRICES)
+    assert rates_past_their_change(date.fromisoformat(SNAPSHOT_DATE)) == {}
+
+
+def test_a_rate_past_its_announced_change_is_named():
+    assert rates_past_their_change(date(2026, 11, 30)) == {}
+    assert rates_past_their_change(date(2026, 12, 1)) == {
+        ("gemini", "gemini-4-argon"): "2026-11-30"
+    }
+    assert set(rates_past_their_change(date(2027, 1, 1))) == {
+        ("gemini", "gemini-4-argon"),
+        ("gemini", "gemini-3.8-flash"),
+    }

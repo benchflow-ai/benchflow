@@ -20,11 +20,13 @@ import stat
 import subprocess
 import sys
 import sysconfig
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from benchflow._utils.scoring import PLUGIN_GUARD_REJECTED
 from benchflow.sandbox import _pytest_plugin_guard as guard
 from benchflow.sandbox import lockdown
 from benchflow.sandbox.lockdown import (
@@ -233,8 +235,10 @@ async def test_dependency_an_optional_plugin_declares_is_checked_too(
     )
 
     assert "Verifier plugin trust rejected: agent_dependency" in stdout_of(layout)
-    assert refused_scored_zero(rewards, error), (rewards, error)
-    assert "pytest plugin guard not confirmed" in caplog.text
+    # A 0 that names the agent's file ((g2)).
+    assert rewards == {"reward": 0.0}, (rewards, error)
+    assert error.startswith(PLUGIN_GUARD_REJECTED) and "agent_dependency" in error
+    assert "Verifier scored 0: plugin guard rejected: " in caplog.text
     assert not proof.exists()
 
 
@@ -244,7 +248,8 @@ def test_optional_plugin_the_command_line_disables_is_not_loaded(monkeypatch):
     manager = SimpleNamespace(
         is_blocked=lambda name: False,
         get_plugin=lambda name: None,
-        import_plugin=lambda name, **kwargs: loaded.append(name),
+        # pytest 4.4 and later: entry points by name.
+        import_plugin=lambda name, consider_entry_points=False: loaded.append(name),
     )
     monkeypatch.setattr(guard, "_BENCHFLOW_OPTIONAL", ["ctrf"])
     monkeypatch.setattr(guard, "_present", lambda name: True)
@@ -265,6 +270,8 @@ def test_optional_plugin_that_fails_to_import_is_not_a_guard_crash(
     guard crashing (which would leave the run unscored).
     """
     markers = _armed_markers(monkeypatch, tmp_path)
+    # test.sh's own pytest, not one a test runs (which leaves no marker).
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setattr(guard, "_BENCHFLOW_OPTIONAL", ["broken"])
     monkeypatch.setattr(guard, "_present", lambda name: True)
     monkeypatch.setattr(guard, "_validate", lambda names, **kwargs: None)
@@ -294,7 +301,9 @@ async def test_declared_plugins_stay_required_flags(tmp_path):
     task.task_dir = tmp_path
     task.config.verifier.pytest_plugins = ["declared_plugin"]
 
-    await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+    await harden_before_verify(
+        env, task, sandbox_user=None, workspace="/app", integrity="strict"
+    )
 
     addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
     assert "-p declared_plugin" in addopts
@@ -649,6 +658,12 @@ def test_owners_still_count_where_write_bits_do_not(tmp_path, monkeypatch):
     plugin.write_text("# the image's\n")
     key = tmp_path / "key"
     key.write_text("x")
+    # The plugin predates the arm (the key's change time). Two writes in one
+    # clock tick share a change time on coarse-ctime kernels (Debian 12's
+    # 6.1: 1,971 of 2,000), and equal is not before.
+    while os.stat(key).st_ctime <= os.stat(plugin).st_ctime:
+        time.sleep(0.001)
+        key.chmod(0o600)
     monkeypatch.setattr(guard, "_BENCHFLOW_ARMED", True)
     monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     blocked = (str(tmp_path / "app"),)
@@ -747,7 +762,9 @@ async def test_hardening_gives_the_guard_and_discovery_the_agents_groups():
     env = _make_env(side_effect=side_effect)
     task = _make_task()
 
-    await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+    await harden_before_verify(
+        env, task, sandbox_user="agent", workspace="/app", integrity="strict"
+    )
 
     assert any(
         "_BENCHFLOW_AGENT_GIDS = (27, 1000)" in source for source in _guard_sources(env)
@@ -952,8 +969,10 @@ async def test_plugin_the_image_conftest_declares_is_trusted_only_while_unchange
         assert "Verifier plugin trust rejected: imgpkg.testing.fixtures" in (
             stdout_of(layout)
         )
-        assert refused_scored_zero(rewards, error), (rewards, error)
-        assert "pytest plugin guard not confirmed" in caplog.text
+        # The agent edited the image's file: a 0 that names it ((g2)).
+        assert rewards == {"reward": 0.0}, (rewards, error)
+        assert error.startswith(PLUGIN_GUARD_REJECTED) and "imgpkg" in error
+        assert "Verifier scored 0: plugin guard rejected: " in caplog.text
         assert not proof.exists()
     else:
         assert "Verifier plugin trust rejected" not in stdout_of(layout), stdout_of(
@@ -1040,3 +1059,79 @@ def test_image_bytes_count_in_a_world_writable_workspace(tmp_path, monkeypatch):
     ).startswith(
         f"{workspace}/pkg/fixtures.py is under {workspace}, which the agent could write"
     )
+
+
+# plugins of the pytest that runs, whether or not discovery found them.
+
+
+async def test_image_plugin_discovery_never_named_is_loaded_where_installed(
+    tmp_path, monkeypatch
+):
+    """astropy-14309's oracle scored 0.
+
+    Discovery reads the Python on the hardening PATH. SWE-bench's test.sh
+    switches to a conda env that was never on it, so pytest-doctestplus (the
+    image's) loaded nowhere and astropy's ini addopts ``--doctest-rst`` stopped
+    pytest with a usage error that test.sh scored 0. A trusted plugin the
+    running pytest has now loads though discovery never named it.
+    """
+
+    def image(layout):
+        # The image's, so there before hardening arms the guard.
+        install_plugin(
+            layout.tmp / "image-site-packages",
+            IMAGE_PLUGIN,
+            name="image_plugin",
+            module="image_plugin_module",
+        )
+
+    def image_python(env, layout):
+        return [*uvx(env, layout), layout.tmp / "image-site-packages"]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        USES_IMAGE_PLUGIN,
+        image_python,
+        before=image,
+        workspace_name="app",
+        discovered=[],
+    )
+
+    assert error is None, error
+    assert rewards == {"reward": 1.0}, stdout_of(layout)
+
+
+async def test_planted_plugin_discovery_never_named_is_still_not_loaded(
+    tmp_path, monkeypatch
+):
+    """Its control: loading what the running pytest has never loads what
+    the guard does not trust. A plugin the agent planted where test.sh's
+    Python sees it stays unloaded, and the solution decides the score."""
+    proof = tmp_path / "hostile-imported"
+
+    def plant(layout):
+        install_plugin(
+            layout.workspace / "agent-plugins",
+            hostile_ctrf(proof),
+            name="planted_plugin",
+            module="planted_plugin_module",
+        )
+
+    def reach_it(env, layout):
+        return [layout.workspace / "agent-plugins"]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        FAILING,
+        reach_it,
+        before=plant,
+        workspace_name="app",
+        published=False,
+        discovered=[],
+    )
+
+    assert error is None, error
+    assert rewards == {"reward": 0.0}, stdout_of(layout)
+    assert not proof.exists()

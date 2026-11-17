@@ -1,11 +1,18 @@
-"""A service the ACP agent leaves running is kept for grading (K2, deterministic).
+"""A service the ACP agent leaves running is graded in audit (K2, deterministic).
 
 ``claude-agent-acp`` on the scripted fake model (the deterministic tier)
 starts an HTTP service on port 5005 with its Bash tool, detached, and ends its
 turn; the task names the port in ``metadata.x-keep-services``. The verifier
-connects to it. Without the key the kill before grading ends the service and
-the trial scores 0; with it the service is kept and the trial scores 1, and
-the kill's record names the kept process and where the port came from.
+connects to it.
+
+The run's integrity is the default, audit ((g2), F2b 19:37Z; the
+faithful default, 09:58Z). S2 (12:36Z): audit runs no kill before grading,
+so the service is alive while test.sh reads it, the trial scores 1, and no
+``kill-before-grading.json`` is written. The rollout ends the agent's
+processes after grading. That end is asserted on Docker in
+``tests/test_keep_services_docker.py``, where the test wraps it; this trial
+runs ``bench eval run`` in a subprocess, which a monkeypatch cannot reach.
+Strict refuses a kept-services task before the agent's turn (DF-4).
 """
 
 from __future__ import annotations
@@ -67,13 +74,13 @@ def test_a_service_the_acp_agent_leaves_running_is_kept(tmp_path):
             fake.__exit__(None, None, None)
     trial = run.trial("keep-service")
     result = json.loads((trial / "result.json").read_text())
+    # test.sh read the service during grading, and the trial scores what it
+    # wrote.
     assert (result.get("rewards") or {}).get("reward") == 1.0, run.output[-4000:]
-    record = json.loads((trial / "kill-before-grading.json").read_text())
-    rows = record["kept_services"]
-    assert [r["port"] for r in rows] == [5005], record
-    assert "http.server 5005" in rows[0]["command"]
-    assert rows[0]["source"] == "the task"
-    assert record["kept_services_no_listener"] == []
-    # The release found no way into /logs/verifier and could read the links
-    # (as the agent user, since root in Docker cannot): nothing was dropped.
-    assert "kept_services_dropped" not in record, record
+    config = json.loads((trial / "config.json").read_text())
+    assert config["integrity"] == "audit", config
+    # No kill before grading in audit (S2), so no kill record. Its rows (the
+    # kept process on port 5005, its command, "the task" as where the port
+    # came from, kept_services_no_listener) and the release's check of the
+    # links (kept_services_dropped) are strict's hardening (DF-4).
+    assert not (trial / "kill-before-grading.json").exists()

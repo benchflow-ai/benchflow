@@ -536,6 +536,9 @@ async def branch(
                 # Host writers follow this path; sandbox bind mounts stay attached
                 # to their original root, whose entries are separately in custody.
                 rollout._rollout_dir = child_dir
+                # The restored main's cover, and the services', in the child's
+                # own service-network.json.
+                await cover_branch_services(rollout)
 
             child_failures: list[BaseException] = []
             observation["status"] = "running"
@@ -599,6 +602,11 @@ async def branch(
                 observation.update(status=child_status(exc), error=error_record(exc))
             finally:
                 rollout._resume_session_id = None
+                # An in-place child ends here, with no cleanup of its own: what
+                # main's metadata rules refused since its restore covered main
+                # goes into its service-network.json now, before the next
+                # child's restore (every trial end records it).
+                await rollout._record_main_metadata_at_end()
                 try:
                     await _bounded_child_cleanup(rollout.disconnect(), rollout=rollout)
                 except BaseException as exc:
@@ -606,6 +614,10 @@ async def branch(
                     observation["cleanup_error"] = error_record(exc)
                     child_failures.append(exc)
                 runtime = rollout._usage_runtime
+                # Read before the runtime is let go.
+                child_shortfall = _child_usage_incomplete(
+                    rollout, proxied=runtime is not None
+                )
                 if runtime is not None:
                     try:
                         await _bounded_child_cleanup(
@@ -640,6 +652,7 @@ async def branch(
                                 "index": index,
                                 "label": child_labels[index] if child_labels else None,
                             },
+                            usage_incomplete_reason=child_shortfall,
                         )
                     except BaseException as exc:
                         evidence_ok = False
@@ -663,6 +676,7 @@ async def branch(
                         rollout._timing,
                         # In place: the child held the parent's sandbox.
                         sandbox_seconds=loop.time() - child_started,
+                        usage_incomplete_reason=child_shortfall,
                     )
                 )
                 try:
@@ -796,6 +810,19 @@ async def branch(
     return value
 
 
+async def cover_branch_services(rollout: Any) -> None:
+    """Cover the trial's compose services and write its service-network.json: a branch trial, each child and a trial started from a
+    checkpoint, whatever the agent (an oracle connects no session, whose
+    connect would otherwise do it). A container covered before is not covered
+    again."""
+    from pathlib import Path
+
+    cover = getattr(rollout, "_cover_task_services", None)
+    folder = getattr(rollout, "_rollout_dir", None)
+    if callable(cover) and folder is not None and getattr(rollout, "_task", None):
+        await cover(Path(folder))
+
+
 async def restore_sandbox_with_services(rollout: Any, image: Any) -> None:
     """Replace ``rollout``'s sandbox with ``image`` and restart its services.
 
@@ -830,6 +857,10 @@ def _make_sub_rollout(
         jobs_dir=fork_dir,
         job_name="children",
         rollout_name=node.id,
+        # A child is never an attempt of the run's retry loop, which neither
+        # retries nor decides it: it judges its ending and sends its spans
+        # when it writes them.
+        owned_by_retry_loop=False,
     )
     sub = type(rollout)(config)
     sub._tree = rollout._tree
@@ -838,6 +869,16 @@ def _make_sub_rollout(
     # The snapshot was taken after the parent installed its agent.
     sub._installed_agent_cfg = getattr(rollout, "_agent_cfg", None)
     sub._from_branch_snapshot = True
+    # The record of the links before the parent's turn: the snapshot holds the
+    # parent's links, which are the turn's for every child too.
+    from benchflow.sandbox import _verifier_links
+
+    sub._inherited_link_record = getattr(
+        getattr(rollout, "_env", None), _verifier_links.INVENTORY, None
+    ) or _verifier_links.load_record(getattr(rollout, "_rollout_dir", None))
+    # The parent's test.sh verdict, decided before its turn on the untouched
+    # image: the child carries it and never re-judges the snapshot.
+    sub._test_sh_preflight_inherited = getattr(rollout, "_test_sh_preflight", None)
     root_dir = getattr(rollout, "_lineage_dir", None) or rollout._rollout_dir
     sub._lineage_dir = root_dir
     sub._lineage_forks = getattr(rollout, "_lineage_forks", None) or getattr(
@@ -905,6 +946,7 @@ async def _run_isolated_children(
                     await sub.start()
                     if not fast:
                         await restore_sandbox_with_services(sub, image)
+                    await cover_branch_services(sub)
                     event.timing["child_restore"][index] = round(
                         loop.time() - started, 3
                     )
@@ -1241,6 +1283,25 @@ async def _bounded_child_cleanup(
         else:
             rollout._branch_cleanup_unquiesced = True
             task.add_done_callback(_swallow_abandoned_outcome)
+
+
+def _child_usage_incomplete(rollout: Any, *, proxied: bool) -> str | None:
+    """Why an in-place child's count, the agent's own reports, may miss
+    calls: its calls went through a model proxy whose log is not
+    read into its record, or a turn ended without its report."""
+    from benchflow.rollout._cost import (
+        INCOMPLETE_BRANCH_CHILD_PROXY,
+        INCOMPLETE_UNREPORTED,
+    )
+
+    reasons = []
+    if proxied:
+        reasons.append(INCOMPLETE_BRANCH_CHILD_PROXY)
+    if getattr(rollout, "_usage_report_missing", False) is True and not getattr(
+        rollout, "_usage_salvaged", False
+    ):
+        reasons.append(INCOMPLETE_UNREPORTED)
+    return "; ".join(reasons) or None
 
 
 def require_safe_branch_world(rollout: Any) -> None:

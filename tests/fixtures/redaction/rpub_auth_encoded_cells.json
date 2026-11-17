@@ -1,0 +1,2992 @@
+[
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "text",
+  "input": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "_masked",
+  "input": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "judge",
+  "input": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A%20Bearer%20<v>",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "text",
+  "input": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "_masked",
+  "input": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "judge",
+  "input": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A%20Basic%20<v>",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "text",
+  "input": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "export",
+  "input": "{\"o\": \"authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "obj",
+  "input": {
+   "o": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "hosted",
+  "input": {
+   "o": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "_masked",
+  "input": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "judge",
+  "input": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "authorization%3a%20bearer%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "publish",
+  "input": {
+   "o": "authorization%3a%20bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "text",
+  "input": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "export",
+  "input": "{\"o\": \"authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "obj",
+  "input": {
+   "o": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "hosted",
+  "input": {
+   "o": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "_masked",
+  "input": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "judge",
+  "input": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "authorization%3a%20basic%20<v> (lower name, lower hex, lower scheme)",
+  "layer": "publish",
+  "input": {
+   "o": "authorization%3a%20basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'authorization%3a%20basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "text",
+  "input": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "_masked",
+  "input": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "judge",
+  "input": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%3A+Bearer+<v> (+ for space)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A+Bearer+FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Bearer+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "text",
+  "input": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "_masked",
+  "input": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "judge",
+  "input": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%3A+Basic+<v> (+ for space)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A+Basic+ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%3A+Basic+' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "text",
+  "input": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "_masked",
+  "input": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "judge",
+  "input": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Authorization%253A%2520Bearer%2520<v> (double-encoded)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%253A%2520Bearer%2520FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Bearer%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "text",
+  "input": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "_masked",
+  "input": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "judge",
+  "input": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Authorization%253A%2520Basic%2520<v> (double-encoded)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%253A%2520Basic%2520ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization%253A%2520Basic%2520' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "text",
+  "input": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "export",
+  "input": "{\"o\": \"https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "obj",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "hosted",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "_masked",
+  "input": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "judge",
+  "input": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "https://api.example/cb?h=Authorization%3A%20Bearer%20<v>&x=1 (in a query)",
+  "layer": "publish",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Bearer%20 ... &x=1' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "text",
+  "input": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "export",
+  "input": "{\"o\": \"https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "obj",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "hosted",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "_masked",
+  "input": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1",
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "judge",
+  "input": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "https://api.example/cb?h=Authorization%3A%20Basic%20<v>&x=1 (in a query)",
+  "layer": "publish",
+  "input": {
+   "o": "https://api.example/cb?h=Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1&x=1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'https://api.example/cb?h=Authorization%3A%20Basic%20 ... &x=1' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "text",
+  "input": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "export",
+  "input": "{\"o\": \"Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "obj",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "hosted",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "_masked",
+  "input": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "judge",
+  "input": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "Proxy-Authorization%3A%20Bearer%20<v>",
+  "layer": "publish",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "text",
+  "input": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "export",
+  "input": "{\"o\": \"Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "obj",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "hosted",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "_masked",
+  "input": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "judge",
+  "input": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "Proxy-Authorization%3A%20Basic%20<v>",
+  "layer": "publish",
+  "input": {
+   "o": "Proxy-Authorization%3A%20Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Proxy-Authorization%3A%20Basic%20' stays",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": true
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "text",
+  "input": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "export",
+  "input": "{\"o\": \"HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "obj",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "hosted",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "_masked",
+  "input": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "judge",
+  "input": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Bearer",
+  "form": "HTTP_AUTHORIZATION=Bearer%20<v> (CGI env, encoded space)",
+  "layer": "publish",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Bearer%20FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Bearer%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "text",
+  "input": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "export",
+  "input": "{\"o\": \"HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "obj",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "hosted",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "_masked",
+  "input": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "judge",
+  "input": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "encoded",
+  "scheme": "Basic",
+  "form": "HTTP_AUTHORIZATION=Basic%20<v> (CGI env, encoded space)",
+  "layer": "publish",
+  "input": {
+   "o": "HTTP_AUTHORIZATION=Basic%20ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'HTTP_AUTHORIZATION=Basic%20' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "text",
+  "input": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization: Bearer FAKEtokAbc123XyZ987qweRty\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "_masked",
+  "input": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "judge",
+  "input": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Bearer",
+  "form": "Authorization: Bearer <v> (plain, control)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization: Bearer FAKEtokAbc123XyZ987qweRty"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Bearer ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "text",
+  "input": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1\"}",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+    }
+   }
+  ],
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "_masked",
+  "input": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the env value is not recorded in config.json (_is_secret_env_value is True)",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "judge",
+  "input": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1",
+  "expected": "by design the task judge masks key families only, not name carriers (outside the 92)",
+  "rc_ece604802": "leak",
+  "head_2db586b9e": "leak",
+  "in_the_92": false
+ },
+ {
+  "group": "control-plain",
+  "scheme": "Basic",
+  "form": "Authorization: Basic <v> (plain, control)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization: Basic ZGVwbG95dXNlcjpGQUtFcGFzczEyMzQ1"
+  },
+  "expected": "the made-up value is gone (masked); the prefix 'Authorization: Basic ' stays",
+  "rc_ece604802": "masked",
+  "head_2db586b9e": "masked",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "text",
+  "input": "Authorization%3A%20required",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A%20required\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A%20required"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A%20required"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A%20required"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "_masked",
+  "input": "Authorization%3A%20required",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A%20required"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "judge",
+  "input": "Authorization%3A%20required",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20required (prose)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A%20required"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "text",
+  "input": "has_authorization%3D1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "export",
+  "input": "{\"o\": \"has_authorization%3D1\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "obj",
+  "input": {
+   "o": "has_authorization%3D1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "has_authorization%3D1"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "hosted",
+  "input": {
+   "o": "has_authorization%3D1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "_masked",
+  "input": "has_authorization%3D1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "has_authorization%3D1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "judge",
+  "input": "has_authorization%3D1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "has_authorization%3D1",
+  "layer": "publish",
+  "input": {
+   "o": "has_authorization%3D1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "text",
+  "input": "https://x.example/cb?state=authorization%3Apending&x=1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "export",
+  "input": "{\"o\": \"https://x.example/cb?state=authorization%3Apending&x=1\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "obj",
+  "input": {
+   "o": "https://x.example/cb?state=authorization%3Apending&x=1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "https://x.example/cb?state=authorization%3Apending&x=1"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "hosted",
+  "input": {
+   "o": "https://x.example/cb?state=authorization%3Apending&x=1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "_masked",
+  "input": "https://x.example/cb?state=authorization%3Apending&x=1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "https://x.example/cb?state=authorization%3Apending&x=1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "judge",
+  "input": "https://x.example/cb?state=authorization%3Apending&x=1",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "state=authorization%3Apending in a query",
+  "layer": "publish",
+  "input": {
+   "o": "https://x.example/cb?state=authorization%3Apending&x=1"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "text",
+  "input": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "export",
+  "input": "{\"o\": \"https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "obj",
+  "input": {
+   "o": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "hosted",
+  "input": {
+   "o": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "_masked",
+  "input": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "judge",
+  "input": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "encoded URL, no Authorization",
+  "layer": "publish",
+  "input": {
+   "o": "https://x.example/?q=a%3Ab%20c%20Bearer%20of%20news"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "text",
+  "input": "set the Authorization%3A header to Bearer%20<token>",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "export",
+  "input": "{\"o\": \"set the Authorization%3A header to Bearer%20<token>\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "obj",
+  "input": {
+   "o": "set the Authorization%3A header to Bearer%20<token>"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "set the Authorization%3A header to Bearer%20<token>"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "hosted",
+  "input": {
+   "o": "set the Authorization%3A header to Bearer%20<token>"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "_masked",
+  "input": "set the Authorization%3A header to Bearer%20<token>",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "set the Authorization%3A header to Bearer%20<token>"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "judge",
+  "input": "set the Authorization%3A header to Bearer%20<token>",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "doc text naming the header",
+  "layer": "publish",
+  "input": {
+   "o": "set the Authorization%3A header to Bearer%20<token>"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "text",
+  "input": "authorization%3A%20none",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "export",
+  "input": "{\"o\": \"authorization%3A%20none\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "obj",
+  "input": {
+   "o": "authorization%3A%20none"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "authorization%3A%20none"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "hosted",
+  "input": {
+   "o": "authorization%3A%20none"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "_masked",
+  "input": "authorization%3A%20none",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "authorization%3A%20none"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "judge",
+  "input": "authorization%3A%20none",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "authorization%3A%20none",
+  "layer": "publish",
+  "input": {
+   "o": "authorization%3A%20none"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "text",
+  "input": "Authorization%3A%20Bearer",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A%20Bearer\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A%20Bearer"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A%20Bearer"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A%20Bearer"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "_masked",
+  "input": "Authorization%3A%20Bearer",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A%20Bearer"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "judge",
+  "input": "Authorization%3A%20Bearer",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A%20Bearer alone (no credential after it)",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A%20Bearer"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "text",
+  "input": "Authorization%3A",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "export",
+  "input": "{\"o\": \"Authorization%3A\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "obj",
+  "input": {
+   "o": "Authorization%3A"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "Authorization%3A"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "hosted",
+  "input": {
+   "o": "Authorization%3A"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "_masked",
+  "input": "Authorization%3A",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "Authorization%3A"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "judge",
+  "input": "Authorization%3A",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "Authorization%3A alone",
+  "layer": "publish",
+  "input": {
+   "o": "Authorization%3A"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "text",
+  "input": "grant_type=authorization_code%3Dabc",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "export",
+  "input": "{\"o\": \"grant_type=authorization_code%3Dabc\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "obj",
+  "input": {
+   "o": "grant_type=authorization_code%3Dabc"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "grant_type=authorization_code%3Dabc"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "hosted",
+  "input": {
+   "o": "grant_type=authorization_code%3Dabc"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "_masked",
+  "input": "grant_type=authorization_code%3Dabc",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "grant_type=authorization_code%3Dabc"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "judge",
+  "input": "grant_type=authorization_code%3Dabc",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "grant_type=authorization_code%3Dabc",
+  "layer": "publish",
+  "input": {
+   "o": "grant_type=authorization_code%3Dabc"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "text",
+  "input": "the authorization step failed; retry the authorization",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "export",
+  "input": "{\"o\": \"the authorization step failed; retry the authorization\"}",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "obj",
+  "input": {
+   "o": "the authorization step failed; retry the authorization"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "acp",
+  "input": [
+   {
+    "type": "x",
+    "rawInput": {
+     "o": "the authorization step failed; retry the authorization"
+    }
+   }
+  ],
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "hosted",
+  "input": {
+   "o": "the authorization step failed; retry the authorization"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "_masked",
+  "input": "the authorization step failed; retry the authorization",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "config",
+  "input": {
+   "env_name": "X",
+   "env_value": "the authorization step failed; retry the authorization"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "judge",
+  "input": "the authorization step failed; retry the authorization",
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ },
+ {
+  "group": "overmask-control",
+  "scheme": null,
+  "form": "plain prose word",
+  "layer": "publish",
+  "input": {
+   "o": "the authorization step failed; retry the authorization"
+  },
+  "expected": "kept",
+  "rc_ece604802": "kept",
+  "head_2db586b9e": "kept",
+  "in_the_92": false
+ }
+]

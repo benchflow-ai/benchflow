@@ -30,6 +30,7 @@ from benchflow.branch_run import (
     ChildSpec,
     load_checkpoint_source,
     parse_child_spec,
+    refuse_script_branch,
     run_branch_trial,
     write_branch_job,
 )
@@ -272,7 +273,7 @@ def _plan(
     parent: Literal["continue", "discard"] | None,
     snapshot_layers: Iterable[str],
     concurrency: int,
-    isolate_children: bool,
+    isolate_children: bool | None,
     resume_session: bool,
     child_retries: int,
     continue_after_child_failure: bool,
@@ -315,7 +316,9 @@ def _plan(
             harness=harness,
         )
     except BranchPlanError as exc:
-        raise BranchPlanError(_python_names(str(exc))) from None
+        reworded = BranchPlanError(_python_names(str(exc)))
+        reworded.hint = exc.hint
+        raise reworded from None
 
 
 def _build_plan(
@@ -330,7 +333,7 @@ def _build_plan(
     parent: Literal["continue", "discard"] | None,
     snapshot_layers: Iterable[str],
     concurrency: int,
-    isolate_children: bool,
+    isolate_children: bool | None,
     resume_session: bool,
     child_retries: int,
     continue_after_child_failure: bool,
@@ -385,6 +388,8 @@ def _build_plan(
         agent = str(recorded["agent"])
         model = model or recorded.get("model")
     sandbox = sandbox or (source.provider if source else "docker")
+    # Before check_host's Daytona key check.
+    refuse_script_branch(agent, sandbox)
     requested = RolloutConfig(
         task_path=Path(task_path), agent=agent, environment=sandbox, harness=harness
     )
@@ -433,7 +438,7 @@ async def abranch(
     parent: Literal["continue", "discard"] | None = None,
     snapshot_layers: Iterable[str] = ("sandbox",),
     concurrency: int = 1,
-    isolate_children: bool = False,
+    isolate_children: bool | None = None,
     resume_session: bool = False,
     child_retries: int = 1,
     continue_after_child_failure: bool = True,
@@ -539,7 +544,7 @@ def branch(
     parent: Literal["continue", "discard"] | None = None,
     snapshot_layers: Iterable[str] = ("sandbox",),
     concurrency: int = 1,
-    isolate_children: bool = False,
+    isolate_children: bool | None = None,
     resume_session: bool = False,
     child_retries: int = 1,
     continue_after_child_failure: bool = True,

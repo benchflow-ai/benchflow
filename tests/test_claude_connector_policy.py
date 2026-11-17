@@ -120,7 +120,9 @@ async def test_a_task_with_mcp_servers_is_refused_on_either_harness(
     )
     native = AsyncMock(side_effect=AssertionError("the native harness started"))
     monkeypatch.setattr(trial, "_connect_live_agent", native)
-    with pytest.raises(RuntimeError) as refused:
+    with pytest.raises(
+        RuntimeError, match=r"managed connector policy disables MCP servers"
+    ) as refused:
         await trial.connect()
     assert str(refused.value) == MCP_REFUSAL
     native.assert_not_awaited()

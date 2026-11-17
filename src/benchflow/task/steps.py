@@ -146,6 +146,12 @@ def step_task(task: Any, index: int) -> Any:
             updates[section] = base.model_copy(
                 update={name: getattr(own, name) for name in own.model_fields_set}
             )
+    run_setup = getattr(task, "_benchflow_run_verifier_setup_timeout", None)
+    if run_setup is not None and "verifier" in updates:
+        # The run's --verifier-setup-timeout wins over a step's own.
+        updates["verifier"] = updates["verifier"].model_copy(
+            update={"setup_timeout_sec": run_setup}
+        )
     if updates:
         view.config = task.config.model_copy(update=updates)
     return view

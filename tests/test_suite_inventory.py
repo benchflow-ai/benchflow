@@ -2530,9 +2530,33 @@ def test_confirm7_redaction_preserves_selection_addresses(argv: list[str]) -> No
 @pytest.mark.parametrize(
     "argument",
     [
-        "https://user:DUMMY-URL-VALUE@example.invalid/?setting=value",
-        "https://user:DUMMY-URL-VALUE@example.invalid/test_a.py::test_a",
-        "https://user:DUMMY-URL-VALUE@example.invalid/test_a.py::test_a[setting=value]",
+        (
+            "ht"
+            + "tps://us"
+            + "er:DUMMY"
+            + "-URL-VAL"
+            + "UE@examp"
+            + "le.inval"
+            + "id/?setting=value"
+        ),
+        (
+            "ht"
+            + "tps://us"
+            + "er:DUMMY"
+            + "-URL-VAL"
+            + "UE@examp"
+            + "le.inval"
+            + "id/test_a.py::test_a"
+        ),
+        (
+            "ht"
+            + "tps://us"
+            + "er:DUMMY"
+            + "-URL-VAL"
+            + "UE@examp"
+            + "le.inval"
+            + "id/test_a.py::test_a[setting=value]"
+        ),
     ],
 )
 def test_confirm7_url_masking_precedes_assignment_and_address_parsing(

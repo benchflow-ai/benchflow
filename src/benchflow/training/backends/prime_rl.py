@@ -14,7 +14,7 @@ from hashlib import sha256
 from math import ceil
 from pathlib import Path
 from threading import Thread
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from benchflow.training.run_manifest import (
     CommandRecord,
@@ -23,6 +23,9 @@ from benchflow.training.run_manifest import (
     utc_now,
     write_manifest,
 )
+
+if TYPE_CHECKING:
+    from benchflow.publish.huggingface import HfPublishResult
 
 _ENV_KEYS_TO_RECORD = (
     "HF_TOKEN",
@@ -65,6 +68,7 @@ class PrimeRlSftSpec:
     publish_artifacts: str | None = None
     hf_prefix: str | None = None
     hf_public_read_check: bool = False
+    public: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,7 @@ class PrimeRlSftResult:
     manifest_path: Path
     command_path: Path
     returncode: int
+    published: tuple[HfPublishResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2392,7 +2397,21 @@ def _initial_manifest(
 
 
 def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
+    from benchflow._utils.raw_evidence import refuse_raw_evidence
+
+    if spec.public and not (spec.publish_model or spec.publish_artifacts):
+        raise ValueError("--public requires --publish-model or --publish-artifacts")
     spec = _apply_compat_profile(spec)
+    # The folders --publish-model and --publish-artifacts upload, before the
+    # training is spent (_publish_outputs refuses them again after it).
+    if spec.publish_model:
+        refuse_raw_evidence(
+            spec.output_dir
+            if spec.output_dir is not None
+            else spec.work_dir / "prime-rl-output"
+        )
+    if spec.publish_artifacts:
+        refuse_raw_evidence(spec.work_dir)
     if spec.cwd is not None and not spec.cwd.is_dir():
         raise ValueError(f"--prime-rl-dir not found: {spec.cwd}")
     config_path = _resolve_config_path(spec.config, spec.cwd)
@@ -2474,12 +2493,13 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
         stdout_thread.join()
         stderr_thread.join()
 
+    published: tuple[HfPublishResult, ...] = ()
     if returncode == 0:
         manifest.overall_status = "succeeded"
         manifest.components[0].status = "succeeded"
         write_manifest(manifest_path, manifest)
         try:
-            _publish_outputs(spec, manifest, manifest_path)
+            published = _publish_outputs(spec, manifest, manifest_path)
         except ValueError as exc:
             manifest.overall_status = "failed"
             manifest.extra["publish_error"] = str(exc)
@@ -2495,16 +2515,17 @@ def run_prime_rl_sft(spec: PrimeRlSftSpec) -> PrimeRlSftResult:
         manifest_path=manifest_path,
         command_path=command_path,
         returncode=returncode,
+        published=published,
     )
 
 
 def _publish_outputs(
     spec: PrimeRlSftSpec, manifest: TrainRunManifest, manifest_path: Path
-) -> None:
+) -> tuple[HfPublishResult, ...]:
     if spec.model_card not in {None, "auto"}:
         raise ValueError("--model-card currently supports only 'auto'")
     if not spec.publish_model and not spec.publish_artifacts:
-        return
+        return ()
     from benchflow.publish.huggingface import publish_folder_to_hf
 
     output_dir = (
@@ -2513,6 +2534,7 @@ def _publish_outputs(
         else spec.work_dir.resolve() / "prime-rl-output"
     )
     publishes: list[dict[str, str | None]] = []
+    results: list[HfPublishResult] = []
     if spec.publish_model:
         model_prefix = spec.model_tag or ""
         result = publish_folder_to_hf(
@@ -2522,7 +2544,9 @@ def _publish_outputs(
             path_in_repo=model_prefix,
             public_read_check=spec.hf_public_read_check,
             commit_message="Upload BenchFlow SFT model artifacts",
+            private=not spec.public,
         )
+        results.append(result)
         manifest.artifacts["exported_models"].append(result.url)
         publishes.append(
             {
@@ -2531,6 +2555,7 @@ def _publish_outputs(
                 "path": model_prefix,
                 "url": result.url,
                 "commit_url": result.commit_url,
+                "created": result.created,
             }
         )
         manifest.extra["published"] = publishes
@@ -2544,7 +2569,9 @@ def _publish_outputs(
             path_in_repo=artifact_prefix,
             public_read_check=spec.hf_public_read_check,
             commit_message="Upload BenchFlow SFT training artifacts",
+            private=not spec.public,
         )
+        results.append(result)
         publishes.append(
             {
                 "type": "dataset",
@@ -2552,6 +2579,8 @@ def _publish_outputs(
                 "path": artifact_prefix,
                 "url": result.url,
                 "commit_url": result.commit_url,
+                "created": result.created,
             }
         )
     manifest.extra["published"] = publishes
+    return tuple(results)

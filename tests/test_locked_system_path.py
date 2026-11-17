@@ -20,8 +20,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,6 +34,33 @@ from benchflow.sandbox import lockdown
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox._exec_receipt import read_receipt
 from benchflow.sandbox.lockdown import setup_sandbox_user
+
+
+def outside_home(tmp_path: Path) -> Iterator[Path]:
+    """The test's folders, outside every home folder.
+
+    The lock leaves every folder under ``/home`` alone, by design: a home is
+    its user's (``bf_skip`` in ``lockdown._lock_system_path_cmd``). With
+    pytest's temp folders under a home (``--basetemp ~/...``) the lock saw
+    none of these tests' folders and 9 tests failed on such machines, though
+    nothing in the lock was wrong. Their folders go under /tmp then.
+    """
+    if not tmp_path.resolve().is_relative_to("/home"):
+        yield tmp_path
+        return
+    outside = Path(tempfile.mkdtemp(prefix="bf-locked-path-", dir="/tmp"))
+    try:
+        yield outside
+    finally:
+        for folder in [outside, *outside.rglob("*")]:
+            if folder.is_dir() and not folder.is_symlink():
+                folder.chmod(0o700)
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path) -> Iterator[Path]:
+    yield from outside_home(tmp_path)
 
 
 def _ok(stdout: str = "") -> MagicMock:

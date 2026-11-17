@@ -9,6 +9,7 @@ from benchflow.agents.registry import (
     AGENTS,
     get_sandbox_home_dirs,
 )
+from tests.test_en374_login_by_contents import login_file_text
 
 # ── Agent config entries ──
 
@@ -129,7 +130,9 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
-        (creds_dir / ".credentials.json").write_text('{"claudeAiOauth": {}}')
+        (creds_dir / ".credentials.json").write_text(
+            login_file_text(".credentials.json", "dummy")
+        )
         _patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(
@@ -165,7 +168,9 @@ class TestResolveAgentEnvSubscription:
         """Explicit API key wins even when host auth file exists."""
         creds_dir = tmp_path / ".claude"
         creds_dir.mkdir()
-        (creds_dir / ".credentials.json").write_text("{}")
+        (creds_dir / ".credentials.json").write_text(
+            login_file_text(".credentials.json", "dummy")
+        )
         _patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(
@@ -187,7 +192,9 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text('{"OPENAI_API_KEY": "from-login"}')
+        # A ChatGPT login; an auth.json holding an API key is an API key
+        # (tests/test_en374_login_by_contents.py).
+        (codex_dir / "auth.json").write_text(login_file_text("auth.json", "dummy"))
         _patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(

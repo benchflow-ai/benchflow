@@ -69,7 +69,10 @@ def test_record_carries_ors_reward_metadata():
     assert rec["info"]["reward_valid"] is True
 
 
-def test_invalid_reward_clamped_to_zero():
+def test_an_invalid_reward_is_unscored_not_zero():
+    """A NaN verdict is no verdict: null and not completed, as results.jsonl
+    writes it; it used to be clamped to a 0.0 a trainer reads as a
+    failed episode."""
     rec = trajectory_to_verifiers_record(
         task_id="t",
         messages=_sample_trajectory(),
@@ -77,7 +80,8 @@ def test_invalid_reward_clamped_to_zero():
         model="m",
         environment="clawsbench",
     )
-    assert rec["reward"] == 0.0
+    assert rec["reward"] is None
+    assert rec["is_completed"] is False
     assert rec["info"]["reward_valid"] is False
 
 

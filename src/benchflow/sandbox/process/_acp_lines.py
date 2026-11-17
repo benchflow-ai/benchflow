@@ -17,13 +17,14 @@ Keys that identify the message (``jsonrpc``, ``id``, ``method``, ``sessionId``,
 update still closes its tool call. A line that is not JSON keeps its first
 64 KiB. Smaller lines pass through byte for byte.
 
-This file runs in two places. Inside the sandbox, when ``python3`` is there,
+This file runs in two places. Inside the sandbox, when a trusted ``python3``
+is there (``/usr/bin`` or, in the official Python images, ``/usr/local/bin``),
 ``filter_command`` pipes the agent's stdout through ``python3 -c <this
-file>`` (``main``), before the transport sees it. On the host, the transport
-applies ``shrink_line`` to any line still over the limit (an image without
-``python3``), so both paths deliver the same rewritten line. It therefore
-uses the standard library only and Python 3.6 syntax: no annotations or
-walrus.
+file>`` (``main``, run as the file ``python3`` resolves to), before the
+transport sees it. On the host, the transport applies ``shrink_line`` to any
+line still over the limit (an image without ``python3``), so both paths
+deliver the same rewritten line. It therefore uses the standard library only
+and Python 3.6 syntax: no annotations or walrus.
 """
 
 import contextlib
@@ -56,6 +57,38 @@ _KEEP_KEYS = frozenset(
     ]
 )
 _BASE64 = re.compile(r"[A-Za-z0-9+/=\r\n]+")
+# The interpreters the in-sandbox filter may run, in order: Debian's, then
+# the official Python images' (python:3.12-slim has no /usr/bin/python3).
+_PYTHONS = ("/usr/bin/python3", "/usr/local/bin/python3")
+# sh: bf_acp_root_only NAME walks NAME one entry at a time, as the kernel
+# does, reading each link with readlink and following it (40 at most). It
+# sets bf_r to the file NAME names when every folder on the way and that
+# file are root's and closed to group and others, and every link on the way
+# is root's (a link's own mode means nothing). bf_r has no link left in it,
+# and the filter runs bf_r, not NAME: a link nobody checked, or one another
+# user could replace, cannot choose what runs, at the check or after it.
+# The filter runs as the agent's user. GNU or BusyBox tools; they write
+# nothing to the agent's stderr.
+_ROOT_ONLY = (
+    "bf_acp_root_only() { "
+    "case $1 in /*) ;; *) return 1;; esac; "
+    "bf_r=; bf_q=$1; bf_n=0; bf_x=/; while :; do "
+    'if [ -L "$bf_x" ]; then '
+    'bf_n=$((bf_n + 1)); [ "$bf_n" -le 40 ] || return 1; '
+    'bf_s=$(/usr/bin/stat -c %u -- "$bf_x" 2>/dev/null) && [ "$bf_s" = 0 ] '
+    "|| return 1; "
+    'bf_t=$(/usr/bin/readlink -- "$bf_x" 2>/dev/null && echo .) || return 1; '
+    "bf_t=${bf_t%?.}; case $bf_t in /*) bf_r=;; esac; bf_q=$bf_t/$bf_q; "
+    "else "
+    "bf_s=$(/usr/bin/stat -c '%u %a' -- \"$bf_x\" 2>/dev/null) || return 1; "
+    '[ "${bf_s%% *}" = 0 ] && [ $((0${bf_s#* } & 022)) -eq 0 ] || return 1; '
+    "bf_r=${bf_x%/}; fi; "
+    'bf_x=; while [ -z "$bf_x" ] && [ -n "$bf_q" ]; do '
+    "bf_e=${bf_q%%/*}; case $bf_q in */*) bf_q=${bf_q#*/};; *) bf_q=;; esac; "
+    'case $bf_e in ""|.) ;; ..) bf_r=${bf_r%/*};; *) bf_x=$bf_r/$bf_e;; esac; '
+    'done; [ -n "$bf_x" ] || break; done; '
+    '[ -n "$bf_r" ] && [ -f "$bf_r" ]; }'
+)
 
 
 def line_limit():
@@ -177,8 +210,10 @@ def main():
 
 def filter_command(command, limit=None):
     """``command`` with its stdout piped through this filter when the sandbox
-    has a ``python3`` that can run it; ``command`` itself otherwise, or when
-    the limit is off. For a ``bash -c`` / ``bash -lc`` command string."""
+    has a trusted ``python3`` that can run it (the first of ``_PYTHONS`` that
+    ``_ROOT_ONLY`` admits, run as the file it checked); ``command`` itself
+    otherwise, or when the limit is off. For a ``bash -c`` / ``bash -lc``
+    command string."""
     if limit is None:
         limit = line_limit()
     if limit is None:
@@ -187,13 +222,18 @@ def filter_command(command, limit=None):
         source = handle.read()
     # This helper inherits the admitted login too. Isolate both the probe
     # and runner before Python can import an earlier role's startup files.
-    # Images without this trusted interpreter keep the host-side filter.
-    python = "/usr/bin/python3 -I -S"
-    runner = f"{python} -u -c {shlex.quote(source)} {int(limit)}"
-    probe = f"{python} -c 'import json, re, shlex, sys' >/dev/null 2>&1"
+    # Images without a trusted interpreter keep the host-side filter.
+    pick = (
+        f"{_ROOT_ONLY}; bf_acp_py=; for bf_c in {' '.join(_PYTHONS)}; do "
+        'if bf_acp_root_only "$bf_c" && "$bf_r" -I -S -c '
+        "'import json, re, shlex, sys' >/dev/null 2>&1; then "
+        "bf_acp_py=$bf_r; break; fi; done; "
+        "unset -f bf_acp_root_only; unset bf_c bf_e bf_n bf_q bf_r bf_s bf_t bf_x"
+    )
+    runner = f'"$bf_acp_py" -I -S -u -c {shlex.quote(source)} {int(limit)}'
     return (
-        f"if {probe}; then set -o pipefail; {{ {command}\n}} | {runner}; "
-        f"else {command}\nfi"
+        f'{pick}; if [ -n "$bf_acp_py" ]; then set -o pipefail; '
+        f"{{ {command}\n}} | {runner}; else {command}\nfi"
     )
 
 

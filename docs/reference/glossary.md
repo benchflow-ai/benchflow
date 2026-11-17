@@ -9,7 +9,7 @@ Each term these docs use, in a line, with the page that covers it.
 | Agent | The program that does a task, such as Claude Code or Codex. | [Agents and models](../evaluate/agents.md) |
 | Artifacts | Files a task declares, saved in each trial's folder and given to a separate verifier. | [Task format](../tasks/task-format.md) |
 | ATIF | A JSON format for agent trajectories; each trial writes one in `trainer/atif.json`. | [Trajectory and rollout formats](../train/export.md#trajectory-and-rollout-formats) |
-| Attempt | One try at a trial. A trial that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default. The trial counts its scored attempt, or its newest when none was scored; a scored attempt is never retried. | [Resume, retries and regrade](../scale/resume.md#retries) |
+| Attempt | One try at a trial. A trial that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default. The trial counts the attempt the run kept, the last one it started; an attempt the run retried never counts, whatever score it carries. | [Resume, retries and regrade](../scale/resume.md#retries) |
 | Benchmark | A set of tasks. Also called a dataset. | [Find a benchmark](../evaluate/find-a-benchmark.md) |
 | bfx | A small Linux program BenchFlow copies into each sandbox to run its own steps there; `bench doctor` checks it. | [Install](../start/install.md#check-your-machine) |
 | Blocker | A rubric criterion that must pass; if it fails, the trial's reward is 0. | [Rubric review](../tasks/rubric-review.md#write-the-rubric) |

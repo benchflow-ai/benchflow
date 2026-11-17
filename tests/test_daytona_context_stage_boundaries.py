@@ -446,7 +446,9 @@ async def test_start_keeps_unrelated_provider_error(tmp_path):
     error.__cause__ = OSError(errno.EIO, "provider transport failed")
     sandbox._strategy = SimpleNamespace(start=AsyncMock(side_effect=error))
     try:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError, match=r"^provider startup diagnostic$"
+        ) as caught:
             await sandbox.start(False)
         assert caught.value is error
         assert contexts._CURRENT.get() is None
@@ -498,7 +500,9 @@ async def test_sdk_upload_tracing_and_duration_are_preserved(
             if error is None:
                 await upload(current, storage)
             else:
-                with pytest.raises(RuntimeError) as caught:
+                with pytest.raises(
+                    RuntimeError, match=r"^object lookup diagnostic$"
+                ) as caught:
                     await upload(current, storage)
                 assert caught.value is error
             records.append(list(events))

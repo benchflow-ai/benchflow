@@ -79,7 +79,12 @@ async def test_policy_failures_abort_recovery(monkeypatch, failure):
             ]
         )
     )
-    with pytest.raises(RuntimeError):
+    error = {
+        "proxy": r"^proxy$",
+        "firewall": r"^firewall$",
+        "probe": r"^Recovery denylist proxy is unavailable to the sandbox UID$",
+    }[failure]
+    with pytest.raises(RuntimeError, match=error):
         await network.prepare_recovery_network(env, config(), "agent")
     if failure == "proxy":
         firewall.assert_not_awaited()

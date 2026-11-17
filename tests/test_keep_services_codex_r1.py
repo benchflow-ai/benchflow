@@ -227,7 +227,11 @@ async def test_a_listener_in_a_threads_own_descriptor_table_is_kept(tmp_path):
     record: dict = {}
     with kill_record.recording_into(record):
         await harden_before_verify(
-            _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+            _env_on(proc),
+            _task([{"port": 5000}]),
+            "agent",
+            workspace="/app",
+            integrity="strict",
         )
     assert str(pid) in proc.live_pids()
     assert str(other) not in proc.live_pids()
@@ -260,7 +264,9 @@ async def test_the_record_keeps_the_turn_end_kill_and_a_service_lost_after_it(
     rollout = SimpleNamespace(
         _branch_child_active=False,
         _review_plan=object(),
-        _config=SimpleNamespace(purpose="task", sandbox_user="agent"),
+        _config=SimpleNamespace(
+            purpose="task", sandbox_user="agent", integrity="strict"
+        ),  # The turn-end kill and quiesce are strict's.
         _env=proc,
         _agent_env={},
         _planes=DefaultRolloutPlanes(),
@@ -279,7 +285,9 @@ async def test_the_record_keeps_the_turn_end_kill_and_a_service_lost_after_it(
 
     record: dict = {}
     with kill_record.recording_into(record):
-        await harden_before_verify(_env_on(proc), task, "agent", workspace="/app")
+        await harden_before_verify(
+            _env_on(proc), task, "agent", workspace="/app", integrity="strict"
+        )
     assert record["killed"] == 0
     assert record["kept_services"] == []
     turn_end = record["kept_services_turn_end"]

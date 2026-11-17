@@ -8,6 +8,12 @@
       },
       "type": "object"
     },
+    "agent_effort_calls": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "agent_retries": {
       "type": [
         "integer",

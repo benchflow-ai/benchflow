@@ -32,8 +32,27 @@ def _finite(value: Any) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
+def _floor(costs: list[dict[str, Any]]) -> dict[str, Any]:
+    """``usage_incomplete`` (and ``cost_incomplete`` when one of them has a
+    USD) when a part counted only some of its calls: its total is a floor."""
+    partial = [cost for cost in costs if cost.get("usage_incomplete") is True]
+    if not partial:
+        return {}
+    fields: dict[str, Any] = {
+        "usage_incomplete": True,
+        "usage_incomplete_parts": len(partial),
+    }
+    if any(cost.get("cost_incomplete") is True for cost in partial):
+        fields["cost_incomplete"] = True
+    return fields
+
+
 def child_cost(
-    native_usage: Any, timing: Any, sandbox_seconds: float | None = None
+    native_usage: Any,
+    timing: Any,
+    sandbox_seconds: float | None = None,
+    *,
+    usage_incomplete_reason: str | None = None,
 ) -> dict[str, dict]:
     """Token counters, phase seconds and cost of one child, for tree.json.
 
@@ -45,16 +64,23 @@ def child_cost(
     usage = native_usage if isinstance(native_usage, dict) else {}
     phases = timing if isinstance(timing, dict) else {}
     total = usage.get("total_tokens")
+    cost: dict[str, Any] = {
+        "tokens": int(total)
+        if isinstance(total, int) and not isinstance(total, bool)
+        else 0,
+        "usd": _finite(usage.get("cost_usd")),
+        "sandbox_seconds": None
+        if sandbox_seconds is None
+        else round(sandbox_seconds, 3),
+    }
+    if usage_incomplete_reason:
+        # ``usage_incomplete_reason``: why the count may miss calls.
+        cost["usage_incomplete"] = True
+        cost["usage_incomplete_reason"] = usage_incomplete_reason
+        if cost["usd"] is not None:
+            cost["cost_incomplete"] = True
     return {
-        "cost": {
-            "tokens": int(total)
-            if isinstance(total, int) and not isinstance(total, bool)
-            else 0,
-            "usd": _finite(usage.get("cost_usd")),
-            "sandbox_seconds": None
-            if sandbox_seconds is None
-            else round(sandbox_seconds, 3),
-        },
+        "cost": cost,
         "usage": {
             key: int(usage.get(key) or 0)
             for key in _USAGE_COUNTERS
@@ -92,6 +118,7 @@ def fork_cost(
         "parent_sandbox_seconds": wall,
         "children_sandbox_seconds": round(children_seconds, 3),
         "sandbox_seconds": round(wall + children_seconds, 3),
+        **_floor(costs),
     }
 
 
@@ -112,6 +139,7 @@ def cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         "usd": round(math.fsum(u for u in usds if u is not None), 6) if known else None,
         "usd_known": known,
         "sandbox_seconds": round(seconds, 3),
+        **_floor([cost for _, cost in costs]),
     }
 
 

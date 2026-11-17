@@ -7,7 +7,13 @@ Two host-side sources, both read-only toward the traced container:
 - **The daemon's exec records.** Every ``docker exec`` (BenchFlow's root
   steps, the exec channel's helper) appears in ``docker events`` as
   ``exec_create``; the Engine API's ``GET /exec/{id}/json`` then gives its
-  user and argv exactly. Nothing is missed, however short-lived.
+  user and argv exactly. Nothing is missed, however short-lived: the trace
+  subscribes to the container's events before it opens and reads them live
+  (``docker events --since`` read back at the end replays only the
+  daemon's last 256 events, of every container, so a busy daemon pushed the
+  traced execs out). The sampler's own start and exit, in the same stream,
+  bracket the trace; a stream that misses either, or an exec's create,
+  fails the trace instead of passing it.
 - **A ``/proc`` sampler** for what those execs start in turn: a separate
   container that shares only the traced container's PID namespace
   (``--pid container:<id>``), with no network, no capabilities, a read-only
@@ -158,25 +164,51 @@ def _is_root(user: str, default_user: str) -> bool:
 class ExecTrace:
     """Records the root process starts in *container* while open."""
 
-    def __init__(self, container: str, *, interval: float = 0.005) -> None:
+    def __init__(
+        self, container: str, *, interval: float = 0.005, fence: float = 60.0
+    ) -> None:
         self.container = container
         self.interval = interval
+        self.fence = fence
         self.sampled: list[dict] = []
         self.exec_ids: list[str] = []
+        self.events: list[dict] = []
         self._threads: list[threading.Thread] = []
         self._sampler_name = PREFIX + "sampler-" + uuid.uuid4().hex[:8]
+        self._sampler_started = threading.Event()
+        self._sampler_gone = threading.Event()
+        self._stream_ended = threading.Event()
 
     def __enter__(self) -> ExecTrace:
+        since = f"{time.time():.6f}"
         inspected = subprocess.run(
-            ["docker", "inspect", "--format", "{{.Id}}\t{{.Config.User}}", self.container],
+            ["docker", "inspect", "--format",
+             "{{.Id}}\t{{json .ExecIDs}}\t{{.Config.User}}", self.container],
             capture_output=True,
             text=True,
             check=True,
         )  # fmt: skip
-        self.container_id, _, self.default_user = inspected.stdout.strip().partition(
-            "\t"
-        )
-        self._since = f"{time.time():.6f}"
+        self.container_id, running, self.default_user = inspected.stdout.rstrip(
+            "\n"
+        ).split("\t", 2)
+        # Execs already running may end inside the trace: their records
+        # come from before it.
+        self._running_before = set(json.loads(running) or [])
+        # The replay from *since* covers the moment before the subscription
+        # is live; the sampler's start, waited for below, shows that it is.
+        self._events = subprocess.Popen(
+            [
+                "docker", "events", "--since", since,
+                "--filter", f"container={self.container_id}",
+                "--filter", f"container={self._sampler_name}",
+                "--format", "{{json .}}",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )  # fmt: skip
+        events = threading.Thread(target=self._read_events, daemon=True)
+        events.start()
+        self._threads.append(events)
         key, _, value = LABEL.partition("=")
         self._sampler = subprocess.Popen(
             [
@@ -195,7 +227,15 @@ class ExecTrace:
         first = self._sampler.stdout.readline()
         if json.loads(first or "{}").get("ready") is not True:
             self._sampler.kill()
+            self._stop_events()
             raise RuntimeError(f"the sampler did not start: {first!r}")
+        if not self._wait_for(self._sampler_started):
+            self._stop_sampler()
+            self._stop_events()
+            raise RuntimeError(
+                "the event stream never showed the sampler's start: "
+                "the trace could miss exec records"
+            )
         reader = threading.Thread(target=self._read_samples, daemon=True)
         reader.start()
         self._threads.append(reader)
@@ -206,10 +246,29 @@ class ExecTrace:
         for line in self._sampler.stdout:
             self.sampled.append(json.loads(line))
 
-    def __exit__(self, *exc) -> None:
-        # Let a last pass see what the final steps started.
-        time.sleep(max(self.interval * 4, 0.05))
-        until = f"{time.time():.6f}"
+    def _read_events(self) -> None:
+        assert self._events.stdout is not None
+        for line in self._events.stdout:
+            event = json.loads(line)
+            self.events.append(event)
+            attributes = (event.get("Actor") or {}).get("Attributes") or {}
+            if attributes.get("name") == self._sampler_name:
+                if event.get("Action") == "start":
+                    self._sampler_started.set()
+                elif event.get("Action") in ("die", "destroy"):
+                    self._sampler_gone.set()
+        self._stream_ended.set()
+
+    def _wait_for(self, seen: threading.Event) -> bool:
+        """Whether the event stream shows *seen* within the fence; False as
+        soon as the stream ends without it."""
+        until = time.monotonic() + self.fence
+        while not seen.wait(0.05):
+            if self._stream_ended.is_set() or time.monotonic() > until:
+                return seen.is_set()
+        return True
+
+    def _stop_sampler(self) -> None:
         assert self._sampler.stdin is not None
         self._sampler.stdin.close()
         try:
@@ -219,23 +278,49 @@ class ExecTrace:
                 ["docker", "rm", "-f", self._sampler_name], capture_output=True
             )
             self._sampler.wait(timeout=30)
+
+    def _stop_events(self) -> None:
+        self._events.terminate()
+        try:
+            self._events.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self._events.kill()
+            self._events.wait(timeout=30)
+
+    def __exit__(self, *exc) -> None:
+        # Let a last pass see what the final steps started.
+        time.sleep(max(self.interval * 4, 0.05))
+        self._stop_sampler()
+        # The sampler exits after every traced step returned, so the stream
+        # has delivered their exec records once it shows that exit.
+        complete = self._wait_for(self._sampler_gone)
+        self._stop_events()
         for thread in self._threads:
             thread.join(timeout=10)
-        events = subprocess.run(
-            [
-                "docker", "events", "--since", self._since, "--until", until,
-                "--filter", f"container={self.container_id}",
-                "--filter", "event=exec_create", "--format", "{{json .}}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )  # fmt: skip
-        for line in events.stdout.splitlines():
-            event = json.loads(line)
-            exec_id = (event.get("Actor") or {}).get("Attributes", {}).get("execID")
-            if exec_id:
-                self.exec_ids.append(exec_id)
+        created, used = [], set()
+        for event in self.events:
+            actor = event.get("Actor") or {}
+            exec_id = (actor.get("Attributes") or {}).get("execID")
+            if actor.get("ID") != self.container_id or not exec_id:
+                continue
+            action = str(event.get("Action") or "").partition(":")[0]
+            if action == "exec_create":
+                created.append(exec_id)
+            elif action in ("exec_start", "exec_die"):
+                used.add(exec_id)
+        self.exec_ids = list(dict.fromkeys(created))
+        if exc[0] is not None:
+            return
+        if not complete:
+            raise RuntimeError(
+                "the event stream never showed the sampler's exit: "
+                "exec records may be missing"
+            )
+        unrecorded = used - set(created) - self._running_before
+        if unrecorded:
+            raise RuntimeError(
+                f"execs started without an exec_create record: {sorted(unrecorded)}"
+            )
 
     def root_starts(self) -> list[Start]:
         """Every root start the trace saw: each root exec from the daemon's

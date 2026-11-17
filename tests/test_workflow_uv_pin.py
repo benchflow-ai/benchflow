@@ -250,3 +250,64 @@ def test_matrix_completion_barrier_requires_all_legs_and_is_not_the_required_che
     assert not barrier.get("continue-on-error", False)
     assert "unit-complete" in jobs["test"]["needs"]
     assert jobs["test"]["if"] == "always()"
+
+
+def test_the_newest_os_leg_stays_out_of_the_release_call() -> None:
+    """Guards PR #190 (review M2): public-release.yml calls test.yml, and its
+    publish needs every job of the call, so the non-required ubuntu-latest
+    leg would hold each release up to its time limit. A called workflow has
+    the caller's name, so the leg runs only under test.yml's own."""
+    workflows = _workflows()
+    test_yml, release = workflows["test.yml"], workflows["public-release.yml"]
+    callers = [
+        job
+        for job in release["jobs"].values()
+        if str(job.get("uses", "")).endswith("/test.yml")
+    ]
+    assert callers, "public-release.yml no longer calls test.yml"
+    assert test_yml["name"] == "test"
+    assert release["name"] != "test"
+    leg = test_yml["jobs"]["unit-latest-os"]
+    assert leg["runs-on"] == "ubuntu-latest"
+    assert leg["continue-on-error"] is True
+    assert leg.get("if") == "github.workflow == 'test'", leg.get("if")
+    # Every other job of test.yml still runs inside the release.
+    others = {
+        job_id: job.get("if")
+        for job_id, job in test_yml["jobs"].items()
+        if job_id != "unit-latest-os"
+    }
+    assert set(others.values()) <= {None, "always()"}, others
+
+
+def test_the_newest_os_leg_cleanup_survives_a_file_the_runner_does_not_own(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #190 (review round 2, L2): the step runs under ``bash -e``,
+    and ``chmod -R`` exits 1 when the tests' folder holds a file the runner
+    does not own, which ended the step after the first quarter. The cleanup
+    line now goes on to remove the folder. A stub chmod exits 1 here."""
+    (step,) = [
+        s
+        for s in _workflows()["test.yml"]["jobs"]["unit-latest-os"]["steps"]
+        if s.get("name") == "Test"
+    ]
+    lines = [ln.strip() for ln in step["run"].splitlines() if '"$BASETEMP_ROOT"' in ln]
+    cleanup = [ln for ln in lines if ln.startswith("chmod")]
+    assert len(cleanup) == 1, lines
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "chmod").write_text("#!/bin/sh\nexit 1\n")
+    (stubs / "chmod").chmod(0o755)
+    basetemp = tmp_path / "pytest-of-runner"
+    (basetemp / "pytest-0").mkdir(parents=True)
+    (basetemp / "pytest-0" / "kept.txt").write_text("x")
+    done = subprocess.run(
+        ["bash", "-e", "-c", f"{cleanup[0]}\necho continued"],
+        env={"PATH": f"{stubs}:/usr/bin:/bin", "BASETEMP_ROOT": str(basetemp)},
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "continued"
+    assert not basetemp.exists()

@@ -10,7 +10,7 @@ checker makes that lane executable:
 - optionally run oracle Docker evals and validate reward artifacts, and
 - write a machine-readable evidence summary.
 
-Guards: ENG-93 trace-to-task e2e evidence.
+Guards: trace-to-task e2e evidence.
 """
 
 from __future__ import annotations

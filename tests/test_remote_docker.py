@@ -373,6 +373,12 @@ async def test_compose_errors_never_show_the_ssh_user(tmp_path, monkeypatch, fak
     with pytest.raises(RuntimeError) as info:
         await sandbox.start(force_build=False)
     assert SECRET_USER not in str(info.value)
+    assert str(info.value) == (
+        "remote-docker[ssh]: Permission denied (publickey); check SSH "
+        "authentication and remote Docker access\n"
+        "remote-docker[ssh]: cannot connect to the Docker daemon; check the remote "
+        "Docker host, TLS and proxy configuration"
+    ), str(info.value)
 
 
 async def test_full_remote_disk_is_named(tmp_path, monkeypatch, fake):

@@ -9,8 +9,11 @@ low score means a weak agent or a broken task. ``bench`` prints who ran them: th
 from __future__ import annotations
 
 import json
+import os
+import re
 import tarfile
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,79 @@ _UNTESTED = {
 }
 # A pushed job never carries these: credentials and the operator's own settings.
 _PUSH_EXCLUDE = {".env", ".netrc", "auth.json", ".credentials.json"}
+# How long _pack_job may mask one over-limit text file line by line.
+_LINE_MASK_BUDGET_SEC = 600.0
+_KEY_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+_KEY_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")
+# What _pack_job sends as it is: a real binary, by extension or magic bytes.
+_BINARY_SUFFIXES = frozenset(
+    [
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".tif",
+        ".tiff",
+        ".mp4",
+        ".m4v",
+        ".mov",
+        ".webm",
+        ".mkv",
+        ".avi",
+        ".mp3",
+        ".wav",
+        ".ogg",
+        ".flac",
+        ".zip",
+        ".gz",
+        ".tgz",
+        ".bz2",
+        ".xz",
+        ".zst",
+        ".7z",
+        ".tar",
+        ".whl",
+        ".jar",
+        ".sqlite",
+        ".sqlite3",
+        ".db",
+        ".pdf",
+        ".npy",
+        ".npz",
+        ".pt",
+        ".pth",
+        ".safetensors",
+        ".parquet",
+        ".so",
+        ".pyc",
+        ".wasm",
+        ".ttf",
+        ".otf",
+        ".woff",
+        ".woff2",
+    ]
+)
+_BINARY_MAGIC = (
+    b"\x89PNG",
+    b"\xff\xd8\xff",
+    b"GIF8",
+    b"PK\x03\x04",
+    b"\x1f\x8b",
+    b"BZh",
+    b"\xfd7zXZ\x00",
+    b"(\xb5/\xfd",
+    b"SQLite format 3\x00",
+    b"%PDF",
+    b"\x1aE\xdf\xa3",
+    b"\x7fELF",
+    b"RIFF",
+    b"OggS",
+    b"fLaC",
+    b"ID3",
+)
 
 
 def _client(hub: str | None):
@@ -469,46 +545,203 @@ def _job_dataset(job_dir: Path) -> str | None:
 
 
 def _pack_job(job_dir: Path, dest: Path) -> int:
-    """A .tar.gz of the job folder (links and credential files left out),
+    """A .tar.gz of the job folder (links, credential files and a hosted
+    run's raw evidence left out),
     with BenchFlow's count of it by its scoring rule (``scoring.json``, from
     ``benchflow.setting_groups.scoring_document``) beside the trials, so the
-    Hub counts the same way; returns the number of files."""
+    Hub counts the same way; returns the number of files.
+
+    Every text file goes up with its secrets masked, as ``bench bundle``
+    masks them (``evidence_bundle._redacted_bytes``): the agent's own output
+    and test.sh's are raw on disk. Only a real binary (``_is_binary``: its
+    magic bytes or its extension) goes up as it is; any other file is text,
+    a stray non-UTF-8 byte or NUL included, and goes up masked
+    (``_masked_bytes``). A text file over the masking limit is masked line by
+    line (``_masked_lines``). A text file is left out and named, never sent
+    raw, only when its masking does not settle or the line-by-line pass runs
+    past its time budget."""
     import io
 
+    from benchflow._utils.raw_evidence import is_raw_evidence
+    from benchflow.evidence_bundle import _TEXT_LIMIT
     from benchflow.setting_groups import SCORING_FILE, scoring_document
 
     count = 0
     ours = f"{job_dir.name}/{SCORING_FILE}"
+    masked: Counter[str] = Counter()
+    left_out: list[str] = []
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        nonlocal count
         if info.issym() or info.islnk() or not (info.isfile() or info.isdir()):
             return None
         if Path(info.name).name in _PUSH_EXCLUDE or info.name == ours:
             return None
+        # A hosted run's raw vf-eval output stays on this machine.
+        source = job_dir.parent / info.name
+        if info.isdir() and is_raw_evidence(source.parent, source.name):
+            return None
         info.uid = info.gid = 0
         info.uname = info.gname = ""
-        count += info.isfile()
         return info
+
+    def add(tar: tarfile.TarFile, path: Path, arcname: str) -> None:
+        nonlocal count
+        info = keep(tar.gettarinfo(str(path), arcname))
+        if info is None:
+            return
+        if info.isdir():
+            tar.addfile(info)
+            for child in sorted(os.listdir(path)):
+                add(tar, path / child, f"{arcname}/{child}")
+            return
+        if _is_binary(path):
+            with path.open("rb") as handle:
+                tar.addfile(info, handle)
+            count += 1
+            return
+        if info.size > _TEXT_LIMIT:
+            with tempfile.SpooledTemporaryFile(max_size=64 * 1024**2) as spool:
+                if not _masked_lines(path, masked, spool):
+                    left_out.append(arcname)
+                    return
+                info.size = spool.seek(0, os.SEEK_END)
+                spool.seek(0)
+                tar.addfile(info, spool)
+            count += 1
+            return
+        try:
+            data = _masked_bytes(path, path.read_bytes(), masked)
+        except ValueError:
+            left_out.append(arcname)
+            return
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+        count += 1
 
     document = scoring_document(job_dir)
     with tarfile.open(dest, "w:gz") as tar:
-        tar.add(job_dir, arcname=job_dir.name, filter=keep)
+        add(tar, job_dir, job_dir.name)
         if document is not None:
             data = json.dumps(document, indent=2, allow_nan=False).encode()
             info = tarfile.TarInfo(ours)
             info.size, info.mode = len(data), 0o644
             tar.addfile(info, io.BytesIO(data))
             count += 1
+    for name in left_out:
+        console.print(
+            f"Not pushed: {escape(name)} (a text file whose secrets could not be masked)"
+        )
     return count
+
+
+def _masked_lines(path: Path, masked: Counter[str], out: Any) -> bool:
+    """Write *path*, a text file too big for one masking pass, to *out*
+    masked line by line: a line the redactor would change, alone or read with
+    the line before it (``password:`` then its value), is masked whole, the
+    line before it too in the second case, and so is every line of a private
+    key block, whose body lines carry no cue of their own. Bytes that are not
+    UTF-8 round-trip unchanged (surrogateescape). False when the pass runs
+    past ``_LINE_MASK_BUDGET_SEC``."""
+    import time
+
+    from benchflow.evidence_bundle import _redact_text
+    from benchflow.publish.redact import REDACTED
+
+    def write(raw: bytes, line: str, mask: bool) -> None:
+        if mask:
+            ending = line[len(line.rstrip("\r\n")) :]
+            out.write((REDACTED + ending).encode("utf-8", "surrogateescape"))
+        else:
+            out.write(raw)
+
+    deadline = time.monotonic() + _LINE_MASK_BUDGET_SEC
+    in_key = False
+    held: tuple[bytes, str, bool] | None = None
+    with path.open("rb") as handle:
+        for raw in handle:
+            if time.monotonic() > deadline:
+                return False
+            line = raw.decode("utf-8", "surrogateescape")
+            found: Counter[str] = Counter()
+            if in_key or _KEY_BEGIN.search(line):
+                in_key = not _KEY_END.search(line)
+                found["private key block"] += 1
+            else:
+                _redact_text(line, found)
+            mask = bool(found)
+            if not mask and held is not None and not held[2]:
+                _redact_text(held[1] + line, found)
+                if found:
+                    mask = True
+                    held = (held[0], held[1], True)
+            masked.update(found)
+            if held is not None:
+                write(*held)
+            held = (raw, line, mask)
+    if held is not None:
+        write(*held)
+    return True
+
+
+def _masked_bytes(path: Path, data: bytes, masked: Counter[str]) -> bytes:
+    """*data*, a text file within the masking limit, masked as ``bench
+    bundle`` masks it; a stray non-UTF-8 byte does not make it binary: it is
+    read with surrogateescape and round-trips unchanged. Raises ValueError
+    when the masking does not settle."""
+    from benchflow.evidence_bundle import _redact_text, _redacted_bytes
+
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        found: Counter[str] = Counter()
+        text = _redact_text(data.decode("utf-8", "surrogateescape"), found)
+        if not found:
+            return data
+        masked.update(found)
+        return text.encode("utf-8", "surrogateescape")
+    return _redacted_bytes(path, data, masked)
+
+
+def _is_binary(path: Path) -> bool:
+    """Whether *path* is a real binary: its extension or magic bytes say so
+    (images, video, audio, archives, databases, fonts, compiled code) and its
+    first 64 KiB are not clean text (a NUL, or not UTF-8). Some magic is
+    plain ASCII (RIFF, ID3, %PDF), so a text log named ``case.db`` or
+    starting ``RIFF`` is text. Any other file is text to ``_pack_job``,
+    however its bytes decode."""
+    import codecs
+
+    with path.open("rb") as handle:
+        head = handle.read(64 * 1024)
+    claimed = (
+        path.suffix.lower() in _BINARY_SUFFIXES
+        or head.startswith(_BINARY_MAGIC)
+        or head[4:8] == b"ftyp"
+    )
+    if not claimed:
+        return False
+    if b"\0" in head:
+        return True
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def push(
     job_dir: Path, hub: str | None, *, dataset: str | None, label: str | None
 ) -> None:
     """Upload a finished job (traces, results, an embodied trial's record and video) to the Hub as one run."""
+    from benchflow._utils.raw_evidence import raw_evidence_refusal
     from benchflow.hub.client import HubError
 
+    refusal = raw_evidence_refusal(job_dir)
+    if refusal is not None:
+        print_error(
+            refusal, next_step="bench hub push <the job folder that holds the run>"
+        )
+        raise typer.Exit(2)
     if not (job_dir / "summary.json").is_file():
         print_error(
             f"{job_dir} is not a finished job folder (no summary.json)",

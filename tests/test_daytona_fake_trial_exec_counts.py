@@ -53,14 +53,16 @@ from tests.integration.deterministic import harness as h
 
 # Both trials share the module's image, which the fixture removes when its
 # module is done: under -n (CI's -n auto) two workers would each build it and
-# one would remove it under the other's trial (PY8 U12).
+# one would remove it under the other's trial (PY8 U12). The tag is this
+# session's own: a second suite on the same daemon removed a shared tag under
+# this one's trials.
 pytestmark = [
     pytest.mark.deterministic,
     pytest.mark.xdist_group("fake_daytona_image"),
 ]
 
 REPORT_ENV = "BENCHFLOW_EXEC_COUNT_REPORT"
-IMAGE = "benchflow-test-fake-daytona:deterministic"
+IMAGE = f"benchflow-test-fake-daytona:deterministic-{uuid.uuid4().hex[:12]}"
 
 
 @dataclass
@@ -663,6 +665,16 @@ async def test_one_fake_trial_with_merged_execs(
     Since 88ac33cde, the trusted verifier PATH verdict also exceeds the
     transport bound and is staged. Six payload uploads still use 46 execs;
     the command-size and one-upload-per-payload checks remain below.
+    47. The oracle's sandbox-user setup now reads the
+    workspace in a receipt exec of its own, before the kit's build, as an
+    agent trial's setup does, so its test.sh gets the image's mode back too.
+    48. Right after the sandbox starts, one root exec reads Yama's
+    ptrace_scope, PID 1's uids and the sandbox user's uid
+    (sandbox/pid1_ptrace.py), for the start refusal and the trial's record.
+    49. At teardown, before it places its own copies, root removes
+    /logs/agent's claude-sessions and codex-sessions folders, which test.sh
+    may have planted, in one exec (_session_log.clear_session_log_folders_in_sandbox;
+    on a sandbox whose /logs/agent is not the host's mount it always runs).
     """
     result, counts = await _one_trial(monkeypatch, tmp_path, "u12")
     summary = counts.summary()
@@ -700,13 +712,37 @@ async def test_one_fake_trial_with_merged_execs(
     # 36 on integ/py-0.8 cfca0513; the mount provenance read before each
     # ownership freeze (_blocked_before_freeze, CONFIRM-lockdown-3 and -5)
     # runs twice in this trial: two execs more. K1's root-only daemon-log
-    # exec of its own: one more.
-    assert summary["exec_calls"] == 46, groups
+    # exec of its own: one more. The oracle setup's workspace read: one more.
+    # Its start probe (PID 1's uids, Yama's scope): one more.
+    # The image manifest's record before the agent's turn and the
+    # host's copy written back before hardening: two more (50).
+    # Its faithful default: 33. Audit runs none of the verifier's
+    # hardening (its reads, preparation, PATH verdict, plugin discovery and
+    # guard); the detector's walk adds one.
+    # 35: the verifier output folder's close: uid read + chown,.
+    # +1: the workspace's git repositories trusted again before test.sh, for
+    # every agent in audit ((8/n)).
+    # Rc after C8: clears /logs/agent's session folders at teardown,
+    # one more.
+    # +3: the shell's walks for the links (bfx is not delivered to this
+    # fake), before the turn, before test.sh and after grading ((c)3).
+    # In every mode: the test.sh preflight's PATH read and probe, and
+    # the uploaded tests made root's (chown -R 0:0): three more.
+    # Step 5b (Q4): the three shell walks are bfx's now, on the binary
+    # root uploads into a fresh root-only folder (55, +12): the arch read
+    # that plans the delivery before the turn (1); before the turn and again
+    # after it, the folder made root's and the binary made root's 0500 (2 x
+    # 2), each walk's mount table, root scan and mount scan (3 x 3, its
+    # SHA-256 checked inside each call's own exec), and read_back's no-follow
+    # look at the output folder (1), less the three shell walks.
+    # The root exec after the copy at test.sh's exit that checks
+    # the sandbox stayed still and lets it go on (verifier_freeze): 56.
+    assert summary["exec_calls"] == 56, groups
     assert {g: groups.get(g, 0) for g in U12_GROUPS} == {
         "start": 1,
         "snapshot": 1,
         "seed": 1,
-        "environment_reads": 1,
+        "environment_reads": 0,  # the hardening's (strict only)
         "verifier_start": 2,
         "publish": 5,
     }, groups
@@ -717,10 +753,13 @@ async def test_one_fake_trial_with_merged_execs(
     assert max(len(e.command.encode()) for e in counts.execs) <= COMMAND_BOUND
     # A staged command opens its file only after root's shell proved the
     # file's route (DAYTONA-GAPS rule 4): ``if ( <proof> ); then { ...``.
+    # In audit only the kit's build and seal are staged; the preparation,
+    # plugin discovery, the guard's install and the PATH verdict are strict's.
     staged = [e for e in counts.execs if e.command.startswith("if ( ")]
-    assert len(staged) == 6, [e.caller for e in staged]
-    assert any("_judge_trusted_entries" in e.caller for e in staged)
-    assert summary["uploads"] == 4 + len(staged)
+    assert len(staged) == 2, [e.caller for e in staged]
+    assert all("prepare_runtime_tree" in e.caller for e in staged)
+    # Step 5b: bfx uploaded before the turn and afresh after it.
+    assert summary["uploads"] == 4 + len(staged) + 2
     sync = [e for e in counts.execs if e.sync]
     assert not sync
     assert all(e.status_requests >= 1 and e.logs_at is not None for e in counts.execs)

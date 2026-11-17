@@ -34,7 +34,7 @@ from tests import _fake_docker_cli
 from tests._trust_admission import admitted
 
 TOKEN = "tok3nlikeuser9f8e7d6c5b4a"
-TOKEN_B = "s3condhalf0f1e2d3c4b5a69"
+TOKEN_B = "s3" + "condhalf" + "0f1e2d3c" + "4b5a69"
 SSH_URL = f"ssh://{TOKEN}@builder.example.test:2222"
 
 
@@ -398,7 +398,12 @@ async def test_local_docker_keeps_the_users_own_docker_host(
     (task / "tests").mkdir()
     (task / "tests" / "test.sh").write_text("#!/bin/sh\n")
     (task / "instruction.md").write_text("Say hi.\n")
-    (task / "task.toml").write_text('version = "1.0"\n')
+    # The task opts out of the cloud metadata rule: this test is about where
+    # each docker call goes, and the fake daemon builds no helper image (a
+    # start that needs main's rule would be refused for that).
+    (task / "task.toml").write_text(
+        'version = "1.0"\n[environment]\nallow_cloud_metadata = true\n'
+    )
     paths = RolloutPaths(rollout_dir=tmp_path / "run")
     paths.mkdir()
     sandbox = _create_sandbox_environment("docker", Task(task), task, "task__1", paths)

@@ -31,6 +31,9 @@ and an after run are read with the same instrument:
   only what is left.
 - ``agent_stop_to_reward``: from the solver's completion (``verify()``'s
   entry) to the rewards being set, in shared and separate mode.
+- ``agent_sandbox_reproof``: in separate verifier mode, proving the agent
+  sandbox's network rules again before the transfer (only for a
+  sandbox whose rules came from BenchFlow's helper).
 - Separate verifier mode, when the agent's sandbox stops before the transfer:
   ``agent_release``, the teardown steps that read the agent's sandbox or its
   usage proxy (skill export, the usage runtime's stop, the egress proxy's
@@ -88,6 +91,7 @@ KEPT_FREEZER_PROBE = "kept_freezer_probe"
 DAEMON_GUARD = "daemon_guard"
 AGENT_STOP_TO_REWARD = "agent_stop_to_reward"
 VERIFIER_SANDBOX_READY_WAIT = "verifier_sandbox_ready_wait"
+AGENT_SANDBOX_REPROOF = "agent_sandbox_reproof"
 AGENT_RELEASE = "agent_release"
 AGENT_SANDBOX_STOP_BEFORE_VERIFY = "agent_sandbox_stop_before_verify"
 VERIFIER_SANDBOX_OVERLAP = "verifier_sandbox_overlap"
@@ -112,6 +116,7 @@ SPAN_KEYS = (
     DAEMON_GUARD,
     AGENT_STOP_TO_REWARD,
     VERIFIER_SANDBOX_READY_WAIT,
+    AGENT_SANDBOX_REPROOF,
     AGENT_RELEASE,
     AGENT_SANDBOX_STOP_BEFORE_VERIFY,
     VERIFIER_SANDBOX_OVERLAP,
@@ -127,7 +132,10 @@ NESTED_SPANS = frozenset({HARDEN_BEFORE_VERIFY})
 #: Stable names: a later one-script version of the steps fills the same keys.
 HARDEN_STEPS = (
     "kill_sandbox_user_procs",
+    "network_policy_reproof",
     "restore_disarmed_delegates",
+    "cloud_metadata_verifier",
+    "detect_verifier_inputs",
     "clear_verifier_output",
     "prepare_app_dir",
     "reclaim_disk",
@@ -135,6 +143,7 @@ HARDEN_STEPS = (
     "freeze_workspace",
     "cleanup_conftests",
     "build_verifier_env",
+    "verifier_network",
 )
 
 # Spans keep millisecond precision; the older phases keep their 0.1 s.

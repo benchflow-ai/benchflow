@@ -24,7 +24,10 @@ This module corrects what that translation still gets wrong:
   the tool message holds the image's ``data:image/...;base64,...`` URI as its
   text instead, as LiteLLM 1.91.5's bridge sent it: the model cannot see the
   image either way, and the text costs about one token per 1.44 characters,
-  but the request is answered.
+  but the request is answered. Every other image part such a model would get
+  (an image beside text in a tool result, a PDF's pages, a user turn's image)
+  becomes one text line naming its type and size (``_images_as_notes``): its
+  data URI would overflow the context, and the part was answered 400.
 
 LiteLLM 1.103.3 itself fixes the two other faults this module corrected on
 1.91.5: a streamed answer opens with its own first block (its thinking or
@@ -231,6 +234,44 @@ def _lone_image_urls(adapter: Any, messages: Any) -> dict[str, str]:
                 if url:
                     urls[block.get("tool_use_id", "")] = url
     return urls
+
+
+def _image_note(part: dict[str, Any]) -> dict[str, str]:
+    """The text a model that reads text only gets for an image part."""
+    image = part.get("image_url")
+    url = str(image.get("url", "") if isinstance(image, dict) else image or "")
+    if url.startswith("data:"):
+        head, _, data = url.partition(",")
+        media = head[5:].split(";", 1)[0] or "image"
+        what = f"{media}, about {len(data.rstrip('=')) * 3 // 4} bytes"
+    else:
+        what = url[:200]
+    return {
+        "type": "text",
+        "text": f"[An image ({what}) was left out: this model reads text only.]",
+    }
+
+
+def _has_image_parts(built: Any) -> bool:
+    return any(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in (built if isinstance(built, list) else ())
+        if isinstance(message, dict) and isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
+def _images_as_notes(built: Any) -> None:
+    """Every image part of the built messages as a text note, in place."""
+    for message in built if isinstance(built, list) else ():
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            message["content"] = [
+                _image_note(part)
+                if isinstance(part, dict) and part.get("type") == "image_url"
+                else part
+                for part in content
+            ]
 
 
 class _DocumentTexts:
@@ -547,8 +588,8 @@ def _translated(original: Any) -> Any:
             _bridge_logger.warning("documents left as they came", exc_info=True)
         built = original(self, messages, model, **kwargs)
         try:
-            urls = _lone_image_urls(self, messages)
-            if urls and not _accepts_images(model):
+            if _has_image_parts(built) and not _accepts_images(model):
+                urls = _lone_image_urls(self, messages)
                 for message in built:
                     if (
                         isinstance(message, dict)
@@ -560,6 +601,7 @@ def _translated(original: Any) -> Any:
                             {"type": "image_url", "image_url": {"url": url}}
                         ]:
                             message["content"] = url
+                _images_as_notes(built)
         except Exception:
             _bridge_logger.warning(
                 "tool result images left as the bridge made them", exc_info=True
@@ -585,14 +627,18 @@ def install_messages_bridge_patch() -> bool:
     )
 
     name = "translate_anthropic_messages_to_openai"
-    original = LiteLLMAnthropicMessagesAdapter.__dict__[name]
+    original = LiteLLMAnthropicMessagesAdapter.__dict__.get(name)
+    if original is None:
+        raise RuntimeError(
+            "BenchFlow LiteLLM patch 'messages_bridge': "
+            f"LiteLLMAnthropicMessagesAdapter.{name} moved"
+        )
     if not getattr(original, BRIDGE_PATCH_MARK, False):
         setattr(LiteLLMAnthropicMessagesAdapter, name, _translated(original))
     return True
 
 
-try:
-    install_messages_bridge_patch()
-except Exception:
-    # The proxy must start; the request then goes through LiteLLM's own bridge.
-    _bridge_logger.warning("LiteLLM messages bridge patch not installed", exc_info=True)
+# On the LiteLLM it was checked with, a moved target stops the proxy's start
+# and names the patch; another LiteLLM keeps its own bridge, as
+# install_messages_bridge_patch says.
+install_messages_bridge_patch()

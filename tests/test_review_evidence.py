@@ -525,9 +525,10 @@ async def test_package_manager_caches_stay_out_of_evidence(tmp_path):
     ):
         (source / cache).parent.mkdir(parents=True, exist_ok=True)
         (source / cache).write_text("cache")
+    # ~/.npmrc can hold a registry token: a credential file since that change.
+    (source / ".npmrc").write_text("//registry.example.invalid/:_authToken=x")
     kept = (
         ".cache/matplotlib/fontlist.json",
-        ".npmrc",
         ".local/bin/tool",
         "results/cache/uv/table.csv",
         "uv.lock",
@@ -539,16 +540,17 @@ async def test_package_manager_caches_stay_out_of_evidence(tmp_path):
 
     manifest = await capture_workspace(LocalTransport(), str(source), bundle)
 
+    caches = (
+        ".cache/pip",
+        ".cache/uv",
+        ".npm/_cacache",
+        ".npm/_logs",
+        ".npm/_npx",
+        "project/.cache/uv",
+    )
     assert sorted((e.original_path, e.reason) for e in manifest.exclusions) == sorted(
-        (str(source / path), "package_cache")
-        for path in (
-            ".cache/pip",
-            ".cache/uv",
-            ".npm/_cacache",
-            ".npm/_logs",
-            ".npm/_npx",
-            "project/.cache/uv",
-        )
+        [(str(source / path), "package_cache") for path in caches]
+        + [(str(source / ".npmrc"), "credential")]
     )
     files = {e.path for e in manifest.entries if e.kind == "file"}
     assert files == set(kept)

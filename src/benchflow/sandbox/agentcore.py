@@ -93,7 +93,7 @@ from benchflow.sandbox._transport import (
 )
 from benchflow.sandbox.agentcore_image import AgentCoreImagePublisher
 from benchflow.sandbox.agentcore_sealed import SEAL_DIR, SealedChannel
-from benchflow.sandbox.protocol import SandboxStartupError
+from benchflow.sandbox.protocol import ExecTimeoutError, SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
 from benchflow.trust.state import TRUSTED_TRANSFER, admit
@@ -1159,8 +1159,11 @@ class AgentCoreSandbox(BaseSandbox):
                 status = stop.get("status")
 
         if status == "TIMED_OUT":
-            raise TimeoutError(
-                f"AgentCore command timed out after {timeout}s: {payload[:200]}"
+            # Typed as every backend's exec past its limit is: a caller that
+            # set the limit (the oracle's agent timeout) tells it apart.
+            raise ExecTimeoutError(
+                timeout,
+                f"AgentCore command timed out after {timeout}s: {payload[:200]}",
             )
         return ExecResult(
             stdout="".join(stdout),

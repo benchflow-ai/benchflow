@@ -99,6 +99,10 @@ async def _run(sandbox, command: str):
     return done
 
 
+# verifier_runtime: the kit case builds BenchFlow's protected runtime offline,
+# and conftest fills its cache first, so the test no longer depends on an
+# earlier test on the same host having filled it (a CI shard runs it first).
+@pytest.mark.verifier_runtime
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kit", ["kit", "no-kit"])
 async def test_a_separate_verifier_never_starts_a_transferred_interpreter(

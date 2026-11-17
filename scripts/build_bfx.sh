@@ -24,6 +24,12 @@ out=${BFX_OUT:-$repo/src/benchflow/_bfx/bin}
 arches=${BFX_ARCHES:-x86_64 aarch64}
 toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$crate/rust-toolchain.toml")
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
+# With the rust-src component installed, rustc names the standard library's
+# sources by their local path (panic locations inlined into bfx included)
+# instead of /rustc/<commit>; map them back, so the bytes do not depend on
+# which components the toolchain has (RCI's rebuild).
+sysroot=$(rustc "+$toolchain" --print sysroot)
+rustc_commit=$(rustc "+$toolchain" -vV | sed -n 's/^commit-hash: //p')
 # The crate's last commit time, so nothing time-dependent varies.
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct -- bfx 2>/dev/null || echo 0)}
 export SOURCE_DATE_EPOCH
@@ -41,6 +47,7 @@ for arch in $arches; do
         -C linker-flavor=ld.lld
         -C strip=symbols
         -C debuginfo=0
+        "--remap-path-prefix=$sysroot/lib/rustlib/src/rust=/rustc/$rustc_commit"
         "--remap-path-prefix=$cargo_home=/cargo"
         "--remap-path-prefix=$crate=/bfx"
         "--remap-path-prefix=$crate/vendor=/vendor"

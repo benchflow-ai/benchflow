@@ -116,7 +116,7 @@ def write_task(root: Path, *, compose_env: str = "", dockerfile: str = "") -> Pa
     return task
 
 
-def run_script_agent(root: Path, task: Path, body: str):
+def run_script_agent(root: Path, task: Path, body: str, integrity: str = "audit"):
     script = root / "attempt.sh"
     script.write_text(body)
     return bf.run_sync(
@@ -128,6 +128,7 @@ def run_script_agent(root: Path, task: Path, body: str):
             jobs_dir=root / "jobs",
             # No metadata probing; the task's network is none.
             allow_cloud_metadata=True,
+            integrity=integrity,
         )
     )
 
@@ -142,7 +143,9 @@ def assert_no_loader_output(jobs: Path):
         if path.is_file():
             data = path.read_bytes()
             assert b"AT_EXECFN" not in data, path
-            if path.parent.name not in ("agent", "trajectory"):
+            # integrity/ records the image's own links before the turn
+            # (/etc/ld.so.conf.d among them), by design.
+            if path.parent.name not in ("agent", "trajectory", "integrity"):
                 assert b"ld.so" not in data, path
 
 

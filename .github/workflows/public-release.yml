@@ -5,21 +5,40 @@ on:
     tags:
       - "v*"
 
-# PyPI Trusted Publishing uses OIDC, and GitHub Releases need contents: write.
+# Read-only by default: only the publish job can write.
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: public-release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  # The tagged commit's own tests: every job of test.yml (both unit legs,
+  # the deterministic integration tier, grading integrity, pip-audit). The
+  # 0.10.0rc3 tag published at 20:03Z while the test run on the same commit
+  # failed at 21:31Z: the two were separate workflows and nothing waited.
+  tests:
+    name: Tests of the tagged commit
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
+  # Runs only when every test job passed. There is no switch that publishes
+  # without them: a flaky failure is re-run from the run's page ("Re-run
+  # failed jobs", kept in the run's history with who started it); a real one
+  # is fixed on main and released as a new version.
   publish:
     name: Publish public release
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [tests]
+    if: success() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi-public
+    # PyPI Trusted Publishing uses OIDC, and GitHub Releases need contents: write.
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Check out tag
@@ -50,6 +69,11 @@ jobs:
             exit 1
           fi
 
+      # Nothing internal in the tree being published: release records,
+      # linear.app links or tracker keys (tools/public_tree_guard.py).
+      - name: Public tree guard
+        run: uv run --no-project python tools/public_tree_guard.py .
+
       - name: Validate release tag
         id: version
         env:
@@ -66,6 +90,12 @@ jobs:
       # (src/benchflow/_bfx/pins.py), or the release stops here.
       - name: Build bfx (pinned)
         run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
+      # A snapshot rate past its vendor's announced change would price
+      # every such call at the old rate; the unit tests never read
+      # the clock, so the release checks it.
+      - name: Price snapshot is current
+        run: uv run --no-project python tools/check_price_snapshot.py
 
       - name: Build distributions
         run: uv build --no-sources

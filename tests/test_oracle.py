@@ -96,6 +96,41 @@ async def test_run_oracle_uses_native_oracle_mount(tmp_path):
         ORACLE_IMAGE_PATH + "bash /oracle/solve.sh > /logs/agent/oracle.txt 2>&1"
     )
     assert trajectory[0]["command"] == "oracle/solve.sh"
+    # A task.md written as one gets no /solution link (review).
+    assert not any("ln -s" in c.args[0] for c in env.exec.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_run_oracle_links_solution_for_a_converted_task(tmp_path):
+    """A task bench import converted keeps solve.sh's /solution paths: first
+    /solution names /oracle when the sandbox has none."""
+    from benchflow.sdk import SDK
+
+    _scaffold_native_task(tmp_path)
+    text = (tmp_path / "task.md").read_text()
+    (tmp_path / "task.md").write_text(
+        text.replace("---\n", "---\nbenchflow:\n  converted_from: task.toml\n", 1)
+    )
+    env = _oracle_env()
+
+    await SDK()._run_oracle(env, tmp_path, timeout=123)
+
+    link_call, solve_call = env.exec.call_args_list[:2]
+    assert link_call.args[0] == (
+        "[ -e /solution ] || [ -L /solution ] || ln -s /oracle /solution"
+    )
+    assert link_call.kwargs["user"] == "root"
+    assert "bash /oracle/solve.sh" in solve_call.args[0]
+
+
+@pytest.mark.asyncio
+async def test_run_oracle_links_no_solution_for_a_legacy_task(tmp_path):
+    from benchflow.sdk import SDK
+
+    _scaffold_task(tmp_path)
+    env = _oracle_env()
+    await SDK()._run_oracle(env, tmp_path, timeout=123)
+    assert not any("ln -s" in c.args[0] for c in env.exec.call_args_list)
 
 
 @pytest.mark.asyncio

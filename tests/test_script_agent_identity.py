@@ -2,7 +2,12 @@
 
 import pytest
 
-from tests.test_script_agent_cleanup import BACKENDS, PYTHON_IMAGE, service_rollout
+from tests.test_script_agent_cleanup import (
+    BACKENDS,
+    KEPT_FREEZER,
+    PYTHON_IMAGE,
+    service_rollout,
+)
 from tests.test_script_agent_docker import started_box
 
 
@@ -100,6 +105,7 @@ async def test_root_account_alias_is_refused(tmp_path, backend, verifier_user):
     with started_box(
         image=PYTHON_IMAGE,
         setup="useradd -m -s /bin/bash agent; printf 'toor:x:0:0::/root:/bin/bash\\n' >> /etc/passwd",
+        run_flags=KEPT_FREEZER,
     ) as initial:
         box = backend(initial.name)
         result, observed = await service_rollout(
@@ -117,7 +123,7 @@ async def test_empty_verifier_inherits_nonroot_container_user(tmp_path, backend)
     with started_box(
         image=PYTHON_IMAGE,
         setup="useradd -m -s /bin/bash agent; useradd -u 2000 -m grader",
-        run_flags=("--user", "2000:2000"),
+        run_flags=("--user", "2000:2000", *KEPT_FREEZER),
     ) as initial:
         box = backend(initial.name)
         assert (

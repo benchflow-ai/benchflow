@@ -288,6 +288,7 @@ _RECORD_FIELDS = [
     "assessment",
     "error",
     "error_category",
+    "integration_failure_info",
     "verifier_error",
     "verifier_error_category",
     "n_tool_calls",
@@ -299,6 +300,8 @@ _RECORD_FIELDS = [
     "total_tokens",
     "cost_usd",
     "usage_source",
+    "cost_source",
+    "price_table_date",
     "started_at",
     "finished_at",
     "duration_sec",
@@ -306,13 +309,24 @@ _RECORD_FIELDS = [
 ]
 
 
-def _record(result: RolloutResult) -> dict[str, Any]:
-    """``to_record`` plus the viewer's execution and assessment."""
+def _as_trial(result: RolloutResult) -> Any:
+    """*result* as a job reader reads it: with the ending its writer
+    recorded (the category and the finding), never judged again."""
     from benchflow.jobs import Trial
 
-    trial = Trial(path=result.rollout_dir or Path("."), result=result, raw={})
+    raw: dict[str, Any] = {"error_category": result.error_category}
+    if result.integration_failure_info is not None:
+        raw["integration_failure_info"] = result.integration_failure_info
+    return Trial(path=result.rollout_dir or Path("."), result=result, raw=raw)
+
+
+def _record(result: RolloutResult) -> dict[str, Any]:
+    """``to_record`` plus the finding of a withheld trial and the viewer's
+    execution and assessment."""
+    trial = _as_trial(result)
     return {
         **result.to_record(),
+        "integration_failure_info": result.integration_failure_info,
         "execution": trial.execution,
         "assessment": trial.assessment,
     }
@@ -326,7 +340,12 @@ def write_csv(results: Iterable[RolloutResult], path: str | Path) -> Path:
         writer = csv.DictWriter(handle, fieldnames=_RECORD_FIELDS)
         writer.writeheader()
         for result in results:
-            writer.writerow(_record(result))
+            row = _record(result)
+            if row["integration_failure_info"] is not None:
+                row["integration_failure_info"] = json.dumps(
+                    row["integration_failure_info"]
+                )
+            writer.writerow(row)
     return path
 
 
@@ -372,11 +391,9 @@ class Results(list[RolloutResult]):
 
         Control runs (oracle, empty) are left out unless ``include_controls=True``.
         """
-        from benchflow.jobs import Denominators, Trial
+        from benchflow.jobs import Denominators
 
-        trials = [
-            Trial(path=r.rollout_dir or Path("."), result=r, raw={}) for r in self
-        ]
+        trials = [_as_trial(r) for r in self]
         kept = [t for t in trials if include_controls or t.control is None]
         return Denominators.of(kept, controls_excluded=len(trials) - len(kept))
 

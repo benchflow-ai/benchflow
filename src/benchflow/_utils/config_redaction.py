@@ -11,8 +11,9 @@ import json
 import re
 from typing import Any
 
+from benchflow._utils.credential_names import entry_kind, name_words
 from benchflow._utils.env_values import env_value_text
-from benchflow.trajectories.types import redact_trajectory_text
+from benchflow.trajectories.types import is_secret_field, redact_trajectory_text
 
 # Substrings that flag an env var name as secret-bearing for ``config.json``
 # redaction. Matching is case-insensitive (callers ``.upper()`` the key first)
@@ -35,18 +36,38 @@ _SECRET_ENV_SUBSTRINGS: tuple[str, ...] = (
     "BEARER",
     "SESSION",
 )
+# Password names too short to match as substrings: "PASS" is in BYPASS and
+# COMPASS, "PWD" is the shell's working directory.
+_SECRET_ENV_SUFFIXES: tuple[str, ...] = ("_PASS", "_PWD")
+# On top of these, every name the trajectory redactor masks a value under
+# (is_secret_field: MYSQL_PASSWD, GCP_CREDENTIAL). The list above stays
+# wider on purpose: config.json drops a whole entry by its name, so a
+# substring such as KEY, AUTH or SESSION costs a setting, where in text it
+# would mask ordinary words.
 _SECRET_URL_PATH_MARKERS: tuple[str, ...] = ("/__benchflow/",)
 
 
 def _is_secret_env_key(name: str) -> bool:
     """Return True if *name* looks like it carries a secret value.
 
-    Case-insensitive substring match against :data:`_SECRET_ENV_SUBSTRINGS`.
+    Case-insensitive substring match against :data:`_SECRET_ENV_SUBSTRINGS`,
+    the suffixes and the trajectory redactor's names (``is_secret_field``),
+    on the name in upper case and on its words as the shared splitter reads
+    them, joined by ``_`` in upper case: a camel hump divides words there
+    (``dbPass`` as ``DB_PASS``, ``smtpPwd`` as ``SMTP_PWD``), where plain
+    upper case loses it (``DBPASS`` is no password's name; the lead's
+    ruling, 2026-11-14). And the redactor's names on the name as written.
     Used by :func:`_write_config` to drop secret-bearing entries before
     persisting ``agent_env`` to the rollout's ``config.json``.
     """
     upper = name.upper()
-    return any(s in upper for s in _SECRET_ENV_SUBSTRINGS)
+    worded = "_".join(name_words(name)).upper()
+    return is_secret_field(name) or any(
+        any(s in form for s in _SECRET_ENV_SUBSTRINGS)
+        or form.endswith(_SECRET_ENV_SUFFIXES)
+        or is_secret_field(form)
+        for form in (upper, worded)
+    )
 
 
 def _is_secret_env_value(name: str, value: object) -> bool:
@@ -75,7 +96,14 @@ def _is_secret_env_value(name: str, value: object) -> bool:
 
 
 def _should_record_env_entry(name: str, value: object) -> bool:
-    return not _is_secret_env_key(name) and not _is_secret_env_value(name, value)
+    """Whether a record keeps this env entry's value: not a secret's name
+    (_is_secret_env_key), unless the entry is a setting's by the shared
+    rule (``MAX_OUTPUT_TOKENS``, ``SESSION_TIMEOUT``, ``TESTS_PASS=12`` but
+    not ``TESTS_PASS=hunter2``:
+    :func:`benchflow._utils.credential_names.entry_kind`), and not a value
+    shaped like a secret under any name."""
+    named = not _is_secret_env_key(name) or entry_kind(name, value) == "setting"
+    return named and not _is_secret_env_value(name, value)
 
 
 # Known execution settings whose names also match the credential denylist.

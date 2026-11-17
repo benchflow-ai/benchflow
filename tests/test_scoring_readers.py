@@ -91,6 +91,19 @@ def test_every_reader_gives_the_fixture_s_figures(tmp_path: Path, name: str) -> 
     folder, rows = _batch(tmp_path, case)
     interval = _interval(want)
     line = f"{want['passed']} of {want['n']} trials"
+    # The note beside the score, counted from the fixture's own outcomes:
+    # the trials with an error or no score, and the scored-only figure.
+    unscored = sum(
+        want["outcomes"].get(kind, 0)
+        for kind in ("errored", "verifier_errored", "no_verdict")
+    )
+    only = want["score_excl_errors"]
+    note = (
+        f"; counts {unscored} unscored trial{'' if unscored == 1 else 's'} as 0; "
+        f"scored only: {'none scored' if only is None else format(only, '.1%')}"
+        if unscored
+        else ""
+    )
 
     # summary.json's block.
     summary = score_summary_fields(rows)
@@ -128,18 +141,19 @@ def test_every_reader_gives_the_fixture_s_figures(tmp_path: Path, name: str) -> 
     text = _plain(
         CliRunner().invoke(app, ["eval", "metrics", str(folder)], env=WIDE).output
     )
-    assert f"Score {want['score']:.1%} ({line}); {interval}" in text
+    assert f"Score {want['score']:.1%} ({line}{note}); {interval}" in text
     assert "Scoring rule benchflow.score.v1" in text
 
     # report.md.
     report = build_report([folder], "fixture")
-    assert f"{want['passed']} passed ({want['score']:.1%}; {interval})" in report
+    assert f"{want['passed']} passed ({want['score']:.1%}{note}; {interval})" in report
     assert "Counted by the scoring rule benchflow.score.v1" in report
 
     # bench results on the folder (bench eval inspect).
     shown = _plain(CliRunner().invoke(app, ["results", str(folder)], env=WIDE).output)
     assert (
-        f"Score by benchflow.score.v1: {want['score']:.1%} ({line}; {interval}), "
+        f"Score by benchflow.score.v1: {want['score']:.1%} ({line}{note}; "
+        f"{interval}), "
         f"{want['n_tasks']} tasks"
     ) in shown
 
@@ -153,7 +167,7 @@ def test_every_reader_gives_the_fixture_s_figures(tmp_path: Path, name: str) -> 
     # The run card's after-run lines.
     lines = after_run_lines({"scoring": summary["scoring"]})
     assert (
-        f"  Score:     {line} passed ({want['score']:.1%}; {interval}) by "
+        f"  Score:     {line} passed ({want['score']:.1%}{note}; {interval}) by "
         "benchflow.score.v1"
     ) in lines
 
@@ -283,7 +297,10 @@ def test_the_run_and_bench_results_name_the_same_trials_alike(tmp_path: Path) ->
     )
 
     shown = _plain(CliRunner().invoke(app, ["results", str(job)], env=WIDE).output)
-    assert f"1/4 attempted passed (25%), 1/2 scored passed (50%), {words}" in shown
+    assert (
+        "1/4 attempted passed (25%; counts 2 unscored trials as 0; scored only: "
+        f"50.0%), 1/2 scored passed (50%), {words}"
+    ) in shown
 
 
 def test_a_trial_folder_that_cannot_be_read_is_named_not_dropped(

@@ -144,9 +144,20 @@ async def test_late_relative_helpers_cannot_become_scored_failures(
         if when == "during-verification":
             script += "mkdir -p bin; printf '#!/bin/sh\\nexit 0\\n' > bin/check-answer; chmod +x bin/check-answer\n"
         script += "if check-answer >/dev/null 2>&1; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n"
-        reward, error, _ = await verify(
+        reward, error, record = await verify(
             box, tmp_path, script, required=required, helper=when == "upload"
         )
+    if required is None and entry.startswith("/") and ".." not in entry:
+        # An absolute entry absent
+        # when judged, under folders root alone can write, with no link
+        # another user controls, is kept: only root could make it (here the
+        # verifier's upload or test.sh, both root). The late helper is found
+        # and test.sh's own score stands, never a scored failure.
+        assert (reward, error) == ({"reward": 1.0}, None)
+        assert record["absent_root_only"] == [entry]
+        return
+    # A `..` part is refused as written (RUSAGE on #292): /tests/bin/../bin
+    # is left out and needs the contract.
     assert reward is None
     assert error and "required_tools" in error
 
@@ -181,7 +192,11 @@ async def test_unrelated_files_never_veto_an_independent_score(
 async def test_marker_storage_failure_invalidates_optional_scores(
     image, tmp_path, damage, caplog
 ):
-    """Guards CONFIRM7-4: unavailable evidence is never interpreted as no use."""
+    """Guards CONFIRM7-4: unavailable evidence is never interpreted as no use.
+
+    Since an optional program gets no stub, so no evidence of its use
+    exists to lose: the damaged marker storage belongs to another program's
+    stub, and losing it still scores 0 with the evidence named unreadable."""
     with fixtures._box(image) as box:
         fixtures._write(box, "/opt/probe/bin/check-answer", "#!/bin/sh\nexit 0\n")
         fixtures._sh(box, "chmod 755 /opt/probe/bin/check-answer")
@@ -197,7 +212,7 @@ async def test_marker_storage_failure_invalidates_optional_scores(
             box,
             tmp_path,
             "#!/bin/sh\ncheck-answer >/dev/null 2>&1 || true\necho 1 > /logs/verifier/reward.txt\n",
-            optional=["check-answer"],
+            optional=["another-probe"],
             before=damage_storage,
         )
     assert reward == {"reward": 0.0}

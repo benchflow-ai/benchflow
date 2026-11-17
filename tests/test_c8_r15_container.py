@@ -63,7 +63,7 @@ async def _clean(sandbox, workspace: str) -> None:
 
 # --- PT-R14-B2: uv's documented Docker layout --------------------------------
 
-UV_IMAGE = "pt-r15-uv-project:test"
+UV_IMAGE = "pt-r15-uv-project"
 UV_DOCKERFILE = """FROM python:3.12-slim
 LABEL target="PT-r15"
 COPY uv /bin/uv
@@ -87,15 +87,20 @@ def uv_project_image(tmp_path_factory):
     context = tmp_path_factory.mktemp("uv-image")
     shutil.copy2(uv, context / "uv")
     (context / "Dockerfile").write_text(UV_DOCKERFILE)
+    # A tag of this fixture's own, and a failed build is an error.
+    tag = f"{UV_IMAGE}-{uuid.uuid4().hex[:12]}:test"
     built = subprocess.run(
-        ["docker", "build", "-q", "-t", UV_IMAGE, str(context)],
+        ["docker", "build", "-q", "-t", tag, str(context)],
         capture_output=True,
         text=True,
         timeout=900,
     )
     if built.returncode != 0:
-        pytest.skip(f"cannot build the uv project image: {built.stderr[-300:]}")
-    yield UV_IMAGE
+        pytest.fail(
+            f"cannot build the uv project image: {built.stderr[-300:]}", pytrace=False
+        )
+    yield tag
+    subprocess.run(["docker", "rmi", "--force", tag], capture_output=True, timeout=120)
 
 
 @pytest.mark.asyncio

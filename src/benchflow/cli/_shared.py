@@ -40,6 +40,55 @@ if TYPE_CHECKING:
 
 console = Console()
 
+
+def print_at_natural_width(renderable: Any, out: Console | None = None) -> None:
+    """Print *renderable* so that none of its rows wraps inside a cell, through
+    the diagnostics choke point's redactor.
+
+    It's for a table whose cells hold a score with its unscored-trials note, a
+    line that must stay one line: a table wider than the console prints at its
+    own width, to the same stream, and a narrow terminal then wraps it as any
+    long line. The cells also hold run identifiers (job folders, setting
+    labels, cause keys), so the rendered text goes through
+    :func:`benchflow._diagnostics.redact` with the CLI's secrets before it is
+    written. The plain rendering is the one checked: when anything in it is
+    masked, the masked plain text is written, so no style code can split a
+    value; otherwise the console's own styled rendering is.
+    """
+    import io
+    from typing import Literal, cast
+
+    from rich.measure import Measurement
+
+    from benchflow._diagnostics import redact
+    from benchflow.cli._errors import _secrets
+
+    target = out if out is not None else console
+    wide = target.options.update_width(10_000)
+    width = max(Measurement.get(target, wide, renderable).maximum, target.width)
+
+    def rendered(*, styled: bool) -> str:
+        buffer = io.StringIO()
+        Console(
+            file=buffer,
+            width=width,
+            # The console's own system: one of these names, or None.
+            color_system=cast(
+                Literal["auto", "standard", "256", "truecolor", "windows"] | None,
+                target.color_system,
+            )
+            if styled
+            else None,
+            force_terminal=target.is_terminal if styled else False,
+            no_color=target.no_color or not styled,
+        ).print(renderable)
+        return buffer.getvalue()
+
+    plain = rendered(styled=False)
+    masked = redact(plain, _secrets())
+    target.file.write(masked if masked != plain else rendered(styled=True))
+
+
 # stderr console for out-of-band notices (deprecations) so they never corrupt
 # stdout consumers like `--json` (e.g. `environment list --json`).
 err_console = Console(stderr=True)
@@ -548,10 +597,18 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
             f"; [yellow]{not_run} of {planned} planned tasks not run ({why})[/yellow]"
             f", so {result.passed}/{planned} ({result.passed / planned:.1%}) of the plan"
         )
+    # The score counts an unscored trial as 0, and says so beside the number
+    # (benchflow.score.v1), so the number is never quoted without it; one
+    # line however wide the terminal.
+    from benchflow._utils.scoring import result_unscored_note
+
+    note = result_unscored_note(result)
     console.print(
         f"\n[{style}]{mark} Score: {result.passed}/{result.total}"
         f"{' run' if not_run else ''} "
-        f"({result.score:.1%})[/{style}]{mean_part}{err_part}{scored_part}{plan_part}"
+        f"({result.score:.1%}{'; ' + note if note else ''})[/{style}]"
+        f"{mean_part}{err_part}{scored_part}{plan_part}",
+        soft_wrap=True,
     )
     _report_scoring(getattr(result, "scoring", None))
     if agent.lower() == "oracle" and total_errors == 0 and result.passed < result.total:
@@ -590,11 +647,23 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     _report_checkpoint_retries(result)
     budget = getattr(result, "budget", None)
     if budget and budget.get("stopped"):
+        reason = str(budget.get("reason"))
+        # A resume would stop at the same unpriced trial.
+        then = (
+            "cap the job with --max-tokens or --max-sandbox-seconds instead"
+            if reason.startswith("cost unknown")
+            else "resume the job to run them"
+        )
         console.print(
-            f"[yellow]Budget:[/yellow] {escape(str(budget.get('reason')))}; "
+            f"[yellow]Budget:[/yellow] {escape(reason)}; "
             f"{len(budget.get('cancelled') or [])} running trial(s) cancelled, "
             f"{len(budget.get('not_started') or [])} not started (not counted as "
-            "failures; resume the job to run them)"
+            f"failures; {then})"
+        )
+    if budget and budget.get("cost_cap_note"):
+        console.print(
+            f"[dim]Budget:   [/dim] {escape(str(budget['cost_cap_note']))}",
+            soft_wrap=True,
         )
     checks = getattr(result, "run_checks", None) or {}
     for line in checks.get("warnings") or []:
@@ -1084,6 +1153,17 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         missing = trials - len(costs)
         note = f" ({missing} of {trials} trials reported no cost)" if missing else ""
         cost_text = f"${sum(costs):.2f}{token_text}{note}"
+        partial = sum(
+            1
+            for trial in results.values()
+            if getattr(trial, "usage_incomplete", None) is True
+            and getattr(trial, "cost_usd", None) is not None
+        )
+        if partial:
+            cost_text += (
+                f"; {partial} trial(s) counted only some of their calls, so the "
+                "total is a floor"
+            )
     elif tokens and not sum(tokens) and not no_usage:
         cost_text = "none: no model tokens were used"
     elif tokens and sum(tokens):

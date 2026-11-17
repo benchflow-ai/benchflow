@@ -343,7 +343,7 @@ async def test_the_bind_proof_runs_the_check_on_mains_inspect(monkeypatch):
         return {}
 
     monkeypatch.setattr(_bind_targets, "inspect_targets", no_targets)
-    with pytest.raises(RuntimeError, match="refused"):
+    with pytest.raises(RuntimeError, match=r"^refused$"):
         await _bind_targets.pin_project(Env(), "a" * 64, None)
     assert len(Env.seen) == 1
 

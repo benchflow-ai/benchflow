@@ -87,14 +87,14 @@ async def test_a_job_cancels_an_unfinished_subnet_read(monkeypatch, tmp_path):
 
     monkeypatch.setattr(docker_module, "prefetch_local_subnet_allocator", prefetch)
     evaluation = object.__new__(Evaluation)
-    evaluation._config = type("C", (), {"environment": "docker"})()
+    evaluation._config = type("C", (), {"environment": "docker", "agent": "oracle"})()
     evaluation._preflight = True
 
     def refuse():
         raise RuntimeError("refused before the job folder exists")
 
     evaluation._check_before_run = refuse
-    with pytest.raises(RuntimeError, match="refused"):
+    with pytest.raises(RuntimeError, match=r"^refused before the job folder exists$"):
         await Evaluation.run(evaluation)
     await asyncio.sleep(0)
     assert holder["task"].cancelled()

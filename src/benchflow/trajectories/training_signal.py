@@ -256,13 +256,18 @@ def replaced_attempts(
 ) -> set[Path]:
     """Rollouts that a later attempt of the same trial replaced.
 
-    In an Evaluation job folder (``evaluation.json`` or ``summary.json``) the
+    In an Evaluation job folder (``evaluation.json`` or ``summary.json``, or
+    the run's attempt records in a copy without them,
+    :func:`benchflow._utils.attempt_decision.groups_attempts`) the
     rollouts of one task, agent and model are attempts of one trial, whose
-    result is the scored attempt, then the newest (``bf.load_job``'s rule);
-    the others are returned. Rollouts in other folders are samples, never
-    replaced.
+    result is the attempt the run kept (``bf.load_job``'s rule,
+    :func:`benchflow._utils.attempt_decision.final_attempt`; in a job from
+    before those records, the scored attempt, then the newest). The others
+    are returned, an attempt the run retried always. Rollouts in other
+    folders are samples, never replaced.
     """
-    from benchflow._utils.result_paths import attempt_rank, holds_attempts
+    from benchflow._utils.attempt_decision import final_attempt, groups_attempts
+    from benchflow._utils.result_paths import attempt_rank, with_placeholder_settings
 
     folders: dict[Path, bool] = {}
     chains: dict[tuple[Any, ...], list[Path]] = {}
@@ -273,14 +278,17 @@ def replaced_attempts(
         root = Path(rollout_dir)
         folder = root.parent
         if folder not in folders:
-            folders[folder] = holds_attempts(folder)
+            folders[folder] = groups_attempts(folder)
         if not folders[folder]:
             continue
+        # A trial that left no rollout folder has its agent and model in its
+        # config.json only, in a job written before its result.json had them.
+        settings = with_placeholder_settings(root, result)
         key = (
             folder,
             _key_value(result, root, "task"),
-            result.get("agent"),
-            result.get("model"),
+            settings.get("agent"),
+            settings.get("model"),
         )
         chains.setdefault(key, []).append(root)
         ranks[root] = attempt_rank(
@@ -288,9 +296,12 @@ def replaced_attempts(
         )
     replaced: set[Path] = set()
     for chain in chains.values():
-        if len(chain) > 1:
-            final = max(chain, key=lambda d: ranks[d])
-            replaced.update(d for d in chain if d != final)
+        final = final_attempt(
+            chain,
+            folder=lambda d: d,
+            earlier_rule=lambda left: max(left, key=ranks.__getitem__),
+        )
+        replaced.update(d for d in chain if d != final)
     return replaced
 
 

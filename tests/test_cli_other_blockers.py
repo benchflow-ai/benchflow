@@ -29,12 +29,21 @@ from tests.test_sweep_credential_lifecycle import (
 
 @pytest.mark.parametrize("entry", ["primary", "role"])
 @pytest.mark.parametrize("disconnect", [False, True])
+@pytest.mark.parametrize("integrity", ["strict", "audit", "off"])
 async def test_c31_barrier_precedes_every_credential_consumer(
-    tmp_path, monkeypatch, entry, disconnect
+    tmp_path, monkeypatch, entry, disconnect, integrity
 ):
-    """7516a36a ran Codex probes and proxy wiring before the role barrier."""
+    """7516a36a ran Codex probes and proxy wiring before the role barrier: a
+    role change quiesces first in every mode (the lead's 18:40Z ruling)."""
     sandbox = Sandbox(monkeypatch)
-    trial = _rollout(tmp_path, sandbox, "codex-acp", None, {"OPENAI_API_KEY": EXPLICIT})
+    trial = _rollout(
+        tmp_path,
+        sandbox,
+        "codex-acp",
+        None,
+        {"OPENAI_API_KEY": EXPLICIT},
+        integrity=integrity,
+    )
     await trial.connect_as(OPENHANDS_ROLE)
     if disconnect:
         await trial.disconnect()
@@ -65,28 +74,55 @@ async def test_c31_barrier_precedes_every_credential_consumer(
     events = [kind for kind, _ in sandbox.events]
     assert events.index("quiesce") < events.index("credential-consumer")
     if "remove" in events:
-        assert events.index("quiesce") < events.index("remove")
+        # Off and audit's turn end removed the files with no quiesce (the
+        # lead's 19:23Z ruling); the next connection's removal follows it.
+        assert "remove" in events[events.index("quiesce") :]
 
 
+@pytest.mark.parametrize("integrity", ["strict", "audit", "off"])
 async def test_c26_same_role_reconnect_still_stops_credential_writers(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integrity
 ):
-    """7516a36a skipped the barrier for identical role/environment tuples."""
+    """7516a36a skipped the barrier for identical role/environment tuples.
+    In strict the turn's end stops them; in off and audit the same role with
+    the same logins goes on, and nothing is removed before a quiesce (the
+    lead's 18:40Z ruling)."""
     sandbox = Sandbox(monkeypatch)
-    trial = _rollout(tmp_path, sandbox, "claude-agent-acp", "claude-sonnet-4-6", {})
+    trial = _rollout(
+        tmp_path,
+        sandbox,
+        "claude-agent-acp",
+        "claude-sonnet-4-6",
+        {},
+        integrity=integrity,
+    )
     await trial.connect()
     await trial.disconnect()
     await trial.connect()
     events = [kind for kind, _ in sandbox.events]
-    assert events.index("quiesce") < events.index("remove")
+    if integrity == "strict":
+        assert events.index("quiesce") < events.index("remove")
+    else:
+        # No quiesce, and the turn's end kept the ledger's entries.
+        assert "quiesce" not in events
 
 
+@pytest.mark.parametrize("integrity", ["strict", "audit", "off"])
 async def test_c26_failed_quiescence_keeps_ledger_and_blocks_all_next_consumers(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, integrity
 ):
-    """7516a36a cleaned before proving the previous connection was stopped."""
+    """7516a36a cleaned before proving the previous connection was stopped.
+    In off and audit the turn's end runs no quiesce and removes nothing
+    either; the next role's quiesce is refused all the same."""
     sandbox = Sandbox(monkeypatch)
-    trial = _rollout(tmp_path, sandbox, "claude-agent-acp", "claude-sonnet-4-6", {})
+    trial = _rollout(
+        tmp_path,
+        sandbox,
+        "claude-agent-acp",
+        "claude-sonnet-4-6",
+        {},
+        integrity=integrity,
+    )
     await trial.connect()
     before = dict(sandbox.files)
 
@@ -94,9 +130,15 @@ async def test_c26_failed_quiescence_keeps_ledger_and_blocks_all_next_consumers(
         raise RuntimeError("dummy quiescence refusal")
 
     trial._planes.quiesce_agent = refuse
-    with pytest.raises(RuntimeError, match="dummy quiescence refusal"):
+    if integrity == "strict":
+        with pytest.raises(RuntimeError, match="dummy quiescence refusal"):
+            await trial.disconnect()
+        assert sandbox.files == before
+    else:
+        # No quiesce at the turn's end: the files go, the ledger stays.
+        ledger = list(trial._credential_ledger)
         await trial.disconnect()
-    assert sandbox.files == before
+        assert trial._credential_ledger == ledger
     with pytest.raises(RuntimeError, match="dummy quiescence refusal"):
         await trial.connect_as(OPENHANDS_ROLE)
     assert len(sandbox.launches) == 1
@@ -325,14 +367,16 @@ async def test_partial_launcher_preparation_keeps_each_attempt_on_one_ledger(
 
 
 @pytest.mark.parametrize("backend", ["docker", "remote-docker", "daytona", "modal"])
+@pytest.mark.parametrize("integrity", ["strict", "audit", "off"])
 async def test_c32_openhands_login_removed_for_every_backend(
-    tmp_path, monkeypatch, backend
+    tmp_path, monkeypatch, backend, integrity
 ):
-    """Guards C32 at 7516a36a through backend-independent rollout planes."""
+    """Guards C32 at 7516a36a through backend-independent rollout planes; a
+    role change removes the login in every mode (the lead's 18:40Z ruling)."""
     from unittest.mock import AsyncMock
 
     sandbox = Sandbox(monkeypatch)
-    trial = _rollout(tmp_path, sandbox, "oracle", None, {})
+    trial = _rollout(tmp_path, sandbox, "oracle", None, {}, integrity=integrity)
     trial._config.environment = backend
     trial._planes.ensure_litellm_runtime = AsyncMock(
         side_effect=lambda **kw: (kw["agent_env"], None)
@@ -363,7 +407,7 @@ async def test_c32_openhands_login_removed_for_every_backend(
     await trial.connect_as(Role(name="second", agent="claude-agent-acp", model=None))
     assert path not in sandbox.files
     kinds = [kind for kind, _ in sandbox.events]
-    assert kinds.index("quiesce") < kinds.index("remove")
+    assert "remove" in kinds[kinds.index("quiesce") :]
 
 
 @pytest.mark.parametrize(

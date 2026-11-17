@@ -96,7 +96,22 @@ def _reward(value: float | None) -> str:
 def _usd(cost: dict | None) -> str:
     if not cost or not cost.get("usd_known"):
         return "-"
-    return f"{cost['usd']:.4f}"
+    return f"{cost['usd']:.4f}{_floor(cost)}"
+
+
+# A part counted only some of its calls (usage_incomplete): every
+# total it is in is a floor.
+FLOOR_NOTE = (
+    "+ = a floor: some calls were not counted (usage_incomplete; each "
+    "child's usage_incomplete_reason says why)"
+)
+
+
+def _floor(cost: dict | None) -> str:
+    """``+`` after a figure that is a floor (its cost is usage_incomplete)."""
+    return (
+        "+" if isinstance(cost, dict) and cost.get("usage_incomplete") is True else ""
+    )
 
 
 def _count(usage: dict, *keys: str) -> str:
@@ -111,16 +126,19 @@ def _totals_line(view: dict) -> str:
     totals = view["totals"]
     cost = totals.get("cost") or {}
     usage = totals.get("usage")
+    floor = _floor(cost)
     parts = []
     if usage is not None:
         parts.append(
-            f"{usage['total']:,} tokens (in {usage['input']:,} · out "
+            f"{usage['total']:,}{floor} tokens (in {usage['input']:,} · out "
             f"{usage['output']:,} · cache read {usage['cache_read']:,} · cache "
             f"write {usage['cache_creation']:,})"
         )
-    no_model = usage is not None and usage["total"] == 0
+    elif floor and isinstance(cost.get("tokens"), int):
+        parts.append(f"{cost['tokens']:,}{floor} tokens")
+    no_model = usage is not None and usage["total"] == 0 and not floor
     if cost.get("usd_known"):
-        parts.append(f"USD {cost['usd']:.4f} reported")
+        parts.append(f"USD {cost['usd']:.4f}{floor} reported")
     elif no_model:
         parts.append("no model calls")
     else:
@@ -128,7 +146,7 @@ def _totals_line(view: dict) -> str:
     pricing = view.get("pricing")
     if totals.get("usd_estimate") is not None and not no_model and pricing:
         parts.append(
-            f"estimate ~USD {totals['usd_estimate']:.4f} at list price for "
+            f"estimate ~USD {totals['usd_estimate']:.4f}{floor} at list price for "
             f"{pricing['model']} ({pricing['source']})"
         )
     if cost.get("sandbox_seconds") is not None:
@@ -141,11 +159,15 @@ def _totals_line(view: dict) -> str:
             else []
         )
         if per.get("usd") is not None:
-            each.insert(0, f"USD {per['usd']:.4f}")
+            each.insert(0, f"USD {per['usd']:.4f}{floor}")
         elif per.get("usd_estimate") is not None and not no_model:
-            each.insert(0, f"~USD {per['usd_estimate']:.4f}")
+            each.insert(0, f"~USD {per['usd_estimate']:.4f}{floor}")
+        if floor and per.get("tokens") is not None:
+            each.insert(0, f"{per['tokens']:,}{floor} tokens")
         if each:
             parts.append(f"per scored child ({per['scored']}): " + ", ".join(each))
+    if floor:
+        parts.append(FLOOR_NOTE)
     return "Totals: " + "; ".join(parts) + "."
 
 
@@ -180,7 +202,7 @@ def _print_cost_table(outcomes) -> None:
                 escape(str(fork.get("from") or "-")),
                 str(fork.get("children", "-")),
                 _reward(fork.get("value")),
-                f"{cost.get('tokens', 0):,}",
+                f"{cost.get('tokens', 0):,}{_floor(cost)}",
                 _usd(cost),
                 f"{cost.get('sandbox_seconds') or 0:.0f}",
                 f"{cost.get('wall_seconds') or 0:.0f}",
@@ -188,17 +210,19 @@ def _print_cost_table(outcomes) -> None:
     if cost_table.row_count:
         console.print(cost_table)
         totals = [o.cost for o in outcomes if o.cost]
+        floor = "+" if any(_floor(c) for c in totals) else ""
         console.print(
-            f"Total: {sum(c.get('tokens') or 0 for c in totals):,} tokens, "
+            f"Total: {sum(c.get('tokens') or 0 for c in totals):,}{floor} tokens, "
             f"{sum(c.get('sandbox_seconds') or 0 for c in totals):.0f} sandbox-seconds"
             + (
                 "; no model calls"
-                if not any(c.get("tokens") for c in totals)
+                if not any(c.get("tokens") for c in totals) and not floor
                 else "; USD not reported (subscription or no provider price; "
                 "bench eval branches shows a list-price estimate)"
                 if unknown_usd
-                else f", USD {sum(c.get('usd') or 0 for c in totals):.4f}"
-            ),
+                else f", USD {sum(c.get('usd') or 0 for c in totals):.4f}{floor}"
+            )
+            + (f". {FLOOR_NOTE}" if floor else ""),
             highlight=False,
             soft_wrap=True,
         )
@@ -367,14 +391,18 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
             ),
         ] = 1,
         isolate_children: Annotated[
-            bool,
+            bool | None,
             typer.Option(
-                "--isolate-children",
+                "--isolate-children/--in-place-children",
                 help="Run each child in its own sandbox created from the snapshot "
-                "instead of restoring the parent's sandbox between children. "
-                "Implied by --concurrency > 1 and by nested children.",
+                "instead of restoring the parent's sandbox between children; "
+                "the default with a sandbox-only snapshot, and implied by "
+                "--concurrency > 1 and by nested children. Each such child has "
+                "its own result.json, build and integrity record. "
+                "--in-place-children restores the parent's sandbox between "
+                "children instead (they keep observation.json only).",
             ),
-        ] = False,
+        ] = None,
         agent_env: Annotated[
             list[str] | None,
             typer.Option("--agent-env", help="Agent env var (KEY=VALUE); repeatable"),
@@ -605,6 +633,7 @@ def register_eval_branches(eval_app: typer.Typer) -> None:
                     cost = child["cost"] or {}
                     usage = child.get("usage") or {}
                     label = escape(str(child["label"]))
+                    floor = _floor(cost)
                     table.add_row(
                         escape(where),
                         label,
@@ -616,7 +645,7 @@ def register_eval_branches(eval_app: typer.Typer) -> None:
                         escape(where),
                         label,
                         *(
-                            _count(usage, *keys)
+                            _count(usage, *keys) + floor * bool(usage)
                             for keys in (
                                 ("n_input_tokens",),
                                 ("n_output_tokens",),
@@ -624,11 +653,11 @@ def register_eval_branches(eval_app: typer.Typer) -> None:
                             )
                         ),
                         # reported, else "~" + the list-price estimate
-                        f"{cost['usd']:.4f}"
+                        f"{cost['usd']:.4f}{floor}"
                         if cost.get("usd") is not None
                         else "-"
                         if child.get("usd_estimate") is None
-                        else f"~{child['usd_estimate']:.4f}",
+                        else f"~{child['usd_estimate']:.4f}{floor}",
                         f"{cost['sandbox_seconds']:.0f}"
                         if cost.get("sandbox_seconds") is not None
                         else "-",

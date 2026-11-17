@@ -41,7 +41,7 @@ Created: half-life/task.md
   kept task.toml and instruction.md
 ```
 
-`--remove-legacy` deletes the split files once the new `task.md` checks out. Converting is optional: both layouts run.
+`--remove-legacy` deletes the split files once the new `task.md` checks out. Converting is optional: both layouts run. The new `task.md` carries `benchflow: {converted_from: task.toml}`, so it is graded as its `task.toml` was where the formats differ: a separate verifier built from the verifier folder's Dockerfile gets only the declared artifacts from the workspace, and `/solution` names the oracle folder. A task converted by an earlier release lacks the mark; convert it again, or add the two lines to its header.
 
 Ten published Terminal-Bench 2.0 tasks, `hf-model-inference` and `pypi-server` among them, keep services the agent leaves running (`x-keep-services`). A `--sandbox daytona` sandbox can't hold those for an agent that runs as a non-root user, so BenchFlow refuses such a trial before it starts, with `KeptServiceFreezerUnavailable` ([Error messages](../reference/errors.md)). Run those tasks with `--sandbox docker` or `--sandbox remote-docker`.
 

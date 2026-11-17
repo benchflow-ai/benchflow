@@ -179,7 +179,10 @@ def test_a_usr_local_workspace_is_granted_without_the_loaders_folders():
     assert "! -path /usr/local/lib ! -path /usr/local/lib64" in grant
     assert "mkdir -m 755 /usr/local/lib64" in grant
     assert "! -name '*-linux-*' -exec chown -R agent:agent" in grant
-    assert workspace_grant_command("/app", "agent") == "chown -R agent:agent /app"
+    # Without a daemon folder in it (#1232), /app is granted whole.
+    assert workspace_grant_command("/app", "agent").endswith(
+        "; else chown -R agent:agent /app; fi"
+    )
 
 
 # --- The b122 review's mediums -----------------------------------------------

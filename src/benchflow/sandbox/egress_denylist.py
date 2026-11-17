@@ -226,6 +226,72 @@ _ADDRESS_ATTEMPTS = 10
 _ADDRESS_POLL_SEC = 3.0
 
 
+def _outbound_refusal(leaks: list[str]) -> TaskServiceEgressError:
+    return TaskServiceEgressError(
+        "sandbox startup refused: network_mode='allowlist' needs the task's "
+        f"services kept inside the sandbox, but {', '.join(leaks)} can reach "
+        "outside it, so the agent could have it fetch what the allowlist "
+        "refuses. Put the task's services on networks marked "
+        "`internal: true` (main may join them beside its own network)."
+    )
+
+
+def outbound_services(project: Any) -> list[str]:
+    """Each service but main of a Compose model (``config --format json``'s,
+    or a raw compose file's) with a route out of the sandbox, named as
+    :func:`admit_task_services` names a running one: a network that is not
+    ``internal`` (Compose's default network included), the host's network,
+    or another container's network namespace. The networks' ``internal``
+    flag is static, so the plan can tell before anything starts."""
+    if not isinstance(project, dict):
+        return []
+    services = project.get("services")
+    networks = project.get("networks")
+    services = services if isinstance(services, dict) else {}
+    networks = networks if isinstance(networks, dict) else {}
+    leaks: list[str] = []
+    for name, spec in sorted(services.items()):
+        if name == "main" or not isinstance(spec, dict):
+            continue
+        mode = str(spec.get("network_mode") or "").strip()
+        if mode == "none":
+            continue
+        if mode == "host":
+            leaks.append(f"{name!r} (the host's network)")
+            continue
+        if mode.startswith(("service:", "container:")):
+            leaks.append(f"{name!r} (another container's network namespace)")
+            continue
+        joined = spec.get("networks")
+        names = (
+            list(joined) if isinstance(joined, (dict, list)) and joined else ["default"]
+        )
+        open_nets = []
+        for net in names:
+            record = networks.get(net)
+            internal = isinstance(record, dict) and record.get("internal") in (
+                True,
+                "true",
+                "True",
+            )
+            if not internal:
+                open_nets.append(f"network {net!r} is not internal")
+        if open_nets:
+            leaks.append(f"{name!r} ({'; '.join(open_nets)})")
+    return leaks
+
+
+def allowlist_outbound_refusal(project: Any) -> None:
+    """Raise :class:`TaskServiceEgressError` (the run's own refusal) when a
+    service of the Compose model *project* has a route out of the sandbox,
+    for an allowlist task, before any container starts: the dry run and the
+    launch alike (:func:`admit_task_services` refused it only once it
+    had run)."""
+    leaks = outbound_services(project)
+    if leaks:
+        raise _outbound_refusal(leaks)
+
+
 def admit_task_services(
     policy: EgressDenylist, services: Sequence[TaskService]
 ) -> EgressDenylist:
@@ -241,13 +307,7 @@ def admit_task_services(
     """
     leaks = [f"{s.service!r} ({'; '.join(s.outbound)})" for s in services if s.outbound]
     if leaks:
-        raise TaskServiceEgressError(
-            "sandbox startup refused: network_mode='allowlist' needs the task's "
-            f"services kept inside the sandbox, but {', '.join(leaks)} can reach "
-            "outside it, so the agent could have it fetch what the allowlist "
-            "refuses. Put the task's services on networks marked "
-            "`internal: true` (main may join them beside its own network)."
-        )
+        raise _outbound_refusal(leaks)
     listed = {entry.strip().rstrip(".").lower() for entry in policy.allowed_hosts or ()}
     names: dict[str, None] = {}
     ranges: dict[str, None] = {}
@@ -479,12 +539,20 @@ _RUNTIME_OWNER = (
 )
 
 
+#: The proxy marks its upstream sockets with this (``--mark``): the verifier
+#: phase's rules let out only marked packets (benchflow.sandbox.verifier_network).
+EGRESS_MARK = 0xBF609
+
+
 def _setup_cmd(
-    *, runtime_dir: str = RUNTIME_DIR, ca_dir: str = CA_DIR, dns_port: int | None = None
+    *,
+    runtime_dir: str = RUNTIME_DIR,
+    ca_dir: str = CA_DIR,
+    dns_port: int | None = None,
+    mark: bool = True,
 ) -> str:
     """Root shell: validate dependencies, install the CA, and start the proxy."""
     q = shlex.quote
-    ca_cert, bundle = f"{ca_dir}/ca.crt", f"{ca_dir}/ca-bundle.crt"
     log, pid = f"{runtime_dir}/blocked.jsonl", f"{runtime_dir}/proxy.pid"
     allowed = f"{runtime_dir}/allowed.jsonl"
     proxy = (
@@ -493,6 +561,10 @@ def _setup_cmd(
         f"--ca-cert {q(runtime_dir + '/ca.crt')} --ca-key {q(runtime_dir + '/ca.key')} "
         f'--openssl "$OPENSSL" --log {q(log)} --allowed-log {q(allowed)}'
         + (f" --dns-port {int(dns_port)}" if dns_port is not None else "")
+        # Marking takes NET_ADMIN, which main lacks where BenchFlow's helper
+        # adds the rules: there the agent's uid rules hold the agent
+        # and this proxy (root) is outside them, unmarked.
+        + (f" --mark {EGRESS_MARK}" if mark else "")
     )
     # PT-C8-CONF-2: the proxy and the CA probe run on root's protected
     # Python once the sandbox has its kit (this setup runs again on every
@@ -515,17 +587,8 @@ def _setup_cmd(
         + f'; [ -n "$PY" ] || {{ {image_py}; }}; '
         'OPENSSL="$(command -v openssl || true)"; '
         f'[ -n "$OPENSSL" ] || {{ echo "{_RUNTIME_OWNER} needs openssl in the task image" >&2; exit 87; }}; '
-        f"mkdir -p {q(ca_dir)} && chmod 755 {q(ca_dir)}; "
-        f"cp {q(runtime_dir + '/ca.crt')} {q(ca_cert)} && chmod 644 {q(ca_cert)}; "
-        'SYS=""; for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do '
-        'if [ -s "$f" ]; then SYS="$f"; break; fi; done; '
-        f'[ -n "$SYS" ] || SYS="$( {ssl_probe} )"; '
-        f'if [ -n "$SYS" ] && [ -s "$SYS" ]; then cat "$SYS" {q(ca_cert)} > {q(bundle)}; '
-        f"else cp {q(ca_cert)} {q(bundle)}; fi; chmod 644 {q(bundle)}; "
-        "if command -v update-ca-certificates >/dev/null 2>&1; then "
-        f"mkdir -p /usr/local/share/ca-certificates && cp {q(ca_cert)} /usr/local/share/ca-certificates/runtime-egress.crt "
-        "&& update-ca-certificates >/dev/null 2>&1 || true; fi; "
-        f"touch {q(log)} {q(allowed)}; chmod 600 {q(log)} {q(allowed)}; "
+        + _ca_trust_sh(runtime_dir=runtime_dir, ca_dir=ca_dir, ssl_probe=ssl_probe)
+        + f"touch {q(log)} {q(allowed)}; chmod 600 {q(log)} {q(allowed)}; "
         f'if [ -s {q(pid)} ]; then old="$(cat {q(pid)})"; '
         'kill -TERM "$old" 2>/dev/null || true; '
         'for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$old" 2>/dev/null || break; sleep 0.5; done; fi; '
@@ -578,7 +641,29 @@ async def _upload(env: Any, files: dict[str, bytes]) -> None:
             ),
         )
     paths = " ".join(shlex.quote(f"{RUNTIME_DIR}/{name}") for name in files)
-    await _run(env, f"chmod 600 {paths}", "egress runtime file modes", timeout_sec=30)
+    command = f"chmod 600 {paths}"
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if bfx_delivered(env):
+        # No program of the image runs for it after the agent's turn.
+        command = " && ".join(
+            bfx_sh("chmod", f"{RUNTIME_DIR}/{name}", mode=0o600) for name in files
+        )
+    await _run(env, command, "egress runtime file modes", timeout_sec=30)
+
+
+def _runtime_dir_cmd(env: Any, folder: str) -> str:
+    """*folder* made and :data:`RUNTIME_DIR` root's alone (700): bfx's mkdir
+    and chmod where bfx is delivered, so no program of the image runs for it
+    after the agent's turn; else the system tools."""
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if not bfx_delivered(env):
+        return f"mkdir -p {shlex.quote(folder)} && chmod 700 {shlex.quote(RUNTIME_DIR)}"
+    return (
+        f"{bfx_sh('mkdir', folder, parents=True, mode=0o700)} && "
+        f"{bfx_sh('chmod', RUNTIME_DIR, mode=0o700)}"
+    )
 
 
 async def _wait_healthy(env: Any, timeout_sec: int) -> None:
@@ -631,6 +716,35 @@ async def start_egress_denylist(
                 "denylist model gateway must be a controller-owned loopback HTTP endpoint"
             )
         gateway_port = gateway.port
+    files = _runtime_files(denylist, gateway_port)
+    await _run(
+        env,
+        _runtime_dir_cmd(env, RUNTIME_DIR + "/certs"),
+        "egress runtime dir",
+        timeout_sec=30,
+    )
+    await _upload(env, files)
+    await _run(
+        env,
+        _setup_cmd(
+            dns_port=DNS_PORT if denylist.allow_mode else None,
+            mark=getattr(env, "rules_by_helper", False) is not True,
+        ),
+        "egress proxy setup",
+        timeout_sec=timeout_sec,
+    )
+    await _wait_healthy(env, timeout_sec)
+    # BenchFlow's own, on the host's record: R1.
+    from benchflow.sandbox.lockdown import note_own_process
+
+    await note_own_process(env, pid_file=RUNTIME_DIR + "/proxy.pid")
+
+
+def _runtime_files(
+    denylist: EgressDenylist, gateway_port: int | None
+) -> dict[str, bytes]:
+    """The proxy's files: its policy, script, request guard, CA and the
+    inspected hosts' certificates (a fresh CA each time)."""
     material = certificate_material(denylist.inspect_hosts, include_ca_key=True)
     policy = {
         "blocked_urls": list(denylist.blocked_urls),
@@ -659,20 +773,112 @@ async def start_egress_denylist(
             if name not in {"ca.crt", "ca.key"}
         },
     }
-    await _run(
-        env,
-        f"mkdir -p {shlex.quote(RUNTIME_DIR + '/certs')} && chmod 700 {shlex.quote(RUNTIME_DIR)}",
-        "egress runtime dir",
-        timeout_sec=30,
+    return files
+
+
+def _ca_only_cmd(*, runtime_dir: str = RUNTIME_DIR, ca_dir: str = CA_DIR) -> str:
+    """Root shell for a proxy that runs outside the sandbox (its own
+    container): stop the sandbox's own proxy (the agent phase's) and
+    trust the CA in *runtime_dir*/ca.crt, as :func:`_setup_cmd` does."""
+    q = shlex.quote
+    pid = f"{runtime_dir}/proxy.pid"
+    ssl_probe = root_python_sh(
+        'import ssl; print(ssl.get_default_verify_paths().cafile or "")',
+        fallback='"$(command -v python3 || echo false)"',
     )
-    await _upload(env, files)
-    await _run(
-        env,
-        _setup_cmd(dns_port=DNS_PORT if denylist.allow_mode else None),
-        "egress proxy setup",
-        timeout_sec=timeout_sec,
+    return (
+        "set -e; cd /; "
+        f'if [ -s {q(pid)} ]; then old="$(cat {q(pid)})"; '
+        'kill -TERM "$old" 2>/dev/null || true; '
+        'for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$old" 2>/dev/null || break; sleep 0.5; done; '
+        f'kill -KILL "$old" 2>/dev/null || true; rm -f {q(pid)}; fi; '
+        + _ca_trust_sh(runtime_dir=runtime_dir, ca_dir=ca_dir, ssl_probe=ssl_probe)
+        + "echo BF egress-ca ok"
     )
-    await _wait_healthy(env, timeout_sec)
+
+
+def _ca_trust_sh(*, runtime_dir: str, ca_dir: str, ssl_probe: str) -> str:
+    """Root shell: the proxy's CA in *ca_dir* (alone, and with the system's
+    roots) and in the image's trust store."""
+    q = shlex.quote
+    ca_cert, bundle = f"{ca_dir}/ca.crt", f"{ca_dir}/ca-bundle.crt"
+    return (
+        f"mkdir -p {q(ca_dir)} && chmod 755 {q(ca_dir)}; "
+        f"cp {q(runtime_dir + '/ca.crt')} {q(ca_cert)} && chmod 644 {q(ca_cert)}; "
+        'SYS=""; for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do '
+        'if [ -s "$f" ]; then SYS="$f"; break; fi; done; '
+        # An image with no system bundle and no Python (BusyBox): the CA alone.
+        f'[ -n "$SYS" ] || SYS="$( {{ {ssl_probe}; }} 2>/dev/null || true )"; '
+        f'if [ -n "$SYS" ] && [ -s "$SYS" ]; then cat "$SYS" {q(ca_cert)} > {q(bundle)}; '
+        f"else cp {q(ca_cert)} {q(bundle)}; fi; chmod 644 {q(bundle)}; "
+        "if command -v update-ca-certificates >/dev/null 2>&1; then "
+        f"mkdir -p /usr/local/share/ca-certificates && cp {q(ca_cert)} /usr/local/share/ca-certificates/runtime-egress.crt "
+        "&& update-ca-certificates >/dev/null 2>&1 || true; fi; "
+    )
+
+
+def has_egress_container(env: Any) -> bool:
+    """Whether *env* runs the verifier phase's proxy in its own container."""
+    return callable(getattr(type(env), "egress_container_start", None))
+
+
+async def start_egress_container(
+    env: Any,
+    denylist: EgressDenylist,
+    *,
+    lifetime_sec: int,
+    timeout_sec: int = 120,
+) -> Any:
+    """The verifier phase's proxy (benchflow.sandbox._egress_container): main
+    stops its own proxy and trusts the new one's CA, then the proxy starts in
+    its own container in main's network namespace, out of test.sh's reach,
+    and answers on the same loopback port."""
+    from benchflow.sandbox._egress_container import proxy_argv
+
+    files = _runtime_files(denylist, None)
+    await _run(
+        env, _runtime_dir_cmd(env, RUNTIME_DIR), "egress runtime dir", timeout_sec=30
+    )
+    await _upload(env, {"ca.crt": files["ca.crt"]})
+    await _run(env, _ca_only_cmd(), "egress CA install", timeout_sec=timeout_sec)
+    box = await env.egress_container_start(
+        files,
+        proxy_argv(
+            port=EGRESS_PORT,
+            dns_port=DNS_PORT if denylist.allow_mode else None,
+            mark=EGRESS_MARK,
+        ),
+        lifetime_sec=lifetime_sec,
+    )
+    # From inside its own container: main's image may have no Python.
+    await box.wait_healthy(f"{PROXY_URL}/healthz", timeout_sec)
+    return box
+
+
+async def in_sandbox_refusals(env: Any) -> list[dict[str, Any]] | None:
+    """The in-sandbox proxy's refusals so far (its blocked log), or None
+    when it cannot be read."""
+    try:
+        result = await exec_raw(
+            env.exec,
+            f"cat {shlex.quote(RUNTIME_DIR + '/blocked.jsonl')} 2>/dev/null; "
+            "echo BF egress-log-end",
+            user="root",
+            timeout_sec=30,
+        )
+    except Exception:
+        return None
+    out = getattr(result, "stdout", "") or ""
+    if not isinstance(out, str) or "BF egress-log-end" not in out:
+        return None
+    found: list[dict[str, Any]] = []
+    for line in out.splitlines():
+        if line.startswith("{"):
+            with contextlib.suppress(ValueError):
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    found.append(entry)
+    return found
 
 
 async def _collect_log(
@@ -716,10 +922,23 @@ async def stop_egress_denylist(env: Any, rollout_dir: Path | ReachablePath) -> N
     await _collect_log(env, _LOG_PATH, rollout_dir, TRAJECTORY_LOG_NAME)
     await _collect_log(env, _ALLOWED_LOG_PATH, rollout_dir, ALLOWED_LOG_NAME)
     with contextlib.suppress(Exception):
-        await exec_raw(
-            env.exec,
+        await exec_raw(env.exec, _stop_cmd(env), user="root", timeout_sec=30)
+
+
+def _stop_cmd(env: Any) -> str:
+    """The in-sandbox proxy's stop. Where bfx is delivered no program of the
+    image runs for it after the agent's turn: the pid is read and
+    signalled with builtins, and bfx removes the folders."""
+    from benchflow.sandbox._bounded_exec import bfx_delivered, bfx_sh
+
+    if not bfx_delivered(env):
+        return (
             f"kill -TERM $(cat {shlex.quote(_PID_PATH)}) 2>/dev/null; "
-            f"rm -rf {shlex.quote(RUNTIME_DIR)} {shlex.quote(CA_DIR)}",
-            user="root",
-            timeout_sec=30,
+            f"rm -rf {shlex.quote(RUNTIME_DIR)} {shlex.quote(CA_DIR)}"
         )
+    return (
+        f"{{ IFS= read -r bf_p < {shlex.quote(_PID_PATH)} && "
+        'kill -TERM "$bf_p"; } 2>/dev/null; '
+        f"{bfx_sh('remove', RUNTIME_DIR, recursive=True, missing_ok=True)}; "
+        f"{bfx_sh('remove', CA_DIR, recursive=True, missing_ok=True)}"
+    )

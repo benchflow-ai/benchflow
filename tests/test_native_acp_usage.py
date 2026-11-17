@@ -220,7 +220,9 @@ def test_native_acp_usage_result_json_and_metadata(tmp_path):
 
     data = json.loads((tmp_path / "result.json").read_text())
 
-    assert data["agent_result"]["usage_source"] == "agent_native_acp"
+    # Names it end_of_turn; the old name stays as usage_source_legacy.
+    assert data["agent_result"]["usage_source"] == "end_of_turn"
+    assert data["agent_result"]["usage_source_legacy"] == "agent_native_acp"
     assert data["agent_result"]["usage_details"] == {"thought_tokens": 2}
     assert data["usage_tracking"]["endpoint_kind"] == "agent_native"
 

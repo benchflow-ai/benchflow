@@ -484,6 +484,14 @@ def run(
             kwargs["tasks_dir"] = folder
         else:
             assert repo is not None
+            named_twice = [n for n in ("source_path", "source_ref") if n in more]
+            if named_twice:
+                flag = "--" + named_twice[0].replace("_", "-")
+                raise _usage(
+                    f"the target {target} names its repository's path and ref, "
+                    f"and {flag} names one too",
+                    f"drop {flag} and put it in the target: org/repo/path@ref",
+                )
             kwargs["source_repo"], kwargs["source_path"], kwargs["source_ref"] = repo
     if "skill_mode" not in more:
         more["skill_mode"] = "with-skill" if task_skills else "no-skill"
@@ -740,6 +748,9 @@ class RunCommand(TyperCommand):
             "accept_deviations",
             "max_cost_usd",
             "max_tokens",
+            # A task whose workspace takes long to hand over (a large
+            # node_modules) needs it before its first trial.
+            "sandbox_setup_timeout",
         }
     )
 

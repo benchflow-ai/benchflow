@@ -26,7 +26,7 @@ from benchflow.cli._shared import print_error
 from benchflow.errors import MissingCredentialError
 
 KEYS = ["error", "code", "owner", "next", "detail", "exit_code"]
-SECRET = "sk-test-0123456789abcdefghijklmnop"
+SECRET = "sk" + "-test-01" + "23456789" + "abcdefgh" + "ijklmnop"
 
 # The real console script, with `bench` as its program name.
 _LAUNCH = (

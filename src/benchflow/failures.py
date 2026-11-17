@@ -106,6 +106,13 @@ _ERRORED: dict[str, tuple[str, Fault, str]] = {
         "the error in result.json and the sandbox setup log say where the "
         "guard stopped; `bench eval resume {job}` runs the trial again",
     ),
+    "phase_timeout": (
+        "a step of the trial other than the agent's turn timed out",
+        "infrastructure",
+        "the error in result.json names the step (setup, start, install, "
+        "agent set-up, step set-up, soft verify, agent tear-down or verify); "
+        "`bench eval resume {job}` runs the trial again",
+    ),
     "invalid_provider_response": (
         "the provider returned an invalid response",
         "infrastructure",
@@ -197,6 +204,12 @@ _ERRORED: dict[str, tuple[str, Fault, str]] = {
         "check `docker login <registry>` on this machine, and that the FROM "
         "line names an image that login can read",
     ),
+    "script_backend": (
+        "a script: agent cannot run on this sandbox backend",
+        "setup",
+        "run it with `--sandbox docker`, or run the logic as an ACP agent "
+        "(docs/agents/custom-agent.md)",
+    ),
     "task_config": (
         "a task file does not load",
         "task",
@@ -213,6 +226,12 @@ _ERRORED: dict[str, tuple[str, Fault, str]] = {
         "setup",
         "the error names what; run the task with `--sandbox docker`, or change "
         "what it asks for",
+    ),
+    "task_refused": (
+        "BenchFlow refuses this task before the turn, unscored",
+        "setup",
+        "the error names why; nothing to do in the run: the task is on "
+        "BenchFlow's refusal list, and an edited copy of it runs",
     ),
 }
 _INTEGRATION: dict[str, tuple[str, Fault, str]] = {
@@ -254,6 +273,43 @@ _INTEGRATION_UNKNOWN: tuple[str, Fault, str] = (
     "integration_failure_info in result.json",
 )
 _UNSCORED: dict[str, tuple[str, Fault, str]] = {
+    "network_policy_breached": (
+        "BenchFlow's network rules for the trial were gone or reset before it "
+        "was scored",
+        "infrastructure",
+        "read the trial's verifier/network-policy.json (which rules were gone, "
+        "and when they were last proven present) and report it at "
+        "https://github.com/benchflow-ai/benchflow/issues with the trial folder",
+    ),
+    "verifier_network_refused": (
+        "the verifier's network refused test.sh packets and its tests did not pass",
+        "task",
+        "if the tests need those hosts, set verifier.network_mode in the task "
+        "(the trial's verifier/verifier-network.json names the network and the "
+        "count); `bench check {task}`",
+    ),
+    "verifier_launch_refused": (
+        "test.sh did not start without NET_ADMIN and NET_RAW, so BenchFlow did not run it",
+        "setup",
+        "run with BenchFlow's bfx delivered (a release wheel ships it), or give "
+        "the image util-linux setpriv; the trial's verifier/test-stdout.txt "
+        "names what the launch found",
+    ),
+    "verifier_tools_refused": (
+        "the verifier's PATH leaves out a folder of the image's that the task's "
+        "required_tools do not cover, so BenchFlow did not run test.sh",
+        "setup",
+        "the error names each folder and why it was left out; make the folder "
+        "root's alone in the image (RUN chmod -R go-w <folder>), or list the "
+        "programs test.sh runs from PATH in [verifier] required_tools",
+    ),
+    "verifier_network_unheld": (
+        "the verifier's network could not be held, so BenchFlow did not run test.sh",
+        "setup",
+        "the error names what failed (the rules from BenchFlow's helper, or "
+        "their proof); run on Docker with the helper image available, or set "
+        "the verifier's network to public in the task if its tests need one",
+    ),
     "verifier_failure": (
         "the verifier crashed",
         "task",
@@ -306,6 +362,21 @@ _UNSCORED: dict[str, tuple[str, Fault, str]] = {
 # cause_of fills in the login, window and reset of a usage limit, the exit
 # code of an agent process, and the first words of an other error.
 _SPECIAL: dict[str, tuple[str, Fault, str]] = {
+    "test_sh_preflight_unavailable": (
+        "a branch child's checkpoint recorded no test.sh preflight verdict, and "
+        "none could be decided on a fresh image, so the child was not run",
+        "setup",
+        "run the task again to make a new checkpoint (one recorded before the "
+        "check has no verdict), then branch from it",
+    ),
+    "test_sh_command_missing": (
+        "test.sh needs a command the verifier's PATH does not have, so the "
+        "trial was refused before the agent's turn",
+        "task",
+        "the error names the command and the PATH the verifier would have "
+        "run test.sh with; put it on the image's PATH (ENV PATH) or call it "
+        "by its full path in test.sh",
+    ),
     "usage_limit": (
         "usage limit",
         "setup",
@@ -330,6 +401,12 @@ _SPECIAL: dict[str, tuple[str, Fault, str]] = {
         "setup",
         "use Docker Engine 28 or later with cgroup v2, not rootless and "
         "without user-namespace remapping (`docker info`)",
+    ),
+    "kept_service_freezer:host_uid": (
+        "the task's agent user has the uid BenchFlow runs as",
+        "setup",
+        "give the image's agent user another uid (useradd -u), run BenchFlow "
+        "as another host user, or run with --sandbox remote-docker",
     ),
     "kept_service_freezer:probe": (
         "the sandbox's cgroups cannot freeze the task's kept services",
@@ -378,6 +455,14 @@ _SPECIAL: dict[str, tuple[str, Fault, str]] = {
         "agent",
         "the trial's verifier/ folder names the plugin and why; when "
         "test.sh installs it, `bench tasks check {task}`",
+    ),
+    "verifier_output_unwritable": (
+        "the verifier's user could not write its output file, so test.sh "
+        "never ran (unscored)",
+        "infrastructure",
+        "verifier/ in the trial names the file, its owner and the verifier's "
+        "uid; until BenchFlow leaves that file to the test command, "
+        'run the verifier as root ([verifier] user = "root" in task.toml)',
     ),
     "verifier_no_usable_reward": (
         "the verifier wrote no usable reward (a failure in every score)",
@@ -428,6 +513,7 @@ def unscored_keys() -> tuple[str, ...]:
         "verifier_plugin_unproven",
         "verifier_plugin_unlisted",
         "verifier_plugin_refused",
+        "verifier_output_unwritable",
         "verifier_no_usable_reward",
         "no_verdict",
     )
@@ -448,7 +534,11 @@ def cause_keys() -> tuple[str, ...]:
                 "pipe_closed:exit",
                 "provider_unavailable",
                 "kept_service_freezer:engine",
+                "kept_service_freezer:host_uid",
                 "kept_service_freezer:probe",
+                # test.sh's preflight (task/test_sh_preflight.py).
+                "test_sh_command_missing",
+                "test_sh_preflight_unavailable",
                 "other",
             )
         )
@@ -515,8 +605,10 @@ def cause_of(
         classify_error,
         classify_score_outcome,
         classify_verifier_error,
-        is_unusable_reward,
+        is_output_unwritable,
         plugin_guard_error_message,
+        refusal_kind,
+        reward_less_verdict,
     )
 
     data = _read_result(result)
@@ -533,7 +625,13 @@ def cause_of(
         category = data.get("verifier_error_category") or classify_verifier_error(
             verifier_error
         )
-        if is_unusable_reward(verifier_error):
+        # Refused or unscored is scoring.reward_less_verdict's answer, as
+        # every score reads it; the cause only names which.
+        verdict = reward_less_verdict(verifier_error)
+        if verdict == "unscored" and is_output_unwritable(verifier_error):
+            # BenchFlow's own file: unscored, never the task's.
+            return _special("verifier_output_unwritable", job, task)
+        if refusal_kind(verifier_error) == "unusable":
             return _special("verifier_no_usable_reward", job, task)
         # Only the guard's own opening words decide the kind: the rest of its
         # message can quote a path or an error the agent chose (V2-R1-A-1).
@@ -573,6 +671,14 @@ def _special(key: str, job: str | None, task: str | None, label: str = "") -> Ca
 def _errored_cause(
     data: Mapping[str, Any], category: str, job: str | None, task: str | None
 ) -> Cause:
+    from benchflow.task.test_sh_preflight import REFUSAL_HEAD, UNAVAILABLE_HEAD
+
+    if category == "sandbox_setup" and UNAVAILABLE_HEAD in str(data.get("error") or ""):
+        return _special("test_sh_preflight_unavailable", job, task)
+    if category == "sandbox_setup" and REFUSAL_HEAD in str(data.get("error") or ""):
+        # The task and its image, read before the agent's turn: never the
+        # sandbox's failure (task/test_sh_preflight.py).
+        return _special("test_sh_command_missing", job, task)
     if category == "usage_limit":
         from benchflow.agents.errors import UsageLimitError
         from benchflow.agents.usage_limits import format_reset
@@ -640,6 +746,8 @@ def _errored_cause(
             return _special("kept_service_freezer:engine", job, task)
         if "this sandbox cannot (the check's reason is below)" in error:
             return _special("kept_service_freezer:probe", job, task)
+        if "the uid BenchFlow runs as on the host" in error:
+            return _special("kept_service_freezer:host_uid", job, task)
     if category == "task_config":
         # The file and the fix are the error's own words, after its class;
         # the task's folder is left out of the path (DF-p4-upgrader-8).
@@ -678,6 +786,10 @@ def _errored_cause(
         return Cause(
             category, f"{label}: {_short(said, 360)}", fault, _fill(step, job, task)
         )
+    if category == "unsupported_task_feature":
+        label, fault, step = _ERRORED[category]
+        step = _unsupported_feature_step(str(data.get("error") or "")) or step
+        return Cause(category, label, fault, _fill(step, job, task))
     if category in _ERRORED:
         label, fault, step = _ERRORED[category]
         return Cause(category, label, fault, _fill(step, job, task))
@@ -690,6 +802,49 @@ def _errored_cause(
 
     short = render_diagnostic((str(data.get("error") or ""),), _secrets(), shorten)
     return _special("other", job, task, f"other error: {short}")
+
+
+# One refused feature in UnsupportedTaskFeatureError's list:
+# "- <path>: <reason> (sandbox=<backend>)" (task/runtime_capabilities.py).
+_REFUSED_FEATURE_RE = re.compile(r"- ([\w.\[\]-]+): .*? \(sandbox=([\w-]+)\)")
+_GPU_FEATURES = frozenset({"sandbox.gpus", "sandbox.gpu_types"})
+
+
+def _unsupported_feature_step(error: str) -> str | None:
+    """The next step for an R401 refusal, from the features it names; None
+    keeps the general row's.
+
+    Never the backend the run already used (a GPU task refused on
+    Docker was told to run with ``--sandbox docker``): a refusal of GPUs alone
+    names the one backend that runs them, and any other refusal on Docker
+    names no backend.
+    """
+    from benchflow.task.runtime_capabilities import GPU_SANDBOX
+
+    found = _REFUSED_FEATURE_RE.findall(error)
+    if not found:
+        return None
+    paths = {path for path, _ in found}
+    used = {sandbox for _, sandbox in found}
+    if paths <= _GPU_FEATURES and GPU_SANDBOX not in used:
+        return (
+            f"the task asks for GPUs, which only the Modal backend runs: run it "
+            f"with `--sandbox {GPU_SANDBOX}`, or drop sandbox.gpus from the task"
+        )
+    if paths <= _GPU_FEATURES:
+        # Modal itself refused the request: its count or type, not GPUs.
+        return (
+            "Modal cannot give the task the GPUs it asks for: fix sandbox.gpus "
+            "and sandbox.gpu_types as the error says (one type Modal offers, "
+            "a count it allows)"
+        )
+    if "docker" in used:
+        return (
+            "the error names what the Docker backend cannot run; change what "
+            "the task asks for, or run it on a backend that supports it "
+            "(`bench explain R401`)"
+        )
+    return None
 
 
 def _short(text: str, limit: int) -> str:
