@@ -307,6 +307,9 @@ _ROUTING_PREFIXES = (
     "azure_ai/",
 )
 _BEDROCK_REGION_PREFIX_RE = re.compile(r"^[a-z-]{2,8}\.(?=anthropic\.)")
+# OpenAI-compatible routes (OpenRouter, for one) reach LiteLLM as
+# ``openai/<vendor>/<model>``.
+_OPENAI_COMPATIBLE_PREFIX = "openai/"
 
 
 def _effort_capability_keys(model: str) -> tuple[str, list[str]]:
@@ -315,8 +318,18 @@ def _effort_capability_keys(model: str) -> tuple[str, list[str]]:
     Bedrock ids resolve to the inference-profile id and its base model
     (``us.anthropic.claude-x`` and ``anthropic.claude-x``); other routes to the
     bare Claude id. Returns no keys for models outside the Claude 4.8+/5 family.
+
+    A Claude id behind an OpenAI-compatible route (``openai/anthropic/claude-x``)
+    keeps its full key under provider ``openai``. LiteLLM resolves that provider
+    for the model and skips an entry filed under ``anthropic``, and its Messages
+    adapter then lowers a requested ``max`` or ``xhigh`` to ``high``. These ids
+    can use dots (OpenRouter's ``anthropic/claude-opus-4.8``).
     """
     bare = model.strip()
+    if bare.startswith(_OPENAI_COMPATIBLE_PREFIX):
+        if BEDROCK_ADAPTIVE_THINKING_RE.search(bare.lower().replace(".", "-")):
+            return "openai", [bare]
+        return "", []
     for prefix in _ROUTING_PREFIXES:
         if bare.startswith(prefix):
             bare = bare[len(prefix) :]
