@@ -1,0 +1,172 @@
+name: leak-gate-propose
+
+# Regenerates the release leak gate's allowlist without anyone seeing the
+# patterns. It builds a release tag exactly as public-release.yml does, runs
+# tools/release_leak_gate.py with the real patterns against an empty
+# allowlist, and uploads the exception drafts as proposal.json. A draft holds
+# its rule, member path, matched-value SHA-256 and file SHA-256, nothing else:
+# neither the patterns nor any matched text reach the log or the artifact
+# (tests/test_leak_gate_propose_workflow.py runs this job's step to prove it).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v0.9.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leak-gate-propose-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: Propose leak gate exceptions
+    runs-on: ubuntu-latest
+    environment: pypi-public
+
+    steps:
+      - name: Check the tag input
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: |
+          if ! [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "::error::tag must be a release tag such as v0.9.3 or v0.10.0rc5"
+            exit 1
+          fi
+
+      - name: Check out tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Check bfx in distributions
+        run: uv run --no-project python tools/check_dist_bfx.py dist
+
+      - name: Install the leak scanners (pinned)
+        run: tools/install_leak_scanners.sh "$RUNNER_TEMP/leak-scanners"
+
+      - name: Propose exceptions
+        env:
+          RELEASE_LEAK_PATTERNS: ${{ secrets.RELEASE_LEAK_PATTERNS }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: |
+          umask 077
+          cfg="$RUNNER_TEMP/leak-gate"
+          mkdir -p "$cfg"
+          printf '%s' "$RELEASE_LEAK_PATTERNS" > "$cfg/patterns.json"
+          printf '%s\n' '{"version": 1, "exceptions": []}' > "$cfg/allowlist.json"
+          status=0
+          uv run --no-project python tools/release_leak_gate.py \
+            --patterns "$cfg/patterns.json" --allowlist "$cfg/allowlist.json" \
+            --scanners "$RUNNER_TEMP/leak-scanners" --propose "$cfg/drafts.json" \
+            dist/*.whl dist/*.tar.gz docs=docs > "$cfg/gate.out" 2>&1 || status=$?
+          rm -f "$cfg/patterns.json"
+          # The gate's own output names member paths and hash prefixes, never a
+          # value, but an error it stops on can quote one: only its count lines
+          # reach the log.
+          grep -E '^(artifact (wheel|sdist|docs) [0-9a-f]{64} members=[0-9]+ |scanners: |candidates: |findings: |allowlisted [0-9]+; )' \
+            "$cfg/gate.out" || true
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            echo "::error::the leak gate stopped (exit $status) before deciding; its message is withheld because it can quote a pattern or a matched value"
+            exit 1
+          fi
+          COMMIT="$(git rev-parse HEAD)" python3 - "$cfg/drafts.json" "$cfg/gate.out" proposal.json <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from collections import Counter
+
+          drafts_path, gate_out, proposal_path = sys.argv[1:4]
+          HEX = re.compile(r"[0-9a-f]{64}")
+          KEEP = ("rule", "artifact_member_path", "matched_value_sha256", "file_sha256")
+          EMPTY = ("reason", "approval_reference", "expires_at")
+
+
+          def stop(why):
+              # Field names only: a message never carries a draft's text.
+              print(f"::error::proposal refused: {why}")
+              sys.exit(1)
+
+
+          try:
+              drafts = json.load(open(drafts_path))
+          except (OSError, ValueError):
+              stop("the gate wrote no readable drafts")
+          if not isinstance(drafts, list):
+              stop("the drafts are not a list")
+          exceptions = []
+          for draft in drafts:
+              if not isinstance(draft, dict):
+                  stop("a draft is not an object")
+              extra = sorted(set(draft) - set(KEEP) - set(EMPTY))
+              if extra:
+                  stop(f"a draft has fields {extra} beyond rule, member and hashes")
+              if any(draft.get(k, "") != "" for k in EMPTY):
+                  stop("a draft carries text in reason, approval_reference or expires_at")
+              if not all(isinstance(draft.get(k), str) for k in KEEP):
+                  stop("a draft lacks rule, member or a hash")
+              if not (HEX.fullmatch(draft["matched_value_sha256"]) and HEX.fullmatch(draft["file_sha256"])):
+                  stop("a draft hash is not a SHA-256")
+              if not re.fullmatch(r"[a-z][a-z0-9-]*(?::[A-Za-z0-9._-]+)?", draft["rule"]):
+                  stop("a draft rule is not a rule name")
+              if not re.fullmatch(r"(?:wheel|sdist|docs)![^\x00-\x1f]+", draft["artifact_member_path"]):
+                  stop("a draft member is not an artifact member path")
+              exceptions.append({k: draft[k] for k in KEEP})
+          artifacts = {}
+          for line in open(gate_out):
+              m = re.match(r"artifact (wheel|sdist|docs) ([0-9a-f]{64}) ", line)
+              if m:
+                  artifacts[m.group(1)] = m.group(2)
+          proposal = {
+              "version": 1,
+              "tag": os.environ["TAG_NAME"],
+              "commit": os.environ["COMMIT"],
+              "artifacts_sha256": artifacts,
+              "exceptions": exceptions,
+          }
+          with open(proposal_path, "w") as f:
+              json.dump(proposal, f, indent=2)
+              f.write("\n")
+          counts = Counter(e["rule"] for e in exceptions)
+          print(f"proposal: {len(exceptions)} exception drafts")
+          for rule, n in sorted(counts.items()):
+              print(f"  {rule}: {n}")
+          PY
+
+      - name: Upload the proposal
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: leak-gate-proposal-${{ inputs.tag }}
+          path: proposal.json
+          if-no-files-found: error
+          retention-days: 14
