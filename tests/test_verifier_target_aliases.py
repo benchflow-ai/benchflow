@@ -163,7 +163,7 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
     monkeypatch.setattr(
         lockdown,
         "_install_refusal_stubs",
-        AsyncMock(side_effect=lambda env, report: report),
+        AsyncMock(side_effect=lambda env, report, *optional: report),
     )
     for name, value in [
         ("_kill_sandbox_user_procs", None),
@@ -201,6 +201,7 @@ async def test_target_path_excludes_shared_agent_content_before_freeze(
         None if separate else "agent",
         "/app",
         agent_paths=("/app",) if separate else None,
+        integrity="strict",
     )
     assert alias not in selected[0].split(":"), selected
     assert alias + suffix not in selected[0].split(":"), selected
@@ -235,7 +236,7 @@ async def test_explicit_main_alias_coordinates_reach_target_judgment(monkeypatch
     monkeypatch.setattr(
         lockdown,
         "_install_refusal_stubs",
-        AsyncMock(side_effect=lambda env, report: report),
+        AsyncMock(side_effect=lambda env, report, *optional: report),
     )
     task = SimpleNamespace(
         config=SimpleNamespace(

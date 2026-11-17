@@ -178,23 +178,33 @@ def postprocess_eval_artifacts(
                 path_in_repo=prefix,
                 repo_type="dataset",
                 public_read_check=req.hf_public_read_check,
+                private=not req.public,
             )
         except ValueError as exc:
             print_error(str(exc), next_step=_finished_next(job_dir))
             raise typer.Exit(1) from None
-        console.print(f"[green]Published HF artifacts:[/green] {escape(published.url)}")
+        console.print(
+            f"[green]Published HF artifacts:[/green] {escape(published.url)} "
+            f"({published.visibility})"
+        )
     if req.publish_bucket is not None:
         from benchflow.publish.huggingface import publish_folder_to_bucket
 
         prefix = req.hf_prefix or job_dir.name
         try:
             published = publish_folder_to_bucket(
-                job_dir, bucket_id=req.publish_bucket, path_in_repo=prefix
+                job_dir,
+                bucket_id=req.publish_bucket,
+                path_in_repo=prefix,
+                private=not req.public,
             )
         except ValueError as exc:
             print_error(str(exc), next_step=_finished_next(job_dir))
             raise typer.Exit(1) from None
-        console.print(f"[green]Published HF bucket:[/green] {escape(published.url)}")
+        console.print(
+            f"[green]Published HF bucket:[/green] {escape(published.url)} "
+            f"({published.visibility})"
+        )
     if req.eval_results_model is not None:
         from benchflow.publish.huggingface import open_eval_results_pr
 
@@ -226,8 +236,9 @@ def postprocess_eval_artifacts(
 # pass-at-k.md show it (DF-p3-eval-runner-3).
 MATRIX_FORMAT = (
     "models: maps each alias (its folder name) to a model name, or to a "
-    "mapping with model, and optionally agent and agent_env; an agent that "
-    "takes no model (oracle, nop) needs only agent, e.g. "
+    "mapping with model, and optionally agent, agent_env, reasoning_effort "
+    "(or effort) and harness; an agent that takes no model (oracle, nop) "
+    "needs only agent, e.g. "
     "models: {haiku: claude-haiku-5-5, oracle: {agent: oracle}}"
 )
 _NOT_MODELS = {"", "none", "null", "~"}
@@ -266,6 +277,103 @@ def _load_eval_matrix(path: Path) -> dict[str, dict]:
         else:
             raise ValueError(f"matrix model {alias!r}: {MATRIX_FORMAT}")
     return models
+
+
+@dataclass(frozen=True)
+class _EntrySettings:
+    """A matrix entry's agent, model (an effort suffix taken off), effort (and
+    where it was asked) and harness."""
+
+    agent: str
+    model: str | None
+    effort: str | None
+    effort_source: str | None
+    harness: str
+
+
+def _matrix_entry_settings(
+    alias: str,
+    raw: dict,
+    *,
+    agent: str,
+    effort: str | None,
+    harness: str,
+    agent_env: dict[str, str],
+) -> _EntrySettings:
+    """A matrix entry's effort and harness: its own ``reasoning_effort``
+    (or ``effort``) and ``harness`` where the run named none, checked as
+    ``--effort`` and ``--harness`` are: an effort its agent's model cannot
+    take, one asked two ways that differ (the entry's and the run's
+    ``--effort`` among them), and a harness its agent lacks are refused.
+    0.10.0rc3 loaded them and never read them. Raises ValueError naming the
+    alias."""
+    from benchflow._utils.config import normalize_reasoning_effort
+    from benchflow.effort_request import MATRIX, settle_effort
+    from benchflow.native_harness.harnesses import check_harness, normalize_harness
+
+    try:
+        given = {
+            key: normalize_reasoning_effort(raw.get(key))
+            for key in ("reasoning_effort", "effort")
+            if raw.get(key) is not None
+        }
+        if len(set(given.values())) > 1:
+            raise ValueError("reasoning_effort and effort differ; give one")
+        own = next(iter(given.values()), None)
+        if own is not None and effort is not None and own != effort:
+            raise ValueError(
+                f"its reasoning effort {own} differs from the run's --effort "
+                f"{effort}; give one"
+            )
+        settled = settle_effort(
+            agent,
+            raw.get("model"),
+            own or effort,
+            agent_env,
+            run_source=MATRIX if own is not None else "--effort",
+        )
+        if raw.get("harness") is not None:
+            harness = normalize_harness(raw["harness"])
+            check_harness(harness, [agent])
+    except ValueError as exc:
+        raise ValueError(f"matrix model {alias!r}: {exc}") from None
+    return _EntrySettings(
+        agent,
+        settled.model,
+        settled.effort,
+        MATRIX if own is not None else None,
+        harness,
+    )
+
+
+def _matrix_entry_agent(alias: str, raw: dict, own: Any) -> str:
+    """The entry's agent, else the run's, by its registry name. An unknown
+    name is the entry's mistake, refused as one (``ValueError`` naming the
+    alias), where it crashed the run and its dry run alike with a KeyError."""
+    from benchflow._utils.config import normalize_agent_name
+
+    try:
+        return normalize_agent_name(str(raw.get("agent") or own.agent))
+    except KeyError as exc:
+        reason = exc.args[0] if exc.args else str(exc)
+        raise ValueError(f"matrix model {alias!r}: {reason}") from None
+
+
+def matrix_entry_settings(plan: Any, models: dict, own: Any) -> dict[str, Any]:
+    """Every entry's settings (:func:`_matrix_entry_settings`) against the
+    run's own config *own*: what the run and its dry run both check, before
+    any trial. Raises ValueError naming the first entry refused."""
+    return {
+        alias: _matrix_entry_settings(
+            alias,
+            raw,
+            agent=_matrix_entry_agent(alias, raw, own),
+            effort=own.reasoning_effort,
+            harness=own.harness,
+            agent_env={**plan.parsed_env, **_matrix_agent_env(raw.get("agent_env"))},
+        )
+        for alias, raw in models.items()
+    }
 
 
 def _matrix_agent_env(raw: object) -> dict[str, str]:
@@ -346,6 +454,55 @@ def matrix_solve_rates(
     return out
 
 
+def matrix_entry_eval_config(
+    plan: Any,
+    alias: str,
+    raw: dict,
+    trial: int,
+    *,
+    entry: Any,
+    overrides: dict[str, Any] | None = None,
+) -> tuple[Any, Any]:
+    """The plan and EvaluationConfig of one ``--matrix`` entry's trial job:
+    its folder, the entry's agent_env over the run's, and the entry's agent,
+    model, effort and harness as :func:`matrix_entry_settings` settled them
+    (*entry*). ``run_matrix_eval`` runs it; a dry run checks it."""
+    req = plan.request
+    trial_dir = Path(plan.output_jobs_dir) / alias / f"trial-{trial:02d}"
+    # The entry's agent, model, effort and harness from the start: the run's
+    # own model beside the entry's agent_env was refused (gpt-5.5 with
+    # CODEX_CONFIG ultra) before the entry's model was set.
+    trial_plan = replace(
+        plan,
+        request=replace(_trial_request(req, alias, trial), model=raw["model"]),
+        output_jobs_dir=str(trial_dir),
+        parsed_env={
+            **plan.parsed_env,
+            **_matrix_agent_env(raw.get("agent_env")),
+        },
+        eval_agent=entry.agent,
+        eval_reasoning_effort=entry.effort,
+        eval_harness=entry.harness,
+    )
+    eval_config = trial_plan.make_eval_config(**(overrides or {}))
+    # The run card counts every trial of a task, not this job's one.
+    eval_config.planned_trials = req.trials
+    eval_config.trial_number = trial
+    # The entry's model, as named (an effort suffix taken off); None: an
+    # agent that takes no model (oracle, nop).
+    eval_config.model = entry.model
+    if req.matrix is not None:
+        # A matrix entry names its model; --trials alone keeps the run's own,
+        # as the plan resolved it.
+        eval_config.model_given = eval_config.model is not None
+    if raw.get("agent"):
+        eval_config.agent = str(raw["agent"])
+        eval_config.agent_defaulted = False
+    if entry.effort_source is not None:
+        eval_config.reasoning_effort_source = entry.effort_source
+    return trial_plan, eval_config
+
+
 def run_matrix_eval(
     plan: EvalPlan,
     resolved_tasks_dir: Path,
@@ -377,10 +534,19 @@ def run_matrix_eval(
                 "shows one",
             )
             raise typer.Exit(1) from None
-    else:
-        own = plan.make_eval_config(**overrides)
+    own = plan.make_eval_config(**overrides)
+    if req.matrix is None:
         alias = re.sub(r"[^A-Za-z0-9._-]+", "-", own.agent).strip("-") or "agent"
         models = {alias: {"model": own.model}}
+    # Each entry's effort and harness, refused before any trial runs.
+    try:
+        settings = matrix_entry_settings(plan, models, own)
+    except ValueError as exc:
+        print_error(
+            f"Refused before launch: {exc}",
+            next_step="fix the --matrix entry; `bench run --help` lists the levels",
+        )
+        raise typer.Exit(2) from None
     root = Path(plan.output_jobs_dir)
     task_collection_dir = resolve_task_collection_root(resolved_tasks_dir)
     _write_matrix_task_manifest(
@@ -397,29 +563,10 @@ def run_matrix_eval(
     try:
         for alias, raw in models.items():
             for trial in range(1, req.trials + 1):
-                trial_dir = root / alias / f"trial-{trial:02d}"
-                trial_plan = replace(
-                    plan,
-                    request=_trial_request(req, alias, trial),
-                    output_jobs_dir=str(trial_dir),
-                    parsed_env={
-                        **plan.parsed_env,
-                        **_matrix_agent_env(raw.get("agent_env")),
-                    },
+                trial_plan, eval_config = matrix_entry_eval_config(
+                    plan, alias, raw, trial, entry=settings[alias], overrides=overrides
                 )
-                eval_config = trial_plan.make_eval_config(**overrides)
-                # The run card counts every trial of a task, not this job's one.
-                eval_config.planned_trials = req.trials
-                eval_config.trial_number = trial
-                # None: an agent that takes no model (oracle, nop).
-                eval_config.model = None if raw["model"] is None else str(raw["model"])
-                if req.matrix is not None:
-                    # A matrix entry names its model; --trials alone keeps
-                    # the run's own, as the plan resolved it.
-                    eval_config.model_given = eval_config.model is not None
-                if raw.get("agent"):
-                    eval_config.agent = str(raw["agent"])
-                    eval_config.agent_defaulted = False
+                trial_dir = Path(trial_plan.output_jobs_dir)
                 try:
                     result = run_batch_eval(
                         trial_plan, task_collection_dir, eval_config

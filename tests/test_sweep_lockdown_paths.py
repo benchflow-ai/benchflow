@@ -57,7 +57,10 @@ async def test_each_lock_failure_survives_later_success(tmp_path, utility, patte
         if pattern
         else [str(tmp_path / "lock-a"), str(tmp_path / "lock-b")]
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError,
+        match=r"(?s)Locking sandbox paths failed exited with rc=1\nstderr: Cannot lock .* make the mount writable",
+    ):
         await lockdown_paths(SimpleNamespace(exec=execute), paths)
 
 
@@ -72,6 +75,6 @@ async def test_missing_paths_are_safe_and_links_cannot_expose_targets(tmp_path):
             stdout=result.stdout, stderr=result.stderr, return_code=result.returncode
         )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"Cannot lock symlink"):
         await lockdown_paths(SimpleNamespace(exec=execute), [str(tmp_path / "link")])
     await lockdown_paths(SimpleNamespace(exec=execute), [str(tmp_path / "missing")])

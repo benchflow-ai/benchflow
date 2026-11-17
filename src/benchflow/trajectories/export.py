@@ -26,10 +26,12 @@ This module also provides the live wiring used by ``Rollout`` and
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
+from benchflow._utils.scoring import finite_reward
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories._export_common import (
@@ -72,18 +74,28 @@ def trajectory_to_verifiers_record(
     is_completed: bool = True,
     is_truncated: bool = False,
 ) -> dict[str, Any]:
-    """Build one Verifiers / ORS dataset record from a scored trajectory."""
+    """Build one Verifiers / ORS dataset record from a scored trajectory.
+
+    A trajectory with no usable verdict (no rewards, a scoring error, a
+    reward NaN) is unscored: its ``reward`` is null and it is not completed,
+    as in results.jsonl. An infrastructure failure written as 0.0
+    would train as a real failed episode. A reward is written as the
+    verifier scored it, outside [0, 1] too when the task's range allows it;
+    ``info.reward_valid`` keeps ORS's own [0, 1] check.
+    """
     prompt, completion = _split_prompt_completion(messages)
     ors = ORSAdapter.verify_result_to_ors(verify_result)
+    # The verifier already held the reward to the task's own range (a task
+    # may score in [-1, 1]); only a missing or non-finite one is unscored.
+    scored = verify_result.error is None and math.isfinite(verify_result.reward)
     return {
         "example_id": example_id,
         "prompt": prompt,
         "completion": completion,
-        # ors["reward"] is validated + clamped (NaN/out-of-range -> 0.0).
-        "reward": ors["reward"],
+        "reward": float(verify_result.reward) if scored else None,
         # ors metadata items are already JSON-safe floats.
         "metrics": ors["metadata"]["items"],
-        "is_completed": is_completed,
+        "is_completed": is_completed and scored,
         "is_truncated": is_truncated,
         "info": {
             "task_id": task_id,
@@ -209,7 +221,7 @@ def reward_map_to_verify_result(
 
     A ``None`` rewards map (verifier crashed/timed out) yields a 0.0 reward
     with ``error`` populated so the exported record's ``reward_valid`` flag
-    is ``False``.
+    is ``False`` and its ``reward`` null (:func:`trajectory_to_verifiers_record`).
     """
     if rewards is None:
         return VerifyResult(reward=0.0, items={}, error=error or "no rewards")
@@ -258,9 +270,14 @@ def write_rollout_verifiers_jsonl(
     Output path is ``rollout_dir/trainer/verifiers.jsonl`` — the
     architecture's trainer seam (issue #385). Returns the written record so
     callers can aggregate across a job.
+
+    An unscored rollout (no verdict, or no finite reward) has ``reward``
+    null and ``is_completed`` false, as ``results.jsonl`` writes it: a 0.0
+    reads as a real failed attempt to a trainer (audit RECORDS-4).
     """
     messages = acp_events_to_messages(trajectory, prompts)
     verify_result = reward_map_to_verify_result(rewards, error=error)
+    scored = finite_reward((rewards or {}).get("reward")) is not None
     record = trajectory_to_verifiers_record(
         task_id=task_id,
         messages=messages,
@@ -268,9 +285,11 @@ def write_rollout_verifiers_jsonl(
         model=model or "",
         environment=environment,
         example_id=example_id,
-        is_completed=is_completed,
+        is_completed=is_completed and scored,
         is_truncated=is_truncated,
     )
+    if not scored:
+        record["reward"] = None
     coverage = acp_projection_coverage(trajectory)
     if coverage is not None:
         record["info"]["acp_projection"] = coverage

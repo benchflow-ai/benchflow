@@ -71,18 +71,20 @@ def _planes(verifier, seen: list[dict] | None = None):
     return SimpleNamespace(harden_before_verify=AsyncMock(), verifier=make)
 
 
-def _env(started_paths):
+def _env(started_paths, *, quiet: str | None = ""):
     """``cat <receipt>`` answers "started" only for commands that ran:
-    a set of receipt paths, or a predicate on the path."""
+    a set of receipt paths, or a predicate on the path. A command that
+    printed nothing answers *quiet* on stdout and stderr (Docker's exec:
+    None)."""
     started = started_paths if callable(started_paths) else started_paths.__contains__
 
     async def exec_(command, **kwargs):
         if command.startswith("if [ -e "):  # the receipt probe
             path = command.split()[3]
             if started(path):
-                return SimpleNamespace(stdout="started", stderr="", return_code=0)
+                return SimpleNamespace(stdout="started", stderr=quiet, return_code=0)
             abandoned.add(path)
-            return SimpleNamespace(stdout="", stderr="", return_code=0)
+            return SimpleNamespace(stdout=quiet, stderr=quiet, return_code=0)
         return SimpleNamespace(stdout="0\n", stderr="", return_code=0)
 
     abandoned: set[str] = set()
@@ -136,6 +138,32 @@ async def test_a_command_that_never_starts_is_retried_once_then_a_wedge(
     }
     # The first attempt's whole process tree goes before the retry.
     assert any("kill -s KILL" in c.args[0] for c in env.exec.await_args_list)
+
+
+@pytest.mark.usefixtures("short_grace")
+async def test_a_missing_receipt_is_not_started_when_the_probe_prints_nothing(
+    tmp_path, caplog
+):
+    """Docker's exec answers a command that printed nothing with
+    ``stdout=None`` (``ExecResult``), and the probe of a missing receipt
+    prints nothing: that is "not started", and the command runs once more,
+    not a failed probe that waits out the whole budget."""
+    verifier = ReceiptVerifier(["hang", {"reward": 1.0}])
+    env = _env(set(), quiet=None)
+    t0 = time.monotonic()
+    rewards, error, diagnostic = await _verify_rollout(
+        env,
+        _task(5),
+        SimpleNamespace(verifier_dir=tmp_path / "v"),
+        {},
+        _planes(verifier),
+    )
+    assert (rewards, error, diagnostic) == ({"reward": 1.0}, None, None)
+    assert verifier.attempts == 2
+    assert time.monotonic() - t0 < 4  # not the 5 s budget
+    assert env.abandoned == {"/run/runtime/verifier-started-1"}
+    assert "start-receipt probe failed" not in caplog.text
+    assert "retrying it once" in caplog.text
 
 
 @pytest.mark.usefixtures("short_grace")
@@ -266,17 +294,23 @@ async def test_a_command_starting_after_the_probe_gave_up_runs_no_tests(
     paths.mkdir()
     sandbox = _receipt_sandbox(tmp_path, paths)
     (tmp_path / "sandbox-run-benchflow").mkdir()
-    receipt = "/run/runtime/verifier-started-late"
-    # The probe runs before the command: no receipt yet, so it gives up.
-    assert (
-        await _verifier_started(sandbox, NS(execution_receipt=(receipt, "main")))
-        is False
-    )
-    assert (tmp_path / "sandbox-run-benchflow/verifier-started-late.abandoned").exists()
-
     monkeypatch.setattr(verifier_core, "uuid4", lambda: NS(hex="late"))
     verifier = Verifier(task, paths, sandbox, execution_receipt=True)
+    prepare = verifier._prepare_execution_receipt
+
+    async def probe_first(service):
+        receipt = await prepare(service)
+        # The probe runs before the command: no receipt yet, so it gives up.
+        assert (
+            await _verifier_started(sandbox, NS(execution_receipt=(receipt, service)))
+            is False
+        )
+        return receipt
+
+    verifier._prepare_execution_receipt = probe_first
     with pytest.raises(RewardFileNotFoundError):  # test.sh never ran
         await verifier.verify()
     assert not (paths.verifier_dir / "reward.txt").exists()
-    assert (tmp_path / "sandbox-run-benchflow/verifier-started-late").exists()
+    folder = tmp_path / "sandbox-run-benchflow" / "verifier-late"
+    assert (folder / "verifier-started-late.abandoned").exists()
+    assert (folder / "verifier-started-late").exists()

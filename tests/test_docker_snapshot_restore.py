@@ -432,6 +432,10 @@ async def test_local_docker_snapshot_retains_mounts_and_rolls_back_files(
     sandbox.environment_name = project
     host_dir = tmp_path / "mounted"
     host_dir.mkdir()
+    # Writable to the container's root, which has no CAP_DAC_OVERRIDE here
+    # (--cap-drop ALL), as start() leaves its own log binds (chmod 777). A
+    # Docker Desktop file share ignores the owner; a Linux bind does not.
+    host_dir.chmod(0o777)
     image = None
 
     async def current_container():
@@ -453,6 +457,12 @@ async def test_local_docker_snapshot_retains_mounts_and_rolls_back_files(
                 f"com.docker.compose.project={project}",
                 "--label",
                 "com.docker.compose.service=main",
+                # Compose's labels on its own service containers: its ps (and with
+                # it the bind proof, at start and after a restore) lists only those.
+                "--label",
+                "com.docker.compose.oneoff=False",
+                "--label",
+                "com.docker.compose.config-hash=dt2-hand-made",
                 "--mount",
                 f"type=bind,src={host_dir},dst=/proof-output",
                 "--cpus",
@@ -468,6 +478,9 @@ async def test_local_docker_snapshot_retains_mounts_and_rolls_back_files(
                 "infinity",
             ]
         )
+        # As start() does before any setup or agent code: pin the first-start
+        # bind proof that snapshot and restore check.
+        await sandbox._pin_or_verify_bind_targets()
         original = await current_container()
         await sandbox._docker_cli(
             ["exec", original, "sh", "-c", "echo before > /state"]
@@ -539,6 +552,12 @@ async def test_local_docker_restore_keeps_runtime_init_groups_and_owner(sandbox)
                 f"com.docker.compose.project={project}",
                 "--label",
                 "com.docker.compose.service=main",
+                # Compose's labels on its own service containers: its ps (and with
+                # it the bind proof, at start and after a restore) lists only those.
+                "--label",
+                "com.docker.compose.oneoff=False",
+                "--label",
+                "com.docker.compose.config-hash=dt2-hand-made",
                 "--label",
                 "benchflow.owned=true",
                 "--runtime",
@@ -555,6 +574,9 @@ async def test_local_docker_restore_keeps_runtime_init_groups_and_owner(sandbox)
                 "infinity",
             ]
         )
+        # As start() does before any setup or agent code: pin the first-start
+        # bind proof that snapshot and restore check.
+        await sandbox._pin_or_verify_bind_targets()
         original = await current_container()
         image = await sandbox.snapshot()
         await sandbox.restore(image)
@@ -633,11 +655,20 @@ async def test_local_docker_snapshot_keeps_credentials_out_and_is_deleted(sandbo
                 f"com.docker.compose.project={project}",
                 "--label",
                 "com.docker.compose.service=main",
+                # Compose's labels on its own service containers: its ps (and with
+                # it the bind proof, at start and after a restore) lists only those.
+                "--label",
+                "com.docker.compose.oneoff=False",
+                "--label",
+                "com.docker.compose.config-hash=dt2-hand-made",
                 "python:3.12-slim",
                 "sleep",
                 "infinity",
             ]
         )
+        # As start() does before any setup or agent code: pin the first-start
+        # bind proof that snapshot and restore check.
+        await sandbox._pin_or_verify_bind_targets()
         original = await current_container()
         await sandbox._docker_cli(
             [

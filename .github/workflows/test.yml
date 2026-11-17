@@ -2,10 +2,12 @@ name: test
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'rel-*']
   pull_request:
-    branches: [main]
   merge_group:
+  # public-release.yml runs these jobs on the tagged commit and publishes
+  # only when they all pass.
+  workflow_call:
 
 # Cancel superseded runs on a PR branch (cheap, fast-feedback unit lane), but
 # never cancel push/merge_group runs on a protected ref — those gate merges and
@@ -20,18 +22,24 @@ concurrency:
 permissions:
   contents: read
 
+# The jobs run on Ubuntu 24.04, the release gate's VMs' version
+# (tools/release_gate/bootstrap_vm.sh takes no other), so CI and the gate test
+# one OS. Only unit-latest-os runs on ubuntu-latest, to show the next image early.
 jobs:
   unit:
     # Every Python the package lists as a classifier
-    # (tests/test_workflow_uv_pin.py checks the two lists match). Its check
-    # runs are `unit (3.12)` and `unit (3.13)`; the `test` job below
-    # reports the one check named `test` that main requires.
-    name: unit (${{ matrix.python-version }})
+    # (tests/test_workflow_uv_pin.py checks the two lists match), each in four
+    # shards (pytest-split, by test count). The whole suite in one leg ran
+    # past an hour, and the runner was shut down at the same 47% each time.
+    # Its check runs are `unit (3.12, 1/4)` to `unit (3.13, 4/4)`; the `test`
+    # job below reports the one check named `test` that main requires.
+    name: unit (${{ matrix.python-version }}, ${{ matrix.shard }}/4)
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
-    runs-on: ubuntu-latest
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -58,28 +66,53 @@ jobs:
       - name: Install Playwright Chromium
         run: uv run playwright install --with-deps chromium
 
+      # Lint, format and type checks once per Python, not once per shard.
       - name: Lint
+        if: matrix.shard == 1
         run: uv run ruff check src tests tools
 
       - name: Format check
+        if: matrix.shard == 1
         run: uv run ruff format --check src tests tools
 
       - name: Type check
+        if: matrix.shard == 1
         run: uv run ty check
+
+      - name: Memory and disk before the tests
+        run: |
+          free -m
+          df -h / /tmp
+          df -i /
+          docker info --format 'docker {{.ServerVersion}} {{.Driver}} {{json .DriverStatus}}' || true
 
       # The deterministic integration tier has its own job below; here it
       # would run again on the runner's Docker and double this lane's time.
-      # -n auto: one pytest-xdist worker per CPU.
+      # -n auto: one pytest-xdist worker per CPU. --splits/--group: this
+      # shard's quarter of the suite.
       - name: Test
-        run: uv run python -m pytest tests/ -n auto
+        run: uv run python -m pytest tests/ -n auto --splits 4 --group ${{ matrix.shard }}
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: "off"
+
+      # What the tests left behind: memory, disk, the size of the tests'
+      # temporary folders, and any process the kernel killed for memory.
+      - name: Memory and disk after the tests
+        if: always()
+        run: |
+          free -m
+          df -h / /tmp
+          df -i /
+          du -sh "$BASETEMP_ROOT" || true
+          sudo dmesg | grep -iE "out of memory|oom-kill|killed process" | tail -20 || true
+        env:
+          BASETEMP_ROOT: /tmp/pytest-of-runner
 
   # A success-only barrier also covers partial matrix reruns, where the
   # matrix's aggregate result alone can report success for the rerun leg.
   unit-complete:
     needs: [unit]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: exit 0
 
@@ -90,7 +123,7 @@ jobs:
   test:
     needs: [unit, unit-complete]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Every unit leg passed
         run: test "$UNIT_RESULT" = success && test "$UNIT_COMPLETE_RESULT" = success
@@ -103,7 +136,7 @@ jobs:
     # and a scripted fake model provider (tests/integration/README.md): no
     # model keys, no model cost. Requesting docker explicitly makes a missing
     # daemon fail the job instead of skipping every scenario.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -150,7 +183,7 @@ jobs:
     # Docker sandbox: script and oracle agents, and claude-agent-acp on the
     # fake model; no model keys. Its own job, so the deterministic tier keeps
     # its time limit.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -172,12 +205,32 @@ jobs:
         run: >-
           uv run python -m pytest tests/test_grading_integrity_docker.py
           tests/test_grader_access_docker.py tests/test_network_bypass_docker.py
+          tests/test_dry_run_capabilities.py
+          -m deterministic -v -rs --durations=0
+        env:
+          BENCHFLOW_DETERMINISTIC_SANDBOX: docker
+
+      # The kept-service tests below guard a permission failure on the
+      # trial folder Docker mounts from the host; a root host user writes
+      # through it and would pass them without testing anything.
+      - name: Host user is not root
+        run: test "$(id -u)" != 0
+
+      # Kept services on real Docker, as the release gate runs them. Serial:
+      # the runner has 2 vCPUs. Not required yet: continue-on-error, and a
+      # time limit of its own so a hang here cannot time out the job. It
+      # becomes required after its first green run.
+      - name: Kept-service tests
+        continue-on-error: true
+        timeout-minutes: 25
+        run: >-
+          uv run python -m pytest tests/test_keep_services_docker.py
           -m deterministic -v -rs --durations=0
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: docker
 
   pip-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -196,7 +249,84 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --locked
 
-      - name: Audit locked dependencies for known advisories
+      - name: Export the locked dependencies
+        run: uv export --locked --extra dev --extra sandbox-daytona --extra sandbox-modal --format requirements-txt --no-hashes --output-file /tmp/req-audit
+
+      # Two advisory services: PyPI's (pip-audit's default) missed
+      # CVE-2026-118667 on langgraph 1.2.4, which OSV has. The OSV audit runs
+      # even when the PyPI one fails, and an advisory from either fails the job.
+      - name: Audit locked dependencies for known advisories (PyPI)
+        run: uv run --with pip-audit pip-audit -s pypi -r /tmp/req-audit --no-deps --disable-pip
+
+      - name: Audit locked dependencies for known advisories (OSV)
+        if: ${{ !cancelled() }}
+        run: uv run --with pip-audit pip-audit -s osv -r /tmp/req-audit --no-deps --disable-pip
+
+  # The whole unit suite on the newest runner image (ubuntu-latest: Ubuntu
+  # 26.04 since November 2026), to show early what the next OS breaks. Not
+  # required: continue-on-error, and no job needs it. One job, so it takes
+  # about two and a half hours. Never in a release: public-release.yml calls
+  # this workflow, and a called workflow has the caller's name.
+  unit-latest-os:
+    name: unit (3.13, ubuntu-latest)
+    if: github.workflow == 'test'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Memory and disk before the tests
         run: |
-          uv export --locked --extra dev --extra sandbox-daytona --extra sandbox-modal --format requirements-txt --no-hashes --output-file /tmp/req-audit
-          uv run --with pip-audit pip-audit -r /tmp/req-audit --no-deps --disable-pip
+          free -m
+          df -h / /tmp
+          df -i /
+          docker info --format 'docker {{.ServerVersion}} {{.Driver}} {{json .DriverStatus}}' || true
+
+      # The four quarters one after another, with the tests' folders and
+      # Docker's leftovers removed after each: the whole suite writes about
+      # 17 GB (the shards above print it), more than the runner's free disk.
+      - name: Test
+        run: |
+          status=0
+          for group in 1 2 3 4; do
+            echo "::group::quarter $group of 4"
+            uv run python -m pytest tests/ -n auto --splits 4 --group "$group" || status=1
+            df -h /
+            df -i /
+            du -sh "$BASETEMP_ROOT" || true
+            chmod -R u+w "$BASETEMP_ROOT" 2>/dev/null || true; rm -rf "$BASETEMP_ROOT" || sudo rm -rf "$BASETEMP_ROOT"
+            docker system prune -af --volumes > /dev/null || true
+            echo "::endgroup::"
+          done
+          exit "$status"
+        env:
+          BENCHFLOW_DETERMINISTIC_SANDBOX: "off"
+          BASETEMP_ROOT: /tmp/pytest-of-runner
+
+      - name: Memory and disk after the tests
+        if: always()
+        run: |
+          free -m
+          df -h / /tmp
+          df -i /
+          sudo dmesg | grep -iE "out of memory|oom-kill|killed process" | tail -20 || true

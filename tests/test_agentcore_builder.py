@@ -98,7 +98,9 @@ class TestBuilderSelection:
         monkeypatch.delenv(builders.ENV_CODEBUILD_ROLE, raising=False)
         builder = builders.CodeBuildBuilder(MagicMock(), "1", "us-west-2")
 
-        with pytest.raises(RuntimeError) as excinfo:
+        with pytest.raises(
+            RuntimeError, match=r"Remote image builds need a CodeBuild service role"
+        ) as excinfo:
             builder._role_arn()
 
         assert builders.ENV_CODEBUILD_ROLE in str(excinfo.value)

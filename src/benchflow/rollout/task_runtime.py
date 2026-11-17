@@ -54,7 +54,7 @@ class TaskRuntimeConfig:
     # calls against the task's contract after verify(); "strict" also runs the
     # verifier in a separate verifier sandbox. The verdict is on
     # TaskRuntimeResult.integrity; the reward is never changed.
-    integrity: str = "off"
+    integrity: str = "audit"
     # "separate" moves the verifier into the separate verifier sandbox without
     # the audit (RolloutConfig.verifier_sandbox); "task" keeps the task's mode.
     verifier_sandbox: str = "task"

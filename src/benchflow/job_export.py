@@ -46,9 +46,10 @@ SCHEMA_VERSIONS: dict[str, int] = {
 }
 #: The trial document's version (kept for callers that imported it).
 SCHEMA_VERSION = SCHEMA_VERSIONS["trial"]
-#: Bumped when optional fields are added within a schema_version; the
-#: changelog is in docs/train/formats.md#schema-versions.
-SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 1, "comparison": 1, "run-summary": 0}
+#: Bumped when optional fields are added within a schema_version: the
+#: CHANGELOG names each one ("minor 1.N"), and the schema files are listed in
+#: docs/train/export.md#schema-versions.
+SCHEMA_MINOR: dict[str, int] = {"trial": 5, "job": 2, "comparison": 1, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -65,9 +66,48 @@ class UsageExport(_Model):
     cost_usd: float | None = None
     usage_source: str | None = Field(
         None,
-        description="provider_response, agent_native_acp or unavailable; for an "
-        "agent that routes its own model calls, agent-reported or none (never "
-        "metered)",
+        description="where the tokens came from (1.4): stream_log, session_log, "
+        "end_of_turn, proxy or provider; null when nothing counted them",
+    )
+    usage_source_legacy: str | None = Field(
+        None,
+        description="the pre-1.4 name: provider_response, agent_native_acp or "
+        "unavailable; for an agent that routes its own model calls, "
+        "agent-reported or none (never metered)",
+    )
+    cost_source: str | None = Field(
+        None,
+        description="who set cost_usd (1.4): provider (the provider's billed "
+        "figure) or list_price_estimate (tokens at list prices); null when "
+        "cost_usd is null",
+    )
+    price_table_date: str | None = Field(
+        None,
+        description="the date of the price table cost_usd used, when known (1.4)",
+    )
+    cost_usd_provider: float | None = Field(
+        None,
+        description="the provider-billed part of cost_usd, when some calls were "
+        "billed and others estimated (1.5)",
+    )
+    n_calls_cost_estimated: int | None = Field(
+        None,
+        description="the calls cost_usd prices at list price for want of a bill "
+        "(1.5); null when unknown",
+    )
+    usage_incomplete: bool | None = Field(
+        None,
+        description="true when the tokens are those of some of the trial's calls "
+        "only: a turn cut off before its usage report that no log counted, or a "
+        "log copy that had not caught up; null otherwise (1.5)",
+    )
+    usage_incomplete_reason: str | None = Field(
+        None, description="why usage_incomplete is true (1.5)"
+    )
+    cost_incomplete: bool | None = Field(
+        None,
+        description="true when cost_usd was priced from an incomplete count, so "
+        "it is what was counted, never the whole; null otherwise (1.5)",
     )
     cost_status: Literal["priced", "subscription", "unpriced", "unavailable"] | None = (
         Field(
@@ -83,7 +123,10 @@ class UsageExport(_Model):
         None,
         description="who priced cost_usd (1.3): litellm (BenchFlow's gateway), "
         "agent_session_log (an estimate from the agent's own session log, see "
-        "cost_estimate), agent_native_cli, or null",
+        "cost_estimate), agent_native_cli, agent_usage_update (Claude Code's "
+        "running cost over ACP), list_price (BenchFlow's list prices, 1.4), the "
+        "billing provider's name or provider (a provider's bill, 1.4), or null; "
+        "cost_source says whether the figure is a bill",
     )
     cost_estimate: dict[str, Any] | None = Field(
         None,
@@ -470,6 +513,13 @@ class JobExport(_Model):
     )
     denominators_with_controls: DenominatorsExport
     cost_usd: float | None
+    trials_cost_incomplete: int | None = Field(
+        None,
+        description="trials whose cost_usd was priced from some of their calls "
+        "only (usage_incomplete), so cost_usd is a floor when this is not 0; "
+        "summary.json's name for the same count. Null in a document below "
+        "minor 2, which did not count them (2.2)",
+    )
     solve_rates: SolveRatesExport | None = Field(
         None,
         description="agent runs (controls left out, unless every trial is one); "
@@ -482,7 +532,12 @@ class JobExport(_Model):
     )
     interrupted: list[InterruptedExport] = Field(
         default_factory=list,
-        description="attempt folders that never wrote result.json (1.1)",
+        description="the attempt folders of the tasks Job.unfinished() lists "
+        "as interrupted, and of no other task: folders that never wrote "
+        "result.json, folders whose result.json cannot be read, and folders "
+        "of attempts the run retried without keeping one. A task a later "
+        "resume finished has none here (1.1). A job read from its "
+        "results.jsonl has no folders: each such row names the file",
     )
     error_categories: dict[str, int] = Field(
         default_factory=dict,
@@ -736,6 +791,7 @@ CostStatus = Literal["priced", "subscription", "unpriced", "unavailable"]
 
 
 def _cost_status(cost_usd: float | None, usage_source: str | None) -> CostStatus:
+    """``usage_source`` is the earlier name (``usage_source_legacy``)."""
     if cost_usd is not None:
         return "priced"
     if usage_source == "agent_native_acp":
@@ -754,6 +810,46 @@ def _sandbox(trial_dir: Path) -> SandboxExport | None:
         provider=_text(data.get("provider")),
         created_at=_text(data.get("created_at")),
     )
+
+
+def _interrupted_folders(job: Job) -> list[Path]:
+    """The attempt folders of the tasks :meth:`Job.unfinished` lists as
+    interrupted, and of no other task, so the export and a resume name the
+    same tasks: folders that wrote no result, folders whose result cannot be
+    read, and folders of attempts the run retried. A task finished since (a
+    resume ran it) is not interrupted, and its earlier folders are left out."""
+    from benchflow.jobs import _attempt_task_name
+
+    tasks = set(job.unfinished()[0])
+    folders = [
+        p for p in (*job.interrupted, *job.unreadable) if _attempt_task_name(p) in tasks
+    ]
+    folders += [
+        t.path
+        for t in job.retried
+        if t.task_name in tasks and t.source == "result.json"
+    ]
+    return sorted(set(folders))
+
+
+def _interrupted_rows(job: Job) -> list[InterruptedExport]:
+    """The entries of a job read from its results.jsonl for the tasks
+    :meth:`Job.unfinished` lists as interrupted: a row the run retried, or
+    one a later attempt with no row replaced, has no folder, so its entry
+    names the file and the row's task, agent and model."""
+    tasks = set(job.unfinished()[0])
+    return [
+        InterruptedExport(
+            path=str(t.path),
+            task_name=t.task_name,
+            agent=t.agent or None,
+            model=t.model,
+            started_at=None,
+            sandbox_id=None,
+        )
+        for t in job.retried
+        if t.task_name in tasks and t.source == "results.jsonl"
+    ]
 
 
 def _interrupted(folder: Path) -> InterruptedExport:
@@ -776,6 +872,7 @@ def _interrupted(folder: Path) -> InterruptedExport:
 def trial_export(
     trial: Trial, *, include_trajectory: bool = True, include_verifier: bool = True
 ) -> TrialExport:
+    from benchflow._utils.result_metadata import incomplete_usage_fields
     from benchflow.rubric_reviews import rubric_reviews
 
     r = trial.result
@@ -812,7 +909,13 @@ def trial_export(
             total_tokens=r.total_tokens,
             cost_usd=r.cost_usd,
             usage_source=r.usage_source,
-            cost_status=_cost_status(r.cost_usd, r.usage_source),
+            usage_source_legacy=r.usage_source_legacy,
+            cost_source=r.cost_source,
+            price_table_date=r.price_table_date,
+            cost_usd_provider=r.cost_usd_provider,
+            n_calls_cost_estimated=r.n_calls_cost_estimated,
+            **incomplete_usage_fields(r),
+            cost_status=_cost_status(r.cost_usd, r.usage_source_legacy),
             price_source=r.price_source,
             cost_estimate=_safe(estimate)
             if isinstance(
@@ -926,6 +1029,11 @@ def job_export(
             job.denominators(include_controls=True)
         ),
         cost_usd=job.cost_usd,
+        trials_cost_incomplete=sum(
+            1
+            for t in job.trials
+            if t.cost_usd is not None and t.result.usage_incomplete is True
+        ),
         solve_rates=SolveRatesExport(
             **job.solve_rates(include_controls=only_controls).to_dict()
         ),
@@ -938,7 +1046,8 @@ def job_export(
             )
             for g in job.denominators_by(("agent", "model"))
         ],
-        interrupted=[_interrupted(folder) for folder in job.interrupted],
+        interrupted=[_interrupted(folder) for folder in _interrupted_folders(job)]
+        + _interrupted_rows(job),
         error_categories=_error_categories(job),
         timing_totals=_timing_totals(job),
         scoring=_safe(_job_scoring(job)),

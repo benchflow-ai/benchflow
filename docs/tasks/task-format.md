@@ -62,6 +62,13 @@ sandbox:
 
 The agent works as a user named `agent`, not root, in the image's working directory: its `WORKDIR`, or `/root` when it sets none. Before the agent starts, BenchFlow gives that folder and everything in it to the `agent` user; files elsewhere in the image stay root's. So keep data the agent must not change outside the working directory, and install in the Dockerfile what the agent would otherwise need root for. (Checked on 0.9.1 and 0.10.0rc1, with a built image and a named one.)
 
+Giving the folder to the `agent` user walks every file in it, so a large working directory, such as one with a pnpm `node_modules`, takes a while. BenchFlow allows it 600 seconds. A task that needs more, or less, says so, and a run's `--sandbox-setup-timeout` wins over both:
+
+```yaml
+sandbox:
+  setup_timeout_sec: 1800
+```
+
 ## Services the agent works with
 
 A task whose agent needs other services, such as a database or a mock API, puts a `docker-compose.yaml` (or `compose.yaml`) next to the Dockerfile. Docker, remote Docker and Daytona run its services; Modal, AgentCore and Apple Container run one container, so they refuse such a task before it starts rather than run it without its services.

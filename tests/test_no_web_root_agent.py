@@ -41,7 +41,11 @@ def test_the_root_launch_keeps_uid_0_in_its_own_group_without_the_powers():
     assert "--reuid" not in launch
     assert "agent-acp --stdio" in launch
     # Without a setpriv that can do this, the launch refuses with the reason.
-    assert "sandbox startup refused" in launch and "exit 1" in launch
+    assert (
+        "sandbox startup refused: an agent that runs as root under the no-web policy "
+        "needs util-linux setpriv for its restricted launch; install util-linux in the "
+        "image or choose a non-root --sandbox-user"
+    ) in launch and "exit 1" in launch
     subprocess.run(["bash", "-n", "-c", launch], check=True)
 
 

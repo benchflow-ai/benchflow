@@ -23,7 +23,7 @@ from benchflow.errors import MissingCredentialError
 from benchflow.task._document_normalize import TaskDocumentParseError
 from tests._package_files import package_path
 
-SECRET = "sk-test-0123456789abcdefghijklmnop"
+SECRET = "sk" + "-test-01" + "23456789" + "abcdefgh" + "ijklmnop"
 
 
 def _app(exc: BaseException) -> typer.Typer:

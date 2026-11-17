@@ -63,8 +63,10 @@ def test_result_json_contains_unavailable_usage_defaults(tmp_path):
     result = _build_result(tmp_path)
     data = _result_json(tmp_path)
 
-    assert result.usage_source == "unavailable"
-    assert data["agent_result"]["usage_source"] == "unavailable"
+    # nothing counted the tokens; the old name stays as legacy.
+    assert result.usage_source is None
+    assert data["agent_result"]["usage_source"] is None
+    assert data["agent_result"]["usage_source_legacy"] == "unavailable"
     assert data["agent_result"]["n_input_tokens"] is None
     assert data["agent_result"]["n_output_tokens"] is None
     assert data["final_metrics"]["total_prompt_tokens"] is None
@@ -92,13 +94,19 @@ def test_result_json_contains_provider_usage_when_supplied(tmp_path):
     assert data["agent_result"]["n_cache_creation_tokens"] == 3
     assert data["agent_result"]["total_tokens"] == 130
     assert data["agent_result"]["cost_usd"] == 0.0012
-    assert data["agent_result"]["usage_source"] == "provider_response"
-    assert data["final_metrics"] == {
-        "total_prompt_tokens": 100,
+    assert data["agent_result"]["usage_source"] == "proxy"
+    assert data["agent_result"]["usage_source_legacy"] == "provider_response"
+    final = dict(data["final_metrics"])
+    extra = final.pop("extra")
+    # ATIF's meaning: the prompt counts the cache reads and writes.
+    assert final == {
+        "total_prompt_tokens": 100 + 7 + 3,
         "total_completion_tokens": 20,
         "total_cached_tokens": 7,
         "total_cost_usd": 0.0012,
     }
+    assert extra["usage_source"] == "proxy"
+    assert extra["n_input_tokens"] == 100
 
 
 def test_result_json_includes_trajectory_summary(tmp_path):
@@ -130,7 +138,7 @@ def test_extract_usage_none_runtime():
     usage = extract_usage(None)
 
     assert usage["usage_source"] == "unavailable"
-    assert usage["total_tokens"] == 0
+    assert usage["total_tokens"] is None  # unknown, not 0
 
 
 @pytest.mark.parametrize(
@@ -168,7 +176,7 @@ def test_extract_usage_with_anthropic_exchanges():
     )
 
     assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 18
+    assert usage["n_input_tokens"] == 13  # uncached input only
     assert usage["n_output_tokens"] == 7
     assert usage["n_cache_read_tokens"] == 4
     assert usage["n_cache_creation_tokens"] == 1
@@ -205,10 +213,10 @@ def test_extract_usage_with_openai_and_gemini_shapes():
         fallback_model="gemini-3.5-flash",
     )
 
-    assert openai["n_input_tokens"] == 20
+    assert openai["n_input_tokens"] == 15  # 20 less its 5 cached
     assert openai["n_cache_read_tokens"] == 5
     assert openai["total_tokens"] == 28
-    assert gemini["n_input_tokens"] == 12
+    assert gemini["n_input_tokens"] == 9  # 12 less its 3 cached
     assert gemini["n_cache_read_tokens"] == 3
     assert gemini["total_tokens"] == 16
 

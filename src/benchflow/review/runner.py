@@ -15,6 +15,7 @@ outcomes live in the report.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -108,6 +109,8 @@ class ReviewReport:
     network: str = "no-internet"
     job_summary: str | None = None
     trials: list[TrialReview] = field(default_factory=list)
+    # The rest of the reviewer's setup: effort, budgets, image, prompt.
+    setup: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """The report as ``review_report.json``'s mapping."""
@@ -129,6 +132,7 @@ class ReviewReport:
                 "model": self.model,
                 "environment": self.environment,
                 "network": self.network,
+                **self.setup,
             },
             "job_summary": self.job_summary,
             "trials": [
@@ -191,7 +195,11 @@ def discover_rollouts(
     filter_passing: bool | None = None,
 ) -> list[Path]:
     """Resolve ``path`` to the rollout directories to review."""
+    from benchflow._utils.raw_evidence import raw_evidence_refusal
 
+    refusal = raw_evidence_refusal(path)
+    if refusal is not None:
+        raise ReviewRunError(refusal)
     if not path.exists():
         raise ReviewRunError(f"path does not exist: {path}")
     if _is_rollout_dir(path):
@@ -232,10 +240,14 @@ def _source_task_dir(
     downloaded rollout can name **any** host directory (``~/.ssh``, a
     checkout, a directory holding ``.env``) and this code would otherwise
     copy it wholesale into the reviewer sandbox. So the recorded path is
-    only ever used as a *name to look up beneath an operator-supplied
-    root* (``--tasks-root``): the basename must resolve inside that root,
-    and no path outside it is ever read. Without ``--tasks-root`` the task
-    copy is skipped entirely and the reviewer works from run records alone.
+    only ever used as a *name to look up in an operator-supplied root*
+    (``--tasks-root``), by the rule ``bench run`` lists that root by and a
+    review resume takes a task by (``tasks_root_entry_folder``): a folder
+    directly in the root, or a link there to a folder of the same name that
+    is not itself a link. No other path is read, and ``_task_digest_issue``
+    then pins the folder's files to the rollout's digest. Without
+    ``--tasks-root`` the task copy is skipped entirely and the reviewer
+    works from run records alone.
     """
 
     config = _read_json(rollout_dir / "config.json") or {}
@@ -251,13 +263,11 @@ def _source_task_dir(
             "--tasks-root was given (a path recorded inside a rollout is "
             "untrusted and is never read directly)"
         )
-    root = tasks_root.resolve()
-    candidate = (root / name).resolve()
-    if root not in candidate.parents or not candidate.is_dir():
-        return None, (
-            f"task evidence skipped: {name!r} does not resolve to a "
-            f"directory inside --tasks-root {root}"
-        )
+    from benchflow._utils.task_authoring import tasks_root_entry_folder
+
+    candidate, refusal = tasks_root_entry_folder(tasks_root.resolve(), name)
+    if candidate is None:
+        return None, f"task evidence skipped: {refusal}"
     return candidate, None
 
 
@@ -821,6 +831,8 @@ async def run_reviews(
     tasks_root: Path | None = None,
     filter_passing: bool | None = None,
     out_dir: Path | None = None,
+    reasoning_effort: str | None = None,
+    idle_timeout_sec: int | None = None,
 ) -> tuple[ReviewReport, Path]:
     """Review rollout(s) at ``path`` and return the report plus its location."""
 
@@ -857,7 +869,9 @@ async def run_reviews(
         model=model,
         environment=environment,
         agent_env=agent_env or {},
+        reasoning_effort=reasoning_effort,
         timeout_sec=timeout_sec,
+        **({} if idle_timeout_sec is None else {"idle_timeout_sec": idle_timeout_sec}),
         image=image,
         open_network=open_network,
         concurrency=max(1, concurrency),
@@ -899,6 +913,15 @@ async def run_reviews(
         if open_network
         else "no-internet",
         trials=trials,
+        setup={
+            "reasoning_effort": reviewer.reasoning_effort,
+            "timeout_sec": reviewer.timeout_sec,
+            "idle_timeout_sec": reviewer.idle_timeout_sec,
+            "image": reviewer.image,
+            "prompt_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest()
+            if prompt_path
+            else None,
+        },
     )
     report.job_summary = _summarize_job(trials)
 

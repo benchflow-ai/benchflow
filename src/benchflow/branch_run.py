@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow.build_info import benchflow_build
 from benchflow.checkpoints import CheckpointPolicy, after_prompt
 from benchflow.errors import UserError
 from benchflow.review.persistence import write_json_atomic
@@ -48,6 +49,20 @@ _MAX_LABEL = 200
 
 class BranchPlanError(ValueError, UserError):
     """The branch request is inconsistent; nothing was started."""
+
+
+def refuse_script_branch(agent: str | None, sandbox: str) -> None:
+    """``refuse_script_backend`` as a branch plan's refusal: a
+    ``BranchPlanError`` with its text and next step, before the host checks
+    (``bench eval branch`` and ``bf.branch``)."""
+    from benchflow.agents.scripts import ScriptBackendError, refuse_script_backend
+
+    try:
+        refuse_script_backend(agent, sandbox)
+    except ScriptBackendError as exc:
+        refused = BranchPlanError(str(exc))
+        refused.hint = exc.hint
+        raise refused from None
 
 
 @dataclass(frozen=True)
@@ -121,6 +136,32 @@ def parse_snapshot_layers(value: str) -> frozenset[str]:
             "(comma-separated)"
         )
     return layers
+
+
+_UNKNOWN: Any = object()
+
+
+def _source_sandbox_user(trial_dir: Path) -> Any:
+    """The sandbox user the source trial ran as (None for a root agent): its
+    own config.json's ``sandbox_user``, else its job's evaluation.json's
+    ``config.sandbox_user``; ``_UNKNOWN`` when neither records it. A child
+    from its checkpoint runs as the source did: the snapshot holds that
+    user's processes and files, and a root agent's has no sandbox user to
+    quiesce."""
+    for path, nested in (
+        (Path(trial_dir) / "config.json", False),
+        (Path(trial_dir).parent / "evaluation.json", True),
+    ):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        config = record.get("config") if nested and isinstance(record, dict) else record
+        if isinstance(config, dict) and "sandbox_user" in config:
+            user = config["sandbox_user"]
+            if isinstance(user, str) or user is None:
+                return user
+    return _UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -297,7 +338,8 @@ class BranchPlan:
     child_retries: int = 1
     continue_after_child_failure: bool = True
     concurrency: int = 1
-    isolate_children: bool = False
+    # None: isolated whenever the snapshot is the sandbox alone.
+    isolate_children: bool | None = None
 
     @property
     def is_oracle(self) -> bool:
@@ -305,18 +347,23 @@ class BranchPlan:
 
     @property
     def isolated(self) -> bool:
-        """Children in their own sandboxes: asked for, parallel, or nested."""
-        return (
-            self.isolate_children
-            or self.concurrency > 1
-            or any(child.parent is not None for child in self.children)
-        )
+        """Children in their own sandboxes: parallel, nested or asked for, and
+        by default whenever the snapshot is the sandbox alone (an
+        in-place child kept no result.json, build or integrity record and no
+        proxy-read cost of its own). Only ``isolate_children=False`` or
+        another snapshot layer keeps children in the parent's sandbox."""
+        if self.concurrency > 1 or any(c.parent is not None for c in self.children):
+            return True
+        if self.isolate_children is not None:
+            return self.isolate_children
+        return self.snapshot_layers == frozenset({"sandbox"})
 
     def kids(self, parent: str | None) -> list[ChildSpec]:
         """The children forked from ``parent`` (None: the checkpoint)."""
         return [child for child in self.children if child.parent == parent]
 
     def validate(self) -> None:
+        refuse_script_branch(self.agent, self.sandbox)
         if len(self.kids(None)) < 2:
             raise BranchPlanError("give at least two top-level --child options")
         labels = [child.label for child in self.children]
@@ -694,7 +741,10 @@ async def run_branch_trial(
     )
     from benchflow.evaluation import _environment_manifest_from_task_document
     from benchflow.rollout import Rollout, RolloutConfig
-    from benchflow.rollout_branch import restore_sandbox_with_services
+    from benchflow.rollout_branch import (
+        cover_branch_services,
+        restore_sandbox_with_services,
+    )
     from benchflow.sandbox.protocol import SandboxImage
     from benchflow.task.formats import materialize_task_dir
 
@@ -727,6 +777,12 @@ async def run_branch_trial(
         # As in `bench eval run`: a task.md-declared environment plane starts
         # its services and restarts them after every branch restore.
         environment_manifest=_environment_manifest_from_task_document(task_path),
+        **(
+            {"sandbox_user": _source_sandbox_user(plan.source.trial_dir)}
+            if plan.source is not None
+            and _source_sandbox_user(plan.source.trial_dir) is not _UNKNOWN
+            else {}
+        ),
     )
     rollout = (rollout_factory or Rollout)(config)
     outcome = BranchTrialOutcome(task=task_path.name)
@@ -760,14 +816,48 @@ async def run_branch_trial(
             if fast:
                 rollout._from_branch_snapshot = True
         await rollout.start()
+        recorded = None
+        if plan.source is not None:
+            # The source trial's test.sh verdict, decided before its turn on
+            # the untouched image: carried, never re-judged on the restored
+            # sandbox.
+            from benchflow.task.test_sh_preflight import (
+                decide_on_fresh_image,
+                source_record,
+            )
+
+            recorded = source_record(plan.source.trial_dir)
+            if recorded is None and source_image is not None and not fast:
+                # A checkpoint from before the check: decide it on the fresh
+                # sandbox start() made from the task's image, before the
+                # checkpoint replaces it.
+                from benchflow._utils.config import normalize_sandbox_user
+
+                recorded = await decide_on_fresh_image(
+                    rollout._env,
+                    rollout._task,
+                    rollout._planes,
+                    sandbox_user=normalize_sandbox_user(config.sandbox_user),
+                )
         if source_image is not None and not fast:
             # Replace the fresh sandbox with the kept checkpoint, then install
             # the agent again: credential files never enter a snapshot.
             await restore_sandbox_with_services(rollout, source_image)
+        # Every compose service covered whatever the agent: the oracle connects
+        # no session, whose connect would cover them.
+        await cover_branch_services(rollout)
         if source_image is not None:
             # The kept snapshot holds the source trial's pre-agent verifier
             # baseline; install_agent keeps it (and says so).
             rollout._from_branch_snapshot = True
+        if plan.source is not None:
+            rollout._test_sh_preflight_inherited = recorded
+            # The source trial's record of its links before its turn.
+            from benchflow.sandbox import _verifier_links
+
+            rollout._inherited_link_record = _verifier_links.load_record(
+                plan.source.trial_dir
+            )
         await rollout.install_agent()
         if plan.source is not None:
             write_json_atomic(
@@ -877,6 +967,7 @@ def write_branch_job(plan: BranchPlan, outcomes: list[BranchTrialOutcome]) -> Pa
     summary = {
         "kind": "benchflow-branch-job",
         "job_name": plan.job_name,
+        "benchflow_build": benchflow_build(),
         "agent": plan.agent,
         "model": plan.model,
         "sandbox": plan.sandbox,

@@ -85,7 +85,10 @@ def test_bench_eval_metrics_table_shows_both_figures_with_their_n(
     out = CliRunner().invoke(app, ["eval", "metrics", str(job)], terminal_width=200)
     assert out.exit_code == 0, out.output
     text = _plain(out.output)
-    assert "Score 50.0% (2 of 4 trials)" in text
+    assert (
+        "Score 50.0% (2 of 4 trials; counts 1 unscored trial as 0; scored only: 66.7%)"
+        in text
+    )
     assert "Score, scored only 66.7% (2 of 3 scored trials)" in text
     assert "Mean reward 0.500 (over 4 trials)" in text
     assert "Mean reward, scored only 0.667 (over 3 scored trials)" in text
@@ -98,7 +101,10 @@ def test_bench_eval_inspect_headline_shows_both_rates(tmp_path: Path) -> None:
     job = _errored_job(tmp_path / "job")
     out = CliRunner().invoke(app, ["eval", "inspect", str(job)], terminal_width=200)
     assert out.exit_code == 0, out.output
-    assert "2/4 attempted passed (50%), 2/3 scored passed (67%)" in out.output
+    assert (
+        "2/4 attempted passed (50%; counts 1 unscored trial as 0; scored only: 66.7%), "
+        "2/3 scored passed (67%)"
+    ) in out.output
 
 
 def test_a_job_without_unscored_trials_shows_one_figure(tmp_path: Path) -> None:
@@ -170,7 +176,8 @@ def test_the_end_of_run_line_shows_both_figures() -> None:
         )
     )
     assert (
-        "Score: 2/4 (50.0%), mean reward 0.50 over all 4 trials (unscored as 0), "
+        "Score: 2/4 (50.0%; counts 1 unscored trial as 0; scored only: 66.7%), mean reward 0.50 over all 4 "
+        "trials (unscored as 0), "
         "errors=1; scored only: 2/3 (66.7%), mean reward 0.67 (0.7's mean_reward)"
     ) in out
     clean = _report(
@@ -346,7 +353,9 @@ def test_a_job_folder_written_before_the_change_still_reads(tmp_path: Path) -> N
         app, ["eval", "list", str(tmp_path)], terminal_width=200
     )
     assert listing.exit_code == 0, listing.output
-    assert "1/3 (33.3%)" in listing.output
+    assert "1/3 (33.3%; counts 1 unscored trial as 0; scored only: 50.0%)" in (
+        listing.output
+    )
 
 
 def test_the_embodied_seed_report_counts_every_trial() -> None:

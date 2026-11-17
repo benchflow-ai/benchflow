@@ -24,7 +24,6 @@ import importlib.metadata
 import importlib.util
 import io
 import json
-import logging
 import subprocess
 import sys
 import tempfile
@@ -780,19 +779,18 @@ def test_only_the_checked_litellm_is_patched_and_only_once(monkeypatch):
     assert LiteLLMAnthropicMessagesAdapter.__dict__[_TRANSLATE] is patched
 
 
-def test_the_callback_module_loads_when_the_patch_cannot_install(
-    tmp_path, monkeypatch, caplog
-):
-    """The proxy must start: on a bridge whose shape changed, the patch says
-    it is not installed and the request goes through LiteLLM's own bridge."""
+def test_the_callback_module_stops_when_the_patch_cannot_install(tmp_path, monkeypatch):
+    """On a bridge whose shape changed the patch cannot install, and the
+    proxy does not start without it: loading the callback module fails,
+    naming the patch (it used to log a warning and run on LiteLLM's
+    own bridge, which drops what the patch adds)."""
     monkeypatch.delattr(LiteLLMAnthropicMessagesAdapter, _TRANSLATE)
     path = tmp_path / "changed" / "benchflow_litellm_callback.py"
     path.parent.mkdir()
     path.write_text(callback_module_source(), encoding="utf-8")
     spec = importlib.util.spec_from_file_location("benchflow_litellm_callback", path)
     assert spec is not None and spec.loader is not None
-    with caplog.at_level(logging.WARNING, logger="benchflow.litellm_messages_bridge"):
+    with pytest.raises(RuntimeError, match="'messages_bridge'"):
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
-    assert "LiteLLM messages bridge patch not installed" in caplog.text
     assert _TRANSLATE not in LiteLLMAnthropicMessagesAdapter.__dict__

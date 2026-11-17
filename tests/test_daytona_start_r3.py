@@ -581,8 +581,12 @@ async def test_a_rejected_key_still_refuses_after_one_create(fast):
 async def test_a_timeout_reconciled_by_a_later_sweep_lets_the_create_retry(fast):
     client = _Client([_err("DaytonaTimeoutError", "create request timed out")])
     sandbox = _sandbox(client)
-    with pytest.raises(Exception):  # noqa: B017 - the terminal startup error
+    with pytest.raises(
+        Exception,
+        match=r"^Sandbox creation failed after 1 attempt: create request timed out$",
+    ) as raised:
         await sandbox._create_sandbox(params=_params())
+    assert type(raised.value).__name__ == "SandboxStartupError", repr(raised.value)
     late = client.land(client.params[0], "late-timeout-then-confirmed-deleted")
     await sandbox._drain_create_attempts()
     assert late.delete.await_count == 1

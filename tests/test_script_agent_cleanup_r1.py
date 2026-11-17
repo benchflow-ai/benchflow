@@ -9,6 +9,7 @@ import pytest
 from benchflow.task import keep_services
 from tests.test_script_agent_cleanup import (
     BACKENDS,
+    KEPT_FREEZER,
     PYTHON_IMAGE,
     SYSTEM_DIRS,
     service_rollout,
@@ -260,7 +261,7 @@ async def test_root_uid_timeout_keeps_listener(
     tmp_path, backend, verifier_user, failure
 ):
     """Guards DT2-CONF-6: production turn-end freeze, release, scoring and end."""
-    with started_box(image=PYTHON_IMAGE) as initial:
+    with started_box(image=PYTHON_IMAGE, run_flags=KEPT_FREEZER) as initial:
         box = backend(initial.name)
         result, observed = await service_rollout(
             box, tmp_path, keep=True, failure=failure, verifier_user=verifier_user
@@ -283,7 +284,7 @@ async def test_other_root_spellings_refused_before_script(
     tmp_path, backend, verifier_user
 ):
     """Root by another spelling is refused before the script, never scored."""
-    with started_box(image=PYTHON_IMAGE) as initial:
+    with started_box(image=PYTHON_IMAGE, run_flags=KEPT_FREEZER) as initial:
         box = backend(initial.name)
         identity = await box.exec("id -u", user=verifier_user)
         assert identity.return_code == 0 and identity.stdout.strip() == "0"

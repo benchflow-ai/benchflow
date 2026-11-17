@@ -292,6 +292,11 @@ async def test_oracle_install_resolves_the_oracles_account(tmp_path, row, monkey
         rollout_module, "_resolve_agent_cwd", AsyncMock(return_value="/app")
     )
     monkeypatch.setattr(rollout_module, "prepare_capture_runtime", AsyncMock())
+    # The stand-in is a mounted Docker sandbox and its accounts' uids (1001,
+    # 1002) can be the runner's: the host-uid refusal would decide
+    # these rows by the machine they run on. tests/test_keep_services_host_uid.py
+    # covers it.
+    monkeypatch.setattr(keep_services, "refuse_host_uid", lambda *a, **k: None)
     rollout = Rollout(
         RolloutConfig(
             task_path=task_dir,
@@ -314,6 +319,8 @@ async def test_oracle_install_resolves_the_oracles_account(tmp_path, row, monkey
         "prepare_verifier_runtime",
         "deploy_skills",
         "lockdown_paths",
+        # a trial with no sandbox user locks PATH to root first.
+        "lock_system_path",
         # K1: a trial that keeps services proves the freezer before solve.sh.
         "probe_kept_service_freezer",
     ):

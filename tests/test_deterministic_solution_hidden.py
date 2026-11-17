@@ -12,8 +12,11 @@ The fixture task's ``solve.sh`` carries a marker. The scripted agent's one
 Bash call (run as root) lists the four paths and greps the whole sandbox for
 the marker, which it builds at run time so its own command never matches;
 the verifier's ``test.sh`` does the same after the agent's turn. Three runs:
-``claude-agent-acp`` as root, ``nop`` as root, and a scripted-user run
-(``FunctionUser`` with ``oracle_access=True``, two rounds) as root.
+``claude-agent-acp`` as the default (non-root) agent user, ``nop`` as root,
+and a scripted-user run (``FunctionUser`` with ``oracle_access=True``, two
+rounds) as root. ``bench eval run`` refuses Claude Code as root (since
+0.10.0rc2 its connector restrictions are managed settings root owns, which a
+root agent could rewrite), so the CLI's root run is ``nop``'s.
 """
 
 from __future__ import annotations
@@ -143,7 +146,8 @@ def _assert_hidden(probe: dict[str, Any], *, root: bool = True) -> None:
 
 @pytest.fixture(scope="module")
 def cli_runs(tmp_path_factory, require_docker) -> dict[str, Path]:
-    """``claude-agent-acp`` and ``nop``, each as root, on the probe task."""
+    """``claude-agent-acp`` as the agent user and ``nop`` as root, on the
+    probe task."""
     root = tmp_path_factory.mktemp("solution-hidden")
     tasks = root / "tasks"
     _task(tasks)
@@ -155,7 +159,7 @@ def cli_runs(tmp_path_factory, require_docker) -> dict[str, Path]:
             jobs_dir=root / "jobs-agent",
             sandbox="docker",
             host_fake_url=url,
-            extra=["--sandbox-user", "null", "--retry-attempts", "0"],
+            extra=["--retry-attempts", "0"],
         )
         trials["agent"] = run.trial("solution-hidden")
     # nop runs no model, so no provider route (as tests/test_integrity_deterministic.py
@@ -198,16 +202,17 @@ def cli_runs(tmp_path_factory, require_docker) -> dict[str, Path]:
     return trials
 
 
-def test_an_agent_run_as_root_finds_no_solution(cli_runs):
+def test_the_claude_agent_finds_no_solution(cli_runs):
     trial = cli_runs["agent"]
     result = h.read_json(trial / "result.json")
     probes = _agent_probes(trial)
     assert len(probes) == 1, (probes, result.get("error"))
-    _assert_hidden(probes[0])
+    _assert_hidden(probes[0], root=False)
+    assert probes[0]["uid"] not in ("", "0"), probes[0]
     assert result["rewards"] == {"reward": 1.0}, result.get("error")
 
 
-def test_the_verifier_after_a_root_agent_finds_no_solution(cli_runs):
+def test_the_verifier_after_the_claude_agent_finds_no_solution(cli_runs):
     _assert_hidden(_verifier_probe(cli_runs["agent"]))
 
 

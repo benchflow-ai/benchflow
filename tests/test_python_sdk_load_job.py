@@ -406,7 +406,12 @@ def test_printing_a_job_summarises_it(tmp_path: Path) -> None:
     assert "95% interval" in text
     assert "Unscored: 1 of 3 trial(s): acp_error x1 (t3)" in text
     assert "Control runs left out: 1 (oracle)" in text
-    assert "Cost: $0.0400 over 4 rollout(s) (1 estimated" in text
+    # Older records name no cost_source: none of their costs is known to be
+    # a provider's bill, so each is counted as an estimate.
+    assert (
+        "Cost: $0.0400 over 4 rollout(s) (4 estimated, not a provider's bill; "
+        "1 of them from the agent's session log)"
+    ) in text
     assert repr(loaded).startswith("Job(path=")
 
     oracle_only = tmp_path / "oracle"

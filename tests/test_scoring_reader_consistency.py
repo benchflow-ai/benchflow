@@ -114,8 +114,9 @@ def test_incomplete_timeout_keeps_evidence_without_exporting_a_score(tmp_path):
     assert row["passed"] is None
     assert "reward" not in row["metrics"]
     trainer = json.loads((trial_path / "trainer/verifiers.jsonl").read_text())
-    # The older ORS schema requires a number plus an explicit invalid flag.
-    assert trainer["reward"] == 0.0
+    # Null and not completed, as results.jsonl (audit RECORDS-4).
+    assert trainer["reward"] is None
+    assert trainer["is_completed"] is False
     assert trainer["info"]["reward_valid"] is False
     for job in (load_job(job_path), load_job(trial_path / "results.jsonl")):
         trial = job.trials[0]

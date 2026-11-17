@@ -61,6 +61,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--codex-apps-policy` | sdk | `benchflow.EvaluationConfig.codex_apps_policy` |  |
 | `--sandbox-user` | sdk | `benchflow.EvaluationConfig.sandbox_user` |  |
 | `--sandbox-setup-timeout` | sdk | `benchflow.EvaluationConfig.sandbox_setup_timeout` |  |
+| `--verifier-setup-timeout` (unreleased) | sdk | `benchflow.EvaluationConfig.verifier_setup_timeout` |  |
 | `--context-root` | sdk | `benchflow.EvaluationConfig.context_root` |  |
 | `--base-image-override` | sdk | `benchflow.EvaluationConfig.base_image_override` |  |
 | `--separate-verifier` | sdk | `benchflow.EvaluationConfig.separate_verifier` |  |
@@ -114,6 +115,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--hf-prefix` | module | `benchflow.publish.huggingface.publish_folder_to_hf(path_in_repo)` |  |
 | `--hf-public-read-check` | module | `benchflow.publish.huggingface.publish_folder_to_hf(public_read_check)` |  |
 | `--publish-bucket` | module | `benchflow.publish.huggingface.publish_folder_to_bucket(bucket_id)` |  |
+| `--public` (unreleased) | module | `benchflow.publish.huggingface.publish_folder_to_hf(private)` | private=False; the same argument on publish_folder_to_bucket |
 | `--eval-results-model` | module | `benchflow.publish.huggingface.open_eval_results_pr(model_repo)` |  |
 | `--eval-results-dataset` | module | `benchflow.publish.huggingface.open_eval_results_pr(dataset_id)` |  |
 | `--eval-results-task` | module | `benchflow.publish.huggingface.open_eval_results_pr(task_id)` |  |

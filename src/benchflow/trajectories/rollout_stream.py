@@ -16,9 +16,13 @@ The record is ``benchflow.rollout-stream.v1``; its JSON Schema is
 See ``docs/train/trainer.md#stream-rollouts-while-a-job-runs``.
 
 A rollout counts as finished when its ``result.json`` exists: BenchFlow
-writes it atomically and last, after the trajectory and the gateway log. The
-job's state comes from its folder: ``.evaluation.lock`` is held while it runs
-and ``summary.json`` is written when it ends.
+writes it atomically and last, after the trajectory and the gateway log. An
+attempt of a running Evaluation job is read once the run has recorded its
+decision about it (``attempt-decision.json``): the run judges the attempt it
+keeps and can rewrite its result.json before then. An attempt still
+undecided when the job ends is read then. The job's state comes from its
+folder: ``.evaluation.lock`` is held while it runs and ``summary.json`` is
+written when it ends.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._utils.attempt_decision import RETRIED, decision_of
 from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.scoring import classify_score_outcome, extract_reward
 from benchflow.trajectories.token_capture import (
@@ -627,12 +632,16 @@ class _Scanner:
         return folder.name if label == "." else label
 
     def _policy(self, folder: Path) -> Any:
-        """The folder's Evaluation retry policy; None for a folder of samples."""
+        """The folder's Evaluation retry policy; None for a folder of samples.
+
+        A copy of a job folder without its evaluation.json that kept the
+        run's attempt records holds attempts too; its records decide, and an
+        undecided attempt is read by the default policy."""
         if folder not in self.policies:
-            from benchflow._utils.result_paths import holds_attempts
+            from benchflow._utils.attempt_decision import groups_attempts
 
             policy = None
-            if holds_attempts(folder):
+            if groups_attempts(folder):
                 from benchflow.evaluation import RetryConfig
 
                 record = _read_json(folder / EVALUATION_RECORD) or {}
@@ -644,13 +653,22 @@ class _Scanner:
             self.policies[folder] = policy
         return self.policies[folder]
 
-    def scan(self) -> list[StreamedRollout]:
+    def scan(self, *, running: bool = False) -> list[StreamedRollout]:
+        """The rollouts finished since the last scan. While the job is
+        *running*, an attempt of an Evaluation folder the run has not decided
+        yet is left for a later scan: the run may still rewrite it."""
         if not self.job_dir.is_dir():
             return []
         fresh: list[tuple[float, StreamedRollout]] = []
         for path in iter_task_result_paths(self.job_dir):
             root = path.parent
             if root in self.seen:
+                continue
+            if (
+                running
+                and self._policy(root.parent) is not None
+                and decision_of(root) is None
+            ):
                 continue
             result = _read_result(root)
             if result is None:
@@ -675,10 +693,17 @@ class _Scanner:
                 mtime = 0.0
             policy = self._policy(root.parent)
             if policy is not None:
+                # The run's own record of what it did with the attempt, once
+                # written; until then, what its policy would do.
+                decided = decision_of(root)
                 record = _replace(
                     record,
                     _attempt_key=(label, record.task, record.agent, record.model),
-                    _retryable=_would_retry(policy, result),
+                    _retryable=(
+                        _would_retry(policy, result)
+                        if decided is None
+                        else decided == RETRIED
+                    ),
                 )
             fresh.append((mtime, record))
         fresh.sort(key=lambda pair: (pair[0], pair[1].rollout_path))
@@ -747,7 +772,7 @@ class _Stream:
             self.scanner.job_dir = resolve_job_dir(self.root)
         state, detail = job_state(self.scanner.job_dir)
         records: list[StreamedRollout] = []
-        for record in self.scanner.scan():
+        for record in self.scanner.scan(running=state == "running"):
             records += self.grouper.add(record)
         if not self.follow or state == "finished":
             return records + self.grouper.flush(), True, None
@@ -755,6 +780,11 @@ class _Stream:
             gone = JobProcessGone(detail, self.scanner.job_dir)
             return records + self.grouper.flush(), True, gone
         if self.deadline is not None and time.monotonic() >= self.deadline:
+            # A lock the stream cannot check (another host's, a reused pid)
+            # may outlive the job: before it ends, the attempts the run never
+            # decided are read as they stand.
+            for record in self.scanner.scan():
+                records += self.grouper.add(record)
             error = StreamTimeout(
                 f"job not finished after {self.timeout:g}s ({detail}); "
                 f"{len(self.scanner.seen)} rollouts streamed"

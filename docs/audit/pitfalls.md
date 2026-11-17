@@ -64,10 +64,10 @@ The checks in this section read each request's record in `trajectory/llm_traject
 
 ### An effort level is refused for an agent that has no effort option
 
-- Message: `reasoning_effort=... was requested for agent ..., but that agent does not declare or advertise an ACP effort config option`
-- Cause: BenchFlow sets effort through an option the agent must offer, and refuses rather than drop it
+- Message: `reasoning effort <level> can't reach the <agent> session: ...` (exit 2, before launch): its registry entry declares no ACP effort option, or, for OpenCode, the model it is handed has no variants. In 0.10.0rc3 the dry run passed and the run failed after the sandbox and the agent install: `reasoning_effort=... was requested for agent ..., but that agent does not declare or advertise an ACP effort config option`
+- Cause: BenchFlow sets effort through an option the agent's registry entry declares, and refuses rather than drop it. deepagents, gemini, harvey-lab-harness, mimo, openhands and pi-acp declare none
 - Check: the message
-- Fix: use an agent that offers effort, or run without `--reasoning-effort` and report "the agent's default"
+- Fix: for openhands, ask through its own setting, `--agent-env LLM_REASONING_EFFORT=<level>` (`none` to `xhigh`); for OpenCode, a `gemini/` route and a level OpenCode sends that model as asked; otherwise use an agent that offers effort, or run without `--effort` and report "the agent's default"
 
 ### `agent integration failure [agent_model]` on the first prompt
 

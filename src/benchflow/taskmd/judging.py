@@ -41,7 +41,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import secrets
 import threading
 import time
@@ -56,6 +55,7 @@ from benchflow._utils.reachable_write import (
     ReachableWriteError,
     private_storage_io,
 )
+from benchflow.rewards.judge_usage import record_anthropic as record_judge_call
 from benchflow.task.verifier_errors import VerifierOutputParseError
 from benchflow.taskmd._util import table
 from benchflow.taskmd._vendor import judgeprompt as jp
@@ -170,25 +170,6 @@ def model_refusal(model: str, credentials: Credentials | None) -> str | None:
 
 REDACTED = "***REDACTED***"
 
-# Provider key families with a prefix of their own, each starting at a word
-# boundary (``task-specification`` holds no key). What :meth:`Scrub.evidence`
-# replaces besides exact values.
-_KEY_FAMILIES = re.compile(
-    r"(?<![A-Za-z0-9_-])(?:"
-    r"sk-ant-[A-Za-z0-9_-]{12,}"
-    r"|sk-(?:benchflow|svcacct|or-v1)-[A-Za-z0-9_-]{12,}"
-    r"|sk-(?:proj|admin|runtime)-(?=[A-Za-z0-9_-]{0,200}[A-Z])[A-Za-z0-9_-]{12,}"
-    r"|AIzaSy[A-Za-z0-9_-]{20,}"
-    r"|(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"
-    r"|dtn_[A-Za-z0-9_]{16,}"
-    r"|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|(?:gsk|r8|hf|fw)_[A-Za-z0-9]{20,}"
-    r"|xai-[A-Za-z0-9]{20,}"
-    r")"
-)
-
 
 class Scrub:
     """Takes secrets out of text the judge is sent and the judge's records keep.
@@ -203,10 +184,12 @@ class Scrub:
       private-key blocks), as the solver's ACP trajectory is redacted when it
       is written.
     - :meth:`evidence`, for what the judge is shown of the submission itself
-      (``read``, ``run``'s output, the ``llm`` evidence part): only the
-      prefixed key families (:data:`_KEY_FAMILIES`). The carriers would turn a
-      program that prints ``password=hunter2secret`` into one that masks it,
-      which is what a criterion may be judging.
+      (``read``, ``run``'s output, the ``llm`` evidence part): only the keys
+      with a shape of their own, by the trajectory redactor's own rules
+      (``redact_key_families``: prefixed provider keys, JWTs, private-key
+      blocks). The carriers would turn a program that prints
+      ``password=hunter2secret`` into one that masks it, which is what a
+      criterion may be judging.
     """
 
     def __init__(self, values: Iterable[Any] = ()) -> None:
@@ -246,8 +229,10 @@ class Scrub:
         return redact_trajectory_text(self._values(text))
 
     def evidence(self, text: str) -> str:
-        """The submission's own text as the judge is shown it: exact values and prefixed key families only."""
-        return _KEY_FAMILIES.sub(REDACTED, self._values(text))
+        """The submission's own text as the judge is shown it: exact values and key families only."""
+        from benchflow.trajectories.types import redact_key_families
+
+        return redact_key_families(self._values(text))
 
     def obj(self, value: Any) -> Any:
         """Every string inside a JSON value, scrubbed."""
@@ -1172,6 +1157,8 @@ async def run_session(
         except JudgeError as exc:
             return result(f"provider: {exc}")
         u = response.get("usage") or {}
+        # The trial's judge spend, beside the agent's (result.json judge_usage).
+        record_judge_call(spec.model, response)
         cache_read = int(u.get("cache_read_input_tokens") or 0)
         prompt_tokens = (
             int(u.get("input_tokens") or 0)

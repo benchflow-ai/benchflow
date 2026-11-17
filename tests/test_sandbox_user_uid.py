@@ -96,7 +96,9 @@ def box(request):
         timeout=600,
     )
     if build.returncode != 0:
-        pytest.skip(f"could not build the fixture image: {build.stderr[-300:]}")
+        pytest.fail(
+            f"could not build the fixture image: {build.stderr[-300:]}", pytrace=False
+        )
     name = f"{tag}-c"
     run = subprocess.run(
         [

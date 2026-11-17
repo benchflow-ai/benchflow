@@ -114,7 +114,9 @@ async def test_test_sh_creates_files_0644_under_a_umask_0000_runtime(tmp_path):
     ).verify()
 
     assert result.rewards == {"reward": 1.0}
-    (command,) = [c for c in sandbox.commands if "test-stdout.txt" in c]
+    (command,) = [
+        c for c in sandbox.commands if "test-stdout.txt" in c and "TEST_DIR=" in c
+    ]
     assert command.startswith(f"umask {VERIFIER_UMASK} && ")
     site = sandbox.out / "cache" / "site-packages"
     assert _mode(sandbox.out / "cache") == 0o755
@@ -134,7 +136,7 @@ async def test_start_receipt_and_test_command_share_the_mask(tmp_path):
 
     async def exec_(command, **kwargs):
         commands.append(command)
-        if "test-stdout.txt" in command:
+        if "test-stdout.txt" in command and "TEST_DIR=" in command:
             paths.reward_text_path.write_text("1")
         return SimpleNamespace(stdout="", stderr="", return_code=0)
 
@@ -148,7 +150,7 @@ async def test_start_receipt_and_test_command_share_the_mask(tmp_path):
 
     await verifier.verify()
 
-    (command,) = [c for c in commands if "test-stdout.txt" in c]
+    (command,) = [c for c in commands if "test-stdout.txt" in c and "TEST_DIR=" in c]
     assert re.match(
         r"umask 022 && export BENCHFLOW_VERIFIER_ATTEMPT=verifier-started-[0-9a-f]{32}"
         r" && printf started > /run/runtime/",

@@ -185,6 +185,21 @@ def _review_command(
         int,
         typer.Option("--timeout-sec", help="Reviewer agent timeout per rollout"),
     ] = 1800,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option("--reasoning-effort", help="Reviewer reasoning effort"),
+    ] = None,
+    idle_timeout: Annotated[
+        str | None,
+        typer.Option(
+            "--idle-timeout",
+            help=(
+                "Abort a reviewer prompt after this many idle seconds (default: "
+                "600). Pass 0 or 'none' to disable the idle watchdog and leave "
+                "--timeout-sec in charge."
+            ),
+        ),
+    ] = None,
     agent_env: Annotated[
         list[str] | None,
         typer.Option("--agent-env", help="KEY=VALUE for the reviewer (repeatable)"),
@@ -249,6 +264,18 @@ def _review_command(
         )
         raise typer.Exit(2)
     filter_passing = True if passing else (False if failing else None)
+    from benchflow._utils.config import normalize_reasoning_effort
+    from benchflow.cli.reviewer_options import reviewer_idle_timeout
+
+    try:
+        reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    except ValueError as exc:
+        print_error(
+            f"--reasoning-effort: {exc}",
+            next_step="pass --reasoning-effort with one of those efforts",
+        )
+        raise typer.Exit(2) from None
+    idle_timeout_sec = reviewer_idle_timeout(idle_timeout, flag="--idle-timeout")
     if not path.exists():
         print_error(
             f"✗ {path} is not there",
@@ -264,6 +291,7 @@ def _review_command(
     # The local environment can select the agent manifest catalog as well as
     # credentials, so load it before resolving the reviewer's name.
     _apply_dotenv_to_process_env()
+    named = agent
     try:
         agent = normalize_agent_name(agent)
     except (KeyError, ValueError) as exc:
@@ -281,6 +309,21 @@ def _review_command(
         model = DEFAULT_REVIEW_MODEL
 
     parsed_env = _parse_agent_env(agent_env)
+    # The reviewer's effort is applied or refused before any review, as a
+    # run's is: a level its agent or model can't take ends here,
+    # not in each rollout's review.
+    from benchflow.effort_request import EffortRequestError, settle_effort
+
+    try:
+        reasoning_effort = settle_effort(
+            agent, model, reasoning_effort, parsed_env, named_as=named
+        ).effort
+    except EffortRequestError as exc:
+        print_error(
+            f"Refused before launch: {exc}",
+            next_step=exc.hint or "ask for a level the model takes, in one way",
+        )
+        raise typer.Exit(2) from None
     # A missing reviewer key is one error line before any review starts, not
     # a traceback from inside the runner.
     from types import SimpleNamespace
@@ -315,6 +358,8 @@ def _review_command(
                 tasks_root=tasks_root,
                 filter_passing=filter_passing,
                 out_dir=out_dir,
+                reasoning_effort=reasoning_effort,
+                idle_timeout_sec=idle_timeout_sec,
             )
         )
     except (ValueError, FileNotFoundError) as exc:

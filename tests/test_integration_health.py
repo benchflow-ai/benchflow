@@ -397,20 +397,41 @@ def test_run_time_wall_clock_timeout_after_real_work_keeps_its_zero(tmp_path):
     assert r._diagnostics.category_for_channel("error") == "timeout"
 
 
-def test_run_time_idle_timeout_that_did_nothing_stays_retryable(tmp_path):
-    """An idle timeout is retried and an integration failure is not, so the
-    run keeps it; bf.load_job still reads a final one as unscored."""
+def _idle_timeout(tmp_path: Path, *, owned: bool) -> object:
     from benchflow.diagnostics import IdleTimeoutDiagnostic, IdleTimeoutError
 
-    r = _rollout(tmp_path, _events(), {"BENCHFLOW_PROVIDER_NAME": "litellm"})
+    # The idle watchdog's own event ends the trajectory.
+    events = _events({"type": "agent_timeout", "reason": "idle"})
+    r = _rollout(tmp_path, events, {"BENCHFLOW_PROVIDER_NAME": "litellm"})
+    r._config.owned_by_retry_loop = owned
     r._timing = {"agent_execution": 600.0}
     detail = "Agent idle for 600s with no new tool call (0 tool calls so far)"
     error = IdleTimeoutError(detail, IdleTimeoutDiagnostic(idle_timeout_sec=600))
     r._record_agent_timeout(error, agent_phase=True)
     r._maybe_classify_api_error()
-    assert r._error == detail
+    return r
+
+
+def test_run_time_idle_timeout_that_did_nothing_stays_retryable(tmp_path):
+    """An idle timeout is retried and an integration failure is not, so a
+    rollout the run's retry loop owns keeps it; the loop judges the attempt it
+    keeps (tests/test_kept_idle_timeout.py)."""
+    r = _idle_timeout(tmp_path, owned=True)
+    assert r._error.startswith("Agent idle for 600s")
     assert r._rewards == {"reward": 0.0}
     assert r._diagnostics.category_for_channel("error") == "idle_timeout"
+
+
+def test_run_time_idle_timeout_no_retry_loop_owns_is_judged(tmp_path):
+    """Nothing retries a rollout outside an Evaluation: an agent that did
+    nothing before it went idle is unscored when the rollout writes it."""
+    r = _idle_timeout(tmp_path, owned=False)
+    assert r._rewards is None
+    assert r._error.startswith("agent integration failure [no_activity]")
+    fields = r._diagnostics.to_result_fields()
+    assert fields["integration_failure_info"]["reward_withheld"] == {"reward": 0.0}
+    assert fields["idle_timeout_info"]["idle_timeout_sec"] == 600
+    assert r._diagnostics.category_for_channel("error") == "agent_integration"
 
 
 def test_run_time_api_key_run_gets_the_named_cause_not_suspected(tmp_path):

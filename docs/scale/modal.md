@@ -7,8 +7,8 @@ Modal runs each trial in a serverless cloud sandbox, and can give a task GPUs. U
 Install BenchFlow with the extra, and give it your Modal token, either from `modal token new` (which writes `~/.modal.toml`) or as variables:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-modal]==0.9.2' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.2/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-modal]==0.9.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
 export MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=...
 ```
 

@@ -1,4 +1,4 @@
-"""Tests for external framework adapters (ENG-51).
+"""Tests for external framework adapters.
 
 Covers:
 - InspectAdapter with a bare Scene
@@ -130,7 +130,7 @@ class TestORSAdapter:
         assert ors["metadata"]["error"] == "boom"
 
     def test_invalid_reward_values_are_not_valid(self) -> None:
-        """Guards ENG-91 P1 dogfood ORS reward-validity regression."""
+        """Guards P1 dogfood ORS reward-validity regression."""
         for reward in (math.nan, 1.7, -0.2):
             ors = to_ors_reward(
                 VerifyResult(

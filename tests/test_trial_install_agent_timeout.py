@@ -95,6 +95,7 @@ async def test_install_agent_forwards_sandbox_setup_timeout(
     setup_sandbox_user_mock.assert_awaited_once()
     args, kwargs = setup_sandbox_user_mock.await_args
     assert args[1] == "agent"
+    # The run named 41: it wins over the task's setup time.
     assert kwargs["timeout_sec"] == 41
     assert kwargs["workspace"] == "/workspace"
     # The oracle runs nothing as the sandbox user, so it needs no

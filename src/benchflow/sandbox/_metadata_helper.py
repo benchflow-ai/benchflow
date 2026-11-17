@@ -72,6 +72,11 @@ HELPER_BASE = (
 #: main. iptables-legacy gives the script's tool choice the same fallback
 #: root has in a Debian main, for hosts where nf_tables does not work.
 HELPER_PACKAGES = (
+    # The verifier phase's egress proxy runs in its own container from this
+    # image (_egress_container): its Python and the OpenSSL it mints
+    # leaf certificates with.
+    "python3=3.14.10-r1",
+    "openssl=3.5.9-r0",
     "iptables=1.8.13-r0",
     "iptables-legacy=1.8.13-r0",
     "nftables=1.1.6-r1",
@@ -129,6 +134,20 @@ MAIN_NET_ADMIN_ENV = "BENCHFLOW_METADATA_MAIN_NET_ADMIN"
 
 def main_keeps_net_admin() -> bool:
     return os.environ.get(MAIN_NET_ADMIN_ENV, "").strip() == "1"
+
+
+def old_start_reason() -> str:
+    """The operator's setting that keeps main's old start (main holding
+    NET_ADMIN where its policy needs rules there), or "" when BenchFlow's
+    helper adds every rule from outside main. The start
+    (``DockerSandbox._decide_rules_by_helper``) and the launch gate's ``-f``
+    list (``compose_env._gate_files``) both read it, so the gate resolves the
+    files the run starts with."""
+    if not helper_enabled():
+        return f"{HELPER_ENV}=0"
+    if main_keeps_net_admin():
+        return f"{MAIN_NET_ADMIN_ENV}=1"
+    return ""
 
 
 def _clock() -> float:
@@ -401,17 +420,129 @@ def build_failure(daemon: str) -> str:
     return failed[1] if failed is not None else ""
 
 
+#: Per daemon: the host's network namespace inode, as BenchFlow's helper
+#: image reads it on the host's network.
+_HOST_NETNS: dict[str, str] = {}
+#: Per (daemon, container): "host" when its network namespace is the host's,
+#: "" when it is its own (a namespace that could not be told apart is not
+#: kept).
+_NETNS_IS_HOST: dict[tuple[str, str], str] = {}
+#: What a record says for a container on the host's network.
+HOST_NETWORK = "no rules; {what} is the host's network"
+
+
+async def _netns_inode(docker: DockerRun, image: str, network: str) -> str:
+    """The network namespace inode a throwaway run of the helper's image
+    reads on *network* (``container:<id>`` or ``host``): no capability, no
+    rule, ``stat`` of its own ``/proc/self/ns/net``; "" when unread."""
+    try:
+        done = await docker(
+            [
+                "run",
+                "--rm",
+                "--network",
+                network,
+                "--user",
+                "0:0",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--entrypoint",
+                "stat",
+                image,
+                "-L",
+                "-c",
+                "%i",
+                "/proc/self/ns/net",
+            ],
+            timeout=_RUN_SEC,
+        )
+    except Exception:
+        return ""
+    text = (getattr(done, "stdout", "") or "").strip()
+    return text if done.return_code == 0 and text.isdigit() else ""
+
+
+async def host_netns(docker: DockerRun, daemon: str, container: str) -> str:
+    """Whether *container*'s network namespace is the host's: "host" when it
+    is (its HostConfig.NetworkMode, or the same netns inode as the host's,
+    each read by the helper's image), "" when it is its own, "unread" when
+    neither could tell. No rule of the trial's may go into the host's
+    namespace: it would change the host's own firewall and outlast the trial
+    (RCI 03:59Z)."""
+    key = (daemon, container)
+    if key in _NETNS_IS_HOST:
+        return _NETNS_IS_HOST[key]
+    try:
+        inspected = await docker(
+            ["inspect", "--format", "{{.HostConfig.NetworkMode}}", container],
+            timeout=_RUN_SEC,
+        )
+        mode = (getattr(inspected, "stdout", "") or "").strip()
+    except Exception:
+        mode = ""
+    if mode == "host":
+        _NETNS_IS_HOST[key] = "host"
+        return "host"
+    if mode.startswith("container:"):
+        # Another container's namespace: the host's when that one's is.
+        owner = mode.split(":", 1)[1]
+        if (
+            owner
+            and owner != container
+            and await host_netns(docker, daemon, owner) == "host"
+        ):
+            _NETNS_IS_HOST[key] = "host"
+            return "host"
+    image = await ensure_image(docker, daemon)
+    host = _HOST_NETNS.get(daemon) or await _netns_inode(docker, image, "host")
+    mine = await _netns_inode(docker, image, f"container:{container}")
+    if host and mine:
+        _HOST_NETNS[daemon] = host
+        _NETNS_IS_HOST[key] = "host" if mine == host else ""
+        return _NETNS_IS_HOST[key]
+    # The inodes could not be read: a network of its own named by the daemon
+    # (a bridge, a project network, none) is not the host's.
+    if mode and mode != "default" and not mode.startswith(("container:", "service:")):
+        _NETNS_IS_HOST[key] = ""
+        return ""
+    return "unread"
+
+
 def _last_line(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     return lines[-1][:300] if lines else ""
 
 
+#: The report lines a helper script's ``status=`` is read from: the cloud
+#: metadata block's install, and the verifier network's and each compose
+#: service's rules and counts. Each script that runs through
+#: :meth:`MetadataHelper.installed` prints one; any other output never reads
+#: as reported.
+_REPORT_LINES = (
+    "BF metadata ",
+    "BF verifier-network ",
+    "BF service-rules ",
+    "BF service-counters ",
+    "BF rule-check ",
+    "BF rules-installed ",
+)
+
+
 def _status(stdout: str) -> str | None:
-    """The ``status=`` of the script's ``BF metadata`` line; None without one."""
+    """The ``status=`` of the script's first report line that carries one
+    (:data:`_REPORT_LINES`); "" for a ``BF metadata`` line without it; None
+    without a report line."""
     for line in (stdout or "").splitlines():
+        if not line.startswith(_REPORT_LINES):
+            continue
+        found = re.search(r"\bstatus=(\S*)", line)
+        if found:
+            return found[1]
         if line.startswith("BF metadata "):
-            found = re.search(r"\bstatus=(\S*)", line)
-            return found[1] if found else ""
+            return ""
     return None
 
 
@@ -564,6 +695,17 @@ class MetadataHelper:
         return "", False
 
     async def _start_and_run(self, main: str, command: str) -> tuple[Any, str]:
+        # Never into the host's namespace (RCI 03:59Z).
+        where = await host_netns(self._docker, self._daemon, main)
+        if where == "host":
+            raise HelperUnavailable(
+                "the container's network is the host's: BenchFlow puts no rule there"
+            )
+        if where:
+            raise HelperUnavailable(
+                "the container's network namespace could not be told from the "
+                "host's, so BenchFlow puts no rule there"
+            )
         image = await ensure_image(self._docker, self._daemon)
         labels = [f"--label={k}={v}" for k, v in sorted(self._labels.items())]
         name = f"{self.name}-{secrets.token_hex(6)}"

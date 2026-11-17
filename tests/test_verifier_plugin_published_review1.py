@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from benchflow import _verifier_setup
 from benchflow.sandbox import lockdown
 from benchflow.sandbox._base import ExecResult
 from tests.test_verifier_plugin_published import venv_install
@@ -159,7 +160,8 @@ async def test_the_input_proof_ends_inside_the_guard_install_timeout(
         "_DISCOVER_PYTEST_PLUGINS_SCRIPT",
         modelled(lockdown._DISCOVER_PYTEST_PLUGINS_SCRIPT, image_bytes),
     )
-    monkeypatch.setattr(lockdown, "VERIFIER_SETUP_TIMEOUT_SEC", 5)
+    # The trial's budget comes from benchflow._verifier_setup since that change.
+    monkeypatch.setattr(_verifier_setup, "VERIFIER_SETUP_TIMEOUT_SEC", 5)
     monkeypatch.setattr(lockdown, "_INPUT_PROOF_RESERVE_SEC", 3, raising=False)
 
     await lockdown._install_pytest_plugin_guard(

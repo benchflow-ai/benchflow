@@ -66,9 +66,16 @@ def _read(
     logs: list[Path | ReachablePath],
 ) -> tuple[dict[str, dict], dict[str, list[tuple]]]:
     """Each session's last cost-state line, and its responses (model, usage)
-    once per response."""
+    once per response.
+
+    A response is one (message id, request id), however many lines and
+    session files log it: it counts once, in the session that logged it
+    first, with the usage of its line with the most output (a line per
+    content block, each with the output so far).
+    """
     states: dict[str, dict] = {}
     responses: dict[str, dict[tuple, tuple]] = defaultdict(dict)
+    first_logged: dict[tuple, str] = {}
     for path in logs:
         subagent = path.parent.name == "subagents"
         session = path.parent.parent.name if subagent else path.stem
@@ -94,7 +101,12 @@ def _read(
                 # all with its message id; a line without one stands alone.
                 response = message.get("id") or f"{path}:{number}"
                 key = (response, entry.get("requestId"))
-                responses[session][key] = (str(model), usage)
+                owner = first_logged.setdefault(key, session)
+                held = responses[owner].get(key)
+                if held is None or _int(usage.get("output_tokens")) >= _int(
+                    held[1].get("output_tokens")
+                ):
+                    responses[owner][key] = (str(model), usage)
     return states, {s: list(r.values()) for s, r in responses.items()}
 
 
@@ -200,12 +212,20 @@ def estimate_claude_code_cost(root: Path | ReachablePath) -> dict[str, Any] | No
     totals) or ``usage-at-list-price``; ``models`` is USD per model;
     ``context_1m`` is True when a model ran its 1M-context variant (a
     ``[1m]`` suffix), which is priced higher. None when the logs hold no
-    response, or a response's model has no list price and Claude Code's own
-    totals do not cover the log.
+    response (and Claude Code's own totals say nothing was spent), or a
+    response's model has no list price and Claude Code's own totals do not
+    cover the log.
     """
     logs = sorted(root.rglob("*.jsonl")) if root.is_dir() else []
     states, responses = _read(logs)
     if not responses and not states:
+        return None
+    if not responses and not any(
+        _number(state.get("totalCostUSD")) for state in states.values()
+    ):
+        # A cost-state line with no response and no cost (Claude Code wrote
+        # its totals before any call answered): nothing was measured, so the
+        # cost is unknown, not $0.
         return None
     stated: dict[str, float] = defaultdict(float)
     for state in states.values():

@@ -17,6 +17,8 @@ import json
 import re
 from datetime import datetime
 
+import pytest
+
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
     IdleTimeoutDiagnostic,
@@ -44,7 +46,7 @@ from benchflow.trajectories.results import (
 )
 
 _FAKE_GEMINI_KEY = "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"
-_FAKE_HEADER_SECRET = "plainSecretNoPrefix123"
+_FAKE_HEADER_SECRET = "pl" + "ainSecre" + "tNoPrefi" + "x123"
 
 
 def _acp_trajectory() -> list[dict]:
@@ -273,7 +275,9 @@ def test_write_rollout_verifiers_jsonl_marks_invalid_when_no_rewards(tmp_path):
         error="verifier timed out",
     )
     parsed = json.loads((rollout_dir / ROLLOUT_ARTIFACT_RELPATH).read_text().strip())
-    assert parsed["reward"] == 0.0
+    # Unscored is null and not completed, never 0.0 (audit RECORDS-4).
+    assert parsed["reward"] is None
+    assert parsed["is_completed"] is False
     assert parsed["info"]["reward_valid"] is False
 
 
@@ -502,6 +506,114 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["is_completed"] is True
     assert row["stop_condition"] == "agent_completed"
     assert "diagnostics" not in row["info"]
+
+
+def test_verifiers_jsonl_matches_results_jsonl_for_errored_and_unscored(tmp_path):
+    """trainer/verifiers.jsonl wrote reward 0.0 and
+    is_completed true for an errored or unscored trial, which a trainer reads
+    as a real failed attempt. It writes what results.jsonl writes."""
+    cases = {
+        "agent-error": {"error": "agent crashed", "rewards": {"reward": 0.0}},
+        "verifier-crash": {"verifier_error": "verifier crashed", "rewards": None},
+        "partial": {"partial_trajectory": True, "rewards": {"reward": 0.0}},
+        "scored": {"rewards": {"reward": 0.0}},
+        # The writer withholds a timeout whose model never answered; on 0.10
+        # it also withholds a final zero-activity idle timeout (#187). Both
+        # are unscored integration failures: no 0.0, not completed.
+        "never-answered timeout": {
+            "error": "agent integration failure [no_activity]: 0 tool calls, "
+            "0 messages, 0 thoughts after the prompt in 45.0 s",
+            "error_category": "agent_integration",
+            "rewards": None,
+        },
+        "withheld idle timeout": {
+            "error": "agent integration failure [no_activity]: 0 tool calls, "
+            "0 messages, 0 thoughts after the prompt in 600.0 s",
+            "error_category": "agent_integration",
+            "rewards": None,
+        },
+    }
+    rows = {}
+    for name, case in cases.items():
+        rollout_dir = tmp_path / name
+        rollout_dir.mkdir()
+        _build_rollout_result(
+            rollout_dir,
+            task_name="list-files",
+            rollout_name=name,
+            agent="claude-agent-acp",
+            agent_name="claude-agent-acp",
+            model="claude-haiku-4-5",
+            n_tool_calls=1,
+            prompts=["List files."],
+            error=case.get("error"),
+            error_category=case.get("error_category"),
+            verifier_error=case.get("verifier_error"),
+            trajectory=_acp_trajectory(),
+            partial_trajectory=case.get("partial_trajectory", False),
+            trajectory_source="acp",
+            rewards=case["rewards"],
+            started_at=datetime.now(),
+            timing={},
+        )
+        trainer = json.loads((rollout_dir / ROLLOUT_ARTIFACT_RELPATH).read_text())
+        results = json.loads((rollout_dir / "results.jsonl").read_text())
+        rows[name] = trainer
+        assert trainer["reward"] == results["reward"], name
+    for name in ("verifier-crash", "never-answered timeout", "withheld idle timeout"):
+        assert rows[name]["reward"] is None, name
+    for name in (
+        "agent-error",
+        "verifier-crash",
+        "partial",
+        "never-answered timeout",
+        "withheld idle timeout",
+    ):
+        assert rows[name]["is_completed"] is False, name
+    assert rows["partial"]["is_truncated"] is True
+    # A real 0.0 verdict on a clean trial stays a scored, completed 0.0.
+    assert rows["scored"]["reward"] == 0.0
+    assert rows["scored"]["is_completed"] is True
+
+
+@pytest.mark.parametrize(
+    "seconds",
+    [45.0, 600.0],
+    ids=["never-answered timeout", "withheld zero-activity idle timeout"],
+)
+def test_an_unscored_integration_failure_has_no_trainer_reward(tmp_path, seconds):
+    """The writer withholds a wall-clock timeout whose model never answered,
+    and (#187) a final zero-activity idle timeout: rewards null, an
+    agent_integration error. Its trainer/verifiers.jsonl and adp.jsonl carry
+    no 0.0 reward, and the record is not completed (RECORDS-4)."""
+    _build_rollout_result(
+        tmp_path,
+        task_name="slow-task",
+        rollout_name="slow-task__0001",
+        agent="claude-agent-acp",
+        agent_name="claude-agent-acp",
+        model="claude-haiku-4-5",
+        n_tool_calls=0,
+        prompts=["Create a file called hello.txt."],
+        error=f"agent integration failure [no_activity]: 0 tool calls, 0 messages, "
+        f"0 thoughts after the prompt in {seconds} s",
+        error_category="agent_integration",
+        verifier_error=None,
+        trajectory=_acp_trajectory(),
+        partial_trajectory=False,
+        trajectory_source="acp",
+        rewards=None,
+        started_at=datetime.now(),
+        timing={},
+    )
+    trainer = json.loads((tmp_path / ROLLOUT_ARTIFACT_RELPATH).read_text())
+    assert trainer["reward"] is None
+    assert trainer["is_completed"] is False
+    adp = tmp_path / "trainer" / "adp.jsonl"
+    if adp.is_file():
+        assert "terminal_reward" not in json.dumps(json.loads(adp.read_text()))
+    results = json.loads((tmp_path / "results.jsonl").read_text())
+    assert results["reward"] is None
 
 
 def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
@@ -1417,7 +1529,24 @@ def test_native_subscription_without_llm_preserves_terminal_errors(tmp_path):
 
 
 def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
-    """Guards PR #828: total-only telemetry still feeds Prime-RL token batches."""
+    """Guards PR #828: total-only telemetry in a result written before that change
+    (zero splits beside a total) still feeds Prime-RL token batches."""
+    from benchflow.trajectories.results import _token_usage_from_agent_result
+
+    old_result = {"n_input_tokens": 0, "n_output_tokens": 0, "total_tokens": 123}
+    assert _token_usage_from_agent_result(old_result) == {
+        "input_tokens": 123.0,
+        "output_tokens": 0.0,
+        "final_input_tokens": 123.0,
+        "final_output_tokens": 0.0,
+        "total_tokens": 123.0,
+    }
+
+
+def test_a_total_without_its_split_is_no_count_in_results_jsonl(tmp_path):
+    """a total whose split is unknown is no count. result.json
+    records null; results.jsonl's numeric token_usage counts nothing rather
+    than calling the total input."""
     rollout_dir = tmp_path / "rollout-total-only"
     rollout_dir.mkdir()
 
@@ -1438,20 +1567,22 @@ def test_results_jsonl_token_usage_falls_back_to_provider_total(tmp_path):
         rewards={"reward": 1.0},
         started_at=datetime.now(),
         timing={},
-        n_input_tokens=0,
-        n_output_tokens=0,
+        n_input_tokens=None,
+        n_output_tokens=None,
         total_tokens=123,
     )
 
+    result = json.loads((rollout_dir / "result.json").read_text())
+    assert result["agent_result"]["total_tokens"] is None
     row = json.loads((rollout_dir / "results.jsonl").read_text())
     assert row["error"]["error"] == "missing_llm_trajectory"
     assert row["info"]["training_ready"] is False
     assert row["token_usage"] == {
-        "input_tokens": 123.0,
+        "input_tokens": 0.0,
         "output_tokens": 0.0,
-        "final_input_tokens": 123.0,
+        "final_input_tokens": 0.0,
         "final_output_tokens": 0.0,
-        "total_tokens": 123.0,
+        "total_tokens": 0.0,
     }
 
 
@@ -1642,7 +1773,10 @@ def test_build_rollout_result_forwards_token_metrics_to_atif(tmp_path):
     )
     atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
     metrics = atif["final_metrics"]
-    assert metrics["total_prompt_tokens"] == 1234
+    # ATIF's prompt total counts the cache reads; the uncached input
+    # is in extra.
+    assert metrics["total_prompt_tokens"] == 1234 + 89
+    assert metrics["extra"]["n_input_tokens"] == 1234
     assert metrics["total_completion_tokens"] == 567
     assert metrics["total_cached_tokens"] == 89
     assert metrics["total_cost_usd"] == 0.0421

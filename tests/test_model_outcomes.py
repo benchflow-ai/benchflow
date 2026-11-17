@@ -327,7 +327,7 @@ async def test_teardown_writes_the_model_calls_off_the_event_loop(
     monkeypatch.setattr(
         rollout_module,
         "write_model_calls",
-        lambda trial: seen.append((trial, threading.current_thread())),
+        lambda trial, **_kwargs: seen.append((trial, threading.current_thread())),
     )
     (tmp_path / "task").mkdir()
     rollout = Rollout(RolloutConfig(task_path=tmp_path / "task"))

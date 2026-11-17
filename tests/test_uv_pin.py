@@ -15,6 +15,7 @@ nothing outside ``tmp_path`` is written.
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import io
 import os
@@ -417,6 +418,81 @@ def test_image_without_a_sha256_tool_refuses_rather_than_skip_the_check(tmp_path
     assert box.uv_calls() == []
 
 
+_FAKE_APT_GET_FAILS = """#!/bin/sh
+echo "$*" >> "$FAKE_LOG/apt-get.log"
+[ "$1" = update ] && exit 0
+echo "E: Failed to fetch http://archive.ubuntu.com/ubuntu/pool/main/c/curl/curl.deb" >&2
+exit 100
+"""
+
+_FAKE_APT_HELPER = """#!/bin/sh
+echo "$*" >> "$FAKE_LOG/apt-helper.log"
+while [ "$1" != download-file ]; do shift; done
+name="${2##*/}"
+[ -f "$FAKE_SERVE/$name" ] || exit 100
+cp "$FAKE_SERVE/$name" "$3"
+"""
+
+_SLIM_IMAGE_TOOLS = (
+    "mktemp", "tar", "gzip", "cp", "chmod", "mkdir", "rm", "uname", "id", "ls",
+    "find", "readlink", "head", "sha256sum",
+)  # fmt: skip
+
+
+def _slim_box(tmp_path: Path) -> _Box:
+    """ubuntu:24.04 as it ships: no curl, no wget, an apt-get whose mirror fails."""
+    box = _Box(tmp_path, tools=_SLIM_IMAGE_TOOLS)
+    (box.bin / "curl").unlink()
+    apt_get = box.bin / "apt-get"
+    apt_get.write_text(_FAKE_APT_GET_FAILS)
+    apt_get.chmod(0o755)
+    return box
+
+
+@needs_sh
+def test_a_failed_curl_install_falls_back_to_apt_helper_under_set_e(tmp_path):
+    """Guards PR #146's fix for rc3's red test (public run 42891406130):
+    test_cloud_metadata_failclosed_docker's no-web trials on ubuntu:24.04
+    ended "install LiteLLM in sandbox failed with exit code 100". The image
+    has no curl or wget; apt-get install curl failed (a mirror error is
+    apt's 100), and the proxy install's own `set -eu` ended the uv
+    install's subshell with that status, before its message and without
+    trying apt-helper. Now the failed install falls through to apt-helper,
+    whose download the pinned SHA-256 still checks."""
+    box = _slim_box(tmp_path)
+    helper = box.root / "apt-helper"
+    helper.write_text(_FAKE_APT_HELPER)
+    helper.chmod(0o755)
+    command = uv_install_command(
+        uv_dir=str(box.uv_dir), sums=box.sums, bases=box.bases, apt_helper=str(helper)
+    )
+
+    done = box.run(f"set -eu\n{command}\necho installed")
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().endswith("installed")
+    assert (box.uv_dir / "uv").is_file()
+    assert "install" in (box.log / "apt-get.log").read_text()
+    assert "download-file" in (box.log / "apt-helper.log").read_text()
+
+
+@needs_sh
+def test_no_downloader_at_all_says_so_instead_of_apts_status(tmp_path):
+    box = _slim_box(tmp_path)
+    command = uv_install_command(
+        uv_dir=str(box.uv_dir),
+        sums=box.sums,
+        bases=box.bases,
+        apt_helper=str(box.root / "no-apt-helper"),
+    )
+
+    done = box.run(f"set -eu\n{command}\necho installed")
+
+    assert done.returncode == 1, (done.returncode, done.stderr)
+    assert "installing curl failed, and it has no apt-helper" in done.stderr
+    assert not (box.uv_dir / "uv").exists()
+
+
 # --------------------------------------------------------------------------
 # The whole proxy install script, run locally against the fakes
 # --------------------------------------------------------------------------
@@ -471,6 +547,31 @@ async def test_proxy_install_builds_the_venv_on_managed_python_3_12(
         assert downloads == "automatic"
 
 
+def _host_uv_libc() -> str:
+    """The libc uv_install_command's script picks on this host: musl when a
+    /lib/ld-musl-* loader exists (musl-tools on a build VM adds one), else
+    glibc. The wrong-sum test pins the tarball this host would fetch."""
+    return "musl" if any(map(os.path.exists, glob.glob("/lib/ld-musl-*"))) else "gnu"
+
+
+@pytest.mark.parametrize("libc", ["gnu", "musl"])
+def test_the_wrong_sum_pin_follows_the_hosts_libc(tmp_path, monkeypatch, libc):
+    """Both answers of _host_uv_libc, and the product's own rule it mirrors:
+    a gate VM with musl-tools fetches the musl tarball, and the test must
+    expect it there."""
+    loader = tmp_path / "ld-musl-x86_64.so.1"
+    loader.write_text("")
+    found = [str(loader)] if libc == "musl" else []
+    monkeypatch.setattr(
+        glob, "glob", lambda pattern: found if pattern == "/lib/ld-musl-*" else []
+    )
+    assert _host_uv_libc() == libc
+    assert (
+        'for f in /lib/ld-musl-*; do if [ -e "$f" ]; then libc=musl; fi; done'
+        in uv_install_command()
+    )
+
+
 @needs_sh
 @pytest.mark.asyncio
 async def test_proxy_install_with_wrong_sum_fails_before_uv_runs(tmp_path, monkeypatch):
@@ -478,7 +579,10 @@ async def test_proxy_install_with_wrong_sum_fails_before_uv_runs(tmp_path, monke
     wrong = {target: "f" * 64 for target in TARGETS}
     venv = _point_proxy_install_at(box, monkeypatch, sums=wrong)
 
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(
+        RuntimeError,
+        match=rf"sha256 mismatch for uv-x86_64-unknown-linux-{_host_uv_libc()}\.tar\.gz",
+    ) as raised:
         await runtime_mod._ensure_sandbox_litellm(
             _LocalShellSandbox(box), venv_dir=str(venv), requirements_path=f"{venv}.txt"
         )
@@ -501,7 +605,9 @@ async def test_proxy_install_names_the_python_download_host_when_blocked(
     box = _Box(tmp_path)
     venv = _point_proxy_install_at(box, monkeypatch)
 
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(
+        RuntimeError, match=r"could not install managed CPython 3\.12\.15"
+    ) as raised:
         await runtime_mod._ensure_sandbox_litellm(
             _LocalShellSandbox(box, FAKE_PYTHON_FAIL="1"),
             venv_dir=str(venv),

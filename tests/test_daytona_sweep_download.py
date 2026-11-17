@@ -5,7 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
+import benchflow.sandbox.daytona as daytona_mod
 from tests.test_daytona_download import _fake_daytona_sandbox, _FakeFs
+
+
+@pytest.fixture(autouse=True)
+def _daytona_sdk_loaded():
+    """A real DaytonaSandbox loads the optional Daytona SDK when it is built
+    (``_load_daytona_sdk`` in ``__init__``), before any download. The fake
+    skips ``__init__``, so load it here, before each test body: run alone,
+    ``FileDownloadRequest`` was still None, and a first load inside the test
+    would replace a name the test patched (``DaytonaNotFoundError``)."""
+    daytona_mod._load_daytona_sdk()
 
 
 @pytest.mark.parametrize(
@@ -44,7 +55,10 @@ async def test_batch_requires_every_file(tmp_path, response, retry_fails):
     fs = Fs()
     sandbox = _fake_daytona_sandbox(fs)
     if retry_fails:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(
+            RuntimeError,
+            match=r"Daytona individual download_dir failed \(0 recovered; recovered no files",
+        ):
             await sandbox._sdk_download_dir("/logs/verifier", tmp_path)
     else:
         await sandbox._sdk_download_dir("/logs/verifier", tmp_path)
@@ -85,5 +99,31 @@ async def test_metadata_disappearance_is_not_silent_success(tmp_path, monkeypatc
                 raise FileNotFoundError("dummy disappeared")
             return SimpleNamespace(is_dir=False)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError, match=r"Daytona download_dir lost a listed file before transfer"
+    ):
         await _fake_daytona_sandbox(Fs())._sdk_download_dir("/logs/verifier", tmp_path)
+
+
+def test_each_test_here_passes_in_a_fresh_interpreter():
+    """These tests ran green only after another module had loaded the
+    Daytona SDK. A fresh interpreter runs the module, and the test that
+    patches an SDK name runs first and alone."""
+    import subprocess
+    import sys
+
+    here = Path(__file__).resolve()
+    module = str(here.relative_to(here.parents[1]))
+    patched = f"{module}::test_metadata_disappearance_is_not_silent_success"
+    for args in (
+        [patched],
+        [module, "-k", "not test_each_test_here_passes_in_a_fresh_interpreter"],
+    ):
+        done = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
+            cwd=here.parents[1],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, (args, done.stdout[-3000:], done.stderr[-2000:])

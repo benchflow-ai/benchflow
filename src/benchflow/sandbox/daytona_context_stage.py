@@ -77,11 +77,17 @@ class _ContextStage(staging.StagedEnvironment):
     @contextmanager
     def source(self, relative: str) -> Iterator[BinaryIO]:
         # Reopen through pinned directories, never through a mutable ancestor.
-        directory = staging._open_directory(os.sep)
+        # A folder above the task needs search permission alone, as in the
+        # copy (staging._open_ancestor); the task's own folders are read.
+        directory = staging._open_ancestor(os.sep)
         try:
             path = self.original_task_dir / relative
-            for component in path.parts[1:-1]:
-                child = staging._open_directory(component, directory)
+            above = len(self.original_task_dir.parts) - 2
+            for index, component in enumerate(path.parts[1:-1]):
+                opener = (
+                    staging._open_ancestor if index < above else staging._open_directory
+                )
+                child = opener(component, directory)
                 os.close(directory)
                 directory = child
             fd = os.open(

@@ -1,6 +1,7 @@
 """Sandbox setup utilities: Dockerfile preprocessing, DinD patching, sandbox creation."""
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -719,6 +720,36 @@ def _create_sandbox_environment(
         # Checked below, on the sandbox's own copy, as the sandbox runs it.
         check_compose=False,
     )
+    # Under a network policy, no compose service holds a way around its
+    # rules, whatever the cloud metadata opt-out says. A Docker
+    # sandbox checks the project its run resolves, when it freezes the
+    # launch (DockerSandbox.freeze_launch); a provider's Compose is not
+    # resolved here, so its raw file is read.
+    from benchflow.sandbox.service_cover import (
+        ServiceCoverError,
+        policy_power_refusal,
+    )
+    from benchflow.task.compose_env import COMPOSE_ON_HOST
+
+    refusal = (
+        None
+        if sandbox_type in COMPOSE_ON_HOST
+        else policy_power_refusal(task.config, environment_dir)
+    )
+    if refusal:
+        raise ServiceCoverError(refusal)
+    from benchflow.sandbox.cloud_metadata import task_compose_topology
+
+    joined = task_compose_topology(environment_dir)
+    if sandbox_type not in COMPOSE_ON_HOST and joined.main_chain_end == "host":
+        # main would share the host's own namespace through another service:
+        # no rule of the trial's may go there (the lead's 04:5xZ ruling).
+        raise ServiceCoverError(
+            "sandbox startup refused: main joins the network namespace of "
+            f"service {joined.main_netns_owner!r} (network_mode: "
+            f"{joined.main_network_mode}), which is the host's own network, where "
+            "no rule of the trial's may go"
+        )
     # Every backend builds and launches from a private, no-follow copy of
     # the environment folder, never the task's own files.
     if (
@@ -746,6 +777,25 @@ def _create_sandbox_environment(
     except BaseException:
         staged.remove()
         raise
+    # Whatever the policy and the agent, main's processes, root's included,
+    # never reach the cloud metadata endpoints; only the task opts out
+    # A Docker sandbox adds the rule before main's own processes
+    # start; other sandboxes keep their provider's policy. On the sandbox,
+    # never a copy of the task's config (84a2f2ed).
+    with contextlib.suppress(AttributeError):
+        sandbox._main_metadata_rule = not getattr(
+            task.config, "allows_cloud_metadata", False
+        )
+        # The network policy every service is held to ("" when open): the
+        # launch's check reads it (DockerSandbox.freeze_launch).
+        from benchflow.sandbox.service_cover import restricted_policy
+
+        sandbox._network_policy = restricted_policy(task.config)
+        # Every rule of main's namespace from BenchFlow's helper, and main
+        # without NET_ADMIN and NET_RAW, whatever the policy and the opt-out
+        # (a Docker sandbox decides at its start: DockerSandbox
+        # ._decide_rules_by_helper).
+        sandbox._wants_rules_by_helper = True
     import weakref
 
     # Never ``remove``: the collector can run this while the same thread
@@ -795,7 +845,23 @@ def _make_sandbox(
     from benchflow.task.config import NetworkMode
 
     environment_dir = staged.environment_dir
-    if preserve_agent_network and env_config.allow_internet is False:
+    from benchflow.sandbox.verifier_network import verifier_network_mode
+
+    if (
+        not preserve_agent_network
+        and env_config.allow_internet is False
+        and verifier_network_mode(task.config) != "no-network"
+    ):
+        # An oracle's run of an offline task whose verifier needs a network
+        # (verifier.network_mode allowlist or public: ProgramBench's download):
+        # main keeps its network for the verifier, and the oracle's turn is
+        # offline by every-process rules installed before solve.sh, the marked
+        # egress proxy alone exempt. Main gets NET_ADMIN for them
+        # (compose_needs_net_admin: no-network kept open).
+        env_config = env_config.model_copy(deep=True)
+        env_config.allow_internet = True
+        env_config._offline_by_rules = True
+    elif preserve_agent_network and env_config.allow_internet is False:
         # LLM agents run inside the sandbox and need outbound network for model
         # APIs and first-run agent installation. BenchFlow enforces the task's
         # no-web policy at the agent layer instead of applying the container

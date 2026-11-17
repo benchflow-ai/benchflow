@@ -1,6 +1,7 @@
 """Guard the K1/K2/P78 merge of 6f9d482a and 7b4907c8."""
 
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,28 +17,36 @@ from benchflow.sandbox.lockdown import (
 from tests.test_keep_services_kill import _Async, _env_on, _NetProc, _task
 from tests.test_verifier_process_quiescence import _LIVE, _ROOT, UID
 
+_PRINTED = "quiescence check printed {} 'BF killed' lines, not 1 whole receipt"
+_NO_STATUS = r"exec output receipt not printed \(exec status None\)"
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "receipt,status",
+    "receipt,status,refusal",
     [
-        ("BF killed 2\n", 0),
-        ("BF killed 2\nBF killed 3\n", 0),
-        ("BF killed 2 end\n", None),
-        ("BF killed 2 end\n", False),
-        ("BF killed 2 end\nBF killed 3", 0),
+        ("BF killed 2\n", 0, re.escape(_PRINTED.format(1))),
+        ("BF killed 2\nBF killed 3\n", 0, re.escape(_PRINTED.format(2))),
+        # No integer status: no receipt comes back, so the read fails.
+        ("BF killed 2 end\n", None, _NO_STATUS),
+        ("BF killed 2 end\n", False, _NO_STATUS),
+        ("BF killed 2 end\nBF killed 3", 0, re.escape(_PRINTED.format(2))),
     ],
 )
-async def test_keeping_requires_the_same_complete_kill_evidence(receipt, status):
+async def test_keeping_requires_the_same_complete_kill_evidence(
+    receipt, status, refusal
+):
     """Guards K1 receipt validation when merged into K2 at 7b4907c8."""
     result = SimpleNamespace(
         return_code=status,
         stdout="BF waited 0\nBF kept count 0\n" + receipt,
         stderr="",
     )
-    env = SimpleNamespace(exec=AsyncMock(return_value=result))
+    from tests.test_verifier_process_quiescence import _Canned
+
+    env = _Canned(result)
     record = {}
-    with kill_record.recording_into(record), pytest.raises(RuntimeError):
+    with kill_record.recording_into(record), pytest.raises(RuntimeError, match=refusal):
         await _kill_sandbox_user_procs_keeping(env, "agent", (5000,), wait=True)
     assert record == {}
 
@@ -109,7 +118,10 @@ async def test_turn_end_and_grading_counts_survive_without_optional_capture(
         _branch_child_active=False,
         _review_plan=None,
         _config=SimpleNamespace(
-            purpose="task", sandbox_user="agent", freeze_workspace=False
+            purpose="task",
+            sandbox_user="agent",
+            freeze_workspace=False,
+            integrity="strict",  # The turn-end kill and quiesce are strict's.
         ),
         _env=proc,
         _task=task,
@@ -128,7 +140,9 @@ async def test_turn_end_and_grading_counts_survive_without_optional_capture(
     assert str(writer) not in proc.live_pids()
     assert (proc.root / str(root) / "status").read_text() == _ROOT
     with kill_record.recording_into(record):
-        await harden_before_verify(_env_on(proc), task, "agent", workspace="/app")
+        await harden_before_verify(
+            _env_on(proc), task, "agent", workspace="/app", integrity="strict"
+        )
     assert record["killed"] == 0
     assert record["killed_total"] == record["quiesce_killed"] == 1
     if service is not None:
@@ -193,6 +207,7 @@ async def test_what_a_collect_hook_leaves_is_stopped_before_the_capture(
             sandbox_user="agent",
             freeze_workspace=False,
             primary_agent="claude-agent-acp",
+            integrity="strict",  # The turn-end kill and quiesce are strict's.
         ),
         _env=proc,
         _task=task,

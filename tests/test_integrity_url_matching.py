@@ -166,7 +166,7 @@ def test_r13_3_a_browser_client_reads_the_url_standard_path(tmp_path, url):
 )
 def test_r12_2_honest_contracts_with_valid_unusual_hosts_stay_valid(tmp_path, selector):
     evidence = _evidence(tmp_path, _calls("true"), binding=_binding(selector))
-    assert not [v for v in evidence.contract.violations if "refused" in v]
+    assert evidence.contract.violations == [], evidence.contract.violations
     honest = _verdict(tmp_path / "honest", _calls("true"), binding=_binding(selector))
     assert honest["core_verdict"] == "VectorExposed"
     assert "protected_route_unattested" in honest["profile_vectors"]

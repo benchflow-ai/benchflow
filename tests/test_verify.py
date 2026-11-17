@@ -317,6 +317,7 @@ class TestSdkVerify:
         ],
     )
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("strict_reward_rule")
     async def test_verifier_returning_noncanonical_rewards_is_verifier_error(
         self, verify_harness, rewards, caplog
     ):

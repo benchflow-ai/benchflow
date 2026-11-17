@@ -28,6 +28,60 @@ class VerifierResult(BaseModel):
     rewards: dict[str, Any] | None = None
 
 
+class VerifierNetworkRefusedError(Exception):
+    """test.sh failed after the verifier's network refused it something: an ending of its own, unscored, so a policy never reads as the
+    solution's 0."""
+
+
+class NetworkPolicyBreachedError(Exception):
+    """BenchFlow's network rules for the trial no longer held when proven
+    again at the end of the agent's turn or of test.sh: a rule gone, a
+    counter back, a check the helper could not make, or a connect that got
+    through. An ending of its own: unscored, never retried. *record* is
+    ``verifier/network-policy.json``'s."""
+
+    def __init__(self, message: str, *, record: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.record = record or {}
+
+
+class NetworkPolicyUnprovenError(NetworkPolicyBreachedError):
+    """BenchFlow could not prove the trial's network rules again (its helper's
+    check did not run or report, as under heavy load), and nothing showed
+    they stopped holding: no rule missing, no counter back, no connect
+    through. Its own ending, "network policy not proven": unscored with the
+    reason, an infrastructure failure, never a breach charged to the agent
+    (the lead's 05:42Z rule). A subclass, so every path that ends a
+    trial on a breach ends it here too."""
+
+
+class VerifierLaunchRefusedError(Exception):
+    """test.sh did not start held: its launch found NET_ADMIN or
+    NET_RAW, or no record shows it started through the launch at all."""
+
+
+#: How the trial records :class:`VerifierToolsRefusedError`
+#: (``scoring.VERIFIER_TOOLS_REFUSED``, read head-anchored).
+VERIFIER_TOOLS_REFUSED_ERROR = "verifier tools refused: "
+
+
+class VerifierToolsRefusedError(RuntimeError):
+    """The verifier's PATH leaves out a folder of the image's PATH (one a user
+    other than root could write, or a relative entry), and the task's
+    ``[verifier] required_tools`` contract does not cover what test.sh would
+    have found there, so BenchFlow did not run test.sh. A refusal decided by
+    the image and the task, never a crash of the verifier's: an ending of its
+    own, unscored, never retried (another attempt meets the same image). A
+    RuntimeError, as hardening's refusals were before."""
+
+
+class VerifierNetworkUnheldError(RuntimeError):
+    """The verifier's network could not be held for test.sh: its
+    rules could not be added, from BenchFlow's helper or at all, or were not
+    proven. test.sh does not run open instead: an ending of its own,
+    unscored."""
+
+
 class RewardFileEmptyError(Exception):
     """A reward file the verifier left empty.
 
@@ -170,11 +224,32 @@ class PluginGuardLoadError(Exception):
     Output and markers do not prove their cause: test.sh's user can write both.
     """
 
-    def __init__(self, message: str, *, guard_copy_diagnostic: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        guard_copy_diagnostic: str = "",
+        record: str = "",
+        rejudge: bool = False,
+    ) -> None:
         super().__init__(message)
         # Keep hardening's interpreter list without repeating older error text
         # that assigns blame or says the trial is unscored (FIX-49 merge).
         self.guard_copy_diagnostic = guard_copy_diagnostic
+        # What the guard's verdicts record says of the stop, in the same
+        # neutral words, for the 0's warning ((g2)).
+        self.record = record
+        # A stop the host re-judges on the pristine image ((g2) R):
+        # the guard stopped, failed, or left no verdict, as opposed to a
+        # plugin the verifier installed itself (the task's problem).
+        self.rejudge = rejudge
+
+
+class PluginGuardRejectedError(Exception):
+    """The plugin guard's verdicts record names a file it refused that the
+    image does not have as it is ((g2)): the agent's doing, so the trial
+    scores 0, whatever pytest's exit, with the file named in its verifier
+    error."""
 
 
 class PluginGuardMarkersUnreadableError(Exception):

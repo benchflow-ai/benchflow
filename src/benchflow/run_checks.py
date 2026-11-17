@@ -115,6 +115,9 @@ NEXT_STEPS = {
     "top_p": f"set top_p where the agent sends it, {_AGAIN}",
 }
 
+#: The agents that resolve Claude Code's model aliases (sonnet, opus, ...).
+CLAUDE_CODE_AGENTS = frozenset({"claude-agent-acp"})
+
 #: Model ids that name a deployment or an alias, not a model: Azure routes by
 #: deployment name (LiteLLM's ``azure/`` and ``azure_ai/``, BenchFlow's
 #: ``azure-foundry-openai/`` and ``azure-foundry-anthropic/``), a LiteLLM proxy
@@ -209,12 +212,24 @@ def _model_key(model: str) -> str:
     return key.removesuffix("-latest")
 
 
-def same_model(requested: str | None, served: str | None) -> bool:
+def same_model(
+    requested: str | None, served: str | None, *, agent: str | None = None
+) -> bool:
     """Whether *served* is the model *requested* names: the same id once its
-    routing is set aside (:func:`_model_key`), or a dated or aliased snapshot
-    of it (``claude-sonnet-5`` served as ``claude-sonnet-5-20260301``)."""
+    routing is set aside (:func:`_model_key`), a dated or aliased snapshot
+    of it (``claude-sonnet-5`` served as ``claude-sonnet-5-20260301``), or a
+    model a Claude Code alias names (``sonnet`` served as
+    ``claude-sonnet-5-5``, :mod:`benchflow.agents.claude_models`) when
+    *agent* is Claude Code's: another agent's ``sonnet`` is its own name."""
     if not requested or not served:
         return False
+    from benchflow.agents.claude_models import claude_alias_models
+
+    # A Claude Code alias (-m sonnet) is the model it resolves to: the calls
+    # carry that model's id, so compare with each id it can name.
+    named = claude_alias_models(requested) if agent in CLAUDE_CODE_AGENTS else None
+    if named is not None and _model_key(requested) != _model_key(served):
+        return any(same_model(model, served) for model in named)
     from benchflow.providers.litellm_config import safe_model_alias
 
     alias = safe_model_alias(requested)
@@ -251,7 +266,9 @@ def read_calls(trial_dir: Path) -> list[dict[str, Any]]:
     return calls
 
 
-def _call_kind(call: Mapping[str, Any], model: str | None) -> str | None:
+def _call_kind(
+    call: Mapping[str, Any], model: str | None, agent: str | None = None
+) -> str | None:
     """``main`` for a call of the agent to the run's model, ``side`` for
     the agent's call to another model or a subagent's, None for a call made
     for someone else (a reviewer, a judge)."""
@@ -273,13 +290,14 @@ def _call_kind(call: Mapping[str, Any], model: str | None) -> str | None:
             return "main"
         return (
             "main"
-            if same_model(model, named) or same_model(model, call.get("route"))
+            if same_model(model, named, agent=agent)
+            or same_model(model, call.get("route"), agent=agent)
             else "side"
         )
     if source == CLAUDE_CODE_OTEL:
         # The model Claude Code asked for, its background calls among them.
         named = call.get("model_served")
-        return "main" if not named or same_model(model, named) else "side"
+        return "main" if not named or same_model(model, named, agent=agent) else "side"
     # A session log holds the agent's own conversation.
     return "main"
 
@@ -291,7 +309,9 @@ def _key(value: Any) -> str:
 
 
 def settings_sent(
-    calls: Sequence[Mapping[str, Any]], model: str | None
+    calls: Sequence[Mapping[str, Any]],
+    model: str | None,
+    agent: str | None = None,
 ) -> dict[str, Any] | None:
     """result.json's ``settings_sent``: per setting, each value the agent's
     main calls carried and how many carried it, and how many carried none
@@ -304,7 +324,7 @@ def settings_sent(
     main: list[Mapping[str, Any]] = []
     side: list[Mapping[str, Any]] = []
     for call in calls:
-        kind = _call_kind(call, model)
+        kind = _call_kind(call, model, agent)
         if kind == "main" and offers_no_tools(call, calls):
             # A session title or a summary the agent asked its own model for.
             kind = "side"
@@ -373,6 +393,12 @@ def requested_settings(card: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "source": model.get("source") or "default",
                 "fails": not alias,
                 **({"alias": True} if alias else {}),
+                # Claude Code resolves its own aliases (sonnet, opus, ...).
+                **(
+                    {"agent": agent.get("name")}
+                    if agent.get("name") in CLAUDE_CODE_AGENTS
+                    else {}
+                ),
             }
         )
     effort = model.get("effort")
@@ -442,7 +468,11 @@ def compare_sent(
         return {"kind": "not_sent", "sent": {}, "calls": without, "of": without}
     value = wanted["value"]
     if setting == "model":
-        differs = {v: n for v, n in carried.items() if not same_model(str(value), v)}
+        differs = {
+            v: n
+            for v, n in carried.items()
+            if not same_model(str(value), v, agent=wanted.get("agent"))
+        }
     elif setting == "effort":
         differs = {v: n for v, n in carried.items() if v.lower() != str(value).lower()}
     elif setting == "max_output_tokens":
@@ -1171,6 +1201,22 @@ def truncation_text(truncated: int, known: int, retried: int = 0) -> str:
 def after_run_lines(summary: Mapping[str, Any]) -> list[str]:
     """The run card's lines after the run, from summary.json's ``run_checks``."""
     lines = ["Run card, after the run:"]
+    refused = summary.get("verifier_network_refusals")
+    if isinstance(refused, int) and refused > 0:
+        lines.append(
+            f"  Verifier:  {refused} trial{'s' if refused != 1 else ''} ended "
+            '"verifier network refused" (unscored, 0 in mean_reward): the '
+            "verifier's network refused their tests; flagged, see each trial's "
+            "verifier/verifier-network.json"
+        )
+    breached = summary.get("network_policy_breaches")
+    if isinstance(breached, int) and breached > 0:
+        lines.append(
+            f"  Network:   {breached} trial{'s' if breached != 1 else ''} ended "
+            '"network policy breached" (unscored, 0 in mean_reward): '
+            "BenchFlow's network rules no longer held when proven again; "
+            "flagged, see each trial's verifier/network-policy.json"
+        )
     truncation = summary.get("truncation") or {}
     level = truncation.get("level")
     if level is None:

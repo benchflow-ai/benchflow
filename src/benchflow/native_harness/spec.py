@@ -119,8 +119,8 @@ class NativeTurnOutcome:
     """
 
     stop_reason: StopReason | None = None
-    usage: dict[str, int] | None = None
-    usage_total: dict[str, int] | None = None
+    usage: dict[str, int | None] | None = None
+    usage_total: dict[str, int | None] | None = None
     cost_usd: float | None = None
     error: str | None = None
     agent_text: str | None = None

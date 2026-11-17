@@ -72,6 +72,7 @@ from benchflow.cli.reviewer_options import (
     ReviewerStorageOption,
     ReviewerTimeoutOption,
 )
+from benchflow.integrity.constants import STRICT_EXPERIMENTAL
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 
 if TYPE_CHECKING:
@@ -283,6 +284,13 @@ _ROOT_LAYOUT: tuple[LazyCommand | str, ...] = (
         rich_help_panel=_MORE,
     ),
     LazyCommand(
+        "backfill-cost",
+        f"{_CLI}.backfill_cost",
+        "register_backfill_cost",
+        "Fill the tokens and cost a job's trials lack, from the logs they left.",
+        rich_help_panel=_MORE,
+    ),
+    LazyCommand(
         "skills",
         f"{_CLI}.skills",
         "register_skills",
@@ -310,6 +318,14 @@ _ROOT_LAYOUT: tuple[LazyCommand | str, ...] = (
         "Environment hubs: browse a hub's environments (list/show/inspect), "
         "check registry tasks (check), and publish datasets and push runs "
         "to a BenchFlow Hub (publish/push).",
+        rich_help_panel=_MORE,
+    ),
+    LazyCommand(
+        "hosted",
+        f"{_CLI}.hosted",
+        "register_hosted",
+        "Hosted evals: run a benchmark on BenchFlow's servers instead of this "
+        "machine (BENCHFLOW_HOSTED_URL, BENCHFLOW_HUB_KEY).",
         rich_help_panel=_MORE,
     ),
     LazyCommand(
@@ -912,7 +928,285 @@ eval_app = typer.Typer(
 app.add_typer(eval_app, name="eval", rich_help_panel=_MORE)
 
 
-def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
+def _check_dry_run_auth_tokens(config: Any) -> None:
+    """The ANTHROPIC_AUTH_TOKEN refusal a run makes before launch, for each
+    agent of a dry run's plan (each scene role's, or the run's), with the
+    model each falls back to."""
+    from benchflow.agents.env import check_anthropic_auth_token
+    from benchflow.agents.registry import AGENTS, is_scripted_agent
+
+    base_env = dict(getattr(config, "agent_env", None) or {})
+    scenes = getattr(config, "scenes", None) or []
+    targets = (
+        [
+            (role.agent, role.model, {**base_env, **(role.env or {})})
+            for scene in scenes
+            for role in scene.roles
+        ]
+        if scenes
+        else [(config.agent, config.model, base_env)]
+    )
+    for agent, model, env in targets:
+        if not agent or is_scripted_agent(agent):
+            continue
+        cfg = AGENTS.get(agent)
+        check_anthropic_auth_token(
+            agent, model or (cfg.default_model if cfg else None), env
+        )
+
+
+def _check_override_fits(override: dict | None, task_dirs: list[Path]) -> None:
+    """Stop a dry run, as a real run's trials would fail, when the config
+    override does not fit a task's config (exit 2, ConfigOverrideInvalidError's
+    message: paths and what each field takes, no value). A task that does not
+    load is left to the run card, which names it."""
+    if not override:
+        return
+    from benchflow._utils.config_override import (
+        ConfigOverrideInvalidError,
+        apply_config_override,
+    )
+    from benchflow.cli._shared import print_error
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    for task_dir in task_dirs:
+        try:
+            config = TaskRuntimeView.from_task_dir(task_dir).config
+        except Exception:
+            continue
+        try:
+            apply_config_override(config, override)
+        except ConfigOverrideInvalidError as exc:
+            print_error(f"{task_dir.name}: {exc}", next_step=exc.hint)
+            raise typer.Exit(2) from None
+
+
+#: The ``errors`` key of a refusal the run makes for the whole job, before
+#: any trial.
+_DRY_RUN_JOB = "(job)"
+#: Why a dry run checks no task of a repository or dataset target.
+_DRY_RUN_REMOTE_UNCHECKED = "remote target not fetched in a dry run"
+
+
+def _dry_run_checks(evaluation: Any, chosen: list[Path]) -> dict[str, BaseException]:
+    """:func:`_run_dry_run_checks`, then the copies of the Docker client
+    configuration (registry logins) its Compose checks made are removed, on
+    every way out: a dry run launches nothing that needs them."""
+    from benchflow.task.compose_env import remove_hermetic_docker_configs
+
+    try:
+        return _run_dry_run_checks(evaluation, chosen)
+    finally:
+        remove_hermetic_docker_configs()
+
+
+def _run_dry_run_checks(
+    evaluation: Any, chosen: list[Path]
+) -> dict[str, BaseException]:
+    """The run's own checks before any sandbox, for ``evaluation``'s job on
+    ``chosen``. First the job's, which refuse the whole job:
+    ``Evaluation._check_before_run``'s sandbox name, agent names and model
+    routes (not its host checks: Docker not ready refuses the run), the
+    verifier sandbox plan (``_check_verifier_sandbox_plan``: with a separate
+    verifier or ``--integrity strict`` every task must be able to use it),
+    an empty selection (the tasks-root rule
+    skips a task that links outside itself, and then none is selected),
+    ``_refuse_placeholder_tasks`` and ``_refuse_unnamed_task_env``. Then each
+    trial's: ``dry_run_plan_gate`` on the RolloutConfig the run builds for
+    the task (``Evaluation._rollout_config``: its config override, the
+    primary agent and model a task's roles pin, the agent env with
+    ``--agent-env``). Not run: a reviewer's preparation (``prepare_review``).
+    Task name, or :data:`_DRY_RUN_JOB`, -> what the run raises there."""
+    from benchflow.evaluation import (
+        EmptyTaskSelectionError,
+        _refuse_placeholder_tasks,
+        _refuse_unnamed_task_env,
+    )
+    from benchflow.rollout import dry_run_plan_gate
+    from benchflow.rollout_planes import DefaultRolloutPlanes
+    from benchflow.runtime import (
+        check_agent_names,
+        check_agent_routes,
+        check_sandbox_name,
+    )
+
+    config = evaluation._config
+    try:
+        check_sandbox_name(config.environment)
+        check_agent_names([config.agent])
+        check_agent_routes([config])
+        evaluation._check_verifier_sandbox_plan()
+        if not chosen:
+            empty = EmptyTaskSelectionError(evaluation._empty_selection_message())
+            empty.hint = evaluation._empty_selection_hint()
+            raise empty
+        _refuse_placeholder_tasks(chosen)
+        _refuse_unnamed_task_env(
+            chosen, manifest=config.environment_manifest, sandbox=config.environment
+        )
+    except Exception as exc:
+        return {_DRY_RUN_JOB: exc}
+    errors: dict[str, BaseException] = {}
+    for task_dir in chosen:
+        try:
+            dry_run_plan_gate(
+                evaluation._rollout_config(task_dir, config), DefaultRolloutPlanes()
+            )
+        except Exception as exc:
+            errors[task_dir.name] = exc
+    return errors
+
+
+def _dry_run_matrix(plan: Any) -> tuple[dict[str, dict], dict[str, Any]] | None:
+    """The ``--matrix`` entries and each entry's settings, read once and
+    refused as the run refuses them: the file, each entry and each entry's
+    ``agent_env`` as ``_preflight_targets`` reads them (exit 1), then each
+    entry's agent, model, effort and harness as ``run_matrix_eval`` settles
+    them before any trial (``matrix_entry_settings``, exit 2). The gate builds
+    each entry's job from them, as the run does. None without
+    ``--matrix``."""
+    req = plan.request
+    if req.matrix is None:
+        return None
+    from benchflow.cli._shared import print_error
+    from benchflow.cli.eval_artifacts import (
+        _load_eval_matrix,
+        _matrix_agent_env,
+        matrix_entry_settings,
+    )
+
+    try:
+        models = _load_eval_matrix(req.matrix)
+        for raw in models.values():
+            _matrix_agent_env(raw.get("agent_env"))
+    except (OSError, ValueError) as exc:
+        print_error(
+            str(exc),
+            next_step="fix the --matrix file; docs/reference/pass-at-k.md shows one",
+        )
+        raise typer.Exit(1) from None
+    try:
+        settings = matrix_entry_settings(plan, models, plan.make_eval_config())
+    except ValueError as exc:
+        print_error(
+            f"Refused before launch: {exc}",
+            next_step="fix the --matrix entry; `bench run --help` lists the levels",
+        )
+        raise typer.Exit(2) from None
+    return models, settings
+
+
+def _dry_run_gate(
+    plan: Any,
+    evaluation: Any,
+    chosen: list[Path],
+    matrix: tuple[dict[str, dict], dict[str, Any]] | None,
+) -> dict[str, BaseException]:
+    """:func:`_dry_run_checks` for the run's job, or with ``--matrix`` for each
+    entry's job as ``run_matrix_eval`` builds it (its agent, model, effort,
+    harness and agent_env), keyed ``<alias>/<task>``."""
+    if matrix is None:
+        return _dry_run_checks(evaluation, chosen)
+    models, settings = matrix
+    from benchflow.cli.eval_artifacts import matrix_entry_eval_config
+    from benchflow.evaluation import Evaluation
+
+    errors: dict[str, BaseException] = {}
+    for alias, raw in models.items():
+        trial_plan, entry_config = matrix_entry_eval_config(
+            plan, alias, raw, 1, entry=settings[alias]
+        )
+        entry = Evaluation(
+            tasks_dir=str(evaluation._tasks_dir),
+            jobs_dir=trial_plan.output_jobs_dir,
+            config=entry_config,
+            job_name=trial_plan.job_name,
+            preflight=False,
+        )
+        for name, exc in _dry_run_checks(entry, entry._get_task_dirs()).items():
+            errors[f"{alias}/{name}"] = exc
+    return errors
+
+
+def _dry_run_error_texts(errors: dict[str, BaseException]) -> dict[str, str]:
+    """Each error as the run records it (``describe_exception``)."""
+    from benchflow._utils.text import describe_exception
+
+    return {name: describe_exception(exc) for name, exc in errors.items()}
+
+
+def _dry_run_unchecked_targets(
+    req: Any, *, ref: str | None = None, path: str | None = None
+) -> list[dict[str, str]]:
+    """A repository or dataset target, whose tasks the run fetches: a dry run
+    fetches nothing, so it checks none of them. A repository's entry
+    names the ``--source-ref`` and ``--source-path`` the run would fetch
+    (the request does not carry them)."""
+    targets: list[dict[str, str]] = []
+    if getattr(req, "source_repo", None):
+        item = {"target": str(req.source_repo)}
+        if ref:
+            item["ref"] = ref
+        if path:
+            item["path"] = path
+        targets.append(item)
+    if getattr(req, "dataset", None):
+        targets.append({"target": str(req.dataset)})
+    return [{**item, "reason": _DRY_RUN_REMOTE_UNCHECKED} for item in targets]
+
+
+def _empty_selection_refusal(exc: BaseException) -> tuple[str, str, int]:
+    """What the run prints and exits with for an empty selection, for the run
+    and its dry run alike: an ``--include`` or ``--exclude`` that names no
+    task is a usage mistake (exit 2, dogfood p5-8); a selection the tasks
+    themselves emptied is not (exit 1)."""
+    from benchflow.cli._errors import expected_error_parts
+
+    err_text, err_hint = expected_error_parts(exc)
+    next_step = err_hint or (
+        "`bench check <folder>` lists the tasks it finds; check "
+        "--include and --exclude against their names"
+    )
+    return err_text, next_step, 2 if "matches no task" in err_text else 1
+
+
+def _print_dry_run_gate_errors(errors: dict[str, BaseException]) -> None:
+    """Each job or task that would error, with the text the run records, then
+    exit as the run does: 1, or 2 for an ``--include`` or
+    ``--exclude`` that names no task (:func:`_empty_selection_refusal`)."""
+    from benchflow._utils.text import describe_exception
+    from benchflow.cli._errors import expected_error_parts
+    from benchflow.cli._shared import print_error
+    from benchflow.evaluation import EmptyTaskSelectionError
+
+    if not errors:
+        return
+    code = 1
+    for name, exc in errors.items():
+        if isinstance(exc, EmptyTaskSelectionError):
+            _, next_step, empty_code = _empty_selection_refusal(exc)
+            code = max(code, empty_code)
+        elif name.split("/")[-1] == _DRY_RUN_JOB:
+            _, hint = expected_error_parts(exc)
+            next_step = (
+                hint or "the run refuses the whole job with this error before any trial"
+            )
+        else:
+            next_step = (
+                "every trial of this task records this error; `bench tasks check` "
+                "shows it too"
+            )
+        print_error(f"{name}: {describe_exception(exc)}", next_step=next_step)
+    raise typer.Exit(code)
+
+
+def _print_dry_run(
+    plan: Any,
+    tasks_dir: Path | None,
+    *,
+    source_ref: str | None = None,
+    source_path: str | None = None,
+) -> None:
     """``--dry-run``: the plan the run would run, and its tasks; nothing runs.
 
     Read from the Evaluation the run builds (a ``--config`` file with the
@@ -926,8 +1220,12 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
     from benchflow.cli._shared import console, print_error
 
     req = plan.request
+    # A --matrix file and its entries' settings, read once and refused as
+    # the run refuses them, before anything else.
+    matrix = _dry_run_matrix(plan)
     evaluation = None
     refusal: Exception | None = None
+    gate_errors: dict[str, BaseException] = {}
     if req.config_file is not None:
         job_plan = _job_plan(plan)
         if job_plan is not None and job_plan.is_matrix:
@@ -981,12 +1279,32 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
             err_text, err_hint = expected_error_parts(exc)
             print_error(err_text, next_step=err_hint or "fix the task folder")
             raise typer.Exit(1) from None
+        _check_override_fits(evaluation._config.config_override, chosen)
         out["tasks"] = [d.name for d in chosen]
         # --trials N runs every task N times, each trial a job of its own.
         trials = max(1, int(getattr(req, "trials", 1) or 1))
         out["rollouts"] = len(chosen) * trials
+        # The run's own checks before any sandbox, on the plan the run
+        # builds: the job's, then each trial's. A check the run makes
+        # in the sandbox and a dry run cannot is listed as unchecked.
+        from benchflow.sandbox.pid1_ptrace import collecting_dry_run_notes
+
+        with collecting_dry_run_notes() as not_checked:
+            gate_errors = _dry_run_gate(plan, evaluation, chosen, matrix)
+        if not_checked:
+            out["unchecked"] = not_checked
+        if gate_errors:
+            out["errors"] = _dry_run_error_texts(gate_errors)
+        from benchflow.errors import MissingCredentialError
         from benchflow.run_card import RunCardError, build_run_card, check_card
 
+        try:
+            _check_dry_run_auth_tokens(config)
+        except MissingCredentialError as exc:
+            # The run refuses it before launch: so does its dry run.
+            err_text, err_hint = expected_error_parts(exc)
+            print_error(err_text, next_step=err_hint)
+            raise typer.Exit(1) from None
         evaluation._config.planned_trials = trials
         try:
             card = build_run_card(evaluation, chosen)
@@ -1031,20 +1349,15 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
         out["trials"] = req.trials
         entries = 1
         if req.matrix is not None:
-            from benchflow.cli.eval_artifacts import _load_eval_matrix
-
-            try:
-                models = _load_eval_matrix(req.matrix)
-            except (OSError, ValueError) as exc:
-                print_error(
-                    str(exc),
-                    next_step="fix the --matrix file; docs/reference/pass-at-k.md shows one",
-                )
-                raise typer.Exit(1) from None
+            # The entries' settings, refused as the run refuses them when
+            # the file was read (_dry_run_matrix).
+            models, checked = matrix or ({}, {})
             out["matrix"] = {
                 alias: {
                     "agent": str(raw.get("agent") or plan.eval_agent),
                     "model": raw.get("model"),
+                    "reasoning_effort": checked[alias].effort,
+                    "harness": checked[alias].harness,
                 }
                 for alias, raw in models.items()
             }
@@ -1071,6 +1384,13 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
         out["bench_version"] = pin
         out["bench_version_issue"] = version_issue
         out["ignore_bench_version"] = req.ignore_bench_version
+    unchecked = (
+        _dry_run_unchecked_targets(req, ref=source_ref, path=source_path)
+        if evaluation is None
+        else []
+    )
+    if unchecked:
+        out["unchecked"] = unchecked
     console.print_json(_json.dumps(out, default=str))
     card = out.get("run_card")
     if card is None and "run_card_note" in out:
@@ -1078,7 +1398,8 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
 
         err_console.print(
             "Run card: none yet. A repository or dataset target is fetched when the "
-            "run starts; its card, and a strict reference's refusal, come then.",
+            "run starts; its card, a strict reference's refusal and the checks of "
+            "its tasks come then, so this dry run checked none of its tasks.",
             markup=False,
             highlight=False,
             soft_wrap=True,
@@ -1103,6 +1424,8 @@ def _print_dry_run(plan: Any, tasks_dir: Path | None) -> None:
         err_text, err_hint = expected_error_parts(refusal)
         print_error(err_text, next_step=err_hint)
         raise typer.Exit(1)
+    # After the plan, the run card and the other refusals.
+    _print_dry_run_gate_errors(gate_errors)
 
 
 def _print_job_matrix_dry_run(plan: Any, job_plan: Any) -> None:
@@ -1110,16 +1433,37 @@ def _print_job_matrix_dry_run(plan: Any, job_plan: Any) -> None:
     model and tasks, its trials, and the rollouts in all."""
     import json as _json
 
-    from benchflow.cli._shared import console
+    from benchflow.cli._errors import expected_error_parts
+    from benchflow.cli._shared import console, print_error
+    from benchflow.errors import MissingCredentialError
 
     root = _job_matrix_root(plan, job_plan)
     jobs: list[dict[str, Any]] = []
     # Refuses a cell with no task, as the run does (review L-A3).
     evaluations = _job_cell_evaluations(plan, job_plan, root)
+    gate_errors: dict[str, BaseException] = {}
     for cell in job_plan.cells:
         evaluation = evaluations[cell.alias]
         config = evaluation._config
         chosen = evaluation._get_task_dirs()
+        # The run's own checks before any sandbox, per cell, and the
+        # ones it makes in the sandbox that a dry run cannot.
+        from benchflow.sandbox.pid1_ptrace import collecting_dry_run_notes
+
+        with collecting_dry_run_notes() as not_checked:
+            cell_failures = _dry_run_checks(evaluation, chosen)
+        cell_errors = _dry_run_error_texts(cell_failures)
+        gate_errors.update(
+            {f"{cell.alias}/{name}": exc for name, exc in cell_failures.items()}
+        )
+        try:
+            _check_dry_run_auth_tokens(config)
+        except MissingCredentialError as exc:
+            # The run refuses this cell's agent before launch: so does its
+            # dry run, naming the variable and never its value.
+            err_text, err_hint = expected_error_parts(exc)
+            print_error(f"{cell.alias}: {err_text}", next_step=err_hint)
+            raise typer.Exit(1) from None
         jobs.append(
             {
                 "cell": cell.alias,
@@ -1141,6 +1485,8 @@ def _print_job_matrix_dry_run(plan: Any, job_plan: Any) -> None:
                 "extra_instruction": config.extra_instruction,
                 "trials": job_plan.attempts,
                 "rollouts": len(chosen) * job_plan.attempts,
+                **({"errors": cell_errors} if cell_errors else {}),
+                **({"unchecked": not_checked} if not_checked else {}),
             }
         )
     out = {
@@ -1152,6 +1498,7 @@ def _print_job_matrix_dry_run(plan: Any, job_plan: Any) -> None:
         "rollouts": sum(job["rollouts"] for job in jobs),
     }
     console.print_json(_json.dumps(out, default=str))
+    _print_dry_run_gate_errors(gate_errors)
 
 
 def _refuse_dataset_bench_version(version_issue: str) -> None:
@@ -1356,8 +1703,9 @@ def eval_run(
                 "this run. Inline JSON/YAML/TOML or an @file ref, e.g. "
                 '--config-override \'{"agent":{"timeout_sec":120}}\'. Varies one '
                 "knob (budget, skills, stopping rules) while the tasks, agent, "
-                "model and environment stay fixed; recorded by content hash for "
-                "replay."
+                "model and environment stay fixed. Recorded without the values "
+                "that may be a credential, which a resume or regrade reads from "
+                "BENCHFLOW_CONFIG_OVERRIDE."
             ),
         ),
     ] = None,
@@ -1494,9 +1842,10 @@ def eval_run(
         typer.Option(
             "--integrity",
             help=(
-                "off, audit (record what the agent did and check it against the "
-                "task) or strict (audit, and the verifier in a separate sandbox). "
-                "The verdict is in integrity/claim_verdict.json; rewards never change."
+                "audit (default: test.sh as written, the agent's actions checked), "
+                "strict (also a hardened separate verifier; "
+                + STRICT_EXPERIMENTAL
+                + ") or off. Verdict: integrity/claim_verdict.json."
             ),
         ),
     ] = None,
@@ -1540,9 +1889,10 @@ def eval_run(
         typer.Option(
             "--max-cost-usd",
             help=(
-                "Job budget in USD, checked between starts, so a job can pass it "
-                "by about one rollout's cost; at the cap running rollouts are "
-                "cancelled. With --trials, each repeat has its own cap"
+                "Job budget in USD, judges' included, checked between starts, so "
+                "a job can pass it by about one rollout's cost; at the cap running "
+                "rollouts are cancelled. An unknown cost stops new starts. Per "
+                "repeat with --trials"
             ),
         ),
     ] = None,
@@ -1668,8 +2018,8 @@ def eval_run(
         list[str] | None,
         typer.Option(
             "--fail-on",
-            help="Exit 1 when any trial ended this way: timeout, error, verifier-error "
-            "(comma-separated or repeated)",
+            help="Exit 1 when any trial ended this way: timeout, error, verifier-error, "
+            "effort-mismatch (comma-separated or repeated)",
         ),
     ] = None,
     summary_out: Annotated[
@@ -1694,7 +2044,22 @@ def eval_run(
         int | None,
         typer.Option(
             "--sandbox-setup-timeout",
-            help="Timeout (seconds) for sandbox user setup inside the environment (default: 120; keeps the file's value with --config).",
+            help=(
+                "Seconds for sandbox setup before the agent; wins over "
+                "sandbox.setup_timeout_sec (default: that, else 600)"
+            ),
+        ),
+    ] = None,
+    verifier_setup_timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--verifier-setup-timeout",
+            min=61,
+            help=(
+                "Seconds each command that sets up the verifier may take "
+                "(hardening, a separate verifier's runtime), more than 60; "
+                "wins over the task's verifier.setup_timeout_sec (default: 180)"
+            ),
         ),
     ] = None,
     context_root: Annotated[
@@ -1899,7 +2264,9 @@ def eval_run(
     publish_hf: Annotated[
         str | None,
         typer.Option(
-            "--publish-hf", help="Upload final eval artifacts to a HF dataset repo"
+            "--publish-hf",
+            help="Upload final eval artifacts to a HF dataset repo "
+            "(a new one is private unless --public)",
         ),
     ] = None,
     hf_prefix: Annotated[
@@ -1915,9 +2282,20 @@ def eval_run(
     publish_bucket: Annotated[
         str | None,
         typer.Option(
-            "--publish-bucket", help="Upload final eval artifacts to a HF bucket"
+            "--publish-bucket",
+            help="Upload final eval artifacts to a HF bucket "
+            "(a new one is private unless --public)",
         ),
     ] = None,
+    public: Annotated[
+        bool,
+        typer.Option(
+            "--public",
+            help="Make a new HF repo or bucket public: what --publish-hf and "
+            "--publish-bucket create on Hugging Face is private unless this is "
+            "given. A repo or bucket that already exists is not changed",
+        ),
+    ] = False,
     eval_results_model: Annotated[
         str | None,
         typer.Option(
@@ -1943,7 +2321,8 @@ def eval_run(
             "--matrix",
             help=(
                 "YAML file whose models: maps each alias to a model, or to "
-                "{model, agent, agent_env}; {agent: oracle} for a control "
+                "{model, agent, agent_env, reasoning_effort, harness}; "
+                "{agent: oracle} for a control "
                 "(docs/audit/compare-runs.md#choose-the-metric)"
             ),
         ),
@@ -2117,6 +2496,7 @@ def eval_run(
         sandbox_user=sandbox_user,
         sandbox_user_explicit=sandbox_user_explicit,
         sandbox_setup_timeout=sandbox_setup_timeout,
+        verifier_setup_timeout=verifier_setup_timeout,
         context_root=context_root,
         base_image_override=base_image_override,
         separate_verifier=separate_verifier,
@@ -2166,6 +2546,7 @@ def eval_run(
         hf_prefix=hf_prefix,
         hf_public_read_check=hf_public_read_check,
         publish_bucket=publish_bucket,
+        public=public,
         eval_results_model=eval_results_model,
         eval_results_dataset=eval_results_dataset,
         eval_results_task=eval_results_task,
@@ -2238,10 +2619,22 @@ def eval_run(
         # so once (_run_config_file_eval warns for a --config file without an
         # agent once its overrides are applied; a matrix names its models).
         _warn_default_agent(effective_model(plan.eval_agent, model, plan.parsed_env))
+    if matrix is not None and not config_file and not source_env:
+        # Each --matrix entry's agent, refused as the run's own is in its plan
+        # (a script: on a backend without its runner): before the key check,
+        # the job and its Daytona reaper, in the dry run alike.
+        for pre_agent, _model, _env in _preflight_targets(plan):
+            _exit_on_script_backend(pre_agent, plan.eval_environment)
     # A dry run prints the plan and starts nothing, so it needs no sandbox or
-    # credential checks.
+    # credential checks. It refuses what the run refuses before its job, an
+    # agent/model pair no route serves (it accepted one the run refused).
     if dry_run:
-        _print_dry_run(plan, tasks_dir)
+        if not config_file and not source_env:
+            from benchflow.cli.doctor import refuse_unroutable
+
+            for pre_agent, pre_model, pre_env in _preflight_targets(plan):
+                refuse_unroutable(pre_agent, pre_model, pre_env)
+        _print_dry_run(plan, tasks_dir, source_ref=source_ref, source_path=source_path)
         return
     # Hosted source envs own their harness; a run config names its sandbox in
     # the YAML, so _run_config_file_eval checks it once the file is loaded.
@@ -2472,6 +2865,22 @@ def _exit_no_tasks() -> NoReturn:
 # Batch and config-file execution helpers
 
 
+def _exit_on_script_backend(agent: str | None, environment: str) -> None:
+    """Exit 2 with ``refuse_script_backend``'s text and next step, as bench
+    run's flags are refused (build_eval_plan): a ``script:`` agent on a
+    backend without its runner, before any provider call."""
+    from benchflow.agents.scripts import ScriptBackendError, refuse_script_backend
+    from benchflow.cli._errors import expected_error_parts
+    from benchflow.cli._shared import print_error
+
+    try:
+        refuse_script_backend(agent, environment)
+    except ScriptBackendError as exc:
+        err_text, err_hint = expected_error_parts(exc)
+        print_error(err_text, next_step=err_hint)
+        raise typer.Exit(exc.exit_code) from None
+
+
 def _preflight_targets(
     plan: "EvalPlan",
 ) -> list[tuple[str, str | None, dict[str, str]]]:
@@ -2540,8 +2949,20 @@ def _finish_run(req: "EvalCreateRequest", result: Any, job_dir: Path | None) -> 
         "timeout": sum(r.error_category == "timeout" for r in results.values()),
         "error": int(getattr(result, "errored", 0) or 0),
         "verifier-error": int(getattr(result, "verifier_errored", 0) or 0),
+        "effort-mismatch": _effort_mismatches(results.values()),
     }
     failed: list[str] = []
+    if counts["effort-mismatch"]:
+        # Never silent, --effort or not: each trial's warnings say
+        # what differed.
+        err_console.print(
+            f"[yellow]Warning:[/yellow] {counts['effort-mismatch']} trial(s) ran at "
+            "another reasoning effort than the one asked for or applied "
+            "(result.json's effort.matches is false); --fail-on effort-mismatch "
+            "fails the run",
+            highlight=False,
+            soft_wrap=True,
+        )
     # The gate's denominator is the plan: a task a budget or usage limit kept
     # from running counts as not passed, so a job capped after 3 of 10 tasks
     # cannot pass --fail-under 0.95 on 3/3 (DF-p3-eval-runner-5).
@@ -2577,6 +2998,24 @@ def _finish_run(req: "EvalCreateRequest", result: Any, job_dir: Path | None) -> 
     _write_summary_out(req, result, job_dir, failed=failed, exit_code=exit_code)
     if exit_code:
         raise typer.Exit(exit_code)
+
+
+def _effort_mismatches(results: Any) -> int:
+    """The trials whose result.json says the effort that ran is not the one
+    asked for (``effort.matches`` false)."""
+    count = 0
+    for trial in results:
+        folder = getattr(trial, "rollout_dir", None)
+        if folder is None:
+            continue
+        try:
+            effort = json.loads((Path(folder) / "result.json").read_text()).get(
+                "effort"
+            )
+        except (OSError, ValueError, AttributeError):
+            continue
+        count += isinstance(effort, dict) and effort.get("matches") is False
+    return count
 
 
 def _write_summary_out(
@@ -2748,19 +3187,9 @@ def run_batch_eval(
         # the summary names the login, the window and the reset.
         result = stopped_run_result(e)
     except EmptyTaskSelectionError as e:
-        err_text, err_hint = expected_error_parts(e)
-        print_error(
-            err_text,
-            next_step=err_hint
-            or "`bench check <folder>` lists the tasks it finds; check "
-            "--include and --exclude against their names",
-        )
-        raise typer.Exit(
-            # An --include or --exclude that names no task is a usage
-            # mistake (dogfood p5-8); a selection the tasks themselves
-            # emptied is not.
-            2 if "matches no task" in err_text else 1
-        ) from None
+        err_text, next_step, code = _empty_selection_refusal(e)
+        print_error(err_text, next_step=next_step)
+        raise typer.Exit(code) from None
     except ResumeMismatchError as e:
         # 2 for a named job that ran with other settings: nothing ran.
         err_text, err_hint = expected_error_parts(e)
@@ -2794,6 +3223,78 @@ def _warn_default_agent(model: str | None) -> None:
     )
 
 
+#: EvaluationConfig fields a ``--config`` run sets from the file and the
+#: command line together (merged, resolved or checked against each other in
+#: :func:`_config_file_evaluation`), or that the file's task source names:
+#: :func:`_flag_settings` leaves them to it.
+_FILE_AND_FLAG_FIELDS = frozenset(
+    {
+        "agent",
+        "agent_defaulted",
+        "model",
+        "model_given",
+        "agent_env",
+        "reviewer",
+        "sandbox_user",
+        "agent_idle_timeout",
+        "agent_idle_timeout_given",
+        "usage_tracking",
+        "include_tasks",
+        "exclude_tasks",
+        "config_override",
+        "separate_verifier_include",
+        "source_provenance",
+        "dataset_name",
+        "dataset_version",
+        "dataset_task_digests",
+    }
+)
+
+
+def _flag_settings(plan: "EvalPlan") -> dict[str, Any]:
+    """The run settings the command line gives a ``--config`` run, as the
+    task-folder path gives them (:meth:`EvalPlan.eval_config_settings`).
+
+    Each EvaluationConfig argument (but the model and
+    :data:`_FILE_AND_FLAG_FIELDS`) whose value from this command line
+    differs from its value with no flag, or whose flag was given: the
+    builder the flags already go through, not a list kept here, so a flag
+    added there reaches a ``--config`` run too (a run config dropped
+    --token-budget, --skill-mode, --loop-strategy and --context-root). The
+    values are as the flags give them; EvaluationConfig checks them with the
+    file's own (:func:`_config_file_evaluation`).
+    """
+    from dataclasses import MISSING, fields
+
+    from benchflow.eval_plan import EvalCreateRequest, build_eval_plan
+
+    req = plan.request
+    bare = build_eval_plan(
+        EvalCreateRequest(
+            config_file=req.config_file,
+            agent=req.agent,
+            model=req.model,
+            agent_env=dict(req.agent_env),
+        )
+    )
+    flagged, baseline = plan.eval_config_settings(), bare.eval_config_settings()
+
+    def default(f: Any) -> Any:
+        if f.default is not MISSING:
+            return f.default
+        return f.default_factory() if f.default_factory is not MISSING else MISSING
+
+    given = {
+        f.name for f in fields(EvalCreateRequest) if getattr(req, f.name) != default(f)
+    }
+    return {
+        name: value
+        for name, value in flagged.items()
+        if name not in _FILE_AND_FLAG_FIELDS
+        and (value != baseline.get(name) or name in given)
+    }
+
+
 def _config_file_evaluation(
     plan: "EvalPlan", *, cell: int | None = None, jobs_dir: Path | None = None
 ) -> "Evaluation":
@@ -2804,6 +3305,7 @@ def _config_file_evaluation(
     ``cell`` picks one job of a YAML job config of several, and ``jobs_dir``
     is that trial's folder (``<jobs dir>/<cell>/trial-NN``).
     """
+    import dataclasses
     import subprocess
 
     import yaml
@@ -2818,6 +3320,7 @@ def _config_file_evaluation(
     from benchflow.errors import UserError
     from benchflow.evaluation import (
         Evaluation,
+        check_warm_pool,
         default_oracle_note,
         effective_model,
     )
@@ -2837,7 +3340,11 @@ def _config_file_evaluation(
         # The default-agent warning waits until --agent/--model are applied:
         # from_yaml would name an agent or model this run does not use.
         j = Evaluation.from_yaml(
-            config_file, preflight=False, warn_default_agent=False, job_cell=cell
+            config_file,
+            preflight=False,
+            warn_default_agent=False,
+            job_cell=cell,
+            overrides_follow=True,
         )
         if req.agent is not None:
             j._config.agent = plan.eval_agent
@@ -2849,17 +3356,11 @@ def _config_file_evaluation(
         # An --agent on the command line names the agent even when the YAML
         # does not, so the job must not record it as defaulted.
         j._config.agent_defaulted = j._config.agent_defaulted and req.agent is None
-        if req.reasoning_effort is not None:
-            j._config.reasoning_effort = plan.eval_reasoning_effort
         if req.harness is not None:
             from benchflow.native_harness.harnesses import check_harness
 
             check_harness(plan.eval_harness, [j._config.agent])
             j._config.harness = plan.eval_harness
-        if req.environment is not None:
-            j._config.environment = plan.eval_environment
-        if req.codex_apps_policy is not None:
-            j._config.codex_apps_policy = req.codex_apps_policy
         # Every value a string, as EvaluationConfig makes them: this
         # assignment skips its __post_init__.
         from benchflow._utils.env_values import normalize_env_mapping
@@ -2875,6 +3376,26 @@ def _config_file_evaluation(
         named = req.model or (j._config.model if j._config.model_given else None)
         j._config.model = effective_model(j._config.agent, named, j._config.agent_env)
         j._config.model_given = bool(named) and j._config.model is not None
+        # Every other flag wins over the file's key as the task-folder path
+        # sets it, checked and normalized with the file's values (a flag that
+        # needs one of them, --retry-from-checkpoint beside the file's
+        # checkpoints, is no error); the settings below need the file's too.
+        flags = _flag_settings(plan)
+        if flags.get(
+            "retry_from_checkpoint", j._config.retry_from_checkpoint
+        ) and not flags.get("checkpoints", j._config.checkpoints):
+            raise ValueError(
+                "--retry-from-checkpoint needs checkpoints (--checkpoints, or "
+                "checkpoints: in the run config): a trial can only be retried "
+                "from a checkpoint it kept"
+            )
+        combined = dataclasses.replace(j._config, **flags)
+        for field in dataclasses.fields(combined):
+            value = getattr(combined, field.name)
+            if field.name not in _FILE_AND_FLAG_FIELDS and value != getattr(
+                j._config, field.name
+            ):
+                setattr(j._config, field.name, value)
         if req.reviewer is not None:
             from benchflow.review.options import ReviewerConfig
 
@@ -2919,61 +3440,14 @@ def _config_file_evaluation(
             if j._config.job_mode == "sequential-shared":
                 j.learner_store = j._load_or_init_learner_store()
         j._restart_changed = req.restart_changed
-        if req.concurrency is not None:
-            j._config.concurrency = req.concurrency
-        if req.build_concurrency is not None:
-            j._config.build_concurrency = req.build_concurrency
-        if req.warm_pool is not None:
-            j._config.warm_pool = req.warm_pool
-        if req.fresh_install:
-            j._config.fresh_install = True
-        if req.allow_cloud_metadata:
-            j._config.allow_cloud_metadata = True
-        if req.prompt is not None:
-            j._config.prompts = plan.eval_prompts
-        if req.timeout_multiplier is not None:
-            j._config.timeout_multiplier = req.timeout_multiplier
-        if req.sandbox_setup_timeout is not None:
-            j._config.sandbox_setup_timeout = req.sandbox_setup_timeout
-        if req.base_image_override is not None:
-            j._config.base_image_override = req.base_image_override
-        # Never a run of more tasks, or fewer retries, than the line asks for
-        # (review A, pre-existing): flags win over the file.
-        if req.n_tasks is not None:
-            j._config.n_tasks = req.n_tasks
-        if req.sample_seed is not None:
-            j._config.sample_seed = req.sample_seed
+        # Never fewer retries than the line asks for (review A): flags win.
         if req.retry_attempts is not None:
             j._config.retry.max_retries = req.retry_attempts
-        # Each flag on its own, only when given (review B2-M2): a policy
-        # flag keeps the file's retention, and the reverse.
-        if req.checkpoints:
-            j._config.checkpoints = req.checkpoints
-        if req.checkpoint_keep is not None:
-            j._config.checkpoint_keep = req.checkpoint_keep
-        if req.freeze_workspace:
-            j._config.freeze_workspace = True
         if req.keep_sandbox is not None:
             from benchflow.rollout._keep_sandbox import check_backend, normalize_policy
 
             j._config.keep_sandbox = normalize_policy(req.keep_sandbox)
             check_backend(j._config.keep_sandbox, j._config.environment)
-        if req.accept_deviations is not None:
-            j._config.accept_deviations = req.accept_deviations
-        if req.retry_from_checkpoint:
-            j._config.retry_from_checkpoint = req.retry_from_checkpoint
-        if req.retry_prompt is not None:
-            j._config.retry_prompt = req.retry_prompt
-        if req.retry_resume_session:
-            j._config.retry_resume_session = True
-        if j._config.retry_from_checkpoint and not j._config.checkpoints:
-            raise ValueError(
-                "--retry-from-checkpoint needs checkpoints (--checkpoints, or "
-                "checkpoints: in the run config): a trial can only be retried "
-                "from a checkpoint it kept"
-            )
-        if req.extra_instruction is not None:
-            j._config.extra_instruction = req.extra_instruction
         if req.agent_idle_timeout is not None:
             j._config.agent_idle_timeout = plan.eval_agent_idle_timeout
             j._config.agent_idle_timeout_given = True
@@ -2998,11 +3472,6 @@ def _config_file_evaluation(
             j._config.include_tasks = plan.include_tasks
         if plan.exclude_tasks:
             j._config.exclude_tasks = plan.exclude_tasks
-        # CLI --environment-manifest wins over whatever the YAML carried
-        # so an operator can override a baseline manifest without editing
-        # the config file.
-        if plan.eval_env_manifest is not None:
-            j._config.environment_manifest = plan.eval_env_manifest
         # CLI --config / --config-override (the C axis) likewise wins over the
         # YAML's own config_override. Parsed + allowlist-validated at plan time
         # and applied per task at the rollout layer. Without this the
@@ -3029,29 +3498,9 @@ def _config_file_evaluation(
                     else {}
                 ),
             }
-        # --integrity likewise wins over the YAML. It is a safety flag, so a
-        # silent drop fails in the unsafe direction: the operator believes the
-        # trials are audited and they are not.
-        if req.integrity is not None:
-            from benchflow.integrity.trial import normalize_integrity_mode
-
-            j._config.integrity = normalize_integrity_mode(req.integrity)
-        # --verifier-sandbox too: it only ever moves verifiers into the
-        # separate sandbox, and a dropped flag would fail in the unsafe direction.
-        if req.verifier_sandbox is not None:
-            from benchflow.task.verifier_sandbox import normalize_verifier_sandbox
-
-            j._config.verifier_sandbox = normalize_verifier_sandbox(
-                req.verifier_sandbox
-            )
-        if plan.eval_budget is not None:
-            j._config.budget = plan.eval_budget
-        # --separate-verifier only ever strengthens isolation, so it wins over
-        # a config file that leaves it off.
+        # --separate-verifier-include adds to the file's paths.
         from benchflow.task.verifier_sandbox import normalize_include_paths
 
-        if plan.request.separate_verifier:
-            j._config.separate_verifier = True
         if plan.request.separate_verifier_include:
             j._config.separate_verifier_include = normalize_include_paths(
                 [
@@ -3059,6 +3508,21 @@ def _config_file_evaluation(
                     *plan.request.separate_verifier_include,
                 ]
             )
+        # Once the flags are on: the file's warm_pool: 6 runs with
+        # --concurrency 8 (review of PR #136).
+        check_warm_pool(
+            j._config.warm_pool,
+            j._config.concurrency,
+            path=config_file,
+            flags=[
+                key
+                for key, value in (
+                    ("warm_pool", req.warm_pool),
+                    ("concurrency", req.concurrency),
+                )
+                if value is not None
+            ],
+        )
     except (subprocess.CalledProcessError, GitCloneError) as e:
         if not isinstance(e, UserError):
             raise
@@ -3091,6 +3555,9 @@ def _config_file_evaluation(
             "https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md",
         )
         raise typer.Exit(1) from None
+    # The file's agent and sandbox, the command line's applied: refused as
+    # bench run's flags are (build_eval_plan), before any provider call.
+    _exit_on_script_backend(j._config.agent, j._config.environment)
     return j
 
 
@@ -3164,6 +3631,16 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         from benchflow.cli.eval_artifacts import postprocess_eval_artifacts
         from benchflow.evaluation import EmptyTaskSelectionError, ResumeMismatchError
 
+        if plan.request.publish_hf or plan.request.publish_bucket:
+            # The job folder the publish packages, before the run is spent.
+            from benchflow._utils.raw_evidence import raw_evidence_refusal
+
+            jobs = Path(j._jobs_dir)
+            named = j._job_name if j._auto_job_name is None else None
+            refusal = raw_evidence_refusal(jobs / named if named else jobs)
+            if refusal is not None:
+                print_error(refusal, next_step="pass another --jobs-dir or --job-name")
+                raise typer.Exit(1)
         started = time.time()
         try:
             result = run_until_terminated(j.run(), announce=False)
@@ -3283,6 +3760,58 @@ def _job_cell_evaluations(
     return out
 
 
+def _shown_argv(words: list[str]) -> list[str]:
+    """A typed command line as a printed one may show it, word by word:
+    --config-override's value with ``<withheld>`` in place of each value
+    its record withholds, as the 0.8 note shows it (``echoed_override``),
+    and ``<hidden>`` for the value of a flag named like a credential by the
+    shared rule, which reads the value too (``credential_names.entry_kind``:
+    ``--tests-pass 12`` is shown, ``--tests-pass=<password>`` is not), unless
+    it takes and holds a variable's name. Either flag form (``--flag v``,
+    ``--flag=v``); a flag with no value after it (the last word, or one before
+    another flag) is judged by its name (``name_kind``)."""
+    from benchflow._utils.config_override import echoed_override
+    from benchflow._utils.credential_names import entry_kind, name_kind
+    from benchflow.cli.verbs import _NAME_FLAGS, _is_variable_name
+
+    def shown(flag: str, value: str) -> str:
+        if flag == "--config-override":
+            return echoed_override(value) or "<hidden>"
+        if flag in _NAME_FLAGS and _is_variable_name(value):
+            return value
+        return "<hidden>"
+
+    def hides(flag: str, value: str | None) -> bool:
+        if flag == "--config-override":
+            return True
+        if not flag.startswith("--"):
+            return False
+        kind = name_kind(flag[2:]) if value is None else entry_kind(flag[2:], value)
+        return kind == "credential"
+
+    out: list[str] = []
+    pending: str | None = None  # a flag whose value is the next word
+    for index, word in enumerate(words):
+        if pending is not None and not word.startswith("-"):
+            out.append(shown(pending, word))
+            pending = None
+            continue
+        pending = None
+        flag, sep, value = word.partition("=")
+        # The flag's value: after its first ``=``, or the next word.
+        held = value if sep else None
+        following = words[index + 1] if index + 1 < len(words) else "-"
+        if not sep and not following.startswith("-"):
+            held = following
+        if hides(flag, held):
+            if sep:
+                out.append(f"{flag}={shown(flag, value)}")
+                continue
+            pending = flag
+        out.append(word)
+    return out
+
+
 def _rerun_command(plan: "EvalPlan") -> str:
     """The command that resumes a whole job matrix: this run's own line
     (finished trial jobs are kept), secrets hidden; or ``bench run --config``
@@ -3295,7 +3824,8 @@ def _rerun_command(plan: "EvalPlan") -> str:
     if words:
         secrets = [s for s in _secrets(list(words)) if s]
         shown = [
-            "<hidden>" if any(s in word for s in secrets) else word for word in words
+            "<hidden>" if any(s in word for s in secrets) else word
+            for word in _shown_argv(list(words))
         ]
         return "bench " + shlex.join(shown)
     req = plan.request
@@ -3491,7 +4021,13 @@ def eval_list(
         if memory:
             cells.append("—" if row.memory is None else f"{row.memory:.1%}")
         table.add_row(*cells)
-    console.print(table)
+    if any(row.unscored_note for row in rows):
+        # A Summary cell's note stays on its number's line.
+        from benchflow.cli._shared import print_at_natural_width
+
+        print_at_natural_width(table, console)
+    else:
+        console.print(table)
     for row in rows:
         if row.next_step:
             console.print(
@@ -3515,6 +4051,187 @@ def _tokens_row(tasks: list[Any]) -> str | None:
     )
     sources = sorted({t.usage_source for t in known if t.usage_source})
     return text + (f" (from {', '.join(sources)})" if sources else "")
+
+
+def _cost_figures(job: Any, root: Path) -> dict[str, Any] | None:
+    """summary.json's two cost figures for what ``root`` holds.
+
+    ``kept``: the usage totals (``total_cost_usd`` and the rest of
+    :func:`usage_summary`, with ``judge_totals``) over ``bf.load_job``'s
+    trials, one per task as its attempt picker takes them, and for a task
+    with none its stopped attempt (:func:`kept_usage_rows`, summary.json's
+    rule). ``spend``: ``spend_all_attempts`` read as summary.json reads it
+    (``evaluation._spend_all_attempts``) from each Evaluation job folder
+    ``root`` holds, so an attempt the run retried or stopped counts whether
+    or not any trial kept it, and None when no folder's is known
+    (``parts_unknown`` counts the folders whose records could not be read).
+    A trial read from inside its job (``root`` a trial folder) or from a
+    folder of independent rollouts counts its own attempts, and no other
+    task's. None when nothing under ``root`` ran.
+    """
+    from benchflow._utils.evaluation_results import (
+        attempt_spend_summary,
+        judge_usage_summary,
+        kept_usage_rows,
+        merge_spends,
+        usage_summary,
+    )
+    from benchflow._utils.result_paths import (
+        holds_attempts,
+        interrupted_trial_results,
+        is_interrupted_result,
+        is_set_aside,
+    )
+    from benchflow.evaluation import EVALUATION_RECORD, _spend_all_attempts
+
+    root = root.resolve()
+    trials = [(t, t.path.resolve()) for t in getattr(job, "trials", None) or []]
+
+    def within(folder: Path) -> bool:
+        return folder == root or root in folder.parents
+
+    jobs = {
+        path.parent
+        for path in root.rglob(EVALUATION_RECORD)
+        if not is_set_aside(path, root)
+    }
+    jobs |= {
+        path.parent
+        for _, path in trials
+        if holds_attempts(path.parent) and within(path.parent)
+    }
+    kept: dict[str, dict[str, Any]] = {}
+    stopped = 0
+    for folder in sorted(jobs):
+        own = {str(path): t.raw for t, path in trials if path.parent == folder}
+        rows = kept_usage_rows(own, interrupted_trial_results(folder))
+        stopped += len(rows) - len(own)
+        kept.update({f"{folder}/{key}": row for key, row in rows.items()})
+    loose = [
+        t
+        for t, path in trials
+        if not any(folder in jobs for folder in (path.parent, *path.parents))
+    ]
+    kept.update({f"loose/{i}": t.raw for i, t in enumerate(loose)})
+    stopped += sum(1 for t in loose if is_interrupted_result(t.raw))
+    spends = [
+        _spend_all_attempts(folder)["spend_all_attempts"] for folder in sorted(jobs)
+    ]
+    if loose:
+        attempts = [a.raw for t in loose for a in t.attempts]
+        spends.append(attempt_spend_summary(attempts)["spend_all_attempts"])
+    spend = merge_spends(spends)
+    unreadable = sum(1 for block in spends if not isinstance(block, dict))
+    ran = (spend or {}).get("attempts") or (spend or {}).get("stopped_attempts")
+    if not kept and not unreadable and not ran:
+        return None
+    return {
+        "kept": {**usage_summary(kept), **judge_usage_summary(kept)},
+        "trials": len(kept),
+        "stopped": stopped,
+        "spend": spend,
+        "unreadable": unreadable,
+    }
+
+
+def _cost_rows(figures: dict[str, Any]) -> list[tuple[str, str]]:
+    """``bench eval metrics``'s two Cost rows: the kept trials' cost
+    (``total_cost_usd``) and every attempt's spend (``spend_all_attempts``).
+    A part nothing priced, or a job folder whose records can't be read, is
+    unknown with its count, never $0 or none."""
+
+    def usd(value: float) -> str:
+        return f"${value:.4f}"
+
+    def plural(n: int, word: str) -> str:
+        return f"{n} {word}{'' if n == 1 else 's'}"
+
+    kept, trials = figures["kept"], figures["trials"]
+    agents = sum((kept.get("usage_sources") or {}).values()) + (
+        kept.get("trials_without_usage") or 0
+    )
+    unknown = kept.get("trials_without_cost") or 0
+    total = kept.get("total_cost_usd")
+    if not trials:
+        cost = "none: no attempt was kept yet (retried or stopped)"
+    elif not agents:
+        cost = "none: control runs call no model"
+    elif total is None:
+        cost = f"unknown: none of {plural(agents, 'trial')} reported a cost"
+    else:
+        cost = f"{usd(total)} over {plural(agents - unknown, 'trial')}"
+        sources = kept.get("cost_sources") or {}
+        if sources:
+            cost += " (" + ", ".join(f"{k} {n}" for k, n in sources.items()) + ")"
+        if unknown:
+            cost += f"; {unknown} unknown (no cost reported)"
+        partial = kept.get("trials_cost_incomplete") or 0
+        if partial:
+            cost += (
+                f"; {plural(partial, 'trial')} counted only some of their calls, "
+                "so the total is a floor"
+            )
+    if figures["stopped"]:
+        cost += (
+            f"; {plural(figures['stopped'], 'trial')} stopped before an attempt "
+            "was kept"
+        )
+    judges = kept.get("judge_totals") or {}
+    if judges.get("trials"):
+        judged = judges.get("total_cost_usd")
+        cost += (
+            "; their judges "
+            + ("unknown" if judged is None else usd(judged))
+            + " (judge_totals)"
+        )
+
+    spend, unreadable = figures["spend"], figures["unreadable"]
+    lost = (
+        f"{plural(unreadable, 'job folder')} whose attempt records could not be "
+        "read (its summary.json says spend_all_attempts null)"
+    )
+    if spend is None:
+        total_spend = f"unknown: {lost}"
+    else:
+        attempts = spend.get("attempts") or 0
+        spent = spend.get("cost_usd")
+        missing = spend.get("attempts_without_cost") or 0
+        nothing = spend.get("stopped_attempts_without_usage") or 0
+        unpriced = spend.get("stopped_attempts_without_cost") or 0
+        stopped = spend.get("stopped_attempts") or 0
+        unknown_attempts = missing + nothing + unpriced
+        if spent is None and (unknown_attempts or spend.get("tokens") is not None):
+            total_spend = (
+                f"unknown: none of {plural(max(unknown_attempts, 1), 'attempt')} "
+                "reported a cost"
+            )
+            if stopped:
+                total_spend += f"; {plural(stopped, 'stopped attempt')}"
+        elif spent is None:
+            total_spend = "none: no attempt called a model"
+        else:
+            over = [plural(attempts, "attempt")] if attempts or not stopped else []
+            if stopped:
+                over.append(plural(stopped, "stopped attempt"))
+            total_spend = (
+                f"{usd(spent)} over {' and '.join(over)}, retries and judges included"
+            )
+            if missing + unpriced:
+                total_spend += f"; {missing + unpriced} unknown (no cost reported)"
+            partial = spend.get("attempts_cost_incomplete") or 0
+            if partial:
+                total_spend += (
+                    f"; {plural(partial, 'attempt')} counted only some of their "
+                    "calls, so the total is a floor"
+                )
+        if nothing:
+            total_spend += f", {nothing} stopped with nothing recorded"
+        if unreadable:
+            total_spend += f"; plus unknown spend in {lost}"
+    return [
+        ("Cost (total_cost_usd)", f"kept trials: {cost}"),
+        ("Spend (spend_all_attempts)", f"every attempt: {total_spend}"),
+    ]
 
 
 def _model_calls_row(job: Any) -> str | None:
@@ -3883,6 +4600,20 @@ def eval_metrics(
             soft_wrap=True,
         )
 
+    costs = _cost_figures(job, Path(jobs_dir))
+    if costs is not None:
+        # summary.json's names: every attempt's spend_all_attempts (null when
+        # the job's records can't be read, as there) beside the kept trials'
+        # total_cost_usd.
+        summary["spend_all_attempts"] = costs["spend"]
+        # Every kept total by summary.json's rule (a stopped attempt counts
+        # only while its task has no kept one), tokens and means included.
+        from benchflow._utils.evaluation_results import USAGE_SUMMARY_KEYS
+
+        summary.update(
+            {k: v for k, v in costs["kept"].items() if k in USAGE_SUMMARY_KEYS}
+        )
+
     if output_json:
         # Plain echo: Rich wraps long lines, which breaks strings in the JSON.
         typer.echo(json.dumps(summary, indent=2))
@@ -3907,6 +4638,7 @@ def eval_metrics(
     # mean_reward rule) when some trial is unscored (otherwise they are the same numbers).
     scored = summary["passed"] + summary["failed"]
     both = summary["total"] > scored and not several
+    score_note = ""
     if several and settings is not None:
         table.add_row(
             "Score",
@@ -3916,10 +4648,16 @@ def eval_metrics(
     else:
         if settings is not None and settings.rows:
             table.add_row("Setting", escape(settings.rows[0].setting.label()))
+        from benchflow._utils.scoring import unscored_note
+
+        # Beside the score, the trials it counts as 0 without scoring them
+        # (benchflow.score.v1).
+        score_note = unscored_note(rule.errors, rule.score_excl_errors)
         table.add_row(
             "Score",
             f"[bold]{summary['score']}[/bold] ({summary['passed']} of "
-            f"{summary['total']} trials); {escape(rule.interval_text())}",
+            f"{summary['total']} trials{'; ' + score_note if score_note else ''}); "
+            f"{escape(rule.interval_text())}",
         )
         table.add_row(
             "Scoring rule",
@@ -3981,11 +4719,11 @@ def eval_metrics(
     tokens = _tokens_row(m.tasks)
     if tokens:
         table.add_row("Tokens", escape(tokens))
-        if job is not None:
-            # report.md's cost line: says which figures are estimates.
-            from benchflow.jobs import _cost_line
-
-            table.add_row("Cost", escape(_cost_line(job.trials).removeprefix("Cost: ")))
+    if costs is not None:
+        # Two figures, never one ambiguous number: what the kept
+        # trials cost, and what the job spent on every attempt.
+        for label, value in _cost_rows(costs):
+            table.add_row(escape(label), escape(value))
     calls = _model_calls_row(job)
     if calls:
         table.add_row("Model calls", escape(calls))
@@ -3994,19 +4732,34 @@ def eval_metrics(
         for label, value in rates.rows():
             table.add_row(escape(label), escape(value))
 
-    console.print(table)
+    if score_note:
+        # The Score row's note stays on the number's line.
+        from benchflow.cli._shared import print_at_natural_width
+
+        print_at_natural_width(table, console)
+    else:
+        console.print(table)
     if summary["by_agent"]:
         split = Table(title="By agent")
         for column in ("Agent", "Model", "Trials", "Passed", "Score"):
             split.add_column(column)
-        for row in summary["by_agent"]:
+        from benchflow._utils.scoring import unscored_note
+
+        # summary["by_agent"] is one row per group, in its order.
+        for row, group in zip(summary["by_agent"], groups, strict=True):
             rate = row["pass_rate"]
+            figures = group.denominators
+            note = unscored_note(
+                figures.attempted - figures.scored, figures.pass_rate_scored
+            )
             split.add_row(
                 escape(str(row["agent"])),
                 escape(str(row["model"] or "no model")),
                 str(row["trials"]),
                 str(row["passed"]),
-                "n/a" if rate is None else f"{rate:.1%}",
+                "n/a"
+                if rate is None
+                else f"{rate:.1%}" + (f" ({note})" if note else ""),
             )
         console.print(split)
     if several and settings is not None:

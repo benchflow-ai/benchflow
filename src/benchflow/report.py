@@ -56,7 +56,7 @@ def _trials(job_dirs: list[Path]) -> tuple[list[dict[str, Any]], list[str], Any]
     """The job's trials as ``bf.load_job`` counts them, the planned tasks
     with no trial, and the trials split by setting.
 
-    A retried task is one trial, its best attempt, and a trial passes by the
+    A retried task is one trial, the attempt the run kept, and a trial passes by the
     scoring rule's verdict, the one the job's summary uses (a rubric review
     that passes its gates passes below a reward of 1), so the report and
     ``summary.json`` agree.
@@ -93,6 +93,10 @@ def _trials(job_dirs: list[Path]) -> tuple[list[dict[str, Any]], list[str], Any]
                     "scored": trial.assessment == "scored",
                     "tokens": trial.total_tokens or 0,
                     "cost": trial.cost_usd,
+                    # Priced from some of its calls only: the cost is a floor.
+                    # An unknown cost is no floor (it is not in the total).
+                    "partial": trial.cost_usd is not None
+                    and trial.result.usage_incomplete is True,
                     "seconds": trial.duration_sec,
                     "dir": trial.path if trial.path.is_dir() else None,
                     "outcome": _read_outcome(trial.path),
@@ -178,7 +182,7 @@ def _totals(rows: list[dict[str, Any]], figures: Any) -> str:
     """``P passed (S; interval), mean reward M (...), U with no score``."""
     rewards = [row["reward"] or 0.0 for row in rows]
     return (
-        f"{figures.passed} passed ({figures.score or 0.0:.1%}; "
+        f"{figures.passed} passed ({figures.score or 0.0:.1%}{figures.note_part()}; "
         f"{figures.interval_text()}), mean reward "
         f"{sum(rewards) / len(rewards):.2f} (a trial with no score counts 0), "
         f"{sum(not row['scored'] for row in rows)} with no score"
@@ -304,6 +308,7 @@ def build_report(job_dirs: list[Path], title: str) -> str:
     lines += _outcome_lines(rows)
     tokens = sum(row["tokens"] for row in rows)
     costs = [row["cost"] for row in rows if isinstance(row["cost"], int | float)]
+    partial = sum(1 for row in rows if row["partial"])
     seconds = [
         row["seconds"] for row in rows if isinstance(row["seconds"], int | float)
     ]
@@ -312,6 +317,12 @@ def build_report(job_dirs: list[Path], title: str) -> str:
         (
             f"Tokens {tokens:,}; cost "
             + (f"${sum(costs):.2f}" if costs else "not known (no price for the model)")
+            + (
+                f" ({partial} trial(s) counted only some of their calls, so the "
+                "total is a floor)"
+                if costs and partial
+                else ""
+            )
             if tokens
             else "No model tokens were used"
         )

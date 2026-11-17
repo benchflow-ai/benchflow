@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.errors import (
+    SESSION_FACTORY_ERROR_HEADER,
+    AgentTurnFailedError,
+    UsageLimitError,
+)
 from benchflow.agents.launch_env import agent_launch_env
 from benchflow.diagnostics import (
     AgentPromptTimeoutDiagnostic,
@@ -212,7 +216,9 @@ async def execute_prompts_session_factory(
     incremental tool-call stream to watch go idle); the agent's own subprocess
     timeout is the inner backstop. On budget exhaustion this raises
     ``AgentPromptTimeoutError`` (the kernel drive site already handles it),
-    carrying the steps captured so far.
+    carrying the steps captured so far. A turn that fails for any other reason
+    raises ``AgentTurnFailedError`` with those steps: an agent error, not a
+    timeout.
     """
     for i, prompt in enumerate(prompts):
         logger.info("Prompt %d/%d: %s...", i + 1, len(prompts), (prompt or "")[:80])
@@ -242,22 +248,17 @@ async def execute_prompts_session_factory(
         except Exception as exc:
             # Non-timeout failure (provider crash, one-shot CLI non-zero exit,
             # ValueError, …): the turn did NOT complete, so the snapshot is
-            # PARTIAL. Preserve the steps captured so far by wrapping in the
-            # kernel's trajectory-carrying timeout error with
-            # terminal_trajectory_complete=False, so Rollout.execute()'s existing
-            # AgentPromptTimeoutError handler commits the partial trajectory +
-            # flag instead of the bare exception bubbling up and discarding it
-            # (#825). ``Exception`` (not ``BaseException``) deliberately lets
-            # asyncio ``CancelledError`` propagate untouched.
-            diagnostic = AgentPromptTimeoutDiagnostic(
-                timeout_sec=float(timeout),
-                n_tool_calls=0,
-                terminal_trajectory_complete=False,
-            )
-            raise AgentPromptTimeoutError(
-                f"session-factory prompt failed before completion: {exc}",
+            # PARTIAL. The typed carrier keeps the steps captured so far for
+            # Rollout.execute() to commit (#825), and says what happened: the
+            # agent's turn failed. It was wrapped in AgentPromptTimeoutError,
+            # which recorded a provider's 503 as the agent running out of
+            # time: graded 0 and never retried. ``Exception`` (not
+            # ``BaseException``) deliberately lets asyncio ``CancelledError``
+            # propagate untouched.
+            raise AgentTurnFailedError(
+                f"{SESSION_FACTORY_ERROR_HEADER}: prompt failed before "
+                f"completion: {exc}",
                 trajectory=list(session.steps),
-                diagnostic=diagnostic,
                 executed_prompts=prompts[: i + 1],
             ) from exc
         logger.info("  → %s", stop_reason)

@@ -287,7 +287,7 @@ async def test_activation_is_decided_before_ownership_changes(
     monkeypatch.setattr(lockdown, "_restore_workspace_state", mutate)
     monkeypatch.setattr(lockdown, "_freeze_workspace", mutate)
     await lockdown.harden_before_verify(
-        Sandbox(), config, None, "/app", restore_workspace=restore
+        Sandbox(), config, None, "/app", restore_workspace=restore, integrity="strict"
     )
     assert config.config.verifier.env["BASH_ENV"] == permitted
     assert observations == [False]

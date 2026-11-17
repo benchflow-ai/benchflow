@@ -4,7 +4,6 @@ import json
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +19,7 @@ from benchflow.sandbox.lockdown import (
 from benchflow.sdk import SDK
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
 from tests._receipt_fakes import receipt_aware
+from tests._system_bin import system_bin
 
 # _validate_locked_path
 
@@ -621,19 +621,8 @@ class TestSandboxDaemonGuard:
         """/usr/bin and /bin as links, without the host's own package
         managers and iptables: the guard would find those first (a Linux CI
         runner has apt-get) and use them instead of the test's fakes."""
-        sys_bin = tmp_path / "sysbin"
-        if sys_bin.exists():
-            return sys_bin
-        sys_bin.mkdir()
         hidden = {"apk", "apt", "apt-get", "dnf", "microdnf", "yum"}
-        for d in ("/usr/bin", "/bin"):
-            for src in Path(d).iterdir():
-                name = src.name
-                if name in hidden or name.startswith(("iptables", "ip6tables")):
-                    continue
-                if not (sys_bin / name).is_symlink():
-                    (sys_bin / name).symlink_to(src)
-        return sys_bin
+        return system_bin(tmp_path, hidden, ("iptables", "ip6tables"))
 
     def _sh(self, tmp_path, cmd, bin_dir, shell="bash", broken=""):
         env = {
@@ -924,7 +913,10 @@ class TestDinDDaemonGuard:
         from benchflow.sandbox.lockdown import SandboxDaemonGuardError
 
         strat = self._strategy("BF dind-daemon-guard status=1\n")
-        with pytest.raises(SandboxDaemonGuardError, match="sandbox startup refused"):
+        with pytest.raises(
+            SandboxDaemonGuardError,
+            match=r"the compose containers could not be kept away from Daytona's root toolbox daemon on the DinD VM",
+        ):
             await strat._guard_daemon_from_containers()
 
     def test_daytona_says_where_its_daemon_is_guarded(self):

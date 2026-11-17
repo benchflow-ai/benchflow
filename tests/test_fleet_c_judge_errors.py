@@ -22,7 +22,9 @@ async def test_judge_failure_hides_sdk_locals_and_message(
 
     for provider in ("anthropic", "openai", "google"):
         monkeypatch.setattr(llm, f"_call_{provider}", fail)
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"^Configured LLM judge call failed after retries$"
+    ) as caught:
         await llm.call_judge(
             model, "judge prompt", retries=1, env={"ANTHROPIC_API_KEY": planted}
         )

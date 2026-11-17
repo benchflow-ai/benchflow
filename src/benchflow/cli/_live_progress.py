@@ -261,6 +261,8 @@ class LiveEvalProgress:
 
         self._tokens = 0
         self._cost = 0.0
+        # Trials in _cost priced from some of their calls only: a floor.
+        self._cost_partial = 0
         self._completed = 0  # finished this run (for telemetry coverage)
         self._covered = 0  # finished with trusted token telemetry
 
@@ -307,12 +309,17 @@ class LiveEvalProgress:
             self._completed += 1
             tokens = getattr(result, "total_tokens", None)
             cost = getattr(result, "cost_usd", None)
-            if is_trusted_usage_source(getattr(result, "usage_source", None)):
+            if is_trusted_usage_source(
+                getattr(result, "usage_source", None),
+                getattr(result, "usage_source_legacy", None),
+            ):
                 self._covered += 1
                 if tokens:
                     self._tokens += int(tokens)
                 if cost:
                     self._cost += float(cost)
+                    if getattr(result, "usage_incomplete", None) is True:
+                        self._cost_partial += 1
 
     # -- context manager ----------------------------------------------------
 
@@ -349,6 +356,7 @@ class LiveEvalProgress:
             passed, failed, errored = self._passed, self._failed, self._errored
             running = dict(self._running)
             tokens, cost = self._tokens, self._cost
+            cost_partial = self._cost_partial
             completed, covered = self._completed, self._covered
             elapsed = time.monotonic() - self._run_start
             stopped = self._stopped
@@ -489,7 +497,12 @@ class LiveEvalProgress:
             "dim",
         )
         footer.append(" · ")
-        footer.append(f"${cost:.2f}" if covered else "$—", style="dim")
+        footer.append(
+            (f"${cost:.2f}" + ("+ (floor)" if cost_partial else ""))
+            if covered
+            else "$—",
+            style="dim",
+        )
         if completed:
             footer.append(f" · telemetry {covered / completed * 100:.0f}%", style="dim")
         parts.append(footer)

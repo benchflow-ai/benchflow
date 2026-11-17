@@ -20,8 +20,8 @@ A budget caps a job. At the cap no new trial starts; whether running trials stop
 
 | Flag | Caps | Checked | At the cap, running trials |
 |---|---|---|---|
-| `--max-cost-usd` | dollars, over trials that report a cost, retries included | between starts, from finished trials | are cancelled |
-| `--max-tokens` | total tokens of finished trials, retries included | between starts, from finished trials | stop as with `--max-cost-usd` |
+| `--max-cost-usd` | dollars, the agents' and the LLM judges', retries included | between starts, from finished trials | are cancelled |
+| `--max-tokens` | total tokens of finished trials, the judges' and retries included | between starts, from finished trials | stop as with `--max-cost-usd` |
 | `--max-sandbox-seconds` | trial wall-clock seconds | as trials run, running ones included | are cancelled |
 | `--max-rollouts` | trials started, retries included | at each start | finish |
 
@@ -49,9 +49,9 @@ Outcomes: 1 scored (1 passed, 0 failed), 0 unscored, 0 errored
 Cost:      $0.04, 1,801,711 tokens
 ```
 
-> **An unpriced model has no dollar cap.** `--max-cost-usd` needs a model BenchFlow has a price for; for one it doesn't, such as MiMo or a model newer than its price table, cap tokens instead.
+> **An unpriced model has no dollar cap.** `--max-cost-usd` needs a cost for every trial. When a trial reached its agent (or its judge) and finished without one, because no price table has the model or nothing counted the tokens, no new trial starts, running ones finish, and the reason names the model and the agent: `cost unknown for mimo-v2.6-flash/opencode (its tokens have no list price): --max-cost-usd can't be enforced`. A resume stops at the same trial. For such a model, cap tokens or sandbox seconds instead. A trial that never reached its agent (its sandbox failed to start) and a control run (oracle, nop, a script) spent no model money and don't stop the job.
 
-The run's cost line counts the trials' own model use, and so do these caps as far as we checked: a rubric reviewer's tokens aren't in it ([Rubric review](../tasks/rubric-review.md#choose-the-reviewer) says where they're recorded), and neither are your sandbox provider's charges. With `--trials`, each repeat is a job with its own cap.
+The caps count the trials' own model use and their LLM judges' (`judge_usage` in each trial's `result.json`); `summary.json`'s `spend_all_attempts` has the same figures. A rubric reviewer's tokens aren't in them ([Rubric review](../tasks/rubric-review.md#choose-the-reviewer) says where they're recorded), and neither are your sandbox provider's charges. A timed-out trial counts the tokens recovered from the agent's own logs. With `--trials`, each repeat is a job with its own cap.
 
 The cap counts everything the job has spent, across resumes. Rerunning the same command resumes the job, and with the same cap it stops at once, though the summary above says to resume:
 

@@ -96,13 +96,17 @@ async def test_refusal_uses_the_contract_instead_of_the_score(
         )
     if optional:
         assert (rewards, error) == ({"reward": float(score)}, None)
+        # Since an optional program gets no refusal stub: the check
+        # finds nothing to run, and its folder is still left out.
+        assert record["refused_programs_run"] == []
+        assert "/opt/probe/bin" in [d["folder"] for d in record["dropped"]]
     else:
         assert rewards == {"reward": 0.0}
         assert error is None
         assert "detect-invalid" in caplog.text
-    assert record["refused_programs_run"] == [
-        {"program": "detect-invalid", "folder": "/opt/probe/bin"}
-    ]
+        assert record["refused_programs_run"] == [
+            {"program": "detect-invalid", "folder": "/opt/probe/bin"}
+        ]
 
 
 @pytest.mark.asyncio

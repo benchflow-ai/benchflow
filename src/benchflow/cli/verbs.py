@@ -371,7 +371,7 @@ _ENV_PAIR = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
 # The flag that takes a variable name, not KEY=VALUE, and the name as people
 # write one: a lower-case or mixed word may be a token (ghp_..., hex), and a
 # bare word under --agent-env is a value typed without its name.
-_NAME_FLAGS = frozenset({"--allow-task-env"})
+_NAME_FLAGS = frozenset({"--allow-task-env", "--source-env-api-key-var"})
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 
 
@@ -402,28 +402,57 @@ _SECRET_FLAG = re.compile(
 def _shown(flag: str | None, value: str) -> str:
     """A typed value as a note shows it: never a value that may be a secret.
 
-    An environment value becomes a reference to its variable (``K="$K"``),
-    any other ``KEY=VALUE`` shows its key and hides its value
+    ``--config-override`` shows the override with ``<withheld>`` in place
+    of each value its record would not store, a file reference as given,
+    and ``'<hidden>'`` when it does not parse
+    (:func:`benchflow._utils.config_override.echoed_override`). An
+    environment entry shows as typed when a job's record would keep its
+    value (``MY_FLAG=on``) and otherwise as a reference to its variable
+    (``K="$K"``); any other ``KEY=VALUE`` shows its key and hides its value
     (``KEY='<hidden>'``), and a bare variable name (``--allow-task-env
-    HF_TOKEN``) shows as typed (review L1); a
-    flag named like a credential, or an address with a login, a query or a
-    fragment in it (a private raw link's ``?token=``, a presigned URL's
-    signature), shows ``'<hidden>'``; anything else is quoted for the shell.
+    HF_TOKEN``) shows as typed (review L1). A flag named like a credential
+    (by the override record's rule too,
+    :func:`benchflow._utils.credential_names.name_kind`: ``--api-key``,
+    ``--password``; not a setting such as ``--max-tokens``), a value shaped
+    like a secret, and an address with a login, a query or a fragment in it
+    (a private raw link's ``?token=``, a presigned URL's signature) show
+    ``'<hidden>'``; anything else is quoted for the shell.
     """
+    from benchflow._utils.config_override import echoed_override
+    from benchflow._utils.config_redaction import _should_compare_env_entry
+    from benchflow._utils.credential_names import entry_kind
+    from benchflow.trajectories.types import redact_trajectory_text
+
+    if flag == "--config-override":
+        override = echoed_override(value)
+        return "'<hidden>'" if override is None else shlex.quote(override)
     pair = _ENV_PAIR.match(value)
     env_flag = flag in ("--agent-env", "--env") or (
         flag is not None and flag.endswith("-env") and flag != "--source-env"
     )
     if pair and env_flag:
-        return f'{pair.group(1)}="${pair.group(1)}"'
+        name = pair.group(1)
+        if redact_trajectory_text(name) != name:
+            return "'<hidden>'"
+        if _should_compare_env_entry(name, value[pair.end() :]):
+            # The rule for what a job's record keeps of agent_env.
+            return shlex.quote(value)
+        return f'{name}="${name}"'
     if pair:
         # A KEY=VALUE given anywhere (--allow-task-env NAME=secret,
         # --source-env-arg n=5): the key, never the value.
         return f"{pair.group(1)}='<hidden>'"
-    if env_flag and not (flag in _NAME_FLAGS and _is_variable_name(value)):
+    if flag in _NAME_FLAGS and _is_variable_name(value):
+        return shlex.quote(value)
+    if env_flag:
         # Not a variable name: maybe a value typed where a name belongs.
         return "'<hidden>'"
-    if flag is not None and _SECRET_FLAG.search(flag.lstrip("-").replace("-", "")):
+    if flag is not None and (
+        _SECRET_FLAG.search(flag.lstrip("-").replace("-", ""))
+        or entry_kind(flag.lstrip("-"), value) == "credential"
+    ):
+        return "'<hidden>'"
+    if redact_trajectory_text(value) != value:
         return "'<hidden>'"
     if "://" in value:
         rest = value.split("://", 1)[1]

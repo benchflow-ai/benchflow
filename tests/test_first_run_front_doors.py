@@ -203,7 +203,9 @@ CASES = [
     ),
     ("prebuilt-image-no-timeout", {}, None, True, True),
     ("dockerfile-task", {"frontmatter": "", "dockerfile": True}, None, True, True),
-    # Authoring issues: bench check lists them, the task runs (review D-1).
+    # A CTRF report that never reaches /logs/verifier/ctrf.json in a task
+    # that grades itself: a warning at check and at the run, which goes
+    # ahead (F2b, 2026-11-16 12:27Z).
     (
         "ctrf-path",
         {
@@ -212,8 +214,9 @@ CASES = [
         },
         None,
         True,
-        False,
+        True,
     ),
+    # Authoring issues: bench check lists them, the task runs (review D-1).
     (
         "placeholder-oracle",
         {"oracle": "#!/bin/bash\n# [REPLACE: the solution]\n"},

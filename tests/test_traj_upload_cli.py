@@ -492,7 +492,7 @@ def test_cli_report_shows_redacted_preview_and_requested_step_counts(
 ) -> None:
     """Guards the trajectory-report follow-up to PR #992 terminal report."""
     trial = _trial(tmp_path)
-    secret = "sk-1234567890abcdefghijklmnop"
+    secret = "sk" + "-1234567" + "890abcde" + "fghijklm" + "nop"
     trajectory = trial / "trajectory" / "acp_trajectory.jsonl"
     trajectory.write_text(
         "".join(

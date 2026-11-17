@@ -106,6 +106,7 @@ async def _trial(tmp_path, agent: str):
             agent=agent,
             environment="docker",
             sandbox_user="agent",
+            integrity="strict",  # The turn-end kill and quiesce are strict's.
             jobs_dir=tmp_path / "jobs",
             job_name="collect-git",
             rollout_name=f"collect-git__{name}",
@@ -135,10 +136,12 @@ async def test_a_main_hook_runs_the_agents_git_config_only_as_the_agent(tmp_path
     assert "+changed" in (artifacts / "agent.patch").read_text()
     assert (hook.get("user"), hook.get("return_code")) == ("agent", 0), hook
     # Each process the fsmonitor left was stopped before the capture, and
-    # the kill before grading found none.
+    # nothing beyond that quiesce was killed (strict grades in a separate
+    # sandbox, so no kill runs here before grading).
     runs = len((artifacts / "fsmonitor-uid").read_text().split())
     record = json.loads((trial / "kill-before-grading.json").read_text())
-    assert record["quiesce_killed"] >= runs and record["killed"] == 0, record
+    assert record["quiesce_killed"] >= runs, record
+    assert record["killed_total"] == record["quiesce_killed"], record
 
 
 @pytest.mark.deterministic

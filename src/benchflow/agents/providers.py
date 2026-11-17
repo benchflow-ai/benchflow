@@ -179,6 +179,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         url_params={"resource": "AZURE_RESOURCE"},
         endpoints={
             "openai-responses": "https://{resource}.openai.azure.com/openai/v1",
+            # Claude Code, through the proxy's messages bridge to the
+            # deployment's chat route; the proxy wiring replaces the URL.
+            "anthropic-messages": "",
         },
     ),
     "azure-foundry-anthropic": ProviderConfig(

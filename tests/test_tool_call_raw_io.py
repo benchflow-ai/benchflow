@@ -344,3 +344,76 @@ def test_payload_renders_codex_2_shell_output_behind_a_terminal_block(
         "echo hello-from-mock; echo second-line; exit 3",
         "hello-from-mock\nsecond-line\n[exit code 3]",
     ]
+
+
+# a downstream harness patch: pi-acp 0.0.34's bash output, as its dist/index.js sends it.
+def _pi_bash(*chunks: tuple[str, str]) -> list[dict]:
+    """A Pi bash call: its opening tool_call, then one update per (status, data)
+    chunk of ``_meta.terminal_output``; the last one carries the exit."""
+    updates = [
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "pi_1",
+            "title": "ls /root",
+            "kind": "execute",
+            "status": "pending",
+            "content": [{"type": "terminal", "terminalId": "pi_1"}],
+            "_meta": {"terminal_info": {"terminal_id": "pi_1", "cwd": "/root"}},
+        }
+    ]
+    for index, (status, data) in enumerate(chunks):
+        meta: dict = {"terminal_output": {"terminal_id": "pi_1", "data": data}}
+        if index == len(chunks) - 1:
+            meta["terminal_exit"] = {
+                "terminal_id": "pi_1",
+                "exit_code": 1,
+                "signal": None,
+            }
+        updates.append(
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "pi_1",
+                "status": status,
+                "_meta": meta,
+            }
+        )
+    return updates
+
+
+def test_pi_acp_bash_output_is_kept() -> None:
+    """pi-acp sends a bash call's output only as ``_meta.terminal_output``
+    chunks; the record kept ``formatted_output: ""``."""
+    session = _session_from(
+        _pi_bash(
+            ("in_progress", "line-1\n"),
+            ("in_progress", "line-2\n"),
+            ("failed", "\nCommand exited with code 1"),
+        )
+    )
+    record = session.tool_calls[0]
+    assert record.raw_output == {
+        "formatted_output": "line-1\nline-2\n\nCommand exited with code 1",
+        "exit_code": 1,
+    }
+    traj = _events_to_trajectory(session.events)[0]
+    assert traj["raw_output"]["formatted_output"].startswith("line-1\nline-2\n")
+
+
+def test_pi_acp_bash_output_past_the_window_is_pis_last_window() -> None:
+    """Past Pi's 2000-line window the snapshot drops lines at its head and
+    pi-acp sends it whole: it replaces the text; the final notice is appended."""
+    first = "".join(f"l{n}\n" for n in range(2000))
+    second = "".join(f"l{n}\n" for n in range(1, 2001))
+    notice = "\n[Showing lines 2-2001 of 2001. Full output: /tmp/pi-bash.log]"
+    session = ACPSession("s")
+    updates = _pi_bash(
+        ("in_progress", first), ("in_progress", second), ("failed", notice)
+    )
+    session.handle_update(updates[0])
+    session.handle_update(updates[1])
+    record = session.tool_calls[0]
+    before = record.recorded_state()
+    session.handle_update(updates[2])
+    assert record.recorded_state() != before
+    session.handle_update(updates[3])
+    assert record.raw_output == {"formatted_output": second + notice, "exit_code": 1}

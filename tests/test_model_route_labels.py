@@ -132,7 +132,8 @@ def test_own_route_without_a_report_has_usage_source_none(own_route_agent):
     rollout._finalize_usage_metrics()
     rollout._finalize_usage_metrics()  # idempotent, as teardown may repeat it
     assert rollout._usage_metrics["usage_source"] == "none"
-    assert rollout._usage_metrics["total_tokens"] == 0
+    # Nothing counted: unknown, not 0.
+    assert rollout._usage_metrics["total_tokens"] is None
 
 
 def test_mixed_scene_keeps_the_agent_report_beside_metered_totals(own_route_agent):
@@ -221,7 +222,14 @@ def test_result_metadata_names_the_agent_route(source, endpoint):
         environment="daytona", status="unavailable", usage_source=source
     )
     assert metadata["endpoint_kind"] == endpoint
-    assert metadata["usage_source"] == source
+    # The result vocabulary names where the tokens came from (the agent's
+    # end-of-turn report, or nothing); the old label stays beside it, and
+    # still says the count is the agent's own.
+    assert metadata["usage_source"] == {"agent-reported": "end_of_turn"}.get(source)
+    assert metadata["usage_source_legacy"] == source
+    assert not is_trusted_usage_source(
+        metadata["usage_source"], metadata["usage_source_legacy"]
+    )
 
 
 @pytest.mark.parametrize("source", ["agent-reported", "none"])

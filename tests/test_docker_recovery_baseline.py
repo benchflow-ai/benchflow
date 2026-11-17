@@ -144,7 +144,9 @@ async def test_async_started_callback_runs_before_upload(tmp_path):
         order.append("upload")
 
     runtime = SimpleNamespace(start=start, upload_file=upload)
-    await _start_env_and_upload(runtime, tmp_path, {}, on_started=capture)
+    await _start_env_and_upload(
+        runtime, tmp_path, {}, task=None, agent=None, on_started=capture
+    )
     assert order == ["start", "baseline", "upload"]
 
 
@@ -208,7 +210,9 @@ async def test_pristine_identity_survives_real_hardening_but_rejects_override_dr
     (task_path / "task.toml").write_text("[verifier]\nworkspace_recovery=true\n")
     parent = Task(task_path)
     baseline = await capture_baseline(env, "task-digest", config_digest(parent.config))
-    await harden_before_verify(_make_env(), parent, None, workspace="/app")
+    await harden_before_verify(
+        _make_env(), parent, None, workspace="/app", integrity="strict"
+    )
     assert config_digest(parent.config) != baseline.effective_config_digest
     pristine = Task(task_path)
     validate_task_identity(baseline, "task-digest", pristine.config)

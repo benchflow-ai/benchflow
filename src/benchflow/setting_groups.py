@@ -57,6 +57,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from benchflow._utils.config import EFFORT_LEVELS
+
 if TYPE_CHECKING:
     from benchflow.jobs import Trial
     from benchflow.scoring import Score
@@ -81,7 +83,7 @@ UNKNOWN = "unknown"
 NOT_SENT = "not sent"
 #: The order rows are listed in: this ladder, then any other effort, then
 #: unknown.
-EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+EFFORT_ORDER = EFFORT_LEVELS
 
 #: The fields :meth:`Settings.differ` names, in order, with their words.
 FIELDS: tuple[tuple[str, str], ...] = (
@@ -252,11 +254,17 @@ class SettingRow:
     def line(self) -> str:
         """The row in one line, as every reader prints it: its setting, its
         score by the rule with the interval, and its error-excluding figure."""
+        from benchflow._utils.scoring import unscored_note
+
         figures = self.score()
+        # Beside the score, what it does with unscored trials.
+        note = unscored_note(figures.errors, figures.score_excl_errors)
         text = (
             f"{self.setting.label()}: {figures.passed} of {figures.n} "
             f"trial{'' if figures.n == 1 else 's'} passed "
-            f"({figures.score or 0.0:.1%}; {figures.interval_text()}), "
+            f"({figures.score or 0.0:.1%}"
+            + (f"; {note}" if note else "")
+            + f"; {figures.interval_text()}), "
             f"{figures.n_tasks} task{'' if figures.n_tasks == 1 else 's'}"
         )
         excl = figures.excl_errors_text()
@@ -329,7 +337,7 @@ def _sent(trial: Trial) -> dict[str, Any] | None:
         return None
     from benchflow.run_checks import read_calls, settings_sent
 
-    return settings_sent(read_calls(trial.path), trial.model)
+    return settings_sent(read_calls(trial.path), trial.model, trial.agent)
 
 
 def _versions(trial: Trial) -> tuple[str, ...] | None:

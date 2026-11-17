@@ -315,7 +315,14 @@ def test_migrate_minimal_frontmatter_round_trips_equivalent_config(
 
     text = result.task_md.read_text()
     frontmatter = yaml.safe_load(text.split("---\n")[1])
-    assert sorted(frontmatter) == ["agent", "metadata", "sandbox", "schema_version"]
+    assert sorted(frontmatter) == [
+        "agent",
+        "benchflow",
+        "metadata",
+        "sandbox",
+        "schema_version",
+    ]
+    assert frontmatter["benchflow"] == {"converted_from": "task.toml"}
     assert "judge" not in text
     document = TaskDocument.from_path(result.task_md)
     assert document.config.model_dump() == (

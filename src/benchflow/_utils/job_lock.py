@@ -5,8 +5,20 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+#: How long a refused lock is tried again before the job counts as held. A
+#: child process forked while the lock was held (a ``subprocess.run`` of
+#: ``docker info`` from the event loop's executor thread, say) keeps a copy
+#: of the lock's open file until it execs. Releasing unlocks that open file
+#: first (:meth:`JobLock.close`), which frees the lock whatever copies of it
+#: a child holds; the retry covers a holder that died between its fork and
+#: its unlock, whose child still holds the lock for the milliseconds until
+#: its exec. It blocks the caller (an unnamed run trying a held job, too),
+#: so it is short.
+TRANSIENT_HOLD_SEC = 0.05
 
 
 class JobLockedError(RuntimeError):
@@ -35,8 +47,16 @@ class JobLock:
         # enumerating the jobs directory. It still has one permanent inode.
         guard = path.parent.parent / f".evaluation-lock-{name}"
         fd = os.open(guard, os.O_CREAT | os.O_RDWR, 0o600)
+        deadline = time.monotonic() + TRANSIENT_HOLD_SEC
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.005)
         except BlockingIOError:
             os.close(fd)
             raise JobLockedError(
@@ -48,7 +68,16 @@ class JobLock:
         return cls(path, fd)
 
     def close(self) -> None:
-        os.close(self.fd)
+        import fcntl
+
+        # flock belongs to the open file, which a child forked meanwhile
+        # shares until its exec: unlock it, or closing this fd alone leaves
+        # the job locked while that child lives.
+        try:
+            with contextlib.suppress(OSError):
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
 
     def release(self) -> None:
         try:

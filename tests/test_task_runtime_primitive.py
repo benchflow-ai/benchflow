@@ -77,6 +77,10 @@ class _FakeSandbox:
 
 
 class _FakeVerifier:
+    # Reports its close as a real verifier does (F34: a close that did
+    # not report is a check that did not run).
+    outputs_closed = True
+
     def __init__(self, sandbox: _FakeSandbox, rollout_paths: Any) -> None:
         self.sandbox = sandbox
         self.rollout_paths = rollout_paths

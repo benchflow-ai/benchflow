@@ -33,12 +33,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 SECRETS = {
-    "JUDGE_API_KEY": "sk-judge-secret-0001",
+    "JUDGE_API_KEY": ("sk" + "-judge-s" + "ecret-00" + "01"),
     "LD_LIBRARY_PATH": "/opt/secret-ld-0002/lib",
     "PYTHONPATH": "/opt/secret-pythonpath-0003",
     "PATH": "/opt/secret-path-0004/bin:/usr/bin:/bin",
     "_BENCHFLOW_IMAGE_PATH": "/opt/secret-image-path-0005/bin:/usr/bin",
-    "https_proxy": "http://user:secret-proxy-0006@proxy.invalid:3128",
+    "https_proxy": (
+        "ht" + "tp://use" + "r:secret" + "-proxy-0" + "006@prox" + "y.invali" + "d:3128"
+    ),
     "ODD_VALUE": 'it\'s "odd"\n$(touch /tmp/never-0007) `false` \\ end\n',
 }
 

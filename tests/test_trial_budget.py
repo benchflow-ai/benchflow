@@ -443,6 +443,50 @@ async def test_an_agent_error_on_the_refused_call_is_a_budget_stop_and_graded(
     assert result.error_category == TRIAL_BUDGET
 
 
+class _LaggingServer(_Server):
+    """A proxy whose live capture reaches the refusal record only *lag* s
+    after the agent's error, past its own settle default (*default* s here;
+    the real proxy's is 5 s): a capture behind the log on a loaded host."""
+
+    def __init__(self, lag: float, default: float) -> None:
+        super().__init__(lag)
+        self.default = default
+
+    async def settle_live_capture(self, timeout: float | None = None) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (self.default if timeout is None else timeout)
+        while loop.time() < deadline and self.trial_budget_refusal() is None:
+            await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_a_budget_stop_the_live_capture_reads_late_is_still_a_budget_stop(
+    tmp_path,
+):
+    """The agent's error answers the call the proxy refused, but the live
+    capture reads the refusal only after the proxy's settle default (the rc
+    chain gate, 11-17: the trial ended ``acp_error`` and was retried twice,
+    while its own ``trial_budget`` said ``stopped_by: turns``). The rollout
+    waits for the capture, so the trial is a budget stop: graded, never
+    retried."""
+    from benchflow.agents.errors import AgentProtocolError
+
+    async def agent(_steps):
+        rollout._usage_runtime = SimpleNamespace(
+            kind="litellm", server=_LaggingServer(lag=1.0, default=0.5)
+        )
+        raise AgentProtocolError(
+            "ACP error -32603: Internal error: API Error: 400 trial_budget_spent"
+        )
+
+    rollout = _budget_rollout(tmp_path, agent)
+    result = await asyncio.wait_for(rollout.run(), timeout=30)
+    rollout.verify.assert_awaited_once()
+    assert result.error_category == TRIAL_BUDGET
+    saved = json.loads((tmp_path / "trial" / "result.json").read_text())
+    assert saved["trial_budget"]["stopped_by"] == "turns"
+
+
 @pytest.mark.asyncio
 async def test_a_trial_within_its_budget_ends_as_before(tmp_path):
     async def agent(_steps):
@@ -542,6 +586,9 @@ def test_result_json_records_the_budget_what_was_used_and_the_subagents(tmp_path
         rewards={"reward": 0.0},
         started_at=datetime.now(),
         timing={},
+        # A total is the sum of its known parts: 2,000 tokens.
+        n_input_tokens=1200,
+        n_output_tokens=800,
         total_tokens=2000,
         trial_budget=block,
     )

@@ -174,7 +174,11 @@ def test_merged_sequence_refuses_mismatched_logprobs():
 
 
 def test_running_job_yields_rollouts_as_they_finish(tmp_path):
-    """A trainer gets the first rollout while the job is still running."""
+    """A trainer gets the first rollout while the job is still running, once
+    the run has recorded its decision about it, as an Evaluation does after
+    each attempt (an undecided one waits: the run may still rewrite it)."""
+    from benchflow._utils.attempt_decision import FINAL, record_decision
+
     job = tmp_path / "job"
     start_job(job)
     got: list[tuple[str, bool]] = []
@@ -183,6 +187,7 @@ def test_running_job_yields_rollouts_as_they_finish(tmp_path):
         for name in ("t__1", "t__2", "t__3"):
             time.sleep(0.3)
             write_rollout(job, name, calls=TITO_CALLS)
+            record_decision(job / name, FINAL, task="hello", attempt=1)
         time.sleep(0.3)
         finish_job(job)
 

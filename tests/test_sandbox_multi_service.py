@@ -435,7 +435,10 @@ class TestDaytonaDirectFileTransfer:
         strategy._env._sandbox_exec = fake_exec
         strategy._env._sdk_upload_dir = AsyncMock()
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(
+            RuntimeError,
+            match=r"Daytona direct upload_dir destination prep failed: mkdir stdout mkdir denied",
+        ) as exc_info:
             await strategy.upload_dir("/host/skills", "/app/skills")
 
         message = str(exc_info.value)

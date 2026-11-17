@@ -44,12 +44,19 @@ def _transient_reject(error: BaseException, client: Any) -> bool:
 def _apply_patch() -> None:
     try:
         from litellm.llms.openai.openai import OpenAIChatCompletion
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch 'provider_retry': its target moved: {exc}"
+        ) from exc
 
     original = OpenAIChatCompletion.make_openai_chat_completion_request
     if getattr(original, "__benchflow_provider_retry_patch__", False):
         return
+    _require(
+        "provider_retry",
+        original,
+        ("self", "openai_aclient", "data", "timeout", "logging_obj"),
+    )
 
     async def make_openai_chat_completion_request(
         self, openai_aclient, data, timeout, logging_obj
@@ -79,6 +86,27 @@ def _apply_patch() -> None:
         "make_openai_chat_completion_request",
         make_openai_chat_completion_request,
     )
+
+
+def _require(patch: str, target: Any, params: tuple[str, ...]) -> None:
+    """Fail the proxy's start, naming the patch, when LiteLLM moved the
+    target it wraps: a silent no-op would quietly drop what it adds."""
+    import inspect
+
+    try:
+        names = tuple(inspect.signature(target).parameters)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target's signature is "
+            f"unreadable: {exc}"
+        ) from exc
+    missing = [name for name in params if name not in names]
+    if missing:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target "
+            f"{getattr(target, '__qualname__', target)} no longer takes "
+            + ", ".join(missing)
+        )
 
 
 _apply_patch()

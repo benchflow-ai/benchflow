@@ -34,8 +34,10 @@ Runs that captured no events at all (not even the prompt) are not judged: a
 flat-telemetry agent has that shape when healthy (PR #886). Control runs
 (oracle, nop) are never judged.
 
-Used at run time by ``Rollout._maybe_classify_api_error`` and at read time by
-``bf.load_job`` / ``bf.load_trial`` for results written before it existed.
+Used at run time by ``Rollout._maybe_classify_api_error``, by the run for an
+idle timeout it keeps as a trial's result (:func:`diagnose_kept_idle_timeout`),
+and at read time by ``bf.load_job`` / ``bf.load_trial`` for a result that
+records no ending (:func:`diagnose_trial_dir`).
 """
 
 from __future__ import annotations
@@ -364,17 +366,56 @@ def stored_integration_failure(result: Mapping[str, Any]) -> dict[str, Any] | No
 def diagnose_trial_dir(
     trial_dir: str | Path, result: Mapping[str, Any]
 ) -> IntegrationFailure | None:
-    """Read-time detection for a finished trial folder.
+    """Read-time detection for a finished trial folder that records no ending.
 
-    Only trials the scorer would otherwise count are judged: a trial with a
-    stored finding is returned as is by :func:`stored_integration_failure`,
-    and a trial that already failed with an error (other than a timeout) is
-    left to that error. A folder without its trajectory is left alone (a
-    partial copy of a job, not an empty run). Never raises.
+    The writer decides how a trial ended: a result with an ``error_category``
+    is read as written, whatever its trajectory shows (the rollout judges an
+    agent timeout when it writes it, and the run an idle timeout it keeps,
+    :func:`diagnose_kept_idle_timeout`). Only a result with no category is
+    judged here: one written before ``integration_failure_info`` existed, or
+    a trial that ended with no error. A trial with a stored finding is
+    returned as is by :func:`stored_integration_failure`. A folder without
+    its trajectory is left alone (a partial copy of a job, not an empty run).
+    Never raises.
     """
+    if result.get("error_category") is not None:
+        return None
     try:
         return _diagnose_trial_dir(Path(trial_dir), result)
     except Exception:  # the detector must never break reading a job
+        return None
+
+
+def diagnose_kept_idle_timeout(
+    trial_dir: str | Path, result: Mapping[str, Any]
+) -> IntegrationFailure | None:
+    """The run's judgement of an idle timeout it keeps as the trial's result.
+
+    A rollout the run's retry loop owns (``RolloutConfig.owned_by_retry_loop``)
+    leaves an idle timeout unjudged: the loop retries it, and an integration
+    failure is never retried. The attempt the run keeps (its ``final``
+    record, :mod:`benchflow._utils.attempt_decision`) is judged on its
+    recorded trajectory as a wall-clock timeout is when it is written: the
+    finding when the agent did nothing before it went idle, else None. Any
+    other rollout judges its idle timeout when it writes it. Never raises.
+    """
+    if result.get("error_category") != "idle_timeout" or _int(
+        result.get("n_tool_calls")
+    ):
+        return None
+    agent_result = result.get("agent_result")
+    output = (
+        _int(agent_result.get("n_output_tokens"))
+        if isinstance(agent_result, Mapping)
+        else None
+    )
+    if output is None:
+        output = _int(result.get("n_output_tokens"))
+    if output:  # it acted: its trajectory need not be read
+        return None
+    try:
+        return _diagnose_trial_dir(Path(trial_dir), result)
+    except Exception:  # the judgement must never fail a finished trial
         return None
 
 
@@ -382,12 +423,6 @@ def _diagnose_trial_dir(
     trial_dir: Path, result: Mapping[str, Any]
 ) -> IntegrationFailure | None:
     if result.get("purpose") not in (None, "task"):
-        return None
-    if result.get("error") and result.get("error_category") not in (
-        None,
-        "timeout",
-        "idle_timeout",
-    ):
         return None
     if result.get("trajectory_source") not in (None, "acp", "partial_acp"):
         return None

@@ -283,6 +283,7 @@ async def test_the_agents_processes_are_stopped_again_after_its_hooks(
         kill_record.record_kill_before_grading(user, 1)
 
     rollout = _with_agent(_rollout(tmp_path, run), "claude-agent-acp", "agent")
+    rollout._config.integrity = "strict"  # The turn-end kill and quiesce are strict's.
     if not with_hooks:
         rollout._task.config.verifier.collect = []
     rollout._agent_cwd = "/app"

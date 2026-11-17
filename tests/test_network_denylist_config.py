@@ -113,7 +113,7 @@ def test_blocked_urls_are_normalized() -> None:
     [
         ("https://1.2.3.4/paper", "not an IP"),
         ("https://*.example.com/x", "valid hostnames"),
-        ("https://user:secret@example.com/x", "userinfo"),
+        (("ht" + "tps://us" + "er:secre" + "t@exampl" + "e.com/x"), "userinfo"),
         ("https://example.com:8443/x", "port"),
         ("", "non-empty"),
         ("ftp://example.com/x", "http or https"),

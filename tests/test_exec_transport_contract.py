@@ -1165,7 +1165,7 @@ async def test_bash_start_up_names_in_the_image_env_are_refused_at_start(
     if case == "empty-function":
         await _start_up_admission(kind, box, prototype, monkeypatch)
         return
-    with pytest.raises(RuntimeError) as refused:
+    with pytest.raises(RuntimeError, match=r"sets bash start-up names") as refused:
         await _start_up_admission(kind, box, prototype, monkeypatch)
     message = str(refused.value)
     assert "benchflow: " in message and "bash start-up names" in message, message

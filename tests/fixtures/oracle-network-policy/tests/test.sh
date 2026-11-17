@@ -1,6 +1,7 @@
 #!/bin/bash
-# The verifier runs after the oracle's turn: the policy no longer applies, so
-# it reaches the same host the oracle may not.
+# The verifier's network is [verifier] network_mode, else the task's allowlist:
+# public in the test's root and task-user variants (so it reaches the host the
+# oracle may not), unset in its inherited variant (so it is refused there).
 if python3 -c 'import urllib.request; urllib.request.urlopen("https://example.com/", timeout=20).read(64)'; then
   echo "verifier_reached=reached"
 else

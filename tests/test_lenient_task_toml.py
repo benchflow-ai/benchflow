@@ -289,8 +289,13 @@ def test_tasks_check_names_the_unhonoured_key(tmp_path: Path, monkeypatch) -> No
     toml = TOML_EXAMPLE.replace("[verifier]\n", "[verifier]\nfuture_hooks = 1\n")
     assert toml != TOML_EXAMPLE
     d = _task(tmp_path, toml)
-    assert any(
-        "verifier.future_hooks" in w and "refused" in w for w in check_task_warnings(d)
-    )
+    warnings = check_task_warnings(d)
+    assert (
+        "task.toml key verifier.future_hooks: not executed; the run is refused "
+        "while it is set"
+    ) in warnings, warnings
     issues = check_task(d, sandbox_type="docker")
-    assert any("verifier.future_hooks" in i for i in issues)
+    assert issues == [
+        "Unsupported runtime feature: verifier.future_hooks: not executed "
+        "(sandbox=docker)"
+    ], issues

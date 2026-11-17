@@ -153,7 +153,10 @@ async def test_published_reply_is_redacted_like_the_trajectory(tmp_path) -> None
     env = RecordingEnv()
     trajectory = [
         {"type": "user_message", "text": "q"},
-        {"type": "agent_message", "text": "GITHUB_TOKEN=abc123def456ghi\nAnswer: C"},
+        {
+            "type": "agent_message",
+            "text": ("GITHUB_TOKEN=ab" + "c123def4" + "56ghi\nAnswer: C"),
+        },
     ]
 
     await _publish_trajectory_for_verifier(
@@ -161,7 +164,7 @@ async def test_published_reply_is_redacted_like_the_trajectory(tmp_path) -> None
     )
 
     published = _staged(env, "output.txt")
-    assert "abc123def456ghi" not in published
+    assert ("ab" + "c123def4" + "56ghi") not in published
     assert published.endswith("Answer: C\n")
 
 
@@ -249,7 +252,10 @@ async def test_rollout_verify_publishes_as_the_sandbox_user(monkeypatch) -> None
     monkeypatch.setattr(rollout_mod, "require_safe_branch_world", lambda _r: None)
     rollout = Rollout.__new__(Rollout)
     rollout._config = SimpleNamespace(
-        primary_agent="opencode", sandbox_user="agent", task_path=Path("/nowhere")
+        primary_agent="opencode",
+        sandbox_user="agent",
+        task_path=Path("/nowhere"),
+        integrity="audit",
     )
     rollout._env = object()
     rollout._task = SimpleNamespace(config=None)

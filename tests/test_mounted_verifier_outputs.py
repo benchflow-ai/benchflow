@@ -130,6 +130,11 @@ async def test_root_owned_reward_from_a_criteria_runner_is_handed_to_the_host(
         return [p for p in tmp_path.rglob("reward.json") if "verifier" in p.parts]
 
     async def exec_(*args, **kwargs):
+        if (kwargs.get("command") or (args[0] if args else "")).startswith(
+            "chmod go+r -- "
+        ):
+            # Root's read grant before the copy at exit changes nothing here.
+            return MagicMock(exit_code=1, returncode=1)
         result = await runner(*args, **kwargs)
         if "criteria_runner/reward.py" in (kwargs.get("command") or ""):
             for reward in reward_files():
@@ -150,3 +155,51 @@ async def test_root_owned_reward_from_a_criteria_runner_is_handed_to_the_host(
     verifier._sandbox._chown_to_host_user.assert_awaited_once_with(
         "/logs/verifier", recursive=True, service="main"
     )
+
+
+@pytest.mark.asyncio
+async def test_root_reads_a_0600_reward_from_a_criteria_runner_open_before_the_copy(
+    tmp_path,
+):
+    """The rc4 dogfood's 0600 reward (fix 7) on the criteria-runner path: root
+    adds read for group and others to the reward the host cannot open, before
+    the copy at the runner's exit, so the reward is read with no hand-over.
+    Mutant: no read grant before the copy (the reward is lost wherever the
+    hand-over can't run)."""
+    from tests.test_verifier_strategies import _criteria_runner_verifier, _criteria_toml
+
+    verifier, _ = _criteria_runner_verifier(
+        tmp_path,
+        criteria_toml=_criteria_toml("weighted_mean", {"c1": 1.0}),
+        reward_payload={"metrics": {"c1": 1.0}},
+    )
+    verifier._task.config.verifier.user = "root"
+    runner = verifier._sandbox.exec.side_effect
+    grants = []
+
+    def reward_files():
+        return [p for p in tmp_path.rglob("reward.json") if "verifier" in p.parts]
+
+    async def exec_(*args, **kwargs):
+        command = kwargs.get("command") or (args[0] if args else "")
+        if command.startswith("chmod go+r -- "):
+            grants.append((command, kwargs.get("user")))
+            for reward in reward_files():
+                reward.chmod(0o644)
+            return MagicMock(exit_code=0, returncode=0)
+        result = await runner(*args, **kwargs)
+        if "criteria_runner/reward.py" in command:
+            for reward in reward_files():
+                reward.chmod(0o000)
+        return result
+
+    verifier._sandbox.exec = AsyncMock(side_effect=exec_)
+    verifier._sandbox.upload_file = AsyncMock()
+    verifier._sandbox._chown_to_host_user = AsyncMock()
+
+    result = await verifier.verify()
+
+    assert result.rewards["reward"] == 1.0
+    if os.getuid() != 0:
+        assert grants == [("chmod go+r -- /logs/verifier/reward.json", "root")]
+    verifier._sandbox._chown_to_host_user.assert_not_awaited()

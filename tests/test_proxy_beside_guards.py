@@ -141,7 +141,9 @@ async def test_a_guard_refusal_waits_for_the_proxy_and_keeps_it_for_clean_up(
     trial = _trial(tmp_path, monkeypatch)
     refusal = CloudMetadataPowerError("sandbox startup refused: test")
     steps = _Steps(trial, monkeypatch, block_error=refusal)
-    with pytest.raises(CloudMetadataPowerError, match="startup refused"):
+    with pytest.raises(
+        CloudMetadataPowerError, match=r"^sandbox startup refused: test$"
+    ):
         await asyncio.wait_for(_open(trial, entry), timeout=10)
     assert steps.events == ["proxy started", FIREWALL, "metadata block", "proxy ready"]
     assert trial._usage_runtime is steps.runtime

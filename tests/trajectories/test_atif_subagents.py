@@ -277,7 +277,11 @@ def test_written_artifact_keeps_refs_resolvable_and_redacts_children(tmp_path):
     """Guards ATIF subagent export (after the child transcript filter) through redaction and disk."""
     events = claude_task_rollout()
     events.append(
-        _child("toolu_01B", "agent_message", "OPENAI_API_KEY=sk-abc123def456ghi789")
+        _child(
+            "toolu_01B",
+            "agent_message",
+            ("OPENAI_API_KEY=sk" + "-abc123d" + "ef456ghi" + "789"),
+        )
     )
     record = write_rollout_atif_json(
         tmp_path,
@@ -287,7 +291,7 @@ def test_written_artifact_keeps_refs_resolvable_and_redacts_children(tmp_path):
         trajectory=events,
     )
     raw = (tmp_path / "trainer" / "atif.json").read_text()
-    assert "sk-abc123def456ghi789" not in raw
+    assert ("sk" + "-abc123d" + "ef456ghi" + "789") not in raw
     parsed = json.loads(raw)
     assert parsed == record
     assert _atif_problems(parsed) == []

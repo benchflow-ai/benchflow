@@ -36,6 +36,13 @@ class ServiceSpec(BaseModel):
     Used only when ``owns_lifecycle`` is false — the image does not start
     its own services. Mirrors ``benchflow.sandbox.services.ServiceConfig``,
     which this manifest array is designed to replace.
+
+    A declared service cannot run beside a model agent under a restricted
+    network policy (an allowlist, the denylist, the agent's no-network in an
+    online sandbox): it runs in main
+    as root, outside the agent's network rules, and the agent reaches it on
+    localhost, so such a trial is refused before its turn. Run the service
+    as a compose service on an internal network main shares instead.
     """
 
     name: str

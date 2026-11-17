@@ -69,7 +69,11 @@ async def test_step_by_step_clean_up_keeps_its_inputs_on_the_route(monkeypatch):
     )
     monkeypatch.setattr(lockdown, "_build_verifier_env", AsyncMock(return_value={}))
     await lockdown.harden_before_verify(
-        _make_env(execute), _make_task(), sandbox_user=None, workspace=None
+        _make_env(execute),
+        _make_task(),
+        sandbox_user=None,
+        workspace=None,
+        integrity="strict",
     )
     assert seen == [[SYSTEM_PATH, _HOOKS]]
 
@@ -172,6 +176,7 @@ async def test_kept_service_ancestry_check_runs_on_the_root_route(
             _make_task(),
             sandbox_user="agent",
             workspace=str(workspace),
+            integrity="strict",
         )
     assert not Path(marker).exists()
     build.assert_not_awaited()

@@ -3,7 +3,8 @@ records each root ``docker exec`` with its exact user and argv, the root
 processes those execs start, and nothing that ran before it opened or ran
 as another account; ``disallowed`` keeps only programs outside the allowed
 set. With bfx delivered read-only at /.bfx, a trace of bfx's own commands
-names only /.bfx/bfx.
+names only /.bfx/bfx. Other containers' events never push a traced exec
+out, and a trace whose event stream breaks fails.
 
 Skipped without a Docker daemon.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -111,6 +113,55 @@ def test_disallowed_keeps_only_programs_outside_the_allowed_set(box):
     starts = trace.root_starts()
     assert {program(s) for s in disallowed(starts, {"/bin/sleep"})} == {"/usr/bin/env"}
     assert disallowed(starts, {"/bin/sleep", "/usr/bin/env"}) == []
+
+
+def test_a_busy_daemon_does_not_push_exec_records_out(box):
+    """``docker events --since`` replays only the daemon's last
+    256 events, of every container. Read back at the end, it lost the traced
+    exec whenever other containers made more events meanwhile."""
+    name, other = box(), box()
+    with ExecTrace(name) as trace:
+        _dx(name, "/usr/bin/env", "-i", "/bin/sleep", "0.3")
+        # 100 execs elsewhere: 300 events, more than the daemon replays.
+        with ThreadPoolExecutor(4) as pool:
+            list(pool.map(lambda _: _dx(other, "/bin/true"), range(100)))
+    starts = trace.root_starts()
+    assert [s.argv for s in starts if s.source == "exec"] == [
+        ("/usr/bin/env", "-i", "/bin/sleep", "0.3")
+    ]
+    assert {program(s) for s in disallowed(starts, {"/bin/sleep"})} == {"/usr/bin/env"}
+
+
+def test_a_trace_whose_event_stream_ends_early_fails(box):
+    """A trace that cannot show it saw every exec record fails closed."""
+    name = box()
+    with (
+        pytest.raises(RuntimeError, match="never showed the sampler's exit"),
+        ExecTrace(name) as trace,
+    ):
+        trace._events.kill()
+        _dx(name, "/usr/bin/env", "-i", "/bin/sleep", "0.1")
+
+
+def test_an_exec_record_missing_from_the_stream_fails(box, monkeypatch):
+    """An exec seen starting without its exec_create record fails the trace."""
+    name = box()
+    reader = ExecTrace._read_events
+
+    def drop_creates(self):
+        reader(self)
+        self.events[:] = [
+            e
+            for e in self.events
+            if not str(e.get("Action", "")).startswith("exec_create")
+        ]
+
+    monkeypatch.setattr(ExecTrace, "_read_events", drop_creates)
+    with (
+        pytest.raises(RuntimeError, match="without an exec_create record"),
+        ExecTrace(name),
+    ):
+        _dx(name, "/usr/bin/env", "-i", "/bin/sleep", "0.1")
 
 
 def test_a_trace_of_bfx_commands_names_only_bfx(box, tmp_path, monkeypatch):

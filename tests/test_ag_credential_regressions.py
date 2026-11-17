@@ -474,7 +474,7 @@ async def test_shared_verifier_removes_muse_login_after_quiescence(
         task_dir=None,
         config=SimpleNamespace(verifier=SimpleNamespace(env={}, service="main")),
     )
-    await lockdown.harden_before_verify(env, task, "agent")
+    await lockdown.harden_before_verify(env, task, "agent", integrity="strict")
     assert events == ["quiesced", "removed", "verifier"]
     assert not login.exists()
 

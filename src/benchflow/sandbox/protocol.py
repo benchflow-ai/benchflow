@@ -100,6 +100,35 @@ class ExecTimeoutError(RuntimeError):
         self.timeout_sec = timeout_sec
 
 
+#: The statuses an exec answers, instead of raising, when its time limit
+#: ended the command. On Daytona the command runs under the image's
+#: ``timeout``: GNU's exits 124 (137 after ``-k``), BusyBox's kills the
+#: command with SIGTERM, which reads 143. Modal's ``ContainerProcess.wait``
+#: answers -1 once its exec deadline has passed, and 128 + the signal (137
+#: for SIGKILL) when the process was killed.
+TIME_LIMIT_STATUSES = frozenset({124, 137, 143, -1})
+
+
+def ended_by_time_limit(
+    result: object, timeout_sec: float | None, elapsed_sec: float
+) -> bool:
+    """Whether an exec's answer is its own time limit ending the command.
+
+    Docker raises :class:`ExecTimeoutError` when a command runs past its
+    limit. Daytona and Modal answer the same event as a result, with one of
+    :data:`TIME_LIMIT_STATUSES`. A caller that set the limit and records the
+    two differently asks here. A command can also exit with any of those
+    statuses itself, so the status is the limit's only once the whole limit
+    has elapsed: from a command that ended sooner it is the command's own.
+    """
+    return (
+        timeout_sec is not None
+        and timeout_sec > 0
+        and getattr(result, "return_code", None) in TIME_LIMIT_STATUSES
+        and elapsed_sec >= timeout_sec
+    )
+
+
 class SandboxStartupError(RuntimeError):
     """Raised when sandbox creation fails or times out.
 
@@ -151,7 +180,8 @@ class KeptServiceFreezerUnavailable(RuntimeError, UserError):
     """The sandbox cannot hold the services a task keeps (K1-R9-1): raised by
     the freezer probe before agent code runs, and, once identities are
     measured, for a non-root agent that keeps services where the sandbox or
-    its Engine cannot give the freezer."""
+    its Engine cannot give the freezer, or on a sandbox that bind-mounts the
+    trial folders for an agent user with BenchFlow's own uid."""
 
 
 @runtime_checkable

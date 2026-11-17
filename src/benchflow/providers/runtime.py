@@ -106,14 +106,16 @@ def extract_usage(runtime: ProviderRuntime | None) -> dict[str, Any]:
     return _extract_usage(runtime)
 
 
-async def stop_provider_runtime(runtime: ProviderRuntime | None) -> None:
+async def stop_provider_runtime(
+    runtime: ProviderRuntime | None, *, retry_later: bool = False
+) -> None:
     if runtime is None:
         return
     from benchflow.providers.litellm_runtime import (
         stop_litellm_runtime as _stop_litellm_runtime,
     )
 
-    await _stop_litellm_runtime(runtime)
+    await _stop_litellm_runtime(runtime, retry_later=retry_later)
 
 
 def reserve_host_proxy(

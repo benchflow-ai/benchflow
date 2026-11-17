@@ -51,14 +51,10 @@ def test_bedrock_thinking_effort_is_threaded_into_route_params():
 
 
 @pytest.mark.parametrize("requested", ["xhigh", "max"])
-def test_bedrock_effort_clamps_unsupported_to_litellm_ceiling(requested):
-    """Guards PR #739 against #737's unsupported Bedrock effort regression.
-
-    LiteLLM rejects xhigh/max for opus-4-8 with a BadRequestError, so BenchFlow
-    clamps a requested xhigh/max down to the accepted ceiling (`high`) -- a
-    MAX-thinking config runs at the real maximum instead of erroring mid-run,
-    matching the garbage->high default behavior.
-    """
+def test_bedrock_effort_is_sent_as_asked_on_claude_4_8(requested):
+    """LiteLLM 1.88.0rc1 rejected xhigh/max for opus-4-8 (#737) and
+    BenchFlow lowered them to high; the pinned LiteLLM takes every level, so
+    the route carries the level asked for."""
     route = resolve_litellm_route(
         "aws-bedrock/us.anthropic.claude-opus-4-8",
         {
@@ -67,7 +63,7 @@ def test_bedrock_effort_clamps_unsupported_to_litellm_ceiling(requested):
             BEDROCK_THINKING_EFFORT_ENV: requested,
         },
     )
-    assert route.litellm_params["reasoning_effort"] == "high"
+    assert route.litellm_params["reasoning_effort"] == requested
 
 
 def test_bedrock_fable5_thinking_effort_is_threaded_into_route_params():
@@ -92,11 +88,13 @@ def test_bedrock_thinking_effort_defaults_to_high_and_rejects_garbage():
     )
     assert default_route.litellm_params["reasoning_effort"] == "high"
 
-    garbage_route = resolve_litellm_route(
-        "aws-bedrock/us.anthropic.claude-opus-4-8",
-        {**base_env, BEDROCK_THINKING_EFFORT_ENV: "turbo"},
-    )
-    assert garbage_route.litellm_params["reasoning_effort"] == "high"
+    # An invalid value fails loud, never runs at high; the run's
+    # plan refuses it before any sandbox.
+    with pytest.raises(ValueError, match="must be one of"):
+        resolve_litellm_route(
+            "aws-bedrock/us.anthropic.claude-opus-4-8",
+            {**base_env, BEDROCK_THINKING_EFFORT_ENV: "turbo"},
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -206,38 +204,38 @@ def test_docker_and_daytona_resolve_identical_bedrock_effort_from_run_env(monkey
 
 
 # --------------------------------------------------------------------------- #
-# Clamp end-to-end + drift guard (issue #737)                                 #
+# Every level end-to-end + drift guard (issues #737)                  #
 # --------------------------------------------------------------------------- #
 
 
-def test_proxy_env_max_override_clamps_in_wire_payload(monkeypatch):
-    """Guards PR #739 against #737's proxy-process env clamp regression.
-
-    A run-level `max` in the proxy process env is clamped to the LiteLLM ceiling
-    in the actual wire payload; it must not raise.
-    """
+def test_proxy_env_max_override_reaches_the_wire_payload(monkeypatch):
+    """A run-level `max` in the proxy process env is the wire's effort: it was
+    lowered to high for a LiteLLM 1.88.0rc1 limit (#737)."""
     monkeypatch.delenv(BEDROCK_THINKING_EFFORT_ENV, raising=False)
-    assert _wire_output_config_effort("high", env_override="max") == "high"
+    assert _wire_output_config_effort("high", env_override="max") == "max"
 
 
 def test_every_requestable_bedrock_effort_survives_real_litellm_transform(monkeypatch):
     """Guards PR #739 against #737's accepted-effort drift regression.
 
-    Every effort a user may request must, after the route clamp, be accepted by
-    the REAL litellm Converse transform (no BadRequestError). If a future
-    litellm changes its accepted set, this fails and forces
-    _BEDROCK_LITELLM_MAX_EFFORT / the ladder to be revisited rather than
+    Every effort a user may request must be accepted by the REAL litellm
+    Converse transform (no BadRequestError) and reach the wire as asked. If a
+    future litellm changes its accepted set, this fails and forces the ladder
+    (and the run's refusal before launch) to be revisited rather than
     silently shipping a value the provider rejects mid-run.
     """
     from benchflow.providers.litellm_config import _BEDROCK_EFFORT_LADDER
 
     monkeypatch.delenv(BEDROCK_THINKING_EFFORT_ENV, raising=False)
-    for requested in _BEDROCK_EFFORT_LADDER:
+    # The levels Claude takes. Claude has no ``minimal`` (LiteLLM sends it as
+    # low), so a run asking for it on a Claude model is refused before launch.
+    for requested in [e for e in _BEDROCK_EFFORT_LADDER if e != "minimal"]:
         route = resolve_litellm_route(
             "aws-bedrock/us.anthropic.claude-opus-4-8-20251101-v1:0",
             {**_BEDROCK_BASE_ENV, BEDROCK_THINKING_EFFORT_ENV: requested},
         )
-        clamped = route.litellm_params["reasoning_effort"]
-        # Must not raise — this is the whole point of the clamp.
-        effort = _wire_output_config_effort(clamped, env_override=None)
-        assert effort, f"{requested!r} -> {clamped!r} produced no effort"
+        sent = route.litellm_params["reasoning_effort"]
+        assert sent == requested
+        # Must not raise, and must not become another level.
+        effort = _wire_output_config_effort(sent, env_override=None)
+        assert effort == requested, f"{requested!r} -> {effort!r}"

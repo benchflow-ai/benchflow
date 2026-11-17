@@ -133,6 +133,10 @@ class _Verifier:
         self.test_return_code = None
         self.calls: list[dict] = []
 
+    def output_at_exit(self, name: str):
+        # No copy at exit in this stand-in: the live folder is test.sh's.
+        return self._rollout_paths.verifier_dir / name
+
     async def _verify_test_script(self, **kwargs):
         self.calls.append(kwargs)
         verifier_dir = self._rollout_paths.verifier_dir

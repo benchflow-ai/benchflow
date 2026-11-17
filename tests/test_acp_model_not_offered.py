@@ -70,7 +70,10 @@ async def _connect(tmp_path, acp, model: str) -> None:
 async def test_unoffered_codex_model_fails_before_set_model(tmp_path) -> None:
     acp = _acp_mock()
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError,
+        match=r"codex-acp does not offer model 'gpt-9-unknown' for this login",
+    ) as excinfo:
         await _connect(tmp_path, acp, "gpt-9-unknown")
 
     message = str(excinfo.value)

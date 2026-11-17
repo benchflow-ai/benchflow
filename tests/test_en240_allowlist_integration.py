@@ -318,8 +318,11 @@ async def test_a_service_with_a_route_out_refuses_the_run(tmp_path: Path):
         RolloutPaths(rollout_dir),
     )
     try:
-        await sandbox.start(force_build=False)
+        # Refused at the start, from the resolved compose model,
+        # or by the policy check before the agent: either way before any
+        # agent, with the same error.
         with pytest.raises(TaskServiceEgressError, match="'sidecar' \\(network '"):
+            await sandbox.start(force_build=False)
             await task_service_policy(sandbox, egress_denylist_for(task.config.sandbox))
     finally:
         await sandbox.stop(delete=True)

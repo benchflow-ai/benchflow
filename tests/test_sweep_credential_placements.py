@@ -30,6 +30,7 @@ from benchflow.agents.registry import (
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.litellm_config import resolve_litellm_route
 from benchflow.providers.runtime import ensure_litellm_runtime
+from tests.test_en374_login_by_contents import login_file_text
 from tests.test_litellm_hardening import _FakeSandbox
 from tests.test_sweep_launch_env_routes import HOST_CREDENTIALS, _dummy
 
@@ -51,7 +52,8 @@ except ImportError:  # older trees
 A = "dummy-selected-a"
 HOME = "/home/agent"
 ADC = json.dumps({"type": "authorized_user", "refresh_token": "dummy-host-adc"})
-HOST_LOGIN = json.dumps({"dummy": "dummy-host-login-file"})
+# What the host's Claude login file holds in place of its secret.
+HOST_LOGIN_TOKEN = "dummy-host-login-file"
 SETTINGS = (
     "BENCHFLOW_PROVIDER_BASE_URL",
     "BENCHFLOW_PROVIDER_NAME",
@@ -93,7 +95,7 @@ def host(tmp_path, monkeypatch):
         if login_file:
             login = tmp_path / ".claude/.credentials.json"
             login.parent.mkdir(parents=True)
-            login.write_text(HOST_LOGIN)
+            login.write_text(login_file_text(login.name, HOST_LOGIN_TOKEN))
 
     return export
 
@@ -171,6 +173,8 @@ def _dummies(files: dict[str, str], launch: dict[str, str]) -> dict[str, list[st
     places += [(f"env {k}", v) for k, v in launch.items()]
     for where, text in places:
         for token in text.replace('"', " ").replace(",", " ").split():
+            if token.startswith("sk-ant-oat01-dummy-"):  # a login-shaped dummy
+                token = token.removeprefix("sk-ant-oat01-")
             if token.startswith("dummy-"):
                 found.setdefault(token.rstrip("}"), []).append(where)
     return found

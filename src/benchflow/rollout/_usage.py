@@ -192,7 +192,7 @@ _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
 
 
 def _zero_native_acp_usage_metrics() -> dict[str, Any]:
-    return {**usage_unavailable(), "usage_details": {"thought_tokens": 0}}
+    return {**usage_unavailable(), "usage_details": {"thought_tokens": None}}
 
 
 def _zero_agent_reported_usage_metrics() -> dict[str, Any]:
@@ -240,7 +240,14 @@ def _with_agent_reported_usage(
         **(usage.get("usage_details") or {}),
         USAGE_SOURCE_AGENT_REPORTED: dict(reported),
     }
-    return {**usage, "usage_details": details, "cost_usd": None, "price_source": None}
+    return {
+        **usage,
+        "usage_details": details,
+        "cost_usd": None,
+        "price_source": None,
+        "cost_source": None,
+        "price_table_date": None,
+    }
 
 
 def _as_nonnegative_int(value: object) -> int:

@@ -36,6 +36,7 @@ outputs and gated by the new test, and the combined score is compared
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -51,6 +52,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from benchflow._root_python import root_python_command
 from benchflow._utils.reachable_write import ReachablePath, pin_destination
+from benchflow.integrity.constants import normalize_integrity_mode
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.trust.state import IngressKind, admit
 
@@ -193,34 +195,69 @@ def _result_or_empty(trial: Path) -> dict[str, Any]:
 
 
 def _attempt_key(trial: Path) -> tuple[Any, Any, Any]:
-    result = _result_or_empty(trial)
+    """The trial an attempt folder belongs to: its task, agent and model, as
+    ``bf.load_job`` groups them. The agent is the one the run ran
+    (``agent``), the same for every attempt; the name an agent reports
+    (``agent_name``) is empty in an attempt that failed before its agent
+    started. A trial that left no rollout folder has them in its config.json
+    (:func:`benchflow._utils.result_paths.with_placeholder_settings`)."""
+    from benchflow._utils.result_paths import with_placeholder_settings
+
+    result = with_placeholder_settings(trial, _result_or_empty(trial))
     return (
         result.get("task_name") or trial.name,
-        result.get("agent_name") or result.get("agent"),
+        result.get("agent") or result.get("agent_name"),
         result.get("model"),
     )
 
 
 def _without_replaced_attempts(trials: list[Path]) -> list[Path]:
-    """Drop unscored attempts a scored retry of the same task replaced.
+    """Drop the attempts that are not their trial's result.
 
-    A trial whose sandbox failed to start (or that errored before scoring)
-    and was then retried leaves its own folder; the job's summary, ``inspect``
-    and ``load_job`` count the retry, so regrade must not list the replaced
-    attempt as another trial.
+    The run's record decides, through the picker every reader uses
+    (:mod:`benchflow._utils.attempt_decision`): an attempt the run retried is
+    dropped, and where it kept one, that attempt alone is the trial, as in
+    the job's summary, ``inspect`` and ``load_job``.
+
+    In a job from before those records, an unscored attempt a scored retry of
+    the same task replaced is dropped: a trial whose sandbox failed to start
+    (or that errored before scoring) and was then retried leaves its own
+    folder, and regrade must not list it as another trial. That rule holds
+    only in a folder of attempts, as for ``bf.load_job``
+    (:func:`benchflow._utils.attempt_decision.groups_attempts`: an Evaluation
+    job folder, or a copy of one that kept the run's records): any other
+    folder (``bf.run`` calls sharing a job name) holds samples, each a trial
+    of its own, and every one is listed. The run's records decide in any
+    folder that has them.
     """
-    scored = {
-        _attempt_key(t)
-        for t in trials
-        if isinstance(_result_or_empty(t).get("rewards"), dict)
-    }
-    return [
-        t
-        for t in trials
-        if isinstance(_result_or_empty(t).get("rewards"), dict)
-        or (t / "evidence").is_dir()
-        or _attempt_key(t) not in scored
-    ]
+    from benchflow._utils.attempt_decision import (
+        groups_attempts,
+        kept_attempt,
+        not_retried,
+    )
+
+    chains: dict[tuple[Any, ...], list[Path]] = {}
+    for t in trials:
+        chains.setdefault((t.parent, *_attempt_key(t)), []).append(t)
+    selected: set[Path] = set()
+    for chain in chains.values():
+        kept = kept_attempt(chain, folder=lambda t: t)
+        if kept is not None:
+            selected.add(kept)
+            continue
+        undecided = not_retried(chain, folder=lambda t: t)
+        if not groups_attempts(chain[0].parent):
+            selected.update(undecided)
+            continue
+        scored = [
+            t for t in undecided if isinstance(_result_or_empty(t).get("rewards"), dict)
+        ]
+        selected.update(
+            t
+            for t in undecided
+            if not scored or t in scored or (t / "evidence").is_dir()
+        )
+    return [t for t in trials if t in selected]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -547,6 +584,52 @@ else:
 """
 
 
+def _under_recorded_reward_rule(
+    run: Callable[..., Awaitable[tuple[dict | None, str | None]]],
+) -> Callable[..., Awaitable[tuple[dict | None, str | None]]]:
+    """Run a frozen trial's verify under the rule its recorded integrity
+    mode gives a reward outside the range (config.json's ``integrity``; none
+    recorded is ``off``): strict scores it 0, audit and off keep it."""
+
+    @functools.wraps(run)
+    async def under_rule(
+        trial: Path, task_dir: Path, attempt: Path, *, sandbox: str | None = None
+    ) -> tuple[dict | None, str | None]:
+        from benchflow.rewards.validation import out_of_range_reward_rule
+
+        integrity = _read_json(trial / "config.json").get("integrity") or "off"
+        with out_of_range_reward_rule(integrity):
+            return await run(trial, task_dir, attempt, sandbox=sandbox)
+
+    return under_rule
+
+
+def _regrade_reward_note(rewards: dict | None, task_dir: Path) -> dict | None:
+    """The note on a regraded reward outside the task's range, kept as
+    test.sh wrote it (the trial's integrity audit or off), or None."""
+    from benchflow.diagnostics import RewardOutOfRangeDiagnostic
+    from benchflow.rewards.validation import (
+        RewardOutOfRange,
+        declared_reward_range,
+        is_out_of_range_reward,
+    )
+    from benchflow.task.task import Task
+
+    value = rewards.get("reward") if isinstance(rewards, dict) else None
+    if not isinstance(value, int | float):
+        return None
+    reward_range = declared_reward_range(Task(task_dir))
+    if not is_out_of_range_reward(value, reward_range=reward_range):
+        return None
+    note = RewardOutOfRangeDiagnostic.from_error(
+        RewardOutOfRange("reward", value, reward_range)
+    )
+    note.recorded_as_written = True
+    logger.warning(note.note())
+    return note.to_dict()
+
+
+@_under_recorded_reward_rule
 async def run_verifier_on_frozen_trial(
     trial: Path,
     task_dir: Path,
@@ -566,6 +649,7 @@ async def run_verifier_on_frozen_trial(
     no sandbox is built from the task's agent environment.
     """
     from benchflow._types import Scene
+    from benchflow._verifier_setup import recorded_verifier_setup_timeout
     from benchflow.agents.registry import is_scripted_agent
     from benchflow.review.evidence import EvidenceError, EvidenceManifest
     from benchflow.review.evidence_runtime import ensure_evidence_python
@@ -573,6 +657,10 @@ async def run_verifier_on_frozen_trial(
     from benchflow.rollout._setup import (
         _publish_trajectory_for_verifier,
         _verify_rollout,
+    )
+    from benchflow.task.config import (
+        run_sandbox_setup_timeout,
+        sandbox_user_setup_timeout_sec,
     )
     from benchflow.task.verifier_sandbox import separate_verifier_requested
 
@@ -588,7 +676,9 @@ async def run_verifier_on_frozen_trial(
     attempt_root = pin_destination(attempt)
     task_input = attempt / "task-input"
     await asyncio.to_thread(shutil.copytree, task_dir, task_input, symlinks=False)
-    override = (config.get("config_override") or {}).get("patch")
+    from benchflow._utils.config_override import recorded_overlay
+
+    override = recorded_overlay(config.get("config_override"), what="regrade")
     sandbox_user = config.get("sandbox_user", "agent")
     child = Rollout(
         RolloutConfig(
@@ -599,6 +689,8 @@ async def run_verifier_on_frozen_trial(
             sandbox_user=sandbox_user,
             sandbox_locked_paths=config.get("sandbox_locked_paths"),
             sandbox_setup_timeout=config.get("sandbox_setup_timeout") or 120,
+            sandbox_setup_timeout_given=config.get("sandbox_setup_timeout_given"),
+            verifier_setup_timeout=recorded_verifier_setup_timeout(config),
             context_root=config.get("context_root"),
             base_image_override=config.get("base_image_override"),
             config_override=override,
@@ -623,6 +715,15 @@ async def run_verifier_on_frozen_trial(
         await ensure_evidence_python(
             env, timeout_sec=child._config.sandbox_setup_timeout, allow_install=True
         )
+        from benchflow.rollout import _reward_provenance
+        from benchflow.sandbox import _verifier_links
+
+        if _reward_provenance.assessed(
+            _read_json(trial / "config.json").get("integrity")
+        ):
+            # The fresh sandbox's links, before the frozen workspace arrives:
+            # only the links it brings are judged.
+            await _verifier_links.record_before_turn(env)
         remote = await _install_bundle(env, bundle, staging, "workspace")
         await child.install_agent()
         if child._agent_cwd != workspace:
@@ -672,7 +773,10 @@ async def run_verifier_on_frozen_trial(
                 env,
                 sandbox_user,
                 workspace=workspace,
-                timeout_sec=child._config.sandbox_setup_timeout,
+                timeout_sec=sandbox_user_setup_timeout_sec(
+                    run_sandbox_setup_timeout(child._config),
+                    child._task.config.sandbox,
+                ),
                 guard_daemon=False,
             )
         trajectory = _stored_trajectory(trial)
@@ -693,6 +797,12 @@ async def run_verifier_on_frozen_trial(
             child._planes,
             sandbox_user=sandbox_user,
             workspace=workspace,
+            # The trial's agent: the links its turn left in the frozen
+            # workspace go before test.sh, and the reward waits on the checks.
+            agent=_trial_agent(trial),
+            # The trial's own integrity mode: strict regrades hardened, off and
+            # audit run test.sh as written.
+            integrity=_read_json(trial / "config.json").get("integrity"),
         )
         if paths.verifier_dir.is_dir():
             paths.verifier_dir.copy_to(attempt_root / "verifier")
@@ -833,6 +943,7 @@ def _review_view(
     and separate verifier record take the run's places, and ``solver.json``
     carries the new rewards and the fixed task's digest.
     """
+    from benchflow._utils.raw_evidence import is_raw_evidence
     from benchflow._utils.reachable_write import snapshot_tree
     from benchflow.review.persistence import write_json_atomic
     from benchflow.rollout._separate_verifier import RECORD_DIR, RECORD_FILE
@@ -840,7 +951,12 @@ def _review_view(
     def ignore(folder: str, names: list[str]) -> set[str]:
         if Path(folder) != trial:
             return set()
-        return {name for name in names if name in _NOT_REVIEWED}
+        # A hosted run's raw vf-eval output is no reviewer's either.
+        return {
+            name
+            for name in names
+            if name in _NOT_REVIEWED or is_raw_evidence(trial, name)
+        }
 
     shutil.copytree(trial, view, symlinks=True, ignore=ignore)
     (view / "evidence").symlink_to(trial / "evidence", target_is_directory=True)
@@ -893,6 +1009,10 @@ async def _review_again(
 
 def _new_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+
+
+#: The regrade record's note for a trial from before the integrity modes.
+PRE_INTEGRITY_NOTE = "re-verified faithful (audit); the original verify used the shared hardening from before the integrity modes"
 
 
 async def _regrade_one(
@@ -957,6 +1077,15 @@ async def _regrade_one(
         "original_verifier_error": original["verifier_error"],
     }
     block["task_changed"] = block["original_task_digest"] != block["task_digest"]
+    # The mode this regrade verifies in is the trial's own. A trial
+    # from before the integrity modes recorded none and is re-verified as
+    # test.sh is written (audit): its score can differ from the original's,
+    # and the record says why. The mode chosen is not changed here.
+    if "integrity" in config:
+        block["integrity"] = normalize_integrity_mode(config.get("integrity"))
+    else:
+        block["integrity"] = "audit"
+        block["integrity_note"] = PRE_INTEGRITY_NOTE
     rewards: dict | None = None
     error: str | None = None
     plan = scoring = None
@@ -964,6 +1093,9 @@ async def _regrade_one(
         # A missing rubric or reviewer key fails here, before any sandbox.
         plan = _review_plan(trial, task_dir, reviewer) if review else None
         rewards, error = await runner(trial, task_dir, attempt, sandbox=sandbox)
+        note = None if error else _regrade_reward_note(rewards, task_dir)
+        if note is not None:
+            block["reward_out_of_range_info"] = note
         if plan is not None and not error:
             scoring = await _review_again(
                 plan, trial, attempt, rewards, block["task_digest"]
@@ -1043,8 +1175,10 @@ async def aregrade(
     reviewer: ReviewerConfig | None = None,
 ) -> RegradeSummary:
     """Async :func:`regrade`."""
+    from benchflow._utils.raw_evidence import refuse_raw_evidence
     from benchflow.review.persistence import write_json_atomic
 
+    refuse_raw_evidence(Path(path))
     root = Path(path).resolve()
     trials = find_trials(root)
     regrade_id = _new_id()

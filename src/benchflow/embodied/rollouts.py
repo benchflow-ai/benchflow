@@ -101,11 +101,13 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 
 
 def _latest_results(job_dir: Path) -> list[tuple[Path, dict]]:
-    """One result per task name, as resume and summary select them: scored beats unscored, then newest.
+    """One result per task name, as resume and summary select them: the attempt the run kept, never
+    one it retried (in a job with no attempt records: scored beats unscored, then newest).
     Retry attempts and results nested inside a trial (e.g. the episode record) are not extra trials."""
+    from benchflow._utils.attempt_decision import final_attempt
     from benchflow._utils.result_paths import iter_task_result_paths
 
-    best: dict[str, tuple[tuple, Path, dict]] = {}
+    chains: dict[str, list[tuple[tuple, Path, dict]]] = {}
     for path in iter_task_result_paths(Path(job_dir)):
         try:
             r = json.loads(path.read_text())
@@ -115,9 +117,20 @@ def _latest_results(job_dir: Path) -> list[tuple[Path, dict]]:
             continue
         task = r.get("task_name") or path.parent.name.split("__")[0]
         rank = (r.get("rewards") is not None, path.stat().st_mtime, str(path))
-        if task not in best or rank >= best[task][0]:
-            best[task] = (rank, path, r)
-    return [(p, r) for _, p, r in sorted(best.values(), key=lambda x: str(x[1]))]
+        chains.setdefault(task, []).append((rank, path, r))
+    best = [
+        kept
+        for chain in chains.values()
+        if (
+            kept := final_attempt(
+                chain,
+                folder=lambda c: c[1].parent,
+                earlier_rule=lambda left: max(left, key=lambda c: c[0]),
+            )
+        )
+        is not None
+    ]
+    return [(p, r) for _, p, r in sorted(best, key=lambda x: str(x[1]))]
 
 
 def _trial_rows(job_dir: Path) -> list[dict]:

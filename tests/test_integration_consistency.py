@@ -1,4 +1,4 @@
-"""config<->manifest consistency validator (ENG-265 slice 3).
+"""config<->manifest consistency validator (slice 3).
 
 Covers the membership invariant in BOTH directions (a config's agent must be
 known; a credentialed agent must have a config), model pins, order-insensitive

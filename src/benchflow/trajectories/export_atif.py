@@ -352,12 +352,17 @@ def trajectory_to_atif_record(
     prompts: list[str] | None = None,
     agent_version: str = "unknown",
     model: str | None = None,
+    effort: dict[str, Any] | None = None,
     total_prompt_tokens: int | None = None,
     total_completion_tokens: int | None = None,
     total_cached_tokens: int | None = None,
     total_cost_usd: float | None = None,
+    metrics_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one ATIF trajectory document from a captured rollout.
+
+    *effort* is result.json's ``effort`` block (requested, applied, sent,
+    matches), kept in the record's ``extra.effort``.
 
     ``agent`` requires both ``name`` and ``version`` in ATIF; BenchFlow
     does not track agent binary versions, so *agent_version* defaults to
@@ -388,8 +393,14 @@ def trajectory_to_atif_record(
         ("total_cached_tokens", total_cached_tokens),
         ("total_cost_usd", total_cost_usd),
     ):
-        if value is not None:
+        # A rollout's record (metrics_extra given) says null for an unknown
+        # count, never leaves it out or writes 0.
+        if value is not None or metrics_extra is not None:
             final_metrics[key] = value
+    if metrics_extra is not None:
+        # Where the counts came from: usage_source, cost_source and
+        # price_table_date, as result.json's agent_result has them.
+        final_metrics["extra"] = dict(metrics_extra)
     record: dict[str, Any] = {"schema_version": ATIF_SCHEMA_VERSION}
     if session_id:
         record["session_id"] = session_id
@@ -397,8 +408,13 @@ def trajectory_to_atif_record(
     record["steps"] = steps
     record["final_metrics"] = final_metrics
     coverage = plan.coverage(events)
+    extra: dict[str, Any] = {}
     if coverage is not None:
-        record["extra"] = {"acp_projection": coverage}
+        extra["acp_projection"] = coverage
+    if effort:
+        extra["effort"] = dict(effort)
+    if extra:
+        record["extra"] = extra
     subagents = plan.embedded(None)
     if subagents:
         record["subagent_trajectories"] = subagents
@@ -418,10 +434,12 @@ def write_rollout_atif_json(
     trajectory: list[dict[str, Any]],
     agent_version: str = "unknown",
     model: str | None = None,
+    effort: dict[str, Any] | None = None,
     total_prompt_tokens: int | None = None,
     total_completion_tokens: int | None = None,
     total_cached_tokens: int | None = None,
     total_cost_usd: float | None = None,
+    metrics_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Write one rollout's ATIF document to ``rollout_dir/trainer/atif.json``.
 
@@ -443,10 +461,12 @@ def write_rollout_atif_json(
             prompts=prompts,
             agent_version=agent_version,
             model=model,
+            effort=effort,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
             total_cached_tokens=total_cached_tokens,
             total_cost_usd=total_cost_usd,
+            metrics_extra=metrics_extra,
         )
     except ValueError:
         if coverage is not None:

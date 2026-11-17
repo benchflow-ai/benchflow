@@ -33,7 +33,7 @@ def _load_parity_module():
 
 
 def test_continuallearningbench_runner_accepts_plan_flags() -> None:
-    """Guards ENG-103 dogfood commands from being ignored by the runner."""
+    """Guards dogfood commands from being ignored by the runner."""
     result = subprocess.run(
         [
             sys.executable,
@@ -54,7 +54,7 @@ def test_continuallearningbench_runner_accepts_plan_flags() -> None:
 def test_continuallearningbench_converter_emits_driver_mediated_task(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-103 tasks from asking agents to hand-write verifier results."""
+    """Guards tasks from asking agents to hand-write verifier results."""
     converter = _load_benchflow_module()
 
     generated = converter.generate_all(
@@ -75,7 +75,7 @@ def test_continuallearningbench_converter_emits_driver_mediated_task(
 def test_continuallearningbench_parity_accepts_limited_generated_subset(
     tmp_path: Path,
 ) -> None:
-    """Guards ENG-103 `--limit 1` dogfood from requiring every ContinualLearningBench task."""
+    """Guards `--limit 1` dogfood from requiring every ContinualLearningBench task."""
     converter = _load_benchflow_module()
     parity = _load_parity_module()
     out = tmp_path / "out"

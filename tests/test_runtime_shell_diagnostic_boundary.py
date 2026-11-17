@@ -70,7 +70,9 @@ async def test_public_exec_distinguishes_parser_from_checked_child(
         return result.stdout or "", result.stderr or "", result.return_code
 
     emit_process(monkeypatch, output)
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"(?s)will not run root steps after the agent's turn"
+    ) as caught:
         await lockdown.prepare_runtime_tree(env, phase="build")
     parser = not checked and status in (1, 2)
     assert (BLAME in str(caught.value)) == parser
@@ -113,7 +115,9 @@ async def test_probe_failure_preserves_original_error_and_timeout(failure, budge
     env, calls, _ = protocol_env(
         [(ExecResult(return_code=2, stderr=SYNTAX), False), (probe, True)]
     )
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"(?s)shell syntax error in BenchFlow's setup script"
+    ) as caught:
         await lockdown.prepare_runtime_tree(env, phase="build", timeout_sec=budget)
     assert BLAME in str(caught.value)
     assert "line 930" in str(caught.value)
@@ -147,7 +151,9 @@ async def test_complete_probe_is_redacted_before_display_and_artifacts(
     env, calls, raw = protocol_env(
         [(ExecResult(return_code=2, stderr=SYNTAX), False), (probe, True)]
     )
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"(?s)shell syntax error in BenchFlow's setup script"
+    ) as caught:
         await lockdown.prepare_runtime_tree(env, phase="build")
     assert len(calls) == 2
     assert BLAME in str(caught.value)
@@ -179,7 +185,9 @@ async def test_later_outer_rendering_still_has_no_probe_fragments(monkeypatch, k
             (ExecResult(return_code=0, stdout="/bin/sh\nbash " + secret + "\n"), True),
         ]
     )
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"(?s)shell syntax error in BenchFlow's setup script"
+    ) as caught:
         await lockdown.prepare_runtime_tree(env, phase="build")
     assert len(calls) == 2
     assert BLAME in str(caught.value)

@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from benchflow.agents.env import inherit_agent_auth_env, uses_direct_anthropic_endpoint
 from benchflow.errors import UserError
+from benchflow.integrity.constants import STRICT_EXPERIMENTAL
 from benchflow.model_settings import vendor_setting
 
 if TYPE_CHECKING:
@@ -244,6 +245,7 @@ SOURCE_WORDS = {
     "dotenv": "from .env",
     "host_env": "from the host's environment",
     "benchflow_default": "BenchFlow's default",
+    "run_effort": "from the run's effort",
 }
 # A setting's value as the card shows it: a number, a word or a model id.
 _PLAIN_SETTING = re.compile(r"[\w.:/@\[\]+-]{1,120}")
@@ -256,15 +258,22 @@ def _shown_setting(value: object) -> str:
     return text if _PLAIN_SETTING.fullmatch(text) else "(set)"
 
 
-def env_settings(agent: str, model: str | None, agent_env: dict[str, str]) -> list:
+def env_settings(
+    agent: str,
+    model: str | None,
+    agent_env: dict[str, str],
+    *,
+    effort: str | None = None,
+) -> list:
     """Every :data:`ENV_SETTINGS` and :data:`HOST_SETTINGS` variable in
     effect for this run: its value and where it came from.
 
     The sources, highest first, as agents.env resolves them: the run's
     ``agent_env`` (``--agent-env``, a config's ``agent_env``), then ``.env``,
     then the host's environment (only for the names BenchFlow copies from
-    them), then BenchFlow's own default. A setting none of them sets is left
-    out."""
+    them), then the run's *effort* where a route takes it in a variable
+    (``effort_request.with_route_effort``), then BenchFlow's own default. A
+    setting none of them sets is left out."""
     import os
 
     from benchflow._dotenv import load_dotenv_env
@@ -285,8 +294,10 @@ def env_settings(agent: str, model: str | None, agent_env: dict[str, str]) -> li
             CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT
         )
     bedrock = _bedrock_default_effort(model)
+    # A Bedrock Claude route is sent the run's effort, not its own default.
+    from_effort = {"BENCHFLOW_BEDROCK_THINKING_EFFORT"} if bedrock and effort else set()
     if bedrock is not None:
-        defaults["BENCHFLOW_BEDROCK_THINKING_EFFORT"] = bedrock
+        defaults["BENCHFLOW_BEDROCK_THINKING_EFFORT"] = effort or bedrock
 
     def found(name: str, *, from_host: bool) -> tuple[str, str] | None:
         if from_host:
@@ -304,7 +315,9 @@ def env_settings(agent: str, model: str | None, agent_env: dict[str, str]) -> li
                 if value and value.strip():
                     return value, source
         if name in defaults:
-            return defaults[name], "benchflow_default"
+            return defaults[name], (
+                "run_effort" if name in from_effort else "benchflow_default"
+            )
         return None
 
     rows: list[dict[str, str]] = []
@@ -313,6 +326,14 @@ def env_settings(agent: str, model: str | None, agent_env: dict[str, str]) -> li
         *((s, True) for s in HOST_SETTINGS),
     ):
         if setting.agents and agent not in setting.agents:
+            continue
+        if (
+            setting.name == "BENCHFLOW_BEDROCK_THINKING_EFFORT"
+            and bedrock is None
+            and setting.name not in agent_env
+        ):
+            # Only a Bedrock Claude route reads it: from .env or the shell,
+            # off one, it sets nothing (as effort_request reads it).
             continue
         hit = found(setting.name, from_host=from_host)
         if hit is None:
@@ -550,6 +571,81 @@ def load_reference(path: Path) -> Reference:
         notes=str(table.get("notes", "")),
         values={k: v for k, v in table.items() if k not in _META},
     )
+
+
+def capture_path(
+    agent: str, model: str | None, env: dict[str, str], harness: str
+) -> dict[str, Any] | None:
+    """How each trial of the run will count its tokens and cost:
+    ``auth`` (``api_key``, ``subscription``, ``agent_route``,
+    ``direct_endpoint``), ``usage_source`` (where its tokens come from),
+    ``salvage`` (the agent's own log that counts a turn ending without its
+    report, or None) and ``cost_source``. None for a control or a script.
+    """
+    from benchflow.agents.env import uses_native_subscription_auth
+    from benchflow.agents.registry import (
+        agent_routes_own_model,
+        is_operator_script,
+        is_scripted_agent,
+    )
+    from benchflow.native_harness.spec import HARNESS_NATIVE
+
+    if agent in CONTROL_AGENTS or is_operator_script(agent) or is_scripted_agent(agent):
+        return None
+    name = agent.rsplit("/", 1)[-1]
+    claude = name in ("claude-agent-acp", "claude")
+    codex = name in ("codex-acp", "codex")
+    if agent_routes_own_model(agent):
+        auth = "agent_route"
+    elif uses_direct_anthropic_endpoint(agent, model, env):
+        auth = "direct_endpoint"
+    elif uses_native_subscription_auth(agent, model, env):
+        auth = "subscription"
+    else:
+        auth = "api_key"
+    if auth == "api_key":
+        return {
+            "auth": auth,
+            "harness": harness,
+            "usage_source": "proxy",
+            "salvage": None,
+            # An OpenRouter response's own billed cost, else LiteLLM's.
+            "cost_source": "provider"
+            if (model or "").startswith("openrouter/")
+            else "list_price_estimate",
+        }
+    salvage = None
+    if claude:
+        salvage = "stream_log" if harness == HARNESS_NATIVE else "session_log"
+    elif codex:
+        salvage = "session_log"
+    return {
+        "auth": auth,
+        "harness": harness,
+        # A Codex trial is always counted from Codex's session log (codex-acp's
+        # end-of-turn report is its last call's).
+        "usage_source": "session_log" if codex else "end_of_turn",
+        "salvage": salvage,
+        "cost_source": "list_price_estimate",
+    }
+
+
+def _capture_text(capture: dict[str, Any]) -> str:
+    words = {
+        "proxy": "BenchFlow's model proxy, per call",
+        "end_of_turn": "the agent's end-of-turn reports",
+        "session_log": "the agent's session log",
+        "stream_log": "the CLI's stream log on the host",
+    }
+    text = f"{capture['auth'].replace('_', ' ')}: tokens from {words[capture['usage_source']]}"
+    if capture.get("salvage"):
+        text += f", or {words[capture['salvage']]} when a turn ends without its report"
+    cost = (
+        "the provider's billed figure"
+        if capture["cost_source"] == "provider"
+        else "list prices"
+    )
+    return text + f"; cost from {cost}"
 
 
 def _installs(agent: str) -> str | None:
@@ -812,6 +908,33 @@ def _task_facts(
     return facts
 
 
+def _agent_users(
+    task_dirs: list[Path],
+    agent: str | None,
+    sandbox_user: str | None,
+    override: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Per task: the user its own harness runs the agent as, beside
+    BenchFlow's, and the flag that matches (sandbox/agent_user.py), from the
+    task's files. A task that does not load is left to the run."""
+    from benchflow.sandbox import agent_user
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    users: dict[str, dict[str, Any]] = {}
+    for task_dir in task_dirs:
+        try:
+            config = TaskRuntimeView.from_task_dir(task_dir).config
+            if override:
+                from benchflow._utils.config_override import apply_config_override
+
+                config = apply_config_override(config, override)
+        except Exception as exc:
+            logger.debug("run card: could not read %s: %s", task_dir, exc)
+            continue
+        users[task_dir.name] = agent_user.record(task_dir, config, agent, sandbox_user)
+    return users
+
+
 def _verifier_total(config: Any) -> float:
     if not config.steps:
         return float(config.verifier.timeout_sec)
@@ -1051,6 +1174,7 @@ def _compare(
 def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, Any]:
     """The card for ``evaluation`` over ``task_dirs`` (the selected tasks)."""
     from benchflow.agents.registry import agent_routes_own_model, is_operator_script
+    from benchflow.build_info import benchflow_build
     from benchflow.evaluation import (
         _benchflow_version,
         effective_model,
@@ -1087,10 +1211,18 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
     # after another: concurrency applies within a job.
     rounds = math.ceil(len(task_dirs) / max(1, cfg.concurrency)) * per_task
     provenance = cfg.source_provenance or {}
+    # Every way the run asks for an effort: --effort, the model's
+    # [effort] suffix, the agent's own settings, .env and the host's.
+    from benchflow.effort_request import effort_request, effort_source
+
+    asked = effort_request(cfg.agent, model, cfg.reasoning_effort, cfg.agent_env)
+    asked_from = effort_source(cfg.reasoning_effort_source, asked.source)
     settings = (
         []
         if cfg.agent in CONTROL_AGENTS or is_operator_script(cfg.agent)
-        else env_settings(cfg.agent, model, dict(cfg.agent_env or {}))
+        else env_settings(
+            cfg.agent, model, dict(cfg.agent_env or {}), effort=asked.effort
+        )
     )
     # The output cap BenchFlow gives Claude Code (agents/env.py), or the
     # run's own; no other agent reads it.
@@ -1101,7 +1233,7 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
         "agent": cfg.agent,
         "harness": cfg.harness,
         "model": model,
-        "effort": cfg.reasoning_effort,
+        "effort": asked.effort,
         "trials": per_task,
         "verifier_sandbox": effective_verifier_sandbox(
             cfg.verifier_sandbox, cfg.separate_verifier
@@ -1112,6 +1244,9 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
         "run_card": SCHEMA_VERSION,
         "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "benchflow_version": _benchflow_version(),
+        # The build: version, source commit, uncommitted changes
+        # (benchflow.build_info).
+        "benchflow_build": benchflow_build(),
         "tasks": {
             "count": len(task_dirs),
             "root": str(evaluation._tasks_dir),
@@ -1128,6 +1263,12 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             "selection": _selection(cfg),
             "multi_step": sum(1 for f in facts if f["steps"]),
             "multi_step_mean": sum(1 for f in facts if f.get("mean_steps")),
+            # The entries of the root the tasks-root rule skipped, when any.
+            **(
+                {"tasks_root_skips": skips}
+                if (skips := getattr(evaluation, "_tasks_root_skips", None))
+                else {}
+            ),
         },
         "agent": {
             "name": cfg.agent,
@@ -1141,6 +1282,13 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             ),
             "output_cap": cap["value"] if cap else None,
             "output_cap_source": cap["source"] if cap else None,
+            # Each trial's expected token and cost capture.
+            "capture": capture_path(
+                cfg.agent,
+                model,
+                inherit_agent_auth_env(cfg.agent, model, cfg.agent_env),
+                cfg.harness,
+            ),
         },
         # Every variable BenchFlow knows that changes what a trial measures,
         # with its value and where it came from (env_settings).
@@ -1159,7 +1307,8 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             "id": model,
             "given": model_source == "model",
             "source": model_source,
-            "effort": cfg.reasoning_effort,
+            "effort": asked.effort,
+            "effort_source": asked_from,
             "sampling": None,
             # model_route = "agent": the agent calls its own model, if any, so no
             # model id is BenchFlow's to give.
@@ -1215,6 +1364,11 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
         ),
         # Each trial's own token and turn budget (benchflow.trial_budget).
         "trial_budget": _trial_budget(cfg, model, facts),
+        # Per task, the user its own harness runs the agent as and the one
+        # BenchFlow will, with the flag that matches.
+        "agent_user": _agent_users(
+            task_dirs, cfg.agent, cfg.sandbox_user, cfg.config_override
+        ),
         "extra_instruction": cfg.extra_instruction is not None,
         # --accept-deviations, kept whether or not the tasks name a reference.
         "accepted_deviations": cfg.accept_deviations,
@@ -1386,9 +1540,18 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
         if tasks["multi_step"]
         else ""
     )
+    count = tasks["count"]
+    if skips := tasks.get("tasks_root_skips"):
+        shown = [f"{s['name']}: {s['reason']}" for s in skips["skipped"][:5]]
+        more = len(skips["skipped"]) - len(shown)
+        rule = f"{skips['count']} ({', '.join(shown)}{f' and {more} more' if more else ''})"
+        # The record counts the root's entries: a shard of a sharded run runs
+        # some of them, and with --seeds each gives one task per seed.
+        taken = skips["listed"] - len(skips["skipped"])
+        count = rule if count == taken else f"{count} from {rule}"
     lines = [
         f"Run card ({job_dir / RUN_CARD}):",
-        f"  Tasks:     {tasks['count']} from {where}{_selection_text(tasks.get('selection'))}"
+        f"  Tasks:     {count} from {where}{_selection_text(tasks.get('selection'))}"
         f"{multi}",
     ]
     script = is_operator_script(agent["name"])
@@ -1409,6 +1572,8 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
         lines.append("  Model:     none (an operator script runs no model)")
     else:
         effort = model["effort"] or "the agent's default"
+        if model.get("effort") and model.get("effort_source") not in (None, "--effort"):
+            effort += f" (from {model['effort_source']})"
         source = model.get("source", "default")
         default = (
             ""
@@ -1453,8 +1618,10 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
         )
         if agent.get("direct_endpoint"):
             lines.append(
-                "  Capture:   direct endpoint; no proxy call capture or cost accounting"
+                "  Capture:   direct endpoint; no proxy call capture, cost at list prices"
             )
+        elif agent.get("capture"):
+            lines.append("  Capture:   " + _capture_text(agent["capture"]))
         vendor = model.get("vendor_setting")
         lines.append(
             "  Vendor:    "
@@ -1527,7 +1694,9 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
         )
         + "; the final check hardened (the agent stopped, its start-up hooks removed)"
         + (
-            f"; integrity {grading['integrity']} (--integrity)"
+            f"; integrity {grading['integrity']} (--integrity"
+            + (f"; {STRICT_EXPERIMENTAL}" if grading["integrity"] == "strict" else "")
+            + ")"
             if grading["integrity"] not in (None, "off")
             else "; no integrity audit (--integrity audit records and checks what "
             "the agent did)"

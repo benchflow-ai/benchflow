@@ -14,7 +14,7 @@ Usage::
     python tests/integration/check_results.py jobs/integration gemini pi-acp
     python tests/integration/check_results.py jobs/integration   # all subdirs
 
-Guards: ENG-6 integration test plan (PR #255).
+Guards: integration test plan (PR #255).
 """
 
 from __future__ import annotations
@@ -924,7 +924,7 @@ def check_agent(agent_dir: Path) -> dict:
             f"and should be rerun: {', '.join(tasks)}"
         )
 
-    # Verifier dependency install failures (ENG-151)
+    # Verifier dependency install failures
     dep_install_tasks: list[str] = []
     for r in latest_results:
         verifier_err = r.get("verifier_error")
@@ -946,7 +946,7 @@ def check_agent(agent_dir: Path) -> dict:
             f"fixing the index policy: {', '.join(dep_install_tasks)}"
         )
 
-    # Verifier timeout failures (ENG-152) — rendered from the diagnostic
+    # Verifier timeout failures — rendered from the diagnostic
     # registry; falls back to a plain message when the structured
     # verifier_timeout_info dict is absent.
     _VERIFIER_DIAGS = {

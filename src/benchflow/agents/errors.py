@@ -35,6 +35,36 @@ class AgentProtocolError(Exception):
     message: str
 
 
+#: Head of the error a session-factory agent's failed turn is recorded with.
+#: The classifier reads it as it reads "ACP error" and "Native harness error":
+#: the agent's error, or its provider's when the model proxy saw the status.
+SESSION_FACTORY_ERROR_HEADER = "Session-factory agent error"
+
+
+class AgentTurnFailedError(AgentProtocolError):
+    """An agent's turn ended in a failure that is not a timeout: its provider
+    failed, its one-shot CLI exited non-zero, it raised.
+
+    It carries the steps captured so far, so the trial keeps its partial
+    trajectory. It is an agent error like an ACP adapter's: classified after
+    cleanup with the provider status the model proxy captured, and retried by
+    those rules. It is never the agent running out of time.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        trajectory: list[dict],
+        executed_prompts: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.trajectory = trajectory
+        self.executed_prompts = executed_prompts or []
+        self.n_tool_calls = 0
+
+
 class ModelCatalogMiss(AgentProtocolError):
     """The agent's model catalog has no entry for the model, so it would run
     on fallback tools (Codex's "Model metadata for ... not found" warning).

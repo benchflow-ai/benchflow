@@ -35,9 +35,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "benchflow.model-call.v2"
+SCHEMA = "benchflow.model-call.v3"
 # Records written before ``tools`` (0.10.0rc1): the same fields without it.
 SCHEMA_V1 = "benchflow.model-call.v1"
+# Records written before each call named its cost's source (0.10.0rc3).
+SCHEMA_V2 = "benchflow.model-call.v2"
 SUMMARY_SCHEMA = "benchflow.model-calls.v1"
 CALLS_FILE = "model-calls.jsonl"  # under the trial's trajectory/
 SUMMARY_FILE = "model-calls.json"  # in the trial folder
@@ -90,6 +92,9 @@ FIELDS = (
     "cache_write_tokens",
     "reasoning_tokens",
     "cost_usd",
+    # Who set cost_usd: the provider's own bill on its response
+    # (``provider``), else a list-price estimate; None when unpriced.
+    "cost_source",
     "subagent",
 )
 
@@ -158,19 +163,40 @@ def _generation(body: dict[str, Any], key: str) -> Any:
 
 
 def _effort(body: dict[str, Any]) -> str | None:
-    effort = body.get("reasoning_effort")
-    if isinstance(effort, str):
-        return effort
-    reasoning = body.get("reasoning")
-    if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
-        return reasoning["effort"]
-    config = body.get("output_config")
+    # The effort the call carried upstream, read from the body LiteLLM sent
+    # (``upstream`` in the proxy's log: DeepSeek's route turned max
+    # into thinking.budget_tokens 16384 and the record said max), or, in a
+    # log written before it was kept, from the request the gateway took in.
+    # A call that carried a thinking budget and no level reads as the budget.
+    upstream = body.get("upstream")
+    fields = upstream if isinstance(upstream, dict) else body
+    config = fields.get("output_config")
     if isinstance(config, dict) and isinstance(config.get("effort"), str):
         return config["effort"]
-    # Gemini's thinking level (HIGH, LOW, ...); a token budget is no level.
-    level = _dict(_generation(body, "thinkingConfig")).get("thinkingLevel")
+    reasoning = fields.get("reasoning")
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
+        return reasoning["effort"]
+    effort = fields.get("reasoning_effort")
+    if isinstance(effort, str):
+        return effort
+    thinking = fields.get("thinking")
+    if (
+        isinstance(thinking, dict)
+        and thinking.get("type") == "enabled"
+        and isinstance(thinking.get("budget_tokens"), int)
+    ):
+        return f"budget_tokens={thinking['budget_tokens']}"
+    # Gemini's thinking level (HIGH, LOW, ...), or its budget as itself.
+    gemini = _dict(
+        fields.get("thinkingConfig")
+        if isinstance(upstream, dict)
+        else _generation(body, "thinkingConfig")
+    )
+    level = gemini.get("thinkingLevel")
     if isinstance(level, str) and level and level != "THINKING_LEVEL_UNSPECIFIED":
         return level.lower()
+    if isinstance(gemini.get("thinkingBudget"), int) and isinstance(upstream, dict):
+        return f"thinking_budget={gemini['thinkingBudget']}"
     return None
 
 
@@ -244,6 +270,20 @@ def _detail(usage: dict[str, Any], key: str, *details: str) -> int | None:
         found = usage.get(name)
         if isinstance(found, dict) and found.get(key) is not None:
             return _int(found.get(key))
+    return None
+
+
+def _cache_writes(usage: dict[str, Any]) -> int | None:
+    """A proxied call's cache writes: Anthropic's top-level count, else
+    OpenRouter's in the prompt's details (``cache_write_tokens``; LiteLLM's
+    copy of the answer adds ``cache_creation_tokens`` beside it), or in the
+    input's details, where LiteLLM's Responses API bridge puts them."""
+    if usage.get("cache_creation_input_tokens") is not None:
+        return _int(usage.get("cache_creation_input_tokens"))
+    for key in ("cache_write_tokens", "cache_creation_tokens"):
+        found = _detail(usage, key, "prompt_tokens_details", "input_tokens_details")
+        if found is not None:
+            return found
     return None
 
 
@@ -639,17 +679,35 @@ def _proxy_scan(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 cache_read_tokens=cached
                 if cached is not None
                 else _int(usage.get("cache_read_input_tokens")),
-                cache_write_tokens=_int(usage.get("cache_creation_input_tokens")),
+                cache_write_tokens=_cache_writes(usage),
                 reasoning_tokens=_detail(
                     usage,
                     "reasoning_tokens",
                     "completion_tokens_details",
                     "output_tokens_details",
                 ),
-                cost_usd=_number(meta.get("response_cost")),
+                **_call_cost(answer, meta),
             )
         )
     return calls, {"first_agent_tools": first_tools, "input_files": inputs.summary()}
+
+
+def _call_cost(answer: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """One proxied call's cost: the provider's bill when its route bills each
+    call and its response carried it (OpenRouter's ``usage.cost``, streamed
+    or not), else LiteLLM's list-price figure. LiteLLM's proxy puts its own
+    list price in ``usage.cost`` on every other route, which is no bill
+    (the trial's own rule, ``litellm_logging.billed_cost``)."""
+    from benchflow.providers.litellm_logging import billed_cost
+
+    billed = billed_cost(answer, {"metadata": meta})
+    if billed is not None:
+        return {"cost_usd": billed, "cost_source": "provider"}
+    estimate = _number(meta.get("response_cost"))
+    return {
+        "cost_usd": estimate,
+        "cost_source": "list_price_estimate" if estimate is not None else None,
+    }
 
 
 def _proxy_calls(path: Path) -> list[dict[str, Any]]:
@@ -838,6 +896,10 @@ def _claude_code_otel_calls(path: Path) -> list[dict[str, Any]]:
                 cache_read_tokens=read,
                 cache_write_tokens=write,
                 cost_usd=_otel_number(attrs.get("cost_usd")),
+                # Claude Code's own figure: its list prices.
+                cost_source="list_price_estimate"
+                if _otel_number(attrs.get("cost_usd")) is not None
+                else None,
                 purpose="agent",
             )
         )
@@ -860,11 +922,28 @@ def _codex_calls(folder: Path) -> list[dict[str, Any]]:
     ``{"subagent": ...}``, and it may run on another model or effort (Codex's
     ``default_subagent_model``): its calls are ``subagent``. The title thread
     codex-acp starts is ephemeral, and Codex writes no rollout for it.
+
+    ``info.total_token_usage`` is Codex's running total, never summed. A
+    ``token_count`` event whose session's running total was read already, in
+    this log or another (Codex repeats the event when only its rate limits
+    change; a session's rollout can be logged twice), is no new response,
+    and a record whose ``response_id`` was read already is not counted again.
     """
     calls: list[dict[str, Any]] = []
+    seen_responses: set[str] = set()
+    seen_totals: set[tuple[str, str]] = set()
     for log in _logs(folder):
         rows = list(_jsonl(log))
         records = any(row.get("type") == "token_usage_record" for row in rows)
+        session = next(
+            (
+                str(_dict(row.get("payload")).get("id"))
+                for row in rows
+                if row.get("type") == "session_meta"
+                and _dict(row.get("payload")).get("id")
+            ),
+            str(log),
+        )
         subagent = any(
             row.get("type") == "session_meta"
             and "subagent" in _dict(_dict(row.get("payload")).get("source"))
@@ -882,6 +961,12 @@ def _codex_calls(folder: Path) -> list[dict[str, Any]]:
                     effort = payload["effort"]
             usage = None
             if records and row.get("type") == "token_usage_record":
+                response = payload.get("response_id")
+                if isinstance(response, str) and response:
+                    if response in seen_responses:
+                        previous = when or previous
+                        continue
+                    seen_responses.add(response)
                 usage = payload.get("usage")
             elif (
                 not records
@@ -889,6 +974,13 @@ def _codex_calls(folder: Path) -> list[dict[str, Any]]:
                 and payload.get("type") == "token_count"
                 and isinstance(payload.get("info"), dict)
             ):
+                total = payload["info"].get("total_token_usage")
+                if isinstance(total, dict):
+                    snapshot = (session, json.dumps(total, sort_keys=True))
+                    if snapshot in seen_totals:
+                        previous = when or previous
+                        continue
+                    seen_totals.add(snapshot)
                 usage = payload["info"].get("last_token_usage")
             if isinstance(usage, dict):
                 calls.append(
@@ -916,20 +1008,63 @@ def _codex_calls(folder: Path) -> list[dict[str, Any]]:
     return calls
 
 
-def model_calls(trial: Path) -> list[dict[str, Any]]:
-    """The trial's model calls from the first source it has (see the module)."""
+def codex_session_tokens(trial: Path) -> dict[str, int | None] | None:
+    """Every model call's tokens in the trial's copy of Codex's session
+    rollouts (``agent/codex-sessions/``), summed in ``result.json``'s terms;
+    None when it records no call.
+
+    codex-acp reports one call's usage over ACP, not the session's
+    (``rollout/_session_log.count_codex_tokens``), so its trials are counted
+    from this log: one record per response (:func:`_codex_calls`), the main
+    thread's and each sub-agent thread's. Codex's ``input_tokens`` include
+    the cached and the cache-written ones. ``n_input_tokens`` leaves both
+    out, as codex-acp's own ``inputTokens`` leaves out the cached ones, so
+    ``total_tokens``, the sum of the four counts, is Codex's input plus
+    output. ``thought_tokens`` is the reasoning inside the output.
+    """
+    calls = _codex_calls(trial / CODEX_SESSIONS)
+    if not calls:
+        return None
+    fresh = read = write = output = reasoning = 0
+    for call in calls:
+        cached = call["cache_read_tokens"] or 0
+        written = call["cache_write_tokens"] or 0
+        fresh += max((call["input_tokens"] or 0) - cached - written, 0)
+        read += cached
+        write += written
+        output += call["output_tokens"] or 0
+        reasoning += call["reasoning_tokens"] or 0
+    return {
+        "n_input_tokens": fresh,
+        "n_output_tokens": output,
+        "n_cache_read_tokens": read,
+        # OpenAI reports no cache writes: Codex's 0 is not a count.
+        "n_cache_creation_tokens": write or None,
+        "total_tokens": fresh + read + write + output,
+        "thought_tokens": reasoning,
+        "calls": len(calls),
+    }
+
+
+def model_calls(
+    trial: Path, *, session_root: Path | None = None
+) -> list[dict[str, Any]]:
+    """The trial's model calls from the first source it has (see the module).
+    ``session_root``: where the agent's session logs are read (the copy
+    teardown holds), else under ``trial``."""
     proxy = _proxy_calls(trial / PROXY_LOG)
     if proxy:
         return proxy
     otel = _claude_code_otel_calls(trial / AGENT_OTEL)
     if otel:
         return otel
+    logs = session_root or trial
     for folder, reader in (
         (CLAUDE_SESSIONS, _claude_code_calls),
         (CODEX_SESSIONS, _codex_calls),
     ):
-        if (trial / folder).is_dir():
-            calls = reader(trial / folder)
+        if (logs / folder).is_dir():
+            calls = reader(logs / folder)
             if calls:
                 return calls
     return []
@@ -1046,6 +1181,9 @@ def summarize(
     summary["agent_effort"] = dict(
         Counter(c["effort"] for c in turns if c.get("effort") is not None)
     )
+    # The agent's own calls that could carry one: one that carried
+    # none is no agreement with the effort asked for.
+    summary["agent_effort_calls"] = len(turns)
     last = turns[-1] if turns else None
     summary["last_agent_call"] = (
         {
@@ -1182,20 +1320,23 @@ def refusal_ending(
     }
 
 
-def subagent_usage(trial: Path) -> dict[str, Any] | None:
+def subagent_usage(
+    trial: Path, *, session_root: Path | None = None
+) -> dict[str, Any] | None:
     """What the agent's subagents used, from its own session log copied
     into the trial (Claude Code marks a subagent's responses ``isSidechain``,
     Codex a sub-agent thread's ``session_meta``): their calls (``turns``) and
     tokens (input, cached included, plus output), and the log's whole calls
     and tokens beside them (``of_turns``, ``of_tokens``). None without such a
     log: the proxy sees every call, but not whose it is."""
+    logs = session_root or trial
     for folder, reader, source in (
         (CLAUDE_SESSIONS, _claude_code_calls, CLAUDE_CODE),
         (CODEX_SESSIONS, _codex_calls, CODEX),
     ):
-        if not (trial / folder).is_dir():
+        if not (logs / folder).is_dir():
             continue
-        calls = reader(trial / folder)
+        calls = reader(logs / folder)
         if not calls:
             continue
 
@@ -1216,68 +1357,155 @@ def subagent_usage(trial: Path) -> dict[str, Any] | None:
     return None
 
 
+def _effort_level(value: Any) -> str | None:
+    """*value* when it is an effort level, else None (``default``, ``auto``:
+    nothing applied)."""
+    from benchflow._utils.config import EFFORT_LEVELS
+
+    return value if value in EFFORT_LEVELS else None
+
+
+def _is_budget(value: str) -> bool:
+    """A thinking budget recorded as itself (``budget_tokens=16384``,
+    Gemini's ``thinking_budget=N``): no effort level."""
+    return value.startswith(("budget_tokens=", "thinking_budget="))
+
+
 def effort_outcome(
     summary: dict[str, Any] | None,
     *,
     requested: str | None,
     applied: str | None,
     route: str | None = None,
+    requested_from: str | None = None,
 ) -> dict[str, Any]:
     """The reasoning effort the run asked for, beside the effort that ran.
 
+    ``requested`` counts every way of asking (``benchflow.effort_request``:
+    ``--effort``, a model's ``[effort]`` suffix, the agent's own settings),
+    and ``requested_from`` names the ways it was asked.
+
     ``applied`` is the agent session's word (the ``model[effort]`` id
     codex-acp took, the value an adapter answered an effort option with, the
-    effort a native CLI was given); ``route`` an effort the model proxy's
-    route sets on each request itself (Bedrock's ceiling for some Claude
-    models). ``sent`` counts the agent's model calls by the effort each
+    effort a native CLI was given), kept as it said it; it counts only when
+    it is a level (claude-agent-acp answers ``default`` when nothing was
+    asked). ``route`` is an effort the model proxy's route sets on each
+    request itself, recorded beside: the calls say what was sent. ``sent`` counts the agent's model calls by the effort each
     carried (*summary*, ``model-calls.json``): the proxy sees every request,
     so ``{}`` there means none carried one; an agent's own log can only say
-    what it recorded, so None when it recorded no effort. ``matches`` is
-    False when any of them differs from ``requested``, None when there is
-    nothing to compare (no effort asked for, nothing recorded).
+    what it recorded, so None when it recorded no effort.
+
+    ``matches`` (Fable's audit): every call that carried an effort
+    must carry the expected one, the request, else the session's ``applied``
+    (PR #17: no ``-e``, applied medium, calls at xhigh). False on any call
+    that differs, or an ``applied`` level other than the request,
+    or, when an effort was asked for, a proxy that saw calls and none
+    carried one; True only when every call that could carry one
+    (``agent_effort_calls``) carried it; None when some carried none
+    (``partly unmeasured``, with ``calls_with_effort`` and
+    ``calls_without_effort``; ``calls_with_budget`` counts the calls that
+    carried only a thinking budget, apart from both), when no call was seen
+    carrying one
+    (``unmeasured``), or when nothing was asked or applied
+    (``nothing_to_compare``). A call that carried no effort is no
+    agreement. A level a provider runs as another is measured here, a
+    ``mismatch``: one BenchFlow knows of is refused before launch
+    (:func:`benchflow.effort_request.refuse_known_downgrade`).
     """
     summary = summary or {}
     source = summary.get("source") if summary.get("calls") else None
     efforts = summary.get("agent_effort")
     efforts = dict(efforts) if isinstance(efforts, dict) else {}
     sent: dict[str, int] | None = efforts if source == PROXY or efforts else None
-    checks: list[bool] = []
-    if requested:
-        checks += [value == requested for value in (applied, route) if value]
-        if sent is not None:
-            checks.append(set(sent) == {requested})
+    carried = {value: n for value, n in (sent or {}).items() if n}
+    could = summary.get("agent_effort_calls")
+    with_budget = sum(n for value, n in carried.items() if _is_budget(value))
+    with_effort = sum(carried.values()) - with_budget
+    without = (
+        max(0, could - with_effort - with_budget)
+        if isinstance(could, int) and sent is not None
+        else None
+    )
+    level = _effort_level(applied)
+    expected = requested or level
+    matches: bool | None
+    reason: str | None
+    if requested and level and level != requested:
+        matches, reason = False, "mismatch"
+    elif expected is None:
+        matches, reason = None, "nothing_to_compare"
+    elif carried and set(carried) != {expected}:
+        matches, reason = False, "mismatch"
+    elif carried and without:
+        # Calls that carried no effort agree with nothing (Fable's RECORDS-3:
+        # one call at ultra and 99 with none read as a match).
+        matches, reason = None, "partly unmeasured"
+    elif carried:
+        matches, reason = True, None
+    elif sent == {}:
+        # The proxy saw the calls and none carried an effort.
+        matches, reason = None, "unmeasured: no call carried an effort"
+    else:
+        matches, reason = None, "unmeasured"
     return {
         "requested": requested,
+        "requested_from": requested_from if requested else None,
         "applied": applied,
         "route": route,
         "sent": sent,
         "sent_source": source if sent is not None else None,
-        "matches": all(checks) if checks else None,
+        "calls_with_effort": with_effort if sent is not None else None,
+        "calls_with_budget": with_budget if sent is not None else None,
+        "calls_without_effort": without,
+        "matches": matches,
+        "reason": reason,
     }
 
 
 def effort_warning(effort: dict[str, Any]) -> str | None:
-    """The trial warning for an effort that is not the one asked for."""
+    """The trial warning for an effort that is not the one asked for, or,
+    with none asked for, calls at another effort than the session applied;
+    and for calls of which only some said their effort."""
+    requested = effort.get("requested")
+    applied = _effort_level(effort.get("applied"))
+    expected = requested or applied
+    if effort.get("reason") == "unmeasured: no call carried an effort":
+        return (
+            f"reasoning effort {expected} was "
+            + ("asked for" if requested else "applied")
+            + ", but none of the agent's model calls carried an effort, so the "
+            "effort they ran at is unmeasured"
+        )
+    if effort.get("reason") == "partly unmeasured":
+        with_effort = int(effort.get("calls_with_effort") or 0)
+        without = int(effort.get("calls_without_effort") or 0)
+        return (
+            f"reasoning effort {expected} was "
+            + ("asked for" if requested else "applied")
+            + f": {with_effort} of the agent's {with_effort + without} model calls "
+            f"carried it and {without} carried no effort, so the effort of those "
+            "is unmeasured"
+        )
     if effort.get("matches") is not False:
         return None
-    requested = effort.get("requested")
-    found = [
-        f"{who} {effort[key]}"
-        for key, who in (
-            ("applied", "the agent applied"),
-            ("route", "the model proxy's route sets"),
-        )
-        if effort.get(key) and effort[key] != requested
-    ]
+    found = (
+        [f"the agent applied {applied}"]
+        if requested and applied and applied != requested
+        else []
+    )
     sent = effort.get("sent")
-    if sent == {}:
-        found.append("none of the agent's model calls carried an effort")
-    elif sent and set(sent) != {requested}:
+    carried = {value: n for value, n in (sent or {}).items() if n}
+    if carried and set(carried) != {expected}:
         found.append(
             "the agent's model calls carried "
-            + ", ".join(f"{value} ({n} calls)" for value, n in sorted(sent.items()))
+            + ", ".join(f"{value} ({n} calls)" for value, n in sorted(carried.items()))
         )
-    return f"reasoning effort {requested} was asked for, but " + "; ".join(found)
+    if requested:
+        return f"reasoning effort {requested} was asked for, but " + "; ".join(found)
+    return (
+        f"no reasoning effort was asked for and the agent applied {expected}, but "
+        + "; ".join(found)
+    )
 
 
 def summarize_proxy_log(path: Path) -> dict[str, Any] | None:
@@ -1288,14 +1516,16 @@ def summarize_proxy_log(path: Path) -> dict[str, Any] | None:
     return summarize(calls, **seen) if calls else None
 
 
-def write_model_calls(trial: Path) -> dict[str, Any] | None:
+def write_model_calls(
+    trial: Path, *, session_root: Path | None = None
+) -> dict[str, Any] | None:
     """Write ``trajectory/model-calls.jsonl`` and ``model-calls.json``; None
     when no source recorded a call."""
     from benchflow._utils.disk_space import write_text_atomic
 
     calls, seen = _proxy_scan(trial / PROXY_LOG)
     if not calls:
-        calls, seen = model_calls(trial), {}
+        calls, seen = model_calls(trial, session_root=session_root), {}
     if not calls:
         return None
     # Each file is written beside its place and renamed over it, so a link
@@ -1342,12 +1572,15 @@ _FIELD_TYPES: dict[str, dict[str, Any]] = {
     "cache_write_tokens": _INT,
     "reasoning_tokens": _INT,
     "cost_usd": _NUM,
+    "cost_source": {"enum": ["provider", "list_price_estimate", None]},
     "subagent": _BOOL,
 }
 _COUNTS = {"type": "object", "additionalProperties": {"type": "integer"}}
 
+# 0.10.0rc3 wrote v2 records: no cost_source.
+_V2_FIELDS = tuple(name for name in FIELDS if name != "cost_source")
 # 0.10.0rc1 wrote v1 records: neither tools nor seed.
-_V1_FIELDS = tuple(name for name in FIELDS if name not in ("tools", "seed"))
+_V1_FIELDS = tuple(name for name in _V2_FIELDS if name not in ("tools", "seed"))
 SCHEMAS: dict[str, dict[str, Any]] = {
     "benchflow-model-call.v1.schema.json": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1364,6 +1597,18 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "benchflow-model-call.v2.schema.json": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://benchflow.ai/schemas/benchflow-model-call.v2.schema.json",
+        "title": "One model call (trajectory/model-calls.jsonl)",
+        "type": "object",
+        "required": list(_V2_FIELDS),
+        "additionalProperties": False,
+        "properties": {
+            **{name: _FIELD_TYPES[name] for name in _V2_FIELDS},
+            "schema": {"const": SCHEMA_V2},
+        },
+    },
+    "benchflow-model-call.v3.schema.json": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://benchflow.ai/schemas/benchflow-model-call.v3.schema.json",
         "title": "One model call (trajectory/model-calls.jsonl)",
         "type": "object",
         "required": list(FIELDS),
@@ -1397,6 +1642,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "upstream_errors": _INT,
             "purposes": _COUNTS,
             "agent_effort": _COUNTS,
+            "agent_effort_calls": _INT,
             "input_files": {
                 "type": ["object", "null"],
                 "required": ["reads", "stubs", "files"],

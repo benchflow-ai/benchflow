@@ -750,6 +750,44 @@ def preflight_daytona(
     )
 
 
+def refuse_host_uid(task: Any, env: Any) -> None:
+    """Refuse a trial that keeps services, on a sandbox whose /logs/verifier
+    is BenchFlow's own trial folder (``is_mounted``: local Docker's bind
+    mount), when its agent user has the uid BenchFlow runs as.
+
+    The release then finds the folder owned by the agent's uid and makes it
+    root's for grading (K2-R1-B-1), so a kept service holding it cannot
+    write the verifier's outputs; BenchFlow, as that uid, cannot write there
+    either until the kept services have ended, and what it writes there
+    during grading is lost: reward.json's aggregate (the trial goes unscored
+    as a verifier error), the plugin guard's markers, a judge's reward
+    files, a verifier retried in place (write them outside the mount
+    and publish them after end_kept_services, then lift this). The agent's
+    uid is the one prepare_identities measured, as the release reads it
+    (``id -u``); kept services refuse rootless and remapped Engines, so it
+    is the host's uid too. Runs before the agent or solve.sh starts.
+    """
+    host = os.getuid()
+    if host == 0 or getattr(env, "is_mounted", False) is not True:
+        return
+    identities = vars(task).get("_benchflow_service_identities")
+    if identities is None or identities[0].uid != host:
+        return
+    from benchflow.sandbox.protocol import KeptServiceFreezerUnavailable
+
+    raise KeptServiceFreezerUnavailable(
+        f"This task keeps services ({KEY}) and its agent user has uid {host}, "
+        "the uid BenchFlow runs as on the host, whose trial folders this "
+        "sandbox bind-mounts: grading keeps the verifier's folder closed to "
+        "that uid while the kept services run, which closes it to BenchFlow "
+        "too, so BenchFlow cannot guarantee the grading (a reward it writes "
+        "there would be lost). No agent code ran; the trial has no score.\n"
+        "next: give the image's agent user another uid (useradd -u), run "
+        "BenchFlow as another host user, or run on a sandbox that does not "
+        "bind-mount the trial folders (--sandbox remote-docker)"
+    )
+
+
 def provider_refusal(
     task: Any,
     task_dir: Path,

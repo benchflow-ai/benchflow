@@ -172,7 +172,11 @@ def _sandbox(*, guarded=("/usr/local/bin/python3",), image_pythonpath=""):
 async def _hardened_env(tmp_path, scripts, **sandbox) -> dict[str, str]:
     task = _task(tmp_path, scripts)
     await harden_before_verify(
-        _sandbox(**sandbox), task, sandbox_user="agent", workspace="/root"
+        _sandbox(**sandbox),
+        task,
+        sandbox_user="agent",
+        workspace="/root",
+        integrity="strict",
     )
     return task.config.verifier.env
 
@@ -292,7 +296,7 @@ async def test_guard_stays_on_pythonpath_when_verifier_scripts_are_unknown():
     task.config.verifier.env = None
     task.config.verifier.pytest_plugins = []
     task.config.verifier.service = "main"
-    await harden_before_verify(_sandbox(), task, sandbox_user=None)
+    await harden_before_verify(_sandbox(), task, sandbox_user=None, integrity="strict")
 
     env = task.config.verifier.env
     guard = pytest_plugin_guard_name(env["PYTEST_ADDOPTS"])

@@ -10,19 +10,137 @@ from __future__ import annotations
 
 import base64
 import contextvars
+import hashlib
 import json
 import os
 import re
+import signal
+import tempfile
+import threading
 import time
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode
+
+# Anthropic's output_config.effort levels. This file runs standalone in the
+# model proxy and imports nothing of BenchFlow's: tests/test_effort_request.py
+# holds it to benchflow._utils.config.CLAUDE_EFFORT_LEVELS.
+_CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "benchflow_model_request", default=None
 )
+
+
+# The callback log's own count, kept in this process's memory.
+# Every record either writer appends to the log (``_lifecycle`` here, the
+# callback's ``_write``) goes through ``append_record``, which counts the
+# records, their bytes and a SHA-256 of them. ``open`` is the POST requests
+# this boundary is still serving; ``awaiting`` the LiteLLM call ids the
+# callback saw a request for and no record or failure of yet. On SIGUSR1 the
+# proxy writes them to ``<log>.tally``: the host asks at the end of the
+# agent's turn and checks the log it reads back against them. A proxy that
+# was killed cannot answer, and a log that was truncated or rewritten no
+# longer matches its count.
+_TALLY_SUFFIX = ".tally"
+_tally_lock = threading.Lock()
+_tally = {"records": 0, "bytes": 0, "open": 0}
+_tally_digest = hashlib.sha256()
+_tally_awaiting: set[str] = set()
+# Set by the signal when it lands while the count is being changed; whoever
+# holds the lock writes the tally once it lets go.
+_tally_due = False
+
+
+@contextmanager
+def _counting():
+    _tally_lock.acquire()
+    try:
+        yield
+    finally:
+        _tally_lock.release()
+    while _tally_due:
+        _write_tally()
+
+
+def append_record(path, line):
+    """Append one whole record (bytes ending in a newline) to the log at
+    *path*, and count what was written."""
+    with _counting():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            view = memoryview(line)
+            while view:
+                written = os.write(fd, view)
+                _tally_digest.update(view[:written])
+                _tally["bytes"] += written
+                view = view[written:]
+        finally:
+            os.close(fd)
+        _tally["records"] += 1
+
+
+def await_record(call_id):
+    """A LiteLLM call whose record (success, failure or refusal) is due."""
+    if isinstance(call_id, str) and call_id:
+        with _counting():
+            _tally_awaiting.add(call_id)
+
+
+def recorded(call_id):
+    """The call's record is in the log, or LiteLLM ended it with a failure."""
+    if isinstance(call_id, str) and call_id:
+        with _counting():
+            _tally_awaiting.discard(call_id)
+
+
+def _count_open(change):
+    with _counting():
+        _tally["open"] += change
+
+
+def _write_tally():
+    global _tally_due
+    path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
+    with _tally_lock:
+        _tally_due = False
+        report = {
+            "pid": os.getpid(),
+            "records": _tally["records"],
+            "bytes": _tally["bytes"],
+            "sha256": _tally_digest.hexdigest(),
+            "open": _tally["open"],
+            "awaiting": len(_tally_awaiting),
+            # The first few by id, so a shortfall can name the calls cut off.
+            "awaiting_ids": sorted(_tally_awaiting)[:5],
+        }
+    if not path:
+        return
+    target = path + _TALLY_SUFFIX
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(report, handle)
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def _on_tally_signal(signum, frame):
+    global _tally_due
+    _tally_due = True
+    # The signal runs on the main thread: if it holds the lock, the holder
+    # writes the tally as it lets go (_counting).
+    if _tally_lock.acquire(blocking=False):
+        _tally_lock.release()
+        _write_tally()
+
+
+def _install_tally_signal():
+    with suppress(AttributeError, OSError, ValueError):
+        signal.signal(signal.SIGUSR1, _on_tally_signal)
 
 
 def _lifecycle(event, **fields):
@@ -35,11 +153,7 @@ def _lifecycle(event, **fields):
         return
     try:
         record = {"event": event, "time": time.time(), **fields}
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.write(fd, (json.dumps(record) + "\n").encode())
-        finally:
-            os.close(fd)
+        append_record(path, (json.dumps(record) + "\n").encode())
     except Exception:
         pass
 
@@ -54,6 +168,8 @@ class _UpstreamAttempt:
         self.error_body = bytearray()
         self.encoding = ""
         self.ended = False
+        # The provider's stream raised while it was read.
+        self.stream_error = False
         if self.request is not None:
             import httpx
 
@@ -109,6 +225,7 @@ class _UpstreamAttempt:
             response_bytes=self.bytes,
             upstream_seconds=elapsed,
             invalid_provider_response=invalid,
+            stream_error=self.stream_error,
         )
 
 
@@ -127,6 +244,12 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+            except Exception:
+                # The provider's stream broke while it was read: a reset, a
+                # body cut short. A reader that stops early raises
+                # GeneratorExit, which is no break.
+                attempt.stream_error = True
+                raise
             finally:
                 attempt.end()
 
@@ -142,6 +265,9 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 async for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+            except Exception:
+                attempt.stream_error = True
+                raise
             finally:
                 attempt.end()
 
@@ -493,8 +619,7 @@ def _local_messages(body, *, messages):
             if (
                 not isinstance(config, dict)
                 or not config.keys() <= {"effort"}
-                or config.get("effort")
-                not in (None, "low", "medium", "high", "xhigh", "max")
+                or config.get("effort") not in (None, *_CLAUDE_EFFORTS)
             ):
                 return False
         if not _text_fields_are_data(
@@ -2047,10 +2172,12 @@ class SingleRouteGuard:
         started = time.monotonic()
         status = None
         response_bytes = 0
+        response_complete = False
+        _count_open(1)
         _lifecycle("request_start", request_id=state["id"], request_bytes=size)
 
         async def counted_send(message):
-            nonlocal status, response_bytes
+            nonlocal status, response_bytes, response_complete
             if message["type"] == "http.response.start":
                 status = message["status"]
                 # The provider answered: from here a pending request is the
@@ -2059,6 +2186,12 @@ class SingleRouteGuard:
             if message["type"] == "http.response.body":
                 response_bytes += len(message.get("body", b""))
             await send(message)
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                # The response's last part went out. A stream its client
+                # left (a cancel, a timeout) never gets here.
+                response_complete = True
 
         try:
             await self.app(scope, replay, counted_send)
@@ -2068,10 +2201,12 @@ class SingleRouteGuard:
                 request_id=state["id"],
                 status=status,
                 response_bytes=response_bytes,
+                response_complete=response_complete,
                 duration_seconds=time.monotonic() - started,
                 upstream_seconds=state["upstream_seconds"],
                 retry_wait_seconds=state["retry_wait_seconds"],
             )
+            _count_open(-1)
             _REQUEST.reset(token)
 
 
@@ -2081,3 +2216,4 @@ def install() -> None:
 
     install_outbound_check()
     app.add_middleware(SingleRouteGuard)
+    _install_tally_signal()

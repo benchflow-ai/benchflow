@@ -11,7 +11,7 @@ Import the package as `import benchflow as bf`. [Run a benchmark](../evaluate/ru
 ### `abranch`
 
 ```python
-bf.abranch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool' = False, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
+bf.abranch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
 ```
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
@@ -71,7 +71,7 @@ Async form of `stream_rollouts`; folder scans run off the event loop.
 ### `branch`
 
 ```python
-bf.branch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool' = False, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
+bf.branch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
 ```
 
 Blocking form of `abranch`; takes exactly the same arguments.
@@ -327,10 +327,12 @@ Blocking form of `arun_batch`.
 ### `run_reviews`
 
 ```python
-bf.run_reviews(path: 'Path', *, agent: 'str', model: 'str | None' = None, environment: 'str' = 'docker', rubric_path: 'Path | None' = None, prompt_path: 'Path | None' = None, agent_env: 'dict[str, str] | None' = None, concurrency: 'int' = 4, timeout_sec: 'int' = 1800, image: 'str' = 'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91', open_network: 'bool' = False, tasks_root: 'Path | None' = None, filter_passing: 'bool | None' = None, out_dir: 'Path | None' = None) -> 'tuple[ReviewReport, Path]'
+bf.run_reviews(path: 'Path', *, agent: 'str', model: 'str | None' = None, environment: 'str' = 'docker', rubric_path: 'Path | None' = None, prompt_path: 'Path | None' = None, agent_env: 'dict[str, str] | None' = None, concurrency: 'int' = 4, timeout_sec: 'int' = 1800, image: 'str' = 'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91', open_network: 'bool' = False, tasks_root: 'Path | None' = None, filter_passing: 'bool | None' = None, out_dir: 'Path | None' = None, reasoning_effort: 'str | None' = None, idle_timeout_sec: 'int | None' = None) -> 'tuple[ReviewReport, Path]'
 ```
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
+
+Arguments in no release yet: `reasoning_effort`, `idle_timeout_sec`.
 
 Review rollout(s) at ``path`` and return the report plus its location.
 
@@ -536,7 +538,7 @@ Aggregated metrics for a benchmark run.
 - `.avg_duration`: Average duration per completed task (seconds).
 - `.avg_skill_invocations`: Average structured skill invocations per completed task.
 - `.avg_tool_calls`: Average tool calls per completed task.
-- `.error_breakdown`: Categorize errors.
+- `.error_breakdown`: Count errors by category: the one result.json records, else the one the error's text gets (a result from before categories).
 - `.errored`: Trials that ended with an agent error and no score.
 - `.failed`: Trials scored below a pass.
 - `.integration_failures`: Count the unscored trials whose agent integration broke, by cause.
@@ -551,16 +553,16 @@ Aggregated metrics for a benchmark run.
 - `.score_excl_errors`: Pass rate excluding errored tasks.
 - `.score_verifier_errored`: Count of tasks whose disjoint score bucket is verifier_errored.
 - `.summary() -> dict[str, typing.Any]`: Export as summary dict.
-- `.telemetry_completed_tasks`: Completed tasks included in telemetry coverage denominator.
-- `.telemetry_coverage`: Fraction of completed trials with trusted token usage.
-- `.telemetry_tasks`: Completed tasks with provider telemetry.
+- `.telemetry_completed_tasks`: Trials in the telemetry coverage denominator: every trial.
+- `.telemetry_coverage`: Fraction of trials with trusted token usage.
+- `.telemetry_tasks`: Trials with trusted token usage, errored ones included.
 - `.total`: Trials counted (one per trial; see collect_metrics).
-- `.total_cache_creation_tokens`: Prompt-cache write tokens over completed trials with trusted usage.
-- `.total_cache_read_tokens`: Prompt-cache read tokens over completed trials with trusted usage.
-- `.total_cost_usd`: USD over trials that reported a cost; None when none did (a subscription login reports none; unknown is not $0).
-- `.total_input_tokens`: Input tokens over completed trials with trusted usage.
-- `.total_output_tokens`: Output tokens over completed trials with trusted usage.
-- `.total_tokens`: All tokens over completed trials with trusted usage.
+- `.total_cache_creation_tokens`: Prompt-cache write tokens over trials with trusted usage, or None.
+- `.total_cache_read_tokens`: Prompt-cache read tokens over trials with trusted usage, or None.
+- `.total_cost_usd`: USD over trials that reported a cost; None when none did (unknown is not $0).
+- `.total_input_tokens`: Input tokens over trials with trusted usage; None when none had any.
+- `.total_output_tokens`: Output tokens over trials with trusted usage; None when none had any.
+- `.total_tokens`: All tokens over trials with trusted usage; None when none had any.
 - `.verifier_error_breakdown`: Categorize verifier errors.
 - `.verifier_errored`: Backward-compatible alias for score-verifier-error count.
 
@@ -821,7 +823,7 @@ bf.Environment(inner: 'Any', task_path: 'Path', sandbox: 'str') -> 'None'
 - `.exec_in_service(service: 'str', cmd: 'str', **kwargs: 'Any') -> 'Any'`: Async: `await` it. Run a command in a named compose service container (#248).
 - `.from_task(task_path: 'str | Path', sandbox: 'str' = 'daytona', rollout_name: 'str | None' = None, planes: 'Any | None' = None, *, jobs_dir: 'str | Path' = 'jobs') -> 'Environment'`: Create an environment and allocate its trial's artifact paths.
 - `.inner`: The underlying sandbox environment (Docker/Daytona). Use for Scene-based shared sandbox access.
-- `.prepare_kept_services(agent: 'str', *, sandbox_user: 'str | None' = 'agent') -> 'None'`: Tell the sandbox, before `start`, what will run in it, so a task that keeps services (``x-keep-services``) gets the kept-service freezer it needs: the oracle, or an agent run as the non-root ``sandbox_user``. ``Runtime.execute`` does this for an environment it starts; call it yourself for one you start.
+- `.prepare_kept_services(agent: 'str', *, sandbox_user: 'str | None' = 'agent') -> 'None'`: Tell the sandbox, before `start`, what will run in it, so a task that keeps services (``x-keep-services``) gets the kept-service freezer it needs: the oracle, or an agent run as the non-root ``sandbox_user``; and so, under the task's network policy, an oracle, ``nop`` or ``script:`` run's main is held by it from its first instruction. ``Runtime.execute`` does this for an environment it starts; call it yourself for one you start.
 - `.start(force_build: 'bool' = False) -> 'None'`: Async: `await` it. Start the sandbox (``force_build=True`` rebuilds its image first).
 - `.stop(delete: 'bool' = True) -> 'None'`: Async: `await` it. Stop the sandbox if it was started (``delete=False`` keeps it).
 - `.task`: The task this environment runs (a `benchflow.Task`).
@@ -868,14 +870,14 @@ bf.Evaluation(tasks_dir: 'str | Path', jobs_dir: 'str | Path', config: 'Evaluati
 New arguments in 0.10: `restart_changed`.
 
 - `.from_dict(raw: 'dict[str, Any]', *, warn_default_agent: 'bool' = True, **kwargs: 'Any') -> 'Evaluation'`: Build an Evaluation from a native config mapping (``to_dict``'s shape).
-- `.from_yaml(path: 'str | Path', *, warn_default_agent: 'bool' = True, job_cell: 'int | None' = None, **kwargs: 'Any') -> 'Evaluation'`: Create a Job from a YAML config file.
+- `.from_yaml(path: 'str | Path', *, warn_default_agent: 'bool' = True, job_cell: 'int | None' = None, overrides_follow: 'bool' = False, **kwargs: 'Any') -> 'Evaluation'`: Create a Job from a YAML config file.
 - `.job_dir`: Where this job writes its rollouts, known before it runs.
 - `.resume(job_dir: 'str | Path', *, tasks_dir: 'str | Path | None' = None, agent_env: 'dict[str, str] | None' = None, restart_changed: 'bool' = False, **config_overrides: 'Any') -> 'Evaluation'`: Rebuild the Evaluation that created ``job_dir``, ready to finish it.
 - `.run() -> 'EvaluationResult'`: Async: `await` it. Execute the job.
 - `.run_sync() -> 'EvaluationResult'`: Blocking form of `run` (also works inside a running event loop).
 - `.stream() -> 'AsyncIterator[tuple[str, RolloutResult]]'`: Run the job, yielding ``(task_name, RolloutResult)`` as each task finishes.
-- `.to_dict(*, include_agent_env: 'bool' = False) -> 'dict[str, Any]'`: This job as the native config mapping that ``from_yaml`` and ``bench eval run --config`` read.
-- `.to_yaml(path: 'str | Path', *, include_agent_env: 'bool' = False) -> 'Path'`: Write `to_dict` as YAML (``bench eval run --config`` reads it).
+- `.to_dict(*, include_agent_env: 'bool' = False, include_config_override: 'bool' = False) -> 'dict[str, Any]'`: This job as the native config mapping that ``from_yaml`` and ``bench eval run --config`` read.
+- `.to_yaml(path: 'str | Path', *, include_agent_env: 'bool' = False, include_config_override: 'bool' = False) -> 'Path'`: Write `to_dict` as YAML (``bench eval run --config`` reads it).
 - `.warn_unmatched_selection() -> 'None'`: Warn once per pattern that matched no task, though others did.
 
 ### `EvaluationConfig`
@@ -889,6 +891,7 @@ Configuration for a benchmark job.
 | `agent` | `str` | `'claude-agent-acp'` |
 | `model` | `str \| None` | `None` |
 | `reasoning_effort` | `str \| None` | `None` |
+| `reasoning_effort_source` (unreleased) | `str \| None` | `None` |
 | `harness` | `str` | `'acp'` |
 | `environment` | `str` | `'docker'` |
 | `concurrency` | `int` | `4` |
@@ -903,6 +906,8 @@ Configuration for a benchmark job.
 | `sandbox_user` | `str \| None` | `'agent'` |
 | `sandbox_locked_paths` | `list[str] \| None` | `None` |
 | `sandbox_setup_timeout` | `int` | `120` |
+| `sandbox_setup_timeout_given` (unreleased) | `bool \| None` | `None` |
+| `verifier_setup_timeout` (unreleased) | `int \| None` | `None` |
 | `skip_agent_install` | `bool` | `False` |
 | `fresh_install` | `bool` | `False` |
 | `allow_cloud_metadata` | `bool` | `False` |
@@ -934,7 +939,7 @@ Configuration for a benchmark job.
 | `checkpoint_keep` | `int` | `3` |
 | `freeze_workspace` | `bool` | `False` |
 | `keep_sandbox` (0.10) | `str` | `'never'` |
-| `integrity` | `str` | `'off'` |
+| `integrity` | `str` | `'audit'` |
 | `verifier_sandbox` | `str` | `'task'` |
 | `retry_from_checkpoint` | `str \| None` | `None` |
 | `retry_prompt` | `str \| None` | `None` |
@@ -1117,6 +1122,7 @@ Every trial under a job directory (or any folder of trials).
 | `evaluation` | `dict[str, Any] \| None` | `None` |
 | `interrupted` | `list[Path]` | `(computed)` |
 | `unreadable` (0.10) | `list[Path]` | `(computed)` |
+| `retried` (unreleased) | `list[Trial]` | `(computed)` |
 
 - `.agents() -> 'list[Trial]'`: Agent runs (control runs left out).
 - `.branch_views() -> 'list[dict[str, Any]]'`: The ``benchflow.branch-view/1`` document of every trial that branched (see docs/train/environment.md).
@@ -1137,7 +1143,7 @@ Every trial under a job directory (or any folder of trials).
 - `.to_jsonl(path: 'str | Path') -> 'Path'`: Write `to_records` as JSON Lines and return the path.
 - `.to_markdown() -> 'str'`: A short report of the job, also what ``print(job)`` shows.
 - `.to_records() -> 'list[dict[str, Any]]'`: Return one flat dict per trial, sorted by task. Each has a ``job`` key with this job's path, so rows from several jobs stay distinguishable.
-- `.unfinished() -> 'tuple[list[str], list[str]]'`: ``(interrupted, not_started)``: tasks whose trial started but wrote no result (a kill, Ctrl-C, a cancelled run), and planned tasks with no trial at all. ``not_started`` needs `planned_tasks`; without it it is empty. A task finished since (resumed) is in neither. While `running`, the first list holds the trials still running.
+- `.unfinished() -> 'tuple[list[str], list[str]]'`: ``(interrupted, not_started)``: tasks that started and have no result, and planned tasks with no attempt folder at all.
 
 ### `JudgeConfig`
 
@@ -1349,7 +1355,7 @@ Configuration for retry behavior.
 
 - `.backoff_delay(attempt: 'int') -> 'float'`: Exponential backoff delay for retry attempt.
 - `.from_mapping(raw: 'dict | None') -> 'RetryConfig'`: Build from a serialized ``retry`` payload (e.g. a worker config).
-- `.reruns_on_resume(error: 'str | None', *, category: 'str | None' = None) -> 'bool'`: Whether a resumed job runs an unscored trial again.
+- `.reruns_on_resume(error: 'str | None', *, category: 'str | None' = None) -> 'bool'`: Whether a resumed job runs a rubric trial's solver again when nothing was judged.
 - `.reruns_unjudged_solver(scoring: 'ScoringResult | None', error: 'str | None', *, category: 'str | None' = None, on_resume: 'bool' = False) -> 'bool'`: Whether a rubric trial's solver runs again despite its scoring block.
 - `.reruns_verifier_error_on_resume(verifier_error: 'str | None') -> 'bool'`: Whether a resumed job runs a scoreless verifier-errored trial again.
 - `.should_retry(error: 'str | None', *, category: 'str | None' = None) -> 'bool'`: Check if an error is retryable.
@@ -1403,6 +1409,7 @@ Everything one ``bench review`` invocation produced.
 | `network` | `str` | `'no-internet'` |
 | `job_summary` | `str \| None` | `None` |
 | `trials` | `list[TrialReview]` | `(computed)` |
+| `setup` (unreleased) | `dict[str, Any]` | `(computed)` |
 
 - `.to_dict() -> 'dict[str, Any]'`: The report as ``review_report.json``'s mapping.
 
@@ -1545,13 +1552,14 @@ bf.Rollout(config: 'RolloutConfig') -> 'None'
 - `.env`: The rollout's sandbox, once `setup` created it.
 - `.execute(prompts: 'list[str] | None' = None, *, node: 'RolloutNode | None' = None) -> 'tuple[list[dict], int]'`: Async: `await` it. Run prompts through the ACP session. Returns (new trajectory, new tool calls).
 - `.finalize() -> 'RolloutResult'`: Async: `await` it. Finish a manually driven rollout, including required rubric review.
-- `.install_agent() -> 'None'`: Async: `await` it. Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
+- `.install_agent() -> 'None'`: Async: `await` it. Install the primary agent and set the sandbox up for it (`_install_agent_steps`). A failure while main has stopped (its image ENTRYPOINT exited right after its release) is that stop, not the step's own.
 - `.model_requests_in_flight() -> 'int | None'` (0.10): Model requests this rollout's proxy has in flight, when the proxy runs on this machine (the utilization watcher); else None.
 - `.on_ask_user(handler: 'Any') -> 'None'`: Register the agent-initiated ``session/request_permission`` handler.
 - `.on_sandbox_ready(callback: 'Callable[[], None]') -> 'None'`: Call *callback* once the trial's sandbox is started and its agent installed (the job's warm pool then prepares the next trial).
 - `.prestarted`: Whether begin_prestart() ran for this rollout.
 - `.record_external_tool_call(*, tool_name: 'str', event: 'dict') -> 'None'`: Record a tool call driven outside the ACP prompt loop.
 - `.result`: The final result once the rollout is verified or finished, else None.
+- `.result_after_failure(exc: 'BaseException') -> 'RolloutResult | None'` (unreleased): The result of a run that raised, written into its own folder.
 - `.run() -> 'RolloutResult'`: Async: `await` it. Run the complete trial lifecycle under a host-side hard deadline.
 - `.setup(*, verifier_only: 'bool' = False) -> 'None'`: Async: `await` it. Resolve config, create environment object (not yet started).
 - `.soft_verify() -> 'tuple[dict | None, str | None, str | None]'`: Async: `await` it. Run the verifier without full hardening; for intermediate feedback.
@@ -1576,6 +1584,8 @@ Declarative rollout configuration.
 | `sandbox_user` | `str \| None` | `'agent'` |
 | `sandbox_locked_paths` | `list[str] \| None` | `None` |
 | `sandbox_setup_timeout` | `int` | `120` |
+| `sandbox_setup_timeout_given` (unreleased) | `bool \| None` | `None` |
+| `verifier_setup_timeout` (unreleased) | `int \| None` | `None` |
 | `skip_agent_install` | `bool` | `False` |
 | `fresh_install` | `bool` | `False` |
 | `allow_cloud_metadata` | `bool` | `False` |
@@ -1606,6 +1616,7 @@ Declarative rollout configuration.
 | `prompts` | `list[str \| None] \| None` | `None` |
 | `model` | `str \| None` | `None` |
 | `reasoning_effort` | `str \| None` | `None` |
+| `reasoning_effort_source` (unreleased) | `str \| None` | `None` |
 | `agent_env` | `dict[str, str] \| None` | `None` |
 | `skills_dir` | `str \| Path \| None` | `None` |
 | `skills_agent_derived` | `bool` | `False` |
@@ -1616,8 +1627,9 @@ Declarative rollout configuration.
 | `self_gen_no_internet` | `bool` | `False` |
 | `skip_verify` | `bool` | `False` |
 | `freeze_workspace` | `bool` | `False` |
+| `owned_by_retry_loop` (unreleased) | `bool` | `False` |
 | `keep_sandbox` (0.10) | `str` | `'never'` |
-| `integrity` | `str` | `'off'` |
+| `integrity` | `str` | `'audit'` |
 | `verifier_sandbox` | `str` | `'task'` |
 | `codex_apps_policy` | `Literal['disabled', 'inherit'] \| None` | `None` |
 | `separate_verifier` | `bool` | `False` |
@@ -1641,8 +1653,8 @@ Declarative rollout configuration.
 - `.primary_model`: Model for the first role of the first scene.
 - `.primary_reasoning_effort`: Reasoning effort for the first role of the first scene.
 - `.recorded_skill_mode`: The skill mode written to the rollout's records.
-- `.to_dict(*, include_agent_env: 'bool' = False) -> 'dict[str, Any]'`: This config as the rollout YAML mapping ``from_dict``/``from_yaml`` read.
-- `.to_yaml(path: 'str | Path', *, include_agent_env: 'bool' = False) -> 'Path'`: Write `to_dict` as YAML and return the path.
+- `.to_dict(*, include_agent_env: 'bool' = False, include_config_override: 'bool' = False) -> 'dict[str, Any]'`: This config as the rollout YAML mapping ``from_dict``/``from_yaml`` read.
+- `.to_yaml(path: 'str | Path', *, include_agent_env: 'bool' = False, include_config_override: 'bool' = False) -> 'Path'`: Write `to_dict` as YAML and return the path.
 
 ### `RolloutResult`
 
@@ -1651,10 +1663,12 @@ Defined in `benchflow.models`.
 Outcome of a single rollout execution.
 
 ```python
-bf.RolloutResult(task_name: 'str', rollout_name: 'str' = '', rewards: 'dict[str, Any] | None' = None, trajectory: 'list[dict[str, Any]] | None' = None, agent: 'str' = '', agent_name: 'str' = '', model: 'str | None' = None, n_tool_calls: 'int' = 0, n_skill_invocations: 'int' = 0, n_prompts: 'int' = 0, n_input_tokens: 'int | None' = None, n_output_tokens: 'int | None' = None, n_cache_read_tokens: 'int | None' = None, n_cache_creation_tokens: 'int | None' = None, total_tokens: 'int | None' = None, cost_usd: 'float | None' = None, usage_source: 'UsageSource' = 'unavailable', price_source: 'str | None' = None, usage_details: 'dict[str, Any] | None' = None, error: 'str | None' = None, error_category: 'str | None' = None, verifier_error: 'str | None' = None, verifier_error_category: 'str | None' = None, export_error: 'str | None' = None, partial_trajectory: 'bool' = False, trajectory_source: 'TrajectorySource | None' = None, reward_events: 'list[RewardEvent] | None' = None, evolved_skills: 'dict[str, str] | None' = None, source_provenance: 'dict[str, Any] | None' = None, started_at: 'datetime | None' = None, finished_at: 'datetime | None' = None, scoring: 'ScoringResult | None' = None, purpose: "Literal['task', 'reviewer']" = 'task', parent_rollout: 'str | None' = None, rollout_dir: 'Path | None' = None, retry: 'dict[str, Any] | None' = None, integrity: 'dict[str, Any] | None' = None, harness_versions: 'dict[str, Any] | None' = None, model_refusal: 'dict[str, Any] | None' = None, trial_budget: 'dict[str, Any] | None' = None)
+bf.RolloutResult(task_name: 'str', rollout_name: 'str' = '', rewards: 'dict[str, Any] | None' = None, trajectory: 'list[dict[str, Any]] | None' = None, agent: 'str' = '', agent_name: 'str' = '', model: 'str | None' = None, n_tool_calls: 'int' = 0, n_skill_invocations: 'int' = 0, n_prompts: 'int' = 0, n_input_tokens: 'int | None' = None, n_output_tokens: 'int | None' = None, n_cache_read_tokens: 'int | None' = None, n_cache_creation_tokens: 'int | None' = None, total_tokens: 'int | None' = None, cost_usd: 'float | None' = None, usage_source: 'UsageSource | None' = 'unavailable', n_cache_write_tokens: 'int | None' = None, n_cache_write_5m_tokens: 'int | None' = None, n_cache_write_1h_tokens: 'int | None' = None, no_usage_reason: 'str | None' = None, cost_usd_provider: 'float | None' = None, n_calls_cost_estimated: 'int | None' = None, usage_incomplete: 'bool | None' = None, usage_incomplete_reason: 'str | None' = None, price_source: 'str | None' = None, usage_source_legacy: 'str | None' = None, cost_source: 'str | None' = None, price_table_date: 'str | None' = None, usage_details: 'dict[str, Any] | None' = None, judge_usage: 'dict[str, Any] | None' = None, error: 'str | None' = None, error_category: 'str | None' = None, verifier_error: 'str | None' = None, verifier_error_category: 'str | None' = None, export_error: 'str | None' = None, partial_trajectory: 'bool' = False, trajectory_source: 'TrajectorySource | None' = None, reward_events: 'list[RewardEvent] | None' = None, evolved_skills: 'dict[str, str] | None' = None, source_provenance: 'dict[str, Any] | None' = None, started_at: 'datetime | None' = None, finished_at: 'datetime | None' = None, scoring: 'ScoringResult | None' = None, purpose: "Literal['task', 'reviewer']" = 'task', parent_rollout: 'str | None' = None, rollout_dir: 'Path | None' = None, retry: 'dict[str, Any] | None' = None, integrity: 'dict[str, Any] | None' = None, harness_versions: 'dict[str, Any] | None' = None, model_refusal: 'dict[str, Any] | None' = None, trial_budget: 'dict[str, Any] | None' = None, integration_failure_info: 'dict[str, Any] | None' = None)
 ```
 
 New arguments in 0.10: `harness_versions`, `model_refusal`, `trial_budget`.
+
+Arguments in no release yet: `n_cache_write_tokens`, `n_cache_write_5m_tokens`, `n_cache_write_1h_tokens`, `no_usage_reason`, `cost_usd_provider`, `n_calls_cost_estimated`, `usage_incomplete`, `usage_incomplete_reason`, `usage_source_legacy`, `cost_source`, `price_table_date`, `judge_usage`, `integration_failure_info`.
 
 - `.from_dict(data: 'dict[str, Any]', *, rollout_dir: 'Path | None' = None) -> 'RolloutResult'`: Build a result from a persisted ``result.json`` payload.
 - `.load(path: 'str | Path') -> 'RolloutResult'`: Read a finished rollout from its directory (or its ``result.json``).
@@ -2060,7 +2074,7 @@ Configuration for a BenchFlow task runtime session.
 | `runtime_label` | `str` | `'task-runtime'` |
 | `reviewer` | `ReviewerConfig` | `(computed)` |
 | `planes` | `Any \| None` | `None` |
-| `integrity` | `str` | `'off'` |
+| `integrity` | `str` | `'audit'` |
 | `verifier_sandbox` | `str` | `'task'` |
 
 - `.to_rollout_config() -> 'RolloutConfig'`: Lower to the Rollout configuration used to own lifecycle/artifacts.
@@ -2114,11 +2128,13 @@ Raw trajectory: ordered list of captured LLM API exchanges.
 - `.messages`: Extract all messages from all exchanges (the conversation history).
 - `.model_post_init(context: 'Any', /) -> 'None'` (0.10): This function is meant to behave like a BaseModel method to initialize private attributes.
 - `.to_jsonl(*, redact_keys: bool = True) -> str`: Export as JSONL (one exchange per line).
-- `.total_cache_creation_tokens`: Prompt-cache write tokens over the captured exchanges.
+- `.total_cache_creation_tokens`: Prompt-cache write tokens over the captured exchanges (None when no response reported any: OpenAI reports none).
 - `.total_cache_read_tokens`: Prompt-cache read tokens over the captured exchanges.
+- `.total_cache_write_1h_tokens` (unreleased): The 1-hour part of the cache writes, where reported.
+- `.total_cache_write_5m_tokens` (unreleased): The 5-minute part of the cache writes, where reported.
 - `.total_cost_usd`: Extract cost if the API returns it (Anthropic does not, OpenAI does not).
-- `.total_input_tokens`: Input tokens over the captured exchanges.
-- `.total_output_tokens`: Output tokens over the captured exchanges.
+- `.total_input_tokens`: Uncached input tokens over the captured exchanges (None: unreported).
+- `.total_output_tokens`: Output tokens, reasoning included, over the captured exchanges.
 - `.total_provider_tokens`: All tokens over the captured exchanges.
 
 ### `Trial`
@@ -2211,9 +2227,12 @@ bf.Verifier(task: 'Any', rollout_paths: 'RolloutPaths', sandbox: 'Any', _logger:
 ```
 
 - `.finish_test_command(return_code: 'int') -> 'VerifierResult'`: Async: `await` it. Score a test command that ended although its exec never returned.
+- `.output_at_exit(name: 'str') -> 'Any'` (unreleased): test.sh's output *name* as it was at its exit (``verifier-at-exit/``) once that copy is taken: a name it does not hold was not there; one too large to copy is read from ``verifier/``, as is every name without a copy.
 - `.save_timed_out_outputs() -> 'None'` (0.10): Async: `await` it. Keep what a test command still running at its deadline wrote.
 - `.test_command_finishable`: Whether `finish_test_command` can score the issued test command: a script verifier whose command records its end.
 - `.test_command_savable` (0.10): Whether `save_timed_out_outputs` has an issued test command whose outputs it can keep.
+- `.thaw_after_test() -> 'None'` (unreleased): Async: `await` it. Let the sandbox go on after the stop at test.sh's exit and record the freeze (``freeze_record``); a no-op once done, or when none was made.
+- `.timed_out_network_verdict() -> 'None'` (unreleased): Async: `await` it. The end-of-test re-proof of a test command killed at its deadline.
 - `.verify() -> 'VerifierResult'`: Async: `await` it. Run the configured verifier and return the reward result.
 
 ### `VerifierOutput`
@@ -2261,7 +2280,7 @@ Aggregated result from a Rubric or node evaluation.
 
 ### `__version__`
 
-`bf.__version__`: `'0.10.0rc3'`
+`bf.__version__`: `'0.10.0rc4'`
 
 ### `AGENTS`
 

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from benchflow.sandbox import _docker_subnets
+from benchflow.sandbox import _direct_docker, _docker_subnets
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.task.config import SandboxConfig
 from benchflow.task.paths import RolloutPaths
@@ -53,6 +53,30 @@ def _docker_ready() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _docker_ready(), reason=f"needs a Docker daemon holding {IMAGE}"
+)
+
+
+def _host_compose() -> str:
+    try:
+        return subprocess.run(
+            ["docker", "compose", "version", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+# The direct path runs only on a proven Compose build, and the reasons these
+# tests read come from that build's `compose config` output; on another build
+# (Docker CE's Compose 5.7 prints binds the path does not render) every task
+# goes to Compose earlier, for another reason. The release gate's docker-ce
+# leg runs on such a build.
+_COMPOSE = _host_compose() if _docker_ready() else ""
+needs_proven_compose = pytest.mark.skipif(
+    bool(_COMPOSE) and _COMPOSE not in _direct_docker.PROVEN_COMPOSE_VERSIONS,
+    reason=f"the direct path runs on a proven Compose build only; this host has {_COMPOSE}",
 )
 
 
@@ -179,6 +203,7 @@ def _inspect(kind: str, ref: str) -> dict:
     return json.loads(out)[0]
 
 
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_a_single_service_task_starts_and_stops_without_compose_on_the_daemon(
     tmp_path, monkeypatch, argv_log
@@ -262,6 +287,7 @@ async def test_a_key_the_path_does_not_render_starts_on_compose_with_its_reason(
     ],
     ids=["dockerfile", "environment"],
 )
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_the_direct_path_makes_the_container_compose_makes(
     tmp_path, monkeypatch, one_subnet, compose
@@ -336,6 +362,7 @@ async def test_an_image_that_declares_a_volume_starts_on_compose(tmp_path, monke
     assert gone.returncode != 0, f"anonymous volume {volumes[0]} was left behind"
 
 
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_a_compose_version_the_path_was_not_proven_on_starts_on_compose(
     tmp_path, monkeypatch
@@ -359,6 +386,7 @@ async def test_a_compose_version_the_path_was_not_proven_on_starts_on_compose(
         await sandbox.stop(delete=True)
 
 
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_an_engine_api_version_the_path_was_not_proven_on_starts_on_compose(
     tmp_path, monkeypatch
@@ -381,6 +409,7 @@ async def test_an_engine_api_version_the_path_was_not_proven_on_starts_on_compos
         await sandbox.stop(delete=True)
 
 
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_a_compose_version_that_times_out_starts_on_compose(
     tmp_path, monkeypatch
@@ -411,6 +440,7 @@ async def test_a_compose_version_that_times_out_starts_on_compose(
     assert _project_objects(project) == []
 
 
+@needs_proven_compose
 @pytest.mark.asyncio
 async def test_a_daemon_api_version_that_does_not_parse_starts_on_compose(
     tmp_path, monkeypatch

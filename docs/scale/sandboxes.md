@@ -13,6 +13,8 @@ Every trial runs in a fresh sandbox: a container or a cloud machine built from t
 | `agentcore` | Amazon Bedrock AgentCore | `benchflow[sandbox-agentcore]` | no | no | no | no |
 | `apple-container` | Apple's containers, on a Mac | nothing | no | no | no | no |
 
+In `audit` (the default) and `off`, BenchFlow checks where each reward came from with its own `bfx` binary, which `docker`, `remote-docker` and `daytona` run. `modal`, `agentcore` and `apple-container` can't run BenchFlow's integrity check yet, so a model agent's trial there is refused before its turn, unscored, with that reason; the oracle still runs. Use Docker or Daytona for model agents.
+
 A task that asks for something its sandbox can't give is refused before the run starts, with code `R401`; it never runs half-set-up. One combination is refused on Daytona in 0.10.0rc2 though each part works: a task with services and an `allowlist`, since only `docker` and `remote-docker` read the services to check them. A no-network task on AgentCore or Apple Container is refused, for example, because neither can cut the network off.
 
 Setup for the cloud sandboxes: [Daytona](./daytona.md), [Modal](./modal.md).

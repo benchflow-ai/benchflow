@@ -12,6 +12,7 @@ Does not own:
 """
 
 import ast
+import asyncio
 import contextlib
 import contextvars
 import dataclasses
@@ -28,9 +29,10 @@ import re
 import secrets
 import shlex
 import string
+import time
 import tokenize
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +74,19 @@ from benchflow._utils.trusted_path import (
     report_trusted_path,
 )
 from benchflow._verifier_env import PIP_CONFIG_FIX, pin_verifier_env
+from benchflow._verifier_setup import (
+    VERIFIER_SETUP_TIMEOUT_SEC as VERIFIER_SETUP_TIMEOUT_SEC,
+)
+from benchflow._verifier_setup import (
+    apply_verifier_setup_timeout as apply_verifier_setup_timeout,
+)
+from benchflow._verifier_setup import (
+    task_verifier_setup_timeout as task_verifier_setup_timeout,
+)
+from benchflow._verifier_setup import (
+    verifier_setup_timeout_for,
+    verifier_setup_timeout_sec,
+)
 from benchflow.agents.registry import get_sandbox_home_dirs
 from benchflow.sandbox import _hardening_python, _verifier_tool_state
 from benchflow.sandbox._cache_reclaim import build_reclaim_caches_cmd
@@ -117,7 +132,12 @@ from benchflow.sandbox.cloud_metadata import (
     cloud_metadata_list,
     cloud_metadata_record,
 )
-from benchflow.sandbox.protocol import ExecTimeoutError, KeptServiceFreezerUnavailable
+from benchflow.sandbox.protocol import (
+    ExecTimeoutError,
+    KeptServiceFreezerUnavailable,
+    SandboxStartupError,
+    ended_by_time_limit,
+)
 
 if TYPE_CHECKING:
     from benchflow.sandbox._root_launch import AgentLaunch
@@ -207,6 +227,11 @@ _root_python: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # verifier PATH's workspace-tool rule). Unset, both rules are as before.
 _hook_agent_user: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "benchflow_hook_agent_user", default=False
+)
+# The image manifest's path in the sandbox while hardening may use it (the
+# host's copy written back there: _image_manifest), or empty.
+_conftest_manifest: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "benchflow_conftest_manifest", default=""
 )
 _path_workspace: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "benchflow_path_workspace", default=None
@@ -417,6 +442,7 @@ def _agent_egress_firewall_cmd(
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
     refuse_dns: bool = False,
+    uid: int | None = None,
 ) -> str:
     """The uid firewall: the agent's packets leave only on loopback.
 
@@ -461,16 +487,26 @@ def _agent_egress_firewall_cmd(
         )
     return (
         "set -e; "
-        + _IPTABLES_INSTALL_CMD
+        # *uid* given: BenchFlow's helper runs this (its own iptables; main's
+        # users are not its), with the agent's uid read from main first.
+        + (_IPTABLES_INSTALL_CMD if uid is None else "")
         + (
             "agent_uid=0; "
             if root_gid is not None
+            else f"agent_uid={int(uid)}; "
+            if uid is not None
             else f"agent_uid=$(id -u {user}) || exit 86; "
         )
         + f"iptables -C OUTPUT -o lo {owner} "
         "-j ACCEPT 2>/dev/null || "
         f"iptables -I OUTPUT 1 -o lo {owner} "
         "-j ACCEPT; "
+        # TCP first, with a reset: a connection the uid opened before these
+        # rules is cut at its next packet (a plain REJECT's ICMP answer only
+        # stalls it, and what it queued left once the rules came out:).
+        f"iptables -C OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset "
+        "2>/dev/null || "
+        f"iptables -A OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset; "
         f"iptables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"iptables -A OUTPUT {owner} -j REJECT; "
@@ -485,6 +521,9 @@ def _agent_egress_firewall_cmd(
         "-j ACCEPT 2>/dev/null || "
         f"ip6tables -I OUTPUT 1 -o lo {owner} "
         "-j ACCEPT; "
+        f"ip6tables -C OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset "
+        "2>/dev/null || "
+        f"ip6tables -A OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset; "
         f"ip6tables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"ip6tables -A OUTPUT {owner} -j REJECT; " + dns6 + f"fi{allow}"
@@ -869,16 +908,106 @@ def _is_loopback_http(url: str) -> bool:
     )
 
 
+async def arm_agent_uid_before_its_proxy(
+    env: Any,
+    sandbox_user: str | None,
+    *,
+    no_web: bool,
+    egress_denylist: Any = None,
+    create_user: bool = False,
+    timeout_sec: int = 120,
+) -> bool:
+    """A model agent's uid firewall ahead of its launch: right
+    after main's release, before the agent's install (M1, the rollout's
+    ``_arm_agent_uid_at_release``), and for a role before its model proxy.
+    Root runs the install and the proxy, which these rules neither hold nor
+    block, so neither runs in the window in which a process of the agent's
+    uid from main's release runs unheld. *create_user*: make the sandbox
+    user first where the image lacks it (:func:`_create_sandbox_user_cmd`,
+    which keeps one the image has; :func:`setup_sandbox_user` later finds
+    it), with ids above the image's regular range, so a ``useradd`` the
+    task's ENTRYPOINT runs gets the ids it got before. A user that cannot be
+    made so arms nothing here: it is made at its setup, as before, and its
+    rules go in at the launch. The rules are
+    :func:`enforce_agent_egress_firewall`'s, read from the task's policy
+    (no-web, the denylist, the allowlist's networks); that call at the
+    agent's launch checks the proxy's wiring and finds them in (each rule is
+    ``-C`` checked). Main's processes are checked when the agent is about to
+    start (:func:`refuse_task_processes`), not here: only what still runs
+    then is refused. Whether it armed; a combination the launch refuses
+    (denylist without a sandbox user, no-web with an allowlist) is left to
+    it."""
+    denylist = egress_denylist is not None
+    allow_mode = bool(getattr(egress_denylist, "allow_mode", False))
+    if not (no_web or denylist) or (no_web and allow_mode):
+        return False
+    if not sandbox_user:
+        if denylist:
+            return False
+        await enforce_sandbox_uid_egress(
+            env, "root", root_gid=NO_WEB_ROOT_GID, refuse_dns=True
+        )
+        return True
+    allow = (
+        tuple(getattr(egress_denylist, "allow_networks", ()) or ())
+        if allow_mode
+        else None
+    )
+    if create_user:
+        made = await exec_raw(
+            env.exec,
+            _create_sandbox_user_cmd(sandbox_user, above_regular_ids=True),
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        if _exec_return_code(made) != 0:
+            return False
+    await enforce_sandbox_uid_egress(
+        env, sandbox_user, allow_networks=allow, refuse_dns=no_web
+    )
+    return True
+
+
+#: Set on a sandbox once R1 found main quiet at its agent's first launch.
+_QUIET_AT_LAUNCH_ATTR = "_benchflow_quiet_at_launch"
+
+
+def _launch_is_held(agent_env: dict[str, str]) -> bool:
+    """Whether the agent's launch arms its uid firewall: the no-web policy
+    or the denylist (an allowlist is one)."""
+    return (
+        agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
+        or agent_env.get(EGRESS_DENYLIST_ENV) == "1"
+    )
+
+
+async def refuse_task_processes_before_launch(
+    env: Any, agent_env: dict[str, str]
+) -> None:
+    """R1 right before a model agent's process first starts in
+    *env*, for a launch whose firewall holds only the agent (the no-web
+    policy, the denylist, an allowlist): a refused trial never starts its
+    agent. Once per sandbox: a later connection (another role, a resumed
+    turn) finds what the agent itself left, which is not the task's."""
+    if not _launch_is_held(agent_env) or getattr(env, _QUIET_AT_LAUNCH_ATTR, False):
+        return
+    await refuse_task_processes(env)
+    with contextlib.suppress(AttributeError):
+        setattr(env, _QUIET_AT_LAUNCH_ATTR, True)
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+    """Block the agent's external egress before its process starts.
 
     Armed by the no-web policy (model traffic must already use the sandbox-local
     proxy) or by the denylist mode (all traffic must already use the loopback
-    egress proxy).
+    egress proxy). Every launcher calls it before the agent's process exists,
+    the ACP one included: an agent started first had the network
+    until this ran, after ACP's initialize and session/new.
     """
     no_web = agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
     denylist = agent_env.get(EGRESS_DENYLIST_ENV) == "1"
@@ -924,6 +1053,398 @@ async def enforce_agent_egress_firewall(
         )
     await enforce_sandbox_uid_egress(
         env, sandbox_user, allow_networks=allow_networks, refuse_dns=no_web
+    )
+
+
+#: BenchFlow's keep-alive, main's command (the compose files' ``sh -c sleep
+#: infinity``): PID 1 when the image's ENTRYPOINT execs it, and the one
+#: ``sleep`` that shell may run.
+_KEEP_ALIVE_ARGV = {
+    "sh -c sleep infinity",
+    "sh -c exec sleep infinity",
+    "sleep infinity",
+}
+#: The programs that may run each keep-alive command line: a shell for the
+#: shell's, sleep (or a multi-call binary) for sleep's. A command line is
+#: what a process says of itself (``exec -a``); its program is not.
+_SHELLS = ("sh", "dash", "bash", "ash", "busybox", "mksh")
+_KEEP_ALIVE_PROGRAMS = {
+    "sh -c sleep infinity": _SHELLS,
+    "sh -c exec sleep infinity": _SHELLS,
+    "sleep infinity": ("sleep", "busybox", "coreutils"),
+}
+#: An init the image's ENTRYPOINT may be, as PID 1 over the keep-alive.
+_INITS = ("tini", "tini-static", "dumb-init", "catatonit", "docker-init")
+#: A process that is not running: a zombie its parent has not reaped.
+_DEAD_STATES = ("Z", "X", "x")
+#: Where the host keeps the daemons BenchFlow started in main (its model
+#: proxy, egress proxy, OpenTelemetry receiver): their pid and start time.
+OWN_PROCESSES_ATTR = "_benchflow_own_processes"
+#: The most processes a refusal names one by one.
+_NAMED_MAX = 20
+
+# Root's scan of main's processes (POSIX sh, awk and readlink): each process
+# with its parent, uid, the number of its sockets whose remote end is neither
+# loopback nor unset (connected or connecting), its state and start time
+# (clock ticks after boot; with the pid it names one process), its program
+# its kernel name (``comm``, set from the program at exec, which ``exec -a``
+# does not change; the program of another user's process is not root's to
+# read without CAP_SYS_PTRACE) and its argv. Tabs and newlines in a program,
+# name or argv are printed as spaces, so no command line reads as another row.
+_TASK_PROCS_SH = r"""set +e
+P=/proc
+command -v awk >/dev/null 2>&1 && command -v readlink >/dev/null 2>&1 || { echo "BF task-procs status=2"; exit 0; }
+remote=" $(awk 'FNR > 1 { split($3, r, ":"); a = r[1];
+  if (a ~ /^0+$/) next; if (length(a) == 8 && a ~ /7F$/) next;
+  if (a == "00000000000000000000000001000000") next;
+  if (a ~ /^0000000000000000FFFF0000/ && a ~ /7F$/) next; print $10 }' \
+  $P/net/tcp $P/net/tcp6 $P/net/udp $P/net/udp6 2>/dev/null | tr '\n' ' ') "
+for d in $P/[0-9]*; do
+  p=${d##*/}
+  st=$(awk '/^PPid:/ { pp = $2 } /^Uid:/ { u = $2 } END { if (pp != "") print pp, u }' $d/status 2>/dev/null)
+  [ -n "$st" ] || continue
+  ss=$(awk '{ sub(/.*\) /, ""); print $1, $20 }' $d/stat 2>/dev/null)
+  [ -n "$ss" ] || continue
+  n=0
+  for f in $d/fd/*; do
+    l=$(readlink "$f" 2>/dev/null) || continue
+    case $l in socket:\[*\]) i=${l#socket:[}; i=${i%]}; case "$remote" in *" $i "*) n=$((n + 1));; esac;; esac
+  done
+  exe=$(readlink $d/exe 2>/dev/null | tr '\t\n\r' '   ')
+  comm=$(tr '\t\n\r' '   ' < $d/comm 2>/dev/null)
+  argv=$(tr '\000\t\n\r' '    ' < $d/cmdline 2>/dev/null | cut -c1-160)
+  printf 'BF proc %s %s %s %s\t%s\t%s\t%s\n' "$p" "$st" "$n" "$ss" "$exe" "$comm" "$argv"
+done
+echo "BF task-procs status=0"
+"""
+
+
+def _scan_rows(out: str) -> dict[int, dict[str, Any]]:
+    """The scan's rows by pid; a pid's first row stands."""
+    rows: dict[int, dict[str, Any]] = {}
+    for line in out.splitlines():
+        if not line.startswith("BF proc "):
+            continue
+        head, _, rest = line[len("BF proc ") :].partition("\t")
+        parts = rest.split("\t")
+        # (program, kernel name, argv); a row without the name is two.
+        exe, comm, argv = parts if len(parts) == 3 else (parts[0], "", parts[-1])
+        fields = head.split()
+        if len(fields) != 6:
+            continue
+        try:
+            pid, ppid, uid, sockets, start = (int(x) for x in (*fields[:4], fields[5]))
+        except ValueError:
+            continue
+        rows.setdefault(
+            pid,
+            {
+                "pid": pid,
+                "ppid": ppid,
+                "uid": uid,
+                "sockets": sockets,
+                "state": fields[4],
+                "start": start,
+                "exe": exe.strip(),
+                "comm": comm.strip(),
+                "argv": argv.strip(),
+            },
+        )
+    return rows
+
+
+def _program(row: dict[str, Any]) -> str:
+    """The program a process runs: its executable's name, or where root may
+    not read that (another user's process) the kernel's name for it. Never
+    its command line, which the process sets itself."""
+    return row["exe"].removesuffix(" (deleted)").rsplit("/", 1)[-1] or row["comm"]
+
+
+def _is_keep_alive(row: dict[str, Any], *, pid_1: bool) -> bool:
+    """BenchFlow's keep-alive (its command line, run by the program that
+    command line names), or, as PID 1, an init; either with no connection
+    out."""
+    if row["sockets"]:
+        return False
+    if pid_1 and _program(row) in _INITS:
+        return True
+    return _program(row) in _KEEP_ALIVE_PROGRAMS.get(row["argv"], ())
+
+
+def _task_processes(
+    out: str, own: Iterable[tuple[int, int]] = ()
+) -> list[dict[str, Any]]:
+    """The scan's task processes: every live process of main that is not
+    BenchFlow's own. BenchFlow's are known from the host's side, never from
+    anything a process sets for itself (its environment, its program's
+    path, its name):
+
+    - what the container engine's exec started: a process whose parent is
+      outside main's pid namespace (ppid 0, which only an exec from the
+      host gives; PID 1 aside), and every process under it;
+    - a daemon BenchFlow started there whose pid and start time the host
+      recorded (:func:`note_own_process`), and every process under it;
+    - the keep-alive: PID 1 when it is BenchFlow's keep-alive or an init,
+      and the one keep-alive under it, each known by its program (a shell or
+      sleep for the keep-alive's command line, an init's own) with no
+      connection out, never by its command line alone.
+
+    *own* is the host's record, (pid, start time) pairs. A zombie runs
+    nothing and is left out."""
+    rows = _scan_rows(out)
+    children: dict[int, list[int]] = {}
+    for pid, row in rows.items():
+        children.setdefault(row["ppid"], []).append(pid)
+    ours: set[int] = set()
+
+    def take(root: int) -> None:
+        stack = [root]
+        while stack:
+            pid = stack.pop()
+            if pid not in ours:
+                ours.add(pid)
+                stack.extend(children.get(pid, ()))
+
+    for pid, row in rows.items():
+        if row["ppid"] == 0 and pid != 1:
+            take(pid)
+    for pid, start in own:
+        row = rows.get(pid)
+        if row is not None and row["start"] == start:
+            take(pid)
+    pid = 1
+    while pid in rows and pid not in ours:
+        row = rows[pid]
+        if not _is_keep_alive(row, pid_1=pid == 1):
+            break
+        ours.add(pid)
+        if row["argv"] == "sleep infinity":
+            break
+        under = sorted(
+            c
+            for c in children.get(pid, ())
+            if c not in ours and _is_keep_alive(rows[c], pid_1=False)
+        )
+        if not under:
+            break
+        pid = under[0]
+    return sorted(
+        (
+            row
+            for pid, row in rows.items()
+            if pid not in ours and row["state"] not in _DEAD_STATES
+        ),
+        key=lambda r: r["pid"],
+    )
+
+
+def own_processes(env: Any) -> tuple[tuple[int, int], ...]:
+    """The daemons BenchFlow started in *env*'s main, as the host recorded
+    them: (pid, start time) pairs."""
+    record = getattr(env, OWN_PROCESSES_ATTR, None)
+    return tuple(record) if isinstance(record, list) else ()
+
+
+async def note_own_process(
+    env: Any, *, pid: int | None = None, pid_file: str | None = None
+) -> None:
+    """Record on the host a daemon BenchFlow just started in main (*pid*,
+    or the pid its launch wrote to *pid_file*), with the start time root
+    reads for it now, so R1's check (:func:`refuse_task_processes`) knows it
+    for BenchFlow's own. Docker sandboxes only (the others start nothing of
+    the task's in main); a read that fails records nothing, and a daemon not
+    recorded counts as a task process."""
+    if not callable(getattr(type(env), "metadata_rules_install", None)):
+        return
+    if pid is not None:
+        source = f"p={int(pid)}"
+    elif pid_file is not None:
+        source = f"read -r p < {shlex.quote(pid_file)}"
+    else:
+        raise ValueError("note_own_process needs a pid or a pid file")
+    command = (
+        f'{source} && read -r s < "/proc/$p/stat" && s=${{s##*") "}} && '
+        'set -- $s && printf "%s %s\\n" "$p" "${20}"'
+    )
+    try:
+        read = await _read_exec(env, command, user="root", timeout_sec=30)
+    except Exception:
+        return
+    words = str(getattr(read, "stdout", "") or "").split()
+    if (
+        _exec_return_code(read) != 0
+        or len(words) != 2
+        or not all(w.isdigit() for w in words)
+    ):
+        return
+    record = getattr(env, OWN_PROCESSES_ATTR, None)
+    if not isinstance(record, list):
+        record = []
+        setattr(env, OWN_PROCESSES_ATTR, record)
+    entry = (int(words[0]), int(words[1]))
+    if entry not in record:
+        record.append(entry)
+
+
+def _every_process_held(env: Any) -> bool:
+    """Whether every process of main is under the policy already (the start
+    hold, an offline oracle's or script's rules, a policy oracle's)."""
+    return any(
+        isinstance(getattr(env, name, None), tuple)
+        for name in (
+            "_benchflow_start_hold",
+            "_benchflow_offline_rules",
+            "_benchflow_oracle_egress",
+        )
+    )
+
+
+def _image_entrypoint(env: Any) -> list[str]:
+    """main's image (or compose) ENTRYPOINT as the inert bootstrap read it
+    from the stopped prototype; [] when it has none or the sandbox has no
+    such record."""
+    configs = getattr(env, "_bootstrap_configs", None)
+    main = configs.get("main") if isinstance(configs, dict) else None
+    entry = main.get("Entrypoint") if isinstance(main, dict) else None
+    return [str(e) for e in entry] if isinstance(entry, list) else []
+
+
+async def _stop_task_processes(env: Any, pids: list[int]) -> None:
+    """SIGKILL main's task processes (``pids``, then whatever a re-read of
+    main finds), at most three rounds; best effort, for a trial already
+    refused."""
+    for _round in range(3):
+        if not pids:
+            return
+        with contextlib.suppress(Exception):
+            await _read_exec(
+                env,
+                "kill -KILL "
+                + " ".join(str(int(p)) for p in pids)
+                + " 2>/dev/null; true",
+                user="root",
+                timeout_sec=30,
+            )
+        try:
+            scan = await _read_exec(env, _TASK_PROCS_SH, user="root", timeout_sec=60)
+        except Exception:
+            return
+        pids = [
+            row["pid"]
+            for row in _task_processes(
+                str(getattr(scan, "stdout", "") or ""), own_processes(env)
+            )
+            if row["pid"] != 1
+        ]
+
+
+def _quiet_main_refusal(rows: list[dict[str, Any]], entry: str) -> str:
+    """R1's refusal: each process (pid, uid, command line), and what the
+    task's author changes."""
+    named = "; ".join(
+        f"pid {row['pid']} (uid {row['uid']}): {row['argv'] or row['exe'] or '?'}"
+        for row in rows[:_NAMED_MAX]
+    )
+    if len(rows) > _NAMED_MAX:
+        named += f"; and {len(rows) - _NAMED_MAX} more"
+    started = (
+        f"main's image ENTRYPOINT ({entry})" if entry else "the task's own commands"
+    )
+    count = "1 task process is" if len(rows) == 1 else f"{len(rows)} task processes are"
+    return (
+        "sandbox startup refused: main must be quiet when a model agent starts "
+        "under the task's network policy (only BenchFlow's own processes "
+        f"running), and {count} still running there, started by {started} "
+        f"outside the policy: {named}. BenchFlow applies the network policy "
+        "itself, so the task needs none of its own: drop the image's "
+        "ENTRYPOINT, or make it exec its command without leaving background "
+        "processes (no '&', daemon or service started at container start)"
+    )
+
+
+async def refuse_task_processes(env: Any) -> None:
+    """R1 (the rule, approved as "refuse those images"):
+    under the task's network policy a model agent's main keeps the network
+    its agent install and model proxy need, held only by the agent's own
+    uid rules, so main must be quiet when the agent is about to start. Root
+    lists main's processes then: the trial is refused, unscored and never
+    retried, when any process runs there that is not BenchFlow's own
+    (:func:`_task_processes`: known from the host's record of what it
+    started, never from a process's environment or path), whatever its uid,
+    naming each one. The refused trial's task processes are stopped at once.
+    Docker sandboxes only (the others start nothing of the task's in main);
+    not where every process of main is held already."""
+    if _every_process_held(env):
+        return
+    if not callable(getattr(type(env), "metadata_rules_install", None)):
+        return
+    scan = await _read_exec(env, _TASK_PROCS_SH, user="root", timeout_sec=60)
+    out = str(getattr(scan, "stdout", "") or "")
+    entry = " ".join(_image_entrypoint(env))[:120]
+    if "BF task-procs status=0" not in out:
+        raise RuntimeError(
+            "sandbox startup refused: main must be quiet when a model agent "
+            "starts under the task's network policy, but main's processes could "
+            "not be read (its image needs awk and readlink); run the task with an "
+            "oracle, script: or nop agent, or on an open network"
+        )
+    rows = _task_processes(out, own_processes(env))
+    if not rows:
+        return
+    # Refused: main's task processes stop now, not when the sandbox is torn
+    # down, so none has a connection after the refusal (the lead's looping-
+    # connect check). What one started meanwhile is found and stopped too.
+    await _stop_task_processes(env, [row["pid"] for row in rows if row["pid"] != 1])
+    if any(row["pid"] == 1 for row in rows):
+        # PID 1, which nothing in main may kill, stops from the host: main
+        # ends with it, and the trial is refused anyway.
+        stop_main = getattr(type(env), "kill_main", None)
+        if callable(stop_main):
+            with contextlib.suppress(Exception):
+                await stop_main(env)
+    raise RuntimeError(_quiet_main_refusal(rows, entry))
+
+
+async def _uid_egress_from_helper(
+    env: Any,
+    sandbox_user: str,
+    *,
+    allow_networks: tuple[str, ...] | None,
+    root_gid: int | None,
+    refuse_dns: bool,
+) -> None:
+    """The uid firewall from BenchFlow's helper (main without NET_ADMIN),
+    its rules recorded in the rule ledger as ``agent-uid``."""
+    from benchflow.sandbox.verifier_network import install_from_helper
+
+    uid = 0
+    if root_gid is None:
+        read = await _read_exec(
+            env, f"id -u {shlex.quote(sandbox_user)}", user="root", timeout_sec=60
+        )
+        text = str(getattr(read, "stdout", "") or "").strip()
+        if _exec_return_code(read) != 0 or not text.isdigit():
+            raise RuntimeError(
+                "Failed to enforce sandbox-user egress firewall: the uid of "
+                f"{sandbox_user!r} could not be read"
+            )
+        uid = int(text)
+    command = _agent_egress_firewall_cmd(
+        sandbox_user,
+        allow_networks=allow_networks,
+        root_gid=root_gid,
+        refuse_dns=refuse_dns,
+        uid=uid,
+    )
+    try:
+        await install_from_helper(env, command, phase="agent-uid")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Failed to enforce sandbox-user egress firewall: {exc}"
+        ) from exc
+    logger.info(
+        "Sandbox-user egress firewall active for %s from the helper (loopback allowed)",
+        sandbox_user,
     )
 
 
@@ -975,6 +1496,17 @@ async def enforce_sandbox_uid_egress(
     install runs on its own with a longer limit and the exec runs again, at
     most ``_FIREWALL_RETRIES`` times; a failure names the step.
     """
+    if getattr(env, "rules_by_helper", False) is True:
+        # main holds no NET_ADMIN: the rules come from BenchFlow's helper
+        # with the agent's uid read from main before it starts.
+        await _uid_egress_from_helper(
+            env,
+            sandbox_user,
+            allow_networks=allow_networks,
+            root_gid=root_gid,
+            refuse_dns=refuse_dns,
+        )
+        return
     command = _agent_egress_firewall_cmd(
         sandbox_user,
         allow_networks=allow_networks,
@@ -2731,6 +3263,325 @@ def _metadata_rules(env: Any) -> Any:
     return env if callable(install) else None
 
 
+async def _arm_verifier_network(
+    env: Any, task: Any, seconds: dict[str, float], *, separate: bool = False
+) -> None:
+    """Hold test.sh to the verifier's network
+    (:func:`benchflow.sandbox.verifier_network.arm_verifier_network`) where
+    it runs in ``main``, keep what was armed on the sandbox for the verifier,
+    and give test.sh the egress proxy's variables. Recorded as the
+    ``verifier_network`` step only where a policy holds it."""
+    from benchflow.sandbox import verifier_network as vn
+
+    config: Any = getattr(task, "config", None)
+    verifier: Any = getattr(config, "verifier", None)
+    if verifier is None:
+        return
+    service = getattr(verifier, "service", "main") or "main"
+    # The agent phase's every-process rules (an offline task's oracle turn, a
+    # root oracle's policy) give way to the verifier's with no moment unheld
+    # (RCI on 011d84c9f): a hold refuses everything but loopback
+    # while they come out, until the verifier's rules are in.
+    await vn.hold_for_handover(env)
+    await vn.remove_offline_agent_phase(env)
+    await _hand_over_oracle_egress(env)
+    # The task's policy held on every process of main since its start.
+    await vn.remove_start_hold(env)
+    if service != "main":
+        if callable(getattr(type(env), "metadata_service_targets", None)):
+            opt_out = getattr(config, "cloud_metadata_opt_out", "")
+            with _prep_timing(seconds, "verifier_network"):
+                armed = await vn.arm_verifier_service(
+                    env,
+                    task,
+                    service,
+                    vn.verifier_network_mode(config),
+                    metadata=not (isinstance(opt_out, str) and opt_out),
+                )
+            env._benchflow_verifier_network = armed
+        await vn.release_handover(env)
+        return
+    docker = _metadata_rules(env) is not None
+    if separate:
+        mode, where = vn.separate_verifier_network(config), "separate sandbox"
+        if not docker:
+            # A provider's separate sandbox keeps the network it declares
+            # (WeightBench grades on Modal under public): no rule, no launch.
+            with contextlib.suppress(AttributeError):
+                env._benchflow_verifier_network = vn.VerifierNetwork(
+                    mode, "its own", where=where, launch=False
+                )
+            await vn.release_handover(env)
+            return
+    else:
+        mode, where = vn.verifier_network_mode(config), "in-container"
+    # What main's metadata rules refused during the agent's turn, for the
+    # record.
+    refused_before = (
+        await vn.main_metadata_refused(env) if where == "in-container" else None
+    )
+    if mode == "public":
+        # The launch keeps root from removing the cloud metadata rules, where
+        # they went in.
+        cover = getattr(env, "_benchflow_metadata_cover", None)
+        covered = isinstance(cover, dict) and cover.get("state") == "on"
+        with contextlib.suppress(AttributeError):
+            env._benchflow_verifier_network = vn.VerifierNetwork(
+                "public",
+                "open",
+                where=where,
+                launch=docker or covered,
+                metadata_refused_before=refused_before,
+            )
+        await vn.release_handover(env)
+        return
+    with _prep_timing(seconds, "verifier_network"):
+        # Takes the handover's hold out once its rules are in.
+        armed = await vn.arm_verifier_network(env, task, mode, where=where)
+    armed.metadata_refused_before = refused_before
+    env._benchflow_verifier_network = armed
+    if armed.env:
+        verifier.env = {**(verifier.env or {}), **armed.env}
+
+
+async def _hand_over_oracle_egress(env: Any) -> None:
+    """The oracle's every-process rules and its proxy's container, kept from
+    the end of solve.sh (rollout._setup): out now, under the handover's hold,
+    its refusals kept in the trial folder."""
+    pending = getattr(env, "_benchflow_oracle_egress", None)
+    if not isinstance(pending, tuple) or len(pending) != 2:
+        return
+    with contextlib.suppress(AttributeError):
+        env._benchflow_oracle_egress = None
+    from benchflow.sandbox.oracle_egress import disarm_oracle_egress
+
+    armed, rollout_dir = pending
+    await disarm_oracle_egress(env, armed, rollout_dir)
+
+
+def _verifier_metadata_connect_cmd() -> str:
+    """Root's TCP connect to 169.254.169.254:80 and nothing more, telling the
+    kernel's unreachable from a refusal: ``BF metadata-connect <refused|
+    reached|timeout|unreachable|failed|skipped>``."""
+    return (
+        "if command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then "
+        f'e=$(timeout 3 bash -c "exec 3<>/dev/tcp/{_CLOUD_METADATA_PROBE}/80" 2>&1); r=$?; '
+        "case $r in 0) s=reached;; 124) s=timeout;; *) case $e in "
+        "*[Rr]efused*) s=refused;; *[Uu]nreachable*|*'No route'*) s=unreachable;; "
+        "*) s=failed;; esac;; esac; else s=skipped; fi; "
+        'echo "BF metadata-connect $s"'
+    )
+
+
+def _verifier_metadata_failure(why: str) -> RuntimeError:
+    return RuntimeError(
+        "Verifier hardening failed: the cloud metadata endpoints could not be "
+        f"refused to root before test.sh ({why}). test.sh runs as root and runs "
+        "code the agent wrote, so it does not run with them open; "
+        "set allow_cloud_metadata = true in the task's [environment] table if "
+        "its verifier must reach them"
+    )
+
+
+def _cloud_metadata_verifier_applies(env: Any, task: Any) -> bool:
+    """Whether hardening refuses root the cloud metadata endpoints
+    (:func:`cover_cloud_metadata_for_verifier`): a sandbox with BenchFlow's
+    metadata helper, whose provider gives it a route to them, and a task that
+    does not opt out."""
+    opt_out = getattr(getattr(task, "config", None), "cloud_metadata_opt_out", "")
+    return (
+        not (isinstance(opt_out, str) and opt_out)
+        and _metadata_rules(env) is not None
+        and getattr(type(env), "cloud_metadata_unreachable", False) is not True
+    )
+
+
+async def cover_cloud_metadata_for_verifier(
+    env: Any, task: Any
+) -> dict[str, Any] | None:
+    """Refuse the cloud metadata endpoints to every user, root included, from
+    the end of the agent's turn to the end of the verifier.
+
+    The agent's block refuses them to non-root users (to root too only for
+    a root agent), and under ``no-network``, ``allowlist`` and ``denylist``
+    only the uid firewall holds the agent's user. test.sh runs as root,
+    though, and runs code the agent wrote: a solution module a test imports,
+    a hook the agent left. On a GCE VM's Docker that root reached the VM's
+    metadata server under every network policy. So before test.sh, whatever
+    the policy, root's script adds the rules again with ``cover_root``
+    (:func:`_cloud_metadata_rule`: TCP to every endpoint but port 53, which
+    GCE and Azure also serve DNS on), from BenchFlow's metadata helper, which
+    shares main's network namespace, else as root in main. They stay while
+    main runs: main cannot restart (the block's own condition), and where
+    the helper adds them main's root holds no NET_ADMIN to remove them. A
+    ``main`` on the host's network, or another container's, gets no rule (it
+    would land in that namespace) and test.sh does not run, as a ``main``
+    that could restart.
+
+    The proof is root's own test connect to 169.254.169.254:80, refused,
+    raising the rule's packet counter, which only this namespace's rules
+    count: a host's own block never passes for it.
+
+    Only the task's own opt-out (``allow_cloud_metadata = true`` in its
+    ``[environment]`` table, or ``metadata.x-allow-cloud-metadata = true``)
+    leaves the verifier the endpoints; a run's ``--allow-cloud-metadata``
+    opens them to its agent alone. A sandbox without BenchFlow's helper
+    (Daytona, Modal, AgentCore, Apple) runs on its provider's hosts, whose
+    own metadata policy applies, as for a root agent there
+    (``provider-managed``): nothing is installed. Returns the record (state,
+    why, rules_from), or None when nothing applies. Raises RuntimeError
+    ("Verifier hardening failed") when the rules cannot be added or proven,
+    and test.sh does not run.
+    """
+    config = getattr(task, "config", None)
+    opt_out = getattr(config, "cloud_metadata_opt_out", "")
+    if isinstance(opt_out, str) and opt_out:
+        return {"state": "off", "why": f"the task opts out ({opt_out})"}
+    rules = _metadata_rules(env)
+    if rules is None or getattr(type(env), "cloud_metadata_unreachable", False) is True:
+        return None
+    from benchflow.sandbox.cloud_metadata import ComposeTopology, task_compose_topology
+
+    # The project the run resolved and froze (DockerSandbox.freeze_launch):
+    # what runs, include and extends resolved;
+    # else the task's raw file.
+    resolved = getattr(env, "_resolved_topology", None)
+    environment_dir = getattr(getattr(task, "paths", None), "environment_dir", None)
+    topology = (
+        resolved
+        if isinstance(resolved, ComposeTopology)
+        else task_compose_topology(
+            environment_dir if isinstance(environment_dir, Path) else None
+        )
+    )
+    if topology.main_network_mode == "host" and not topology.unresolved:
+        # The host's own namespace: no rule of the trial's goes there (
+        # RCI 03:59Z). A restricted policy was refused before start, so the
+        # network is open; the record says so and test.sh runs as on the rc.
+        from benchflow.sandbox._metadata_helper import HOST_NETWORK
+
+        return {"state": "host network", "why": HOST_NETWORK.format(what="main")}
+    if topology.main_shares_outside_network:
+        # The helper joins main's namespace: there that is another container's
+        # (or one the file does not name), where no rule of the trial's may
+        # go, as the agent's block is not installed there either.
+        raise _verifier_metadata_failure(topology.outside_why())
+    if callable(getattr(type(env), "metadata_main_restarts", None)):
+        why_restarts = await env.metadata_main_restarts()
+        if why_restarts:
+            # A restarted main gets a new namespace without the rules.
+            raise _verifier_metadata_failure(f"{why_restarts}, so no rule could hold")
+    from benchflow.sandbox.verifier_network import _no_route_cmd
+
+    routes, _ = await _cloud_metadata_exec(
+        env, _no_route_cmd(), user="root", timeout_sec=60
+    )
+    if "BF verifier-network routes 0" in (getattr(routes, "stdout", "") or ""):
+        # network: none (an oracle's or a script's offline run): no endpoint
+        # has a route; the verifier's network proof shows the kernel says so.
+        return {"state": NOT_REACHABLE, "why": "main has no route out"}
+    command = _cloud_metadata_block_cmd(cover_root=True)
+
+    def report(out: Any) -> dict[str, str]:
+        out = out if isinstance(out, str) else ""
+        line = next(
+            (ln for ln in out.splitlines() if ln.startswith("BF metadata ")), ""
+        )
+        return _report_fields(line)
+
+    async def count(fw4: str) -> int | None:
+        after_cmd = _cloud_metadata_after_cmd(fw4, f"BFMD{secrets.token_hex(4)}")
+        if from_helper:
+            result, failed = await rules.metadata_rules_run(after_cmd, timeout_sec=60)
+        else:
+            result, failed = await _cloud_metadata_exec(
+                env, after_cmd, user="root", timeout_sec=60
+            )
+        found = re.search(
+            r"BF metadata-hits (\d+)", getattr(result, "stdout", "") or ""
+        )
+        return int(found[1]) if found and not failed else None
+
+    from_helper = False
+    try:
+        fields: dict[str, str] = {}
+        outcome = await rules.metadata_rules_install(command)
+        if outcome is not None:
+            result, failed = outcome
+            fields = report(getattr(result, "stdout", ""))
+            from_helper = not failed and fields.get("status") == "0"
+        if not from_helper:
+            result, failed = await _cloud_metadata_exec(
+                env, command, user="root", timeout_sec=_CLOUD_METADATA_EXEC_SEC
+            )
+            fields = {} if failed else report(getattr(result, "stdout", ""))
+            if failed:
+                raise _verifier_metadata_failure(f"root's script did not run: {failed}")
+        status = fields.get("status", "")
+        if status != "0":
+            raise _verifier_metadata_failure(
+                _CLOUD_METADATA_NOT_INSTALLED.get(
+                    status, f"root's script reported status {status or 'missing'}"
+                )
+            )
+        fw4 = fields.get("fw4", "")
+        fw4 = fw4 if fw4 in _CLOUD_METADATA_TOOLS4 else "iptables"
+        before = await count(fw4)
+        probed, _ = await _cloud_metadata_exec(
+            env, _verifier_metadata_connect_cmd(), user="root", timeout_sec=30
+        )
+        found = re.search(
+            r"BF metadata-connect (\w+)", getattr(probed, "stdout", "") or ""
+        )
+        connect = found[1] if found else ""
+        if connect == "skipped" and from_helper:
+            # No bash and timeout in the image: the helper connects as root
+            # in main's namespace.
+            connect, _ = await _cloud_metadata_helper_test_connect(env, rules, None)
+        if connect == "unreachable":
+            # The kernel has no route to the endpoint (an internal compose
+            # network): nothing reaches it, rule or not.
+            return {
+                "state": "on",
+                "why": "the kernel has no route to the endpoint (unreachable)",
+                "rules_from": "helper" if from_helper else "sandbox",
+                "proof": {"connect": "unreachable", "kernel": "unreachable"},
+            }
+        after = await count(fw4)
+        hits = after - before if before is not None and after is not None else 0
+        if connect != "refused" or hits < 1:
+            raise _verifier_metadata_failure(
+                f"root's test connect to {_CLOUD_METADATA_PROBE}:80 was "
+                f"{connect or 'not made'} and the rule counted {hits}"
+            )
+        if from_helper:
+            from benchflow.sandbox import rule_ledger
+            from benchflow.sandbox.service_cover import (
+                _metadata_rules as metadata_rule_specs,
+            )
+
+            m4, m6 = metadata_rule_specs()
+            fw6 = fields.get("fw6", "")
+            rule_ledger.record(
+                env,
+                rule_ledger.InstalledRules(
+                    where="main",
+                    phase="verifier-metadata",
+                    v4=m4,
+                    v6=m6,
+                    tool4=fw4,
+                    tool6=fw6 if fw6 in _CLOUD_METADATA_TOOLS6 else "ip6tables",
+                ),
+            )
+    finally:
+        rules.metadata_rules_close()
+    return {
+        "state": "on",
+        "why": "root's test connect was refused and the rule counted it",
+        "rules_from": "helper" if from_helper else "sandbox",
+    }
+
+
 async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str, Any]:
     """Refuse the cloud metadata endpoints to ``sandbox_user`` (and every
     other non-root user) before the agent starts; return the record.
@@ -3781,6 +4632,25 @@ async def _kit_services(env) -> list[str]:
 # 0-65535 user namespace and nobody's 65534 that a fresh uid stays under.
 _SANDBOX_UID_MIN = 1000
 _SANDBOX_UID_LIMIT = 60000
+#: Below nobody (65534) and 65535: the last id a user made above the
+#: image's regular range may take.
+_SANDBOX_UID_ABOVE_LIMIT = 65534
+# The first id above the image's regular users and groups: past
+# login.defs' UID_MAX and GID_MAX (useradd's and groupadd's ranges),
+# adduser.conf's LAST_UID and LAST_GID (Debian's adduser) and 60000
+# (busybox's), whichever is highest.
+_ABOVE_REGULAR_IDS_SH = (
+    "bf_top=60000; "
+    "if [ -r /etc/login.defs ]; then while read -r bf_k bf_v bf_x; do "
+    'case "$bf_k" in UID_MAX|GID_MAX) case "$bf_v" in ""|*[!0-9]*) ;; '
+    '*) [ "$bf_v" -le "$bf_top" ] || bf_top=$bf_v;; esac;; esac; '
+    "done < /etc/login.defs; fi; "
+    "if [ -r /etc/adduser.conf ]; then while IFS='= ' read -r bf_k bf_v bf_x; do "
+    'case "$bf_k" in LAST_UID|LAST_GID) case "$bf_v" in ""|*[!0-9]*) ;; '
+    '*) [ "$bf_v" -le "$bf_top" ] || bf_top=$bf_v;; esac;; esac; '
+    "done < /etc/adduser.conf; fi; "
+    "bf_uid=$((bf_top + 1))"
+)
 
 # Every uid and gid the image already uses: the ids /etc/passwd and /etc/group
 # name, and every file's owner and group, including image VOLUMEs and task
@@ -3806,8 +4676,17 @@ printf '%s\n' "$bf_ids" | tr '\n' ' '
 """.strip()
 
 
-def _create_sandbox_user_cmd(sandbox_user: str) -> str:
+def _create_sandbox_user_cmd(
+    sandbox_user: str, *, above_regular_ids: bool = False
+) -> str:
     """Create *sandbox_user* with a uid and gid that own nothing in the image.
+
+    *above_regular_ids*: for a user made before the task's ENTRYPOINT runs
+    (M1), ids above the image's regular range
+    (:data:`_ABOVE_REGULAR_IDS_SH`, below :data:`_SANDBOX_UID_ABOVE_LIMIT`),
+    so a ``useradd`` or ``groupadd`` the ENTRYPOINT runs gets exactly the
+    ids it got before: the user takes none of them. None free there: the
+    command fails and makes nothing.
 
     ``useradd`` takes the first uid /etc/passwd does not name, which can be
     one the image's own files belong to: an image whose ``uv`` is uid 1001's
@@ -3819,14 +4698,19 @@ def _create_sandbox_user_cmd(sandbox_user: str) -> str:
     is: the task chose it. busybox images (Alpine) have adduser, not useradd.
     """
     user = shlex.quote(sandbox_user)
+    start, limit = (
+        (_ABOVE_REGULAR_IDS_SH, _SANDBOX_UID_ABOVE_LIMIT)
+        if above_regular_ids
+        else (f"bf_uid={_SANDBOX_UID_MIN}", _SANDBOX_UID_LIMIT)
+    )
     return (
         f"{{ id -u {user} >/dev/null 2>&1 || {{ "
         f'bf_ids=" $({_system_probe(_USED_IDS_CMD, "bf-used-ids")})" || '
         '{ echo "sandbox uid/gid inventory could not complete" >&2; exit 1; }; '
-        f"bf_uid={_SANDBOX_UID_MIN}; "
+        f"{start}; "
         f'while case "$bf_ids" in *" $bf_uid "*) true;; *) false;; esac; '
         f"do bf_uid=$((bf_uid + 1)); done; "
-        f'[ "$bf_uid" -lt {_SANDBOX_UID_LIMIT} ] && '
+        f'[ "$bf_uid" -lt {limit} ] && '
         f"if command -v useradd >/dev/null 2>&1; then "
         f'groupadd -g "$bf_uid" {user} && '
         f'useradd -m -u "$bf_uid" -g "$bf_uid" -s /bin/bash {user}; '
@@ -3858,8 +4742,11 @@ async def setup_sandbox_user(
     the agent's turn.
     """
     from benchflow._runtime_tree import (
+        WORKSPACE_MODE_ATTR,
+        granted_mode,
         workspace_grant_command,
         workspace_grant_problem,
+        workspace_mode_probe,
     )
 
     if not re.match(r"^[a-z_][a-z0-9_-]*$", sandbox_user):
@@ -3872,28 +4759,36 @@ async def setup_sandbox_user(
             f"BenchFlow will not give the sandbox user {sandbox_user!r} its "
             f"workspace: {problem}"
         )
-    # Scripted controls run as root and use no privileged agent tools; the
-    # physical check protects an untrusted user turn, not an oracle workspace.
-    if guard_daemon:
-        # Resolve aliases in the sandbox, where its symlinks live, before the
-        # grant: a workspace that is a link into the runtime tree or above a
-        # system folder is refused by where it leads (FF-install-C1).
-        # Read from a receipt, as every lockdown read is. A failed exec stops
-        # the setup; a receipt that is missing (a stand-in sandbox) leaves the
-        # path as written, already checked above.
-        from benchflow.sandbox._exec_receipt import RECEIPT_FAILED
+    # Resolve aliases in the sandbox, where its symlinks live, before the
+    # grant. Read from a receipt, as every lockdown read is; a receipt that is
+    # missing (a stand-in sandbox) leaves the path as written, already checked
+    # above. The same read gives the workspace's mode when the grant will keep
+    # a daemon folder in it root's and make it 1777: the hardening gives it
+    # back before test.sh (the first grant's), in scripted runs too, so their
+    # test.sh sees the workspace as an agent trial's does.
+    from benchflow.sandbox._exec_receipt import RECEIPT_FAILED
 
-        resolved = await _read_exec(
-            env, f"cd {shlex.quote(workspace)} && pwd -P", timeout_sec=timeout_sec
-        )
-        status = _exec_return_code(resolved)
+    resolved = await _read_exec(
+        env,
+        f"cd {shlex.quote(workspace)} && pwd -P && {workspace_mode_probe(workspace)}",
+        timeout_sec=timeout_sec,
+    )
+    status = _exec_return_code(resolved)
+    text, mode = granted_mode(getattr(resolved, "stdout", "") or "")
+    physical = text.rstrip("\n")
+    if status != 0:
+        physical, mode = "", None
+    # Scripted controls run as root and use no privileged agent tools; the
+    # physical check protects an untrusted user turn, not an oracle workspace,
+    # and one the image lacks is left without a grant.
+    if guard_daemon:
+        # A failed exec stops the setup. A workspace that is a link into the
+        # runtime tree or above a system folder is refused by where it leads
+        # (FF-install-C1).
         if status not in (0, RECEIPT_FAILED):
             raise RuntimeError(
                 "could not resolve the sandbox workspace before user setup"
             )
-        physical = (getattr(resolved, "stdout", "") or "").rstrip("\n")
-        if status != 0:
-            physical = ""
         if physical:
             problem = workspace_grant_problem(physical)
             if problem is not None:
@@ -3903,6 +4798,10 @@ async def setup_sandbox_user(
                     f"{physical!r}: {problem}"
                 )
             workspace = physical
+    if mode is not None:
+        modes = getattr(env, WORKSPACE_MODE_ATTR, None) or {}
+        modes.setdefault(physical or workspace, mode)
+        setattr(env, WORKSPACE_MODE_ATTR, modes)
     logger.info(f"Setting up sandbox user: {sandbox_user}")
     # Every compose service's kit is built, then main's, while the images are
     # the task's own and before the workspace grant can hand any of them
@@ -3928,6 +4827,7 @@ async def setup_sandbox_user(
         if empty_dirs
         else ""
     )
+    started = time.monotonic()
     result = await exec_raw(
         env.exec,
         f"{_create_sandbox_user_cmd(sandbox_user)} && "
@@ -3949,6 +4849,12 @@ async def setup_sandbox_user(
         user="root",
         timeout_sec=timeout_sec,
     )
+    if ended_by_time_limit(result, timeout_sec, time.monotonic() - started):
+        # The time limit cut the setup short, most often in the workspace
+        # grant (a large node_modules): the agent would start on a workspace
+        # that is only partly its own. Docker raises this for the same
+        # overrun; Daytona and Modal answer it with an exit status.
+        raise ExecTimeoutError(timeout_sec)
     if _exec_return_code(result) != 0:
         # A later step (a chown on a read-only mount) may fail once the user
         # exists, as before; a missing user would only surface much later.
@@ -3967,6 +4873,7 @@ async def setup_sandbox_user(
                 f"root with --sandbox-user none or add one to the image.{detail}"
             )
         logger.warning(f"Sandbox user {sandbox_user} setup step failed.{detail}")
+        await _require_writable_workspace(env, sandbox_user, workspace, result)
     # Root's commands and the verifier find their programs on PATH: keep the
     # agent user from changing them. The oracle and nop get it too, so the
     # verifier keeps the same tool folders whoever ran (Rust 0.8.2: the
@@ -3996,6 +4903,187 @@ async def setup_sandbox_user(
         await guard_sandbox_daemon(env, sandbox_user)
     logger.info(f"Sandbox user {sandbox_user} ready (workspace={workspace})")
     return workspace
+
+
+# What the three workspace checks answer, as exit statuses: a status is
+# machine data on every backend, and nothing here is decided by output text.
+_WRITABLE = 0
+_READ_ONLY = 1  # the write was refused with EROFS: a read-only mount
+_REFUSED = 2  # the write was refused for another reason
+_NOT_GRANTED = 3  # an entry under the root is not the user's
+_MISSING = 4  # the folder does not exist
+_NO_OWNER = 5  # the reach check could not read who owns an entry
+
+
+def _write_check(folder: str) -> str:
+    """sh: try to create a file in *folder*. Exits 0 when it could, 1 when the
+    filesystem is read-only (EROFS, by the C locale's message for it), 2 when
+    the write was refused for another reason (no permission, a root-squashed
+    or user-namespace mount, a full disk), 4 when there is no such folder."""
+    quoted = shlex.quote(folder.rstrip("/") or "/")
+    script = (
+        f"[ -d {quoted} ] || exit {_MISSING}; "
+        f"p={quoted}/.benchflow-write-check-$$; "
+        'if err=$( { : > "$p"; } 2>&1 ); then rm -f -- "$p"; exit 0; fi; '
+        f'case "$err" in *"Read-only file system"*) exit {_READ_ONLY};; esac; '
+        f"exit {_REFUSED}"
+    )
+    return f"LC_ALL=C sh -c {shlex.quote(script)}"
+
+
+def _grant_reach_check(workspace: str, sandbox_user: str) -> str:
+    """sh, as root: exits 3 and names the first entry directly under the
+    workspace that the grant should have given the user and did not.
+
+    An entry is skipped when the user owns it, when it is a link or not a
+    file or folder, when the grant leaves it root's on purpose (a reserved
+    folder), or when it is on a read-only mount (a write to it as root is
+    refused with EROFS). Any other entry is one the grant never reached: a
+    world-writable or sticky root lets the user create files there, and says
+    nothing about the files already in it.
+
+    The owner is read with ``find -user`` when the image's find answers
+    that, else as the numeric owner ``ls -n`` prints (POSIX; busybox and
+    coreutils have it) against ``id -u``, which the setup has already run.
+    An entry whose owner neither can read exits 5: the check could not run.
+    """
+    from benchflow._runtime_tree import _reserved_in
+
+    ws = "/" + workspace.strip("/")
+    reserved = "|".join(shlex.quote(r) for r in _reserved_in(ws))
+    skip_reserved = f'case "$e" in {reserved}) continue;; esac; ' if reserved else ""
+    script = (
+        f"ws={shlex.quote(ws)}; u={shlex.quote(sandbox_user)}; "
+        'if find "$ws" -maxdepth 0 -user "$u" >/dev/null 2>&1; then '
+        'mine() { [ -n "$(find "$1" -maxdepth 0 -user "$u" 2>/dev/null)" ]; }; '
+        'else uid=$(id -u "$u" 2>/dev/null); '
+        f'case "$uid" in ""|*[!0-9]*) exit {_NO_OWNER};; esac; '
+        'mine() { o=$(ls -ldn "$1" 2>/dev/null | '
+        '{ read -r m n o r && printf "%s" "$o"; }); '
+        f'case "$o" in ""|*[!0-9]*) exit {_NO_OWNER};; esac; '
+        '[ "$o" = "$uid" ]; }; fi; '
+        'for e in "$ws"/* "$ws"/.[!.]* "$ws"/..?*; do '
+        '[ -e "$e" ] || continue; [ -L "$e" ] && continue; '
+        f"{skip_reserved}"
+        'mine "$e" && continue; '
+        'if [ -d "$e" ]; then p="$e/.benchflow-write-check-$$"; '
+        'if err=$( { : > "$p"; } 2>&1 ); then rm -f -- "$p"; '
+        f'printf "%s\n" "$e"; exit {_NOT_GRANTED}; fi; '
+        # Opened for appending and nothing written: the file is not changed.
+        'elif [ -f "$e" ]; then if err=$( { : >> "$e"; } 2>&1 ); then '
+        f'printf "%s\n" "$e"; exit {_NOT_GRANTED}; fi; '
+        "else continue; fi; "
+        'case "$err" in *"Read-only file system"*) continue;; esac; '
+        f'printf "%s\n" "$e"; exit {_NOT_GRANTED}; '
+        "done; exit 0"
+    )
+    return f"LC_ALL=C sh -c {shlex.quote(script)}"
+
+
+async def _require_writable_workspace(
+    env, sandbox_user: str, workspace: str, setup: Any
+) -> None:
+    """After a user-setup step failed: stop the trial unless the sandbox user
+    has its workspace.
+
+    The setup is one chained command, so a failure anywhere before the grant
+    skips the grant, and the agent would start in a workspace it cannot write:
+    the trial was then graded as the agent's failure. That is the sandbox's
+    failure, and another attempt may not meet it.
+
+    Two cases are left as they were. A workspace root on a read-only mount,
+    where a write by root is refused with EROFS: the task made it read-only
+    and no grant could change that. And a workspace that does not exist in
+    the image: there is nothing to grant, and the setup went on without it
+    before (``tests/test_b32b_kit_without_python_container.py`` sets up a
+    user for an ``/app`` its image lacks). That case is recorded: a warning
+    in the log and in result.json's ``warnings``. A root that refuses root for any
+    other reason (a root-squashed or user-namespace mount) is not read-only,
+    and is judged by whether the user can write it.
+
+    Otherwise the user must be able to create a file in the root, and every
+    entry directly under it must be the user's, a reserved folder, or on a
+    read-only mount (a chown that failed there stays tolerated).
+
+    A check that could not run (any status but the ones its script sets,
+    and the reach check's 5: no owner could be read) stops the trial too:
+    an unknown answer never counts as "read-only" or as granted.
+    Every decision is an exit status; *setup*, the failed step's result,
+    is only shown. The reach check is read through a receipt, as every
+    lockdown read is: its status decides and the entry it names is only
+    shown. A read whose receipt failed (a lost exec, a stand-in sandbox
+    that prints none) has no answer, so the check could not run.
+    """
+    detail = _exec_failure_detail(setup)
+
+    def unchecked(who: str, status: int) -> SandboxStartupError:
+        return SandboxStartupError(
+            f"could not check that the sandbox user {sandbox_user!r} has its "
+            f"workspace {workspace} after a setup step failed: the check as "
+            f"{who} exited {status}.{detail}"
+        )
+
+    as_root = _exec_return_code(
+        await exec_raw(env.exec, _write_check(workspace), user="root", timeout_sec=30)
+    )
+    if as_root == _READ_ONLY:
+        logger.info(f"The workspace {workspace} is on a read-only mount; left so")
+        return
+    if as_root == _MISSING:
+        # Tolerated, never silent: a log line, and result.json's warnings.
+        from benchflow._utils.trial_warnings import report_trial_warning
+
+        note = f"workspace {workspace} absent in image; grant skipped"
+        logger.warning(note)
+        report_trial_warning(note)
+        return
+    if as_root not in (_WRITABLE, _REFUSED):
+        raise unchecked("root", as_root)
+    as_user = _exec_return_code(
+        await exec_raw(
+            env.exec, _write_check(workspace), user=sandbox_user, timeout_sec=30
+        )
+    )
+    if as_user in (_READ_ONLY, _REFUSED):
+        raise SandboxStartupError(
+            f"the sandbox user {sandbox_user!r} cannot write its workspace "
+            f"{workspace}: the step that gives it the workspace failed, and the "
+            f"agent would start without it.{detail}"
+        )
+    if as_user != _WRITABLE:
+        raise unchecked(sandbox_user, as_user)
+    reach = await _read_exec(
+        env,
+        _grant_reach_check(workspace, sandbox_user),
+        user="root",
+        timeout_sec=60,
+    )
+    if isinstance(reach, ReceiptFailure):
+        raise SandboxStartupError(
+            f"could not check that the sandbox user {sandbox_user!r} has its "
+            f"workspace {workspace} after a setup step failed: the answer of "
+            f"the check as root could not be read.{_exec_failure_detail(reach)}"
+            f"{detail}"
+        )
+    reached = reach.return_code
+    if reached == _NOT_GRANTED:
+        # All the check printed but its newline: a name may hold a newline,
+        # a carriage return or U+2028. Shown under the workspace as the check
+        # spells it, the name alone cut to 200 characters, as a repr.
+        printed = (reach.stdout or "").removesuffix("\n")
+        entry = printed.removeprefix("/" + workspace.strip("/") + "/")
+        cut = "..." if len(entry) > 200 else ""
+        given = (
+            f"{entry[:200]!r}{cut} in its" if entry else "an entry directly under its"
+        )
+        raise SandboxStartupError(
+            f"the sandbox user {sandbox_user!r} was not given {given} "
+            f"workspace {workspace}: the step that gives it the workspace "
+            "failed before reaching it, and the entry is not on a read-only "
+            f"mount.{detail}"
+        )
+    if reached != 0:
+        raise unchecked("root", reached)
 
 
 async def lockdown_paths(env, paths: list[str]) -> None:
@@ -4050,11 +5138,20 @@ _BUILD_CONFIG_FILES = (
     "requirements-dev.txt",
     "Makefile",
 )
+# pytest's own configuration files that are not build files, copied into the
+# same snapshot for strict's -c (_image_pytest_ini): no manifest entry
+# and no restore. The snapshot already holds pyproject.toml, setup.cfg and
+# tox.ini.
+_PYTEST_CONFIG_SNAPSHOT_FILES = ("pytest.ini", ".pytest.ini")
 # chmod 700: root-only so sandbox_user cannot read or overwrite the snapshot.
 # A fixed private root path keeps our pre-agent copy outside workspace and
 # runtime input trees. A /tmp copy otherwise taints even an unchanged project
 # because it has no workspace-relative image counterpart (V2-R12-CONF-5).
 _SNAPSHOT_DIR = "/.runtime_build_snapshot"
+# Where strict's copy of the image's pytest configuration file goes: root's,
+# readable by the verifier's user, outside the workspace, so nothing test.sh
+# does to the repository (SWT-bench's ``git add -A; git diff HEAD``) sees it.
+_PYTEST_CONFIG_DIR = _SNAPSHOT_DIR.replace("build_snapshot", "pytest_config")
 _SNAPSHOT_MANIFEST = f"{_SNAPSHOT_DIR}/manifest.json"
 # The second step of _snapshot_build_config's exec (PY8 U12): the manifest
 # the host builds from the copy's output (json.dumps of {file: present} in
@@ -4111,9 +5208,14 @@ async def _snapshot_build_config(env, workspace: str) -> None:
         f"else echo {fname}=absent; fi"
         for fname in _BUILD_CONFIG_FILES
     ]
+    pytest_copies = [
+        f"if [ -f {workspace}/{fname} ]; then "
+        f"cp --preserve=all {workspace}/{fname} {_SNAPSHOT_DIR}/{fname}; fi"
+        for fname in _PYTEST_CONFIG_SNAPSHOT_FILES
+    ]
     copy = (
         f"mkdir -p {_SNAPSHOT_DIR} && chmod 700 {_SNAPSHOT_DIR} && "
-        f"{{ {'; '.join(probes)}; }}"
+        f"{{ {'; '.join(pytest_copies + probes)}; }}"
     )
     tag = new_tag()
     # The copy and the manifest write ride in front of the image inspectors'
@@ -4260,7 +5362,11 @@ async def _refresh_verifier_workspace(env, workspace: str) -> None:
 VERIFIER_ENV: dict[str, str] = {
     "PATH": TRUSTED_SYSTEM_PATH,
     "PYTEST_ADDOPTS": (
-        "-c /dev/null "  # block pyproject.toml/pytest.ini/tox.ini/setup.cfg discovery
+        # Strict never reads the agent's configuration file (the
+        # lead's 13:57Z ruling: an agent's ini addopts loaded its own plugin
+        # ahead of the guard). The image's own file replaces /dev/null where
+        # it has one (_image_pytest_ini).
+        "-c /dev/null "
         "--confcutdir=/tests "  # block conftest.py walk-up beyond /tests
         "-p no:cacheprovider"
         # --rootdir is injected dynamically by _build_pytest_addopts() based on
@@ -4294,22 +5400,24 @@ VERIFIER_ENV: dict[str, str] = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     # The freeze makes the workspace's repositories root's, so root's git
     # trusts what the agent wrote in them. At command-line scope (git >= 2.31)
-    # git runs no hook, fsmonitor, external diff or signing program of theirs;
-    # a test.sh that wants one names it with -c, which comes later. Drivers and
-    # includes named in the repository's config are purged with the freeze.
-    "GIT_CONFIG_COUNT": "6",
+    # git runs no hook, fsmonitor or signing program of theirs; a test.sh that
+    # wants one names it with -c, which comes later. An external diff, a
+    # driver or an include the agent named in a repository's config is purged
+    # with the freeze (_PURGE_GIT_CONTROLS_SCRIPT). diff.external is not pinned
+    # here: git has no command-line value that unsets it, and an empty one
+    # made every git diff in test.sh run "" and die, an empty patch scored 0
+    # (SWT-bench). The image's own value, if it has one, stays.
+    "GIT_CONFIG_COUNT": "5",
     "GIT_CONFIG_KEY_0": "core.hooksPath",
     "GIT_CONFIG_VALUE_0": "/dev/null",
     "GIT_CONFIG_KEY_1": "core.fsmonitor",
     "GIT_CONFIG_VALUE_1": "false",
-    "GIT_CONFIG_KEY_2": "diff.external",
-    "GIT_CONFIG_VALUE_2": "",
-    "GIT_CONFIG_KEY_3": "commit.gpgSign",
+    "GIT_CONFIG_KEY_2": "commit.gpgSign",
+    "GIT_CONFIG_VALUE_2": "false",
+    "GIT_CONFIG_KEY_3": "tag.gpgSign",
     "GIT_CONFIG_VALUE_3": "false",
-    "GIT_CONFIG_KEY_4": "tag.gpgSign",
+    "GIT_CONFIG_KEY_4": "log.showSignature",
     "GIT_CONFIG_VALUE_4": "false",
-    "GIT_CONFIG_KEY_5": "log.showSignature",
-    "GIT_CONFIG_VALUE_5": "false",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
@@ -4356,9 +5464,9 @@ _LEGACY_VERIFIER_CONFCUTDIR = "/tests"
 
 @dataclass(frozen=True)
 class ImagePytestIni:
-    """The image's own pytest configuration file, unchanged by the agent.
+    """The image's own pytest configuration file.
 
-    *path* is the file in the workspace; *addopts* its ``addopts`` with every
+    *path* is BenchFlow's copy of it (:data:`_PYTEST_CONFIG_DIR`); *addopts* its ``addopts`` with every
     ``-p`` taken out (``None`` when it has none), and *plugins* the names
     those ``-p`` load, which the verifier passes after the plugin guard so
     the guard judges them (pytest imports an ini's ``-p`` before
@@ -4368,6 +5476,12 @@ class ImagePytestIni:
     path: str
     addopts: str | None = None
     plugins: tuple[str, ...] = ()
+    # Its ``pythonpath`` with each entry made absolute from the image file's
+    # folder: pytest resolves them from the folder of the file it is given.
+    pythonpath: str | None = None
+    # Its ``testpaths``, absolute from the rootdir (the workspace), which a
+    # pytest run there with no paths collects (R334's delta, (g2)).
+    testpaths: tuple[str, ...] = ()
 
 
 def _build_pytest_addopts(
@@ -4376,18 +5490,25 @@ def _build_pytest_addopts(
     *,
     verifier_confcutdir: str = _LEGACY_VERIFIER_CONFCUTDIR,
     ini: ImagePytestIni | None = None,
+    rootdir: bool = True,
 ) -> str:
-    """Build PYTEST_ADDOPTS with a dynamic --rootdir based on the workspace.
+    """Build strict's PYTEST_ADDOPTS: ``-c`` always, so the agent's own
+    configuration file is never read, and ``--rootdir`` the
+    workspace always.
 
-    Without an explicit --rootdir, -c /dev/null causes pytest to fall back to
-    /dev as rootdir, producing broken test node IDs (../dev/::test_foo).
-    The rootdir must point to a directory that actually exists in the container.
-
-    *ini* replaces ``/dev/null`` with the image's own configuration file
-    see :func:`_image_pytest_ini`.
+    ``-c /dev/null`` unless *ini*, BenchFlow's copy of the image's own file
+    (:func:`_image_pytest_ini`), which then replaces /dev/null, its
+    ``addopts`` given with ``-o`` and its ``-p`` plugins after the plugin
+    guard's. ``--rootdir`` is the folder pytest itself finds the image's
+    file in: without it ``-c /dev/null`` makes /dev the rootdir (node ids
+    ``../dev/::test_foo``), and pytest before 7.0 given a file with ``-c``
+    takes the tests' common folder (pytest 5.4 on pytest-dev__pytest-7236:
+    testing/testing). *rootdir* False leaves it out for an image whose
+    pytests all predate 3.5, which have no such option: pytest exited at its
+    command line before any test, and astropy-7166 scored 0.
     """
-    rootdir = workspace or _DEFAULT_ROOTDIR
-    base_addopts = VERIFIER_ENV["PYTEST_ADDOPTS"].replace(
+    root = workspace or _DEFAULT_ROOTDIR
+    addopts = VERIFIER_ENV["PYTEST_ADDOPTS"].replace(
         f"--confcutdir={_LEGACY_VERIFIER_CONFCUTDIR}",
         f"--confcutdir={shlex.quote(verifier_confcutdir)}",
     )
@@ -4395,8 +5516,11 @@ def _build_pytest_addopts(
         config = f"-c {shlex.quote(ini.path)}"
         if ini.addopts is not None:
             config += f" -o {shlex.quote('addopts=' + ini.addopts)}"
-        base_addopts = base_addopts.replace("-c /dev/null", config, 1)
-    addopts = f"{base_addopts} --rootdir={shlex.quote(rootdir)}"
+        if ini.pythonpath is not None:
+            config += f" -o {shlex.quote('pythonpath=' + ini.pythonpath)}"
+        addopts = addopts.replace("-c /dev/null", config, 1)
+    if rootdir:
+        addopts += f" --rootdir={shlex.quote(root)}"
     if plugin_flags:
         addopts += f" {plugin_flags}"
     if ini is not None and ini.plugins:
@@ -4416,49 +5540,41 @@ _PYTEST_CONFIG_NAMES = (
 # ``-c /dev/null``.
 _PYTEST_CONFIG_MAX_BYTES = 1 << 20
 
-# Both copies of every configuration file pytest might read from the
-# workspace: root's pre-agent copy in /testbed_verify (as the plugin guard
-# uses it) and the workspace as the agent left it. $1 is the
-# workspace, $2 a marker the host chose after the agent stopped. Each copy is
-# a line "<marker> <name> image|work <kind>", then, for kind "file", the file
-# and a line break. Kinds: "file" (a regular file BenchFlow may read), "link",
-# "other" (not a regular file), "big", and "open" for an image copy the agent
-# user could have written: /testbed_verify must be root's and closed to group
-# and others, or the copy itself root's and not writable by them. The host
-# decides which file pytest would read and whether the agent changed what
-# pytest reads of it (:func:`_choose_unchanged_pytest_config`).
-_IMAGE_PYTEST_INI_SCRIPT = r"""
-w=$1
-m=$2
-c=/testbed_verify
+# The image's copies of the configuration files pytest might read from the
+# workspace, in the root-only build snapshot (_snapshot_build_config) taken
+# before the agent's turn or a separate verifier's transfer, and never the
+# workspace as the agent left it. $1 is a marker the host chose
+# after the agent stopped. Each copy is a line "<marker> <name> image
+# <kind>", then, for kind "file", the file and a line break. Kinds: "file"
+# (a regular file BenchFlow may read), "link", "other" (not a regular file)
+# and "big". A snapshot folder that is not root's alone prints nothing. The
+# host decides which file pytest would read
+# (:func:`_choose_image_pytest_config`).
+_IMAGE_PYTEST_INI_SCRIPT = (
+    r"""
+m=$1
+c=SNAPSHOT
 [ -d "$c" ] && [ ! -L "$c" ] || exit 0
 set -- $(ls -ldn "$c" 2>/dev/null)
 [ "${3-}" = 0 ] || exit 0
-case ${1-} in
-  d???------*) closed=1 ;;
-  d????-??-?*) closed=0 ;;
-  *) exit 0 ;;
-esac
+case ${1-} in d???------*) ;; *) exit 0 ;; esac
 for f in pytest.ini .pytest.ini pyproject.toml tox.ini setup.cfg; do
-  for side in image work; do
-    if [ $side = image ]; then p=$c/$f; else p=$w/$f; fi
-    if [ -L "$p" ]; then k=link
-    elif [ -f "$p" ]; then
-      k=file
-      if [ $side = image ] && [ $closed = 0 ]; then
-        set -- $(ls -ln "$p" 2>/dev/null)
-        case ${1-} in -????-??-?*) [ "${3-}" = 0 ] || k=open ;; *) k=open ;; esac
-      fi
-      s=$(wc -c < "$p" 2>/dev/null | tr -dc 0-9)
-      [ "$k" != file ] || { [ -n "$s" ] && [ "$s" -le MAXBYTES ]; } || k=big
-    elif [ -e "$p" ]; then k=other
-    else continue
-    fi
-    printf '%s %s %s %s\n' "$m" "$f" "$side" "$k"
-    if [ "$k" = file ]; then cat "$p" && printf '\n'; fi
-  done
+  p=$c/$f
+  if [ -L "$p" ]; then k=link
+  elif [ -f "$p" ]; then
+    k=file
+    s=$(wc -c < "$p" 2>/dev/null | tr -dc 0-9)
+    { [ -n "$s" ] && [ "$s" -le MAXBYTES ]; } || k=big
+  elif [ -e "$p" ]; then k=other
+  else continue
+  fi
+  printf '%s %s image %s\n' "$m" "$f" "$k"
+  if [ "$k" = file ]; then cat "$p" && printf '\n'; fi
 done
-""".strip().replace("MAXBYTES", str(_PYTEST_CONFIG_MAX_BYTES))
+""".strip()
+    .replace("SNAPSHOT", _SNAPSHOT_DIR)
+    .replace("MAXBYTES", str(_PYTEST_CONFIG_MAX_BYTES))
+)
 
 
 def _iniconfig_sections(text: str) -> dict[str, dict[str, str]]:
@@ -4527,6 +5643,42 @@ def _pytest_section(name: str, text: str) -> Any:
         return tool.get("pytest") if isinstance(tool, dict) else None
     section = "tool:pytest" if name == "setup.cfg" else "pytest"
     return _iniconfig_sections(text).get(section)
+
+
+def _ini_testpaths(name: str, text: str, folder: str) -> tuple[str, ...]:
+    """The ``testpaths`` of the configuration file *name*, each made
+    absolute from *folder*, the rootdir (``()`` if it sets none)."""
+    options = _pytest_section(name, text) or {}
+    if name == "pyproject.toml" and isinstance(options, dict):
+        options = options.get("ini_options", options)
+    value = options.get("testpaths") if isinstance(options, dict) else None
+    if isinstance(value, str):
+        entries = value.split()
+    elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+        entries = value
+    else:
+        return ()
+    return tuple(posixpath.normpath(posixpath.join(folder, entry)) for entry in entries)
+
+
+def _ini_pythonpath(name: str, text: str, folder: str) -> str | None:
+    """The ``pythonpath`` of the configuration file *name* in *folder*, each
+    entry made absolute from *folder* as pytest would (``None`` if it sets
+    none), for a copy of the file read from elsewhere."""
+    options = _pytest_section(name, text) or {}
+    if name == "pyproject.toml" and isinstance(options, dict):
+        options = options.get("ini_options", options)
+    value = options.get("pythonpath") if isinstance(options, dict) else None
+    if isinstance(value, str):
+        entries = shlex.split(value)
+    elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+        entries = value
+    else:
+        return None
+    return " ".join(
+        shlex.quote(posixpath.normpath(posixpath.join(folder, entry)))
+        for entry in entries
+    )
 
 
 def _ini_addopts(name: str, text: str) -> list[str] | None:
@@ -4602,20 +5754,17 @@ def _parse_pytest_config_probe(
     return records
 
 
-def _choose_unchanged_pytest_config(
+def _choose_image_pytest_config(
     records: dict[tuple[str, str], tuple[str, str]],
 ) -> tuple[str, str] | None:
-    """The configuration file pytest would read in the image's workspace and
-    its image text, when the agent left what pytest reads of it unchanged.
+    """The configuration file pytest would read in the image's workspace, and
+    its text.
 
     pytest takes the first of :data:`_PYTEST_CONFIG_NAMES` that is pytest.ini
-    or .pytest.ini (even empty) or has a pytest table or section. That choice
-    is made on the image's copies, so a file only the agent added is never
-    read. The workspace's copy must give pytest the same table or section:
-    an edit anywhere else in the file (a dependency in pyproject.toml, tox's
-    own sections, setup.cfg's [options]) does not matter, as pytest reads
-    nothing else, but a copy pytest could not parse does. ``None`` keeps
-    ``-c /dev/null``.
+    or .pytest.ini (even empty) or has a pytest table or section. The choice
+    is made on the image's copies alone, so nothing the agent wrote or edited
+    is ever read. ``None`` keeps ``-c /dev/null``: the image has no
+    such file, or the one pytest would read is not one BenchFlow can read.
     """
     for name in _PYTEST_CONFIG_NAMES:
         image = records.get((name, "image"))
@@ -4630,20 +5779,14 @@ def _choose_unchanged_pytest_config(
             return None
         if section is None and name not in ("pytest.ini", ".pytest.ini"):
             continue
-        work = records.get((name, "work"))
-        if work is None or work[0] != "file" or "\ufffd" in work[1]:
-            return None
-        try:
-            if _pytest_section(name, work[1]) != section:
-                return None
-        except ValueError:
-            return None
         return name, text
     return None
 
 
 # A literal absolute path to a Python file in a verifier script.
 _ABSOLUTE_PY_PATH_RE = re.compile(r"(?<![\w.$}/:~-])(/[\w.+@%/-]*\.py)\b")
+# A verifier script line that runs pytest (``pytest``, ``py.test``, ``-m pytest``).
+_PYTEST_WORD_RE = re.compile(r"(?<![\w.-])(?:py\.test|pytest)(?![\w.-])")
 
 
 def _pytest_may_read_the_workspace_config(task: "Task", workspace: str) -> bool:
@@ -4676,66 +5819,111 @@ def _pytest_may_read_the_workspace_config(task: "Task", workspace: str) -> bool:
         return False
     inside = workspace.rstrip("/") + "/"
     for text in texts:
-        for match in _ABSOLUTE_PY_PATH_RE.finditer(_SCRIPT_COMMENT_RE.sub("", text)):
-            if not match.group(1).startswith(inside):
-                return False
+        # One logical line per command: a backslash continues it.
+        text = _SCRIPT_COMMENT_RE.sub("", text).replace("\\\n", " ")
+        for line in text.splitlines():
+            # Only a test file pytest is pointed at counts (a test test.sh
+            # writes to /tmp, run as `pytest /tmp/test_x.py`); a helper a
+            # Python runs (SWT-bench's `python /root/parser.py`) is no test
+            # ((B)).
+            if not _PYTEST_WORD_RE.search(line):
+                continue
+            for match in _ABSOLUTE_PY_PATH_RE.finditer(line):
+                if not match.group(1).startswith(inside):
+                    return False
     return True
 
 
 async def _image_pytest_ini(env, workspace: str) -> ImagePytestIni | None:
-    """The image's pytest configuration file, when the agent left what pytest
-    reads of it unchanged.
+    """The image's own pytest configuration file for strict's ``-c``, never
+    the agent's (the lead's 13:57Z ruling).
 
-    The verifier runs pytest with ``-c /dev/null`` so that a configuration file
-    the agent wrote or edited is never read. That also hid the image's own
-    one, and with it options its tests need: pytest-dev's tox.ini loads
-    ``-p pytester``, without which every ``testdir`` test errors.
-    The workspace's file is passed as it is (relative ``pythonpath`` entries
-    resolve from its folder); what pytest reads of it is the image's.
+    pytest applies a configuration file's ``addopts`` before PYTEST_ADDOPTS,
+    so an ini the agent wrote or edited loads its ``-p`` module ahead of the
+    plugin guard. The file pytest would read is chosen on the image's copies
+    in the build snapshot and copied, with the same suffix (pytest reads a
+    file by its suffix), to :data:`_PYTEST_CONFIG_DIR`, outside the
+    workspace, so nothing test.sh does to the repository sees it; its
+    ``pythonpath`` goes with ``-o``, absolute from the workspace, as pytest
+    would resolve it from the image's file. ``-c /dev/null`` alone hid it, and with
+    it options the image's tests need: pytest-dev's tox.ini loads ``-p
+    pytester``, without which every ``testdir`` test errors. ``None`` keeps
+    ``-c /dev/null``.
     """
     marker = f"bf-pytest-config-{secrets.token_hex(16)}"
     result = await _read_exec(
         env,
-        _system_probe(_IMAGE_PYTEST_INI_SCRIPT, "bf-pytest-ini", workspace, marker),
+        _system_probe(_IMAGE_PYTEST_INI_SCRIPT, "bf-pytest-ini", marker),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if _exec_return_code(result) != 0:
         return None
     records = _parse_pytest_config_probe(result.stdout or "", marker)
-    chosen = _choose_unchanged_pytest_config(records)
+    chosen = _choose_image_pytest_config(records)
     if chosen is None:
         if records:
             logger.info(
-                "The verifier keeps -c /dev/null: the workspace's pytest "
-                "configuration is not the image's, or cannot be read"
+                "The verifier keeps -c /dev/null: the image's pytest "
+                "configuration cannot be read"
             )
         return None
     name, text = chosen
-    path = f"{workspace.rstrip('/')}/{name}"
     try:
         tokens = _ini_addopts(name, text)
     except Exception:
-        logger.debug("pytest configuration %s could not be read", path, exc_info=True)
+        logger.debug("the image's %s could not be read", name, exc_info=True)
         return None
     if tokens is not None and any(token.startswith("@") for token in tokens):
         raise RuntimeError(
-            f"verifier refused pytest argument files (@file) in {path} addopts: "
-            "their contents are not covered by the image configuration snapshot"
+            f"verifier refused pytest argument files (@file) in the image's {name} "
+            "addopts: their contents are not covered by the image configuration "
+            "snapshot"
         )
     split = _split_ini_plugins(tokens) if tokens is not None else None
     if split is None:
         logger.info(
             "The verifier keeps -c /dev/null: the image's %s has addopts "
             "BenchFlow cannot read for -p plugins",
-            path,
+            name,
+        )
+        return None
+    try:
+        pythonpath = _ini_pythonpath(name, text, workspace)
+        testpaths = _ini_testpaths(name, text, workspace)
+    except Exception:
+        logger.debug("the image's %s could not be read", name, exc_info=True)
+        return None
+    suffix = {"setup.cfg": ".cfg", "pyproject.toml": ".toml"}.get(name, ".ini")
+    folder = shlex.quote(_PYTEST_CONFIG_DIR)
+    path = f"{_PYTEST_CONFIG_DIR}/{secrets.token_hex(8)}{suffix}"
+    copied = await _read_exec(
+        env,
+        _on_path(
+            f"[ ! -L {folder} ] && mkdir -p {folder} && chown 0:0 {folder} && "
+            f"chmod 755 {folder} && p={shlex.quote(path)}; "
+            '[ ! -e "$p" ] && [ ! -L "$p" ] && '
+            f'cp {shlex.quote(_SNAPSHOT_DIR + "/" + name)} "$p" && '
+            'chmod 644 "$p"'
+        ),
+        user="root",
+        timeout_sec=verifier_setup_timeout_sec(),
+    )
+    if _exec_return_code(copied) != 0:
+        logger.info(
+            "The verifier keeps -c /dev/null: the image's %s could not be copied",
+            name,
         )
         return None
     rest, plugins = split
     if not plugins:
-        return ImagePytestIni(path=path)
+        return ImagePytestIni(path=path, pythonpath=pythonpath, testpaths=testpaths)
     return ImagePytestIni(
-        path=path, addopts=shlex.join(rest), plugins=tuple(dict.fromkeys(plugins))
+        path=path,
+        addopts=shlex.join(rest),
+        plugins=tuple(dict.fromkeys(plugins)),
+        pythonpath=pythonpath,
+        testpaths=testpaths,
     )
 
 
@@ -4798,7 +5986,76 @@ def _verifier_confcutdir(task: "Task") -> str:
 # duplicate or shadowing module is refused.
 #
 # ``argv[1]`` is the JSON list of agent-writable path prefixes.
-_DISCOVER_PYTEST_PLUGINS_SCRIPT = (
+#: The judge's entry (R): run as ``__main__`` with ``--judge``, it
+#: judges after the policy is in place. The discovery entry point above it
+#: skips ``--judge``.
+PYTEST_PLUGIN_GUARD_JUDGE_ENTRY = (
+    "if __name__ == '__main__' and sys.argv[1:2] == ['--judge']:\n    _judge_main()\n"
+)
+_PYTEST_PLUGIN_GUARD_JUDGE_BEGIN = (
+    "# >>> judge: the host's alone (lockdown.pytest_plugin_guard_judge_source)\n"
+)
+_PYTEST_PLUGIN_GUARD_JUDGE_END = "# <<< judge\n"
+
+
+def _without_the_judge(text: str) -> tuple[str, str]:
+    """The guard file without its judge section, comments and docstrings, and
+    that section. What goes into the sandbox (discovery's script, the armed
+    guard) does so inside one ``sh -c`` argument, which Linux caps at 128 KiB
+    (MAX_ARG_STRLEN): rel's guard install reached 131,577 bytes with its
+    comments (R334's fix). The judge runs only on the host's side
+    (:func:`pytest_plugin_guard_judge_source`)."""
+    head, begin, rest = text.partition(_PYTEST_PLUGIN_GUARD_JUDGE_BEGIN)
+    judge, end, tail = rest.partition(_PYTEST_PLUGIN_GUARD_JUDGE_END)
+    if not (begin and end):
+        raise RuntimeError("the pytest plugin guard has no judge section")
+    return _without_docstrings(_without_comments(head + tail)), judge
+
+
+def _without_docstrings(source: str) -> str:
+    """Python *source* with each docstring (the string that is the first
+    statement of the module, a class or a function) replaced by ``""`` and
+    the lines it spanned left blank, so every line keeps its number. No code
+    reads the guard's docstrings."""
+    lines = source.splitlines(keepends=True)
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if not (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            continue
+        start, end = first.lineno - 1, (first.end_lineno or first.lineno) - 1
+        head = lines[start].encode()[: first.col_offset].decode()
+        tail = lines[end].encode()[first.end_col_offset or 0 :].decode()
+        if tail.strip():
+            raise RuntimeError(f"code follows a docstring on line {end + 1}")
+        lines[start] = head + '""' + tail
+        for row in range(start + 1, end + 1):
+            lines[row] = "\n"
+    return "".join(lines)
+
+
+def _without_comments(source: str) -> str:
+    """Python *source* with every comment cut, as tokenize finds them (never
+    inside a string), and the space before it. Every line stays, so a
+    traceback from the sandbox names the guard file's own line numbers."""
+    lines = source.splitlines(keepends=True)
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        row, column = token.start
+        line = lines[row - 1]
+        lines[row - 1] = line[:column].rstrip() + line[len(line.rstrip("\r\n")) :]
+    return "".join(lines)
+
+
+_DISCOVER_PYTEST_PLUGINS_SCRIPT, _PYTEST_PLUGIN_GUARD_JUDGE = _without_the_judge(
     Path(__file__).with_name("_pytest_plugin_guard.py").read_text()
 )
 
@@ -4839,7 +6096,7 @@ async def _mount_provenance(
         "printf '\\000'",
         "Verifier hardening failed: reading workspace mount aliases",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     output = result.stdout or ""
     mountinfo, complete, physical = output.partition("# end\n")
@@ -4958,12 +6215,27 @@ async def _excluded_inodes(
     File contents and permissions are immaterial. Keep every inode, including
     non-executables that become executable later and hard-linked symlinks.
     ``find -H`` follows only the seed; it crosses nested mounts like freeze.
+
+    GNU find prints each identity itself (``-printf``), relative to the folder
+    it walks, so a path longer than PATH_MAX is read too (#1233); a find
+    without ``-printf`` (BusyBox) gives ``stat`` the paths. An entry whose
+    identity cannot be read does not stop the hardening: find's message comes
+    back as an ``unread`` line, and the trial's result.json gets a warning.
     """
     result = await _checked_read(
         env,
-        _path_inspector_prefix(env) + "for p in " + shlex.join(prefixes) + "; do "
+        _path_inspector_prefix(env) + "exec 3>&1; "
+        "if find / -maxdepth 0 -printf '' >/dev/null 2>&1; then "
+        "bf_ids() { find -H \"$1\" ! -type d -printf '%D:%i\\n'; }; "
+        "else bf_ids() { find -H \"$1\" ! -type d -exec stat -c '%d:%i' -- {} +; }; "
+        "fi; for p in " + shlex.join(prefixes) + "; do "
         'if [ -e "$p" ] || [ -L "$p" ]; then '
-        'find -H "$p" ! -type d -exec stat -c "%d:%i" -- {} + || exit 1; '
+        # Identities to the output as they come, the messages kept apart.
+        'bf_err=$(bf_ids "$p" 2>&1 >&3); bf_rc=$?; '
+        '[ "$bf_rc" -le 1 ] || exit 1; '
+        '[ "$bf_rc" -eq 0 ] || [ -n "$bf_err" ] || bf_err="find exited 1 in $p"; '
+        '[ -z "$bf_err" ] || printf \'%s\\n\' "$bf_err" | '
+        "while IFS= read -r bf_l; do printf 'unread %s\\n' \"$bf_l\"; done; "
         "fi; done; "
         'if [ -f "$PATH/before" ]; then cat "$PATH/before" || exit 1; fi; '
         'if [ -d "$PATH/before-links" ]; then '
@@ -4971,17 +6243,37 @@ async def _excluded_inodes(
         "printf 'complete\\n'",
         "Verifier hardening failed: capturing excluded inode identities",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
-    lines = (result.stdout or "").splitlines()
+    # Newlines only: a message can quote a name holding any other break.
+    lines = (result.stdout or "").removesuffix("\n").split("\n")
+    unread = [line[7:] for line in lines[:-1] if line.startswith("unread ")]
+    identities = [line for line in lines[:-1] if not line.startswith("unread ")]
     if (
         not lines
         or lines[-1] != "complete"
-        or any(not re.fullmatch(r"[0-9]+:[0-9]+", line) for line in lines[:-1])
+        or any(not re.fullmatch(r"[0-9]+:[0-9]+", line) for line in identities)
     ):
         raise RuntimeError("Verifier hardening failed: incomplete inode identities")
+    if unread:
+        # As the hardening's other notes: result.json lists it, DEBUG names
+        # the entries (agent-chosen paths, never a console line).
+        logger.debug(
+            "%d excluded entries kept no inode identity: %s",
+            len(unread),
+            "; ".join(line[:300] for line in unread[:5]),
+        )
+        from benchflow._utils.trial_warnings import report_trial_warning
+
+        report_trial_warning(
+            "the verifier hardening could not read the inode identity of "
+            f"{len(unread)} entries in the folders the agent could write (a "
+            "path longer than PATH_MAX where find has no -printf, or an entry "
+            "that went away), so the verifier's checks do not recognise a hard "
+            "link to one of them elsewhere"
+        )
     return frozenset(
-        (int(dev), int(ino)) for line in lines[:-1] for dev, ino in [line.split(":")]
+        (int(dev), int(ino)) for line in identities for dev, ino in [line.split(":")]
     )
 
 
@@ -5086,7 +6378,8 @@ def _merge_trusted_verifier_path(extras: list[str]) -> str:
 # pre-agent record of the PATH folders' names, or ''. The
 # compiled predicate tests the captured filesystem coordinates (or an
 # uncaptured, namespace-local policy). Prints, for each entry in order,
-# ``K <entry>`` (kept: root's), ``O <entry>`` (kept: another user's) or
+# ``K <entry>`` (kept: root's), ``O <entry>`` (kept: another user's),
+# ``A <entry>`` (kept: absent, and only root could ever make it) or
 # ``D <entry>`` and then ``W <why>`` (left out); nothing for an entry that is
 # no folder.
 _TRUSTED_PATH_EXTRAS_SCRIPT = r"""
@@ -5314,6 +6607,58 @@ bf_judge() (
 bf_drop() {
   printf 'D '; bf_encode "$1"; printf '\nW '; bf_encode "$2"; printf '\n'
 }
+# bf_rootonly <folder>: root owns it, and neither group nor others may write
+# it (no POSIX ACL either).
+bf_rootonly() {
+  set -- "$1" $(ls -ldn -- "$1" 2>/dev/null)
+  [ $# -ge 5 ] || { echo "$1 could not be read"; return 1; }
+  [ "$4" = 0 ] || { echo "$1 is not root's (uid $4)"; return 1; }
+  case "$2" in
+    ?????w*|????????w*) echo "$1 is writable by group or others"; return 1 ;;
+    ??????????+*) echo "$1 has a POSIX ACL"; return 1 ;;
+  esac
+  return 0
+}
+# bf_absent <entry>: an entry absent now that only root could ever make.
+# From /, every part of it that exists is a folder bf_rootonly accepts, none
+# under a blocked prefix, no part of it (or of a link's target) is `..`, and
+# every link on the way is root's (its folder is
+# root's alone, so no one else can replace it) and is followed; the first
+# part that does not exist ends the walk. Anything else says why not.
+bf_absent() {
+  case "$1" in *[[:cntrl:]]*) echo "its name has a control character"; return 1 ;; esac
+  # A `..` anywhere, even past the first part that does not exist.
+  case "/$1/" in */../*) echo "it has a .. part"; return 1 ;; esac
+  rest=$1; cur=; n=0
+  bf_rootonly / || return 1
+  while [ -n "$rest" ]; do
+    c=${rest%%/*}
+    case "$rest" in */*) rest=${rest#*/} ;; *) rest= ;; esac
+    case "$c" in ''|.) continue ;; ..) echo "it has a .. part"; return 1 ;; esac
+    p=$cur/$c
+    if b=$(bf_under "$p"); then echo "$p is under $b"; return 1; fi
+    if [ -L "$p" ]; then
+      n=$((n + 1))
+      [ "$n" -le 40 ] || { echo "the way passes more than 40 links"; return 1; }
+      set -- $(ls -ldn -- "$p" 2>/dev/null)
+      [ $# -ge 4 ] || { echo "$p could not be read"; return 1; }
+      [ "$3" = 0 ] || { echo "$p is a link root does not own (uid $3)"; return 1; }
+      t=$(readlink -- "$p" && echo .) || { echo "$p could not be read"; return 1; }
+      t=${t%"$nl."}
+      [ -n "$t" ] || { echo "$p has an empty link target"; return 1; }
+      case "/$t/" in */../*) echo "$p links to a target with a .. part"; return 1 ;; esac
+      case "$t" in /*) cur= ;; esac
+      rest=$t${rest:+/$rest}
+      continue
+    fi
+    [ -e "$p" ] || return 0
+    [ -d "$p" ] || { echo "$p is not a folder"; return 1; }
+    bf_rootonly "$p" || return 1
+    cur=$p
+  done
+  echo "it exists"
+  return 1
+}
 __BF_SYSTEM_EXCLUSIONS__
 IFS=$nl
 for d in __BF_ENTRIES__; do
@@ -5327,6 +6672,16 @@ for d in __BF_ENTRIES__; do
     if why=$(bf_route "$d"); then
       printf 'K '; bf_encode "$d"; printf '\n'
     else bf_drop "$d" "$why"; fi
+    continue
+  fi
+  # Absent here, in the agent's sandbox: kept only when root alone could
+  # ever make it (the SWE-bench Multilingual images' /root/.cargo/bin under a
+  # 0700 /root); else left out with the reason. A dangling link goes on to
+  # the checks below.
+  if [ "$bf_fresh_image" != 1 ] && [ ! -e "$d" ] && [ ! -L "$d" ]; then
+    if why=$(bf_absent "$d"); then
+      printf 'A '; bf_encode "$d"; printf '\n'
+    else bf_drop "$d" "not present when the verifier PATH was checked, and $why"; fi
     continue
   fi
   real=$(cd -P "$d" 2>/dev/null && pwd -P && echo .) || continue
@@ -5755,7 +7110,7 @@ async def _judge_root_python(
         PATH_QUERY_CMD,
         "Verifier hardening failed: reading image PATH",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     raw_path = decode_path_field((result.stdout or "").removesuffix("\n"))
     candidates = "\n".join(_root_python_candidates(raw_path))
@@ -5779,7 +7134,7 @@ async def _judge_root_python(
         command,
         "Verifier hardening failed: judging root's python3",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     accepted: str | None = None
     rejected: list[tuple[str, str]] = []
@@ -5970,7 +7325,7 @@ async def _extras_without_kit_python(
         env,
         _extras_probe_cmd(entries),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if result.return_code == 3:
         return None
@@ -6049,7 +7404,7 @@ async def _discover_without_kit_python(env, pythonpath: str | None) -> dict | No
         env,
         _KIT_WITHOUT_PYTHON_RECORD_CMD,
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if result.return_code == 3:
         return None
@@ -6177,7 +7532,7 @@ async def _discover_pytest_plugins(
                 agent_gids=agent_gids,
             ),
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
         discovered = None
         if _exec_return_code(result) == 127:
@@ -6195,7 +7550,7 @@ async def _discover_pytest_plugins(
                 env.exec,
                 "if command -v python3 >/dev/null 2>&1; then exit 0; else exit 1; fi",
                 user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                timeout_sec=verifier_setup_timeout_sec(),
             )
             if _exec_return_code(available) == 1:
                 return declared, inferred
@@ -6305,6 +7660,9 @@ PYTEST_PLUGIN_GUARD_MARKER_KINDS = (
     "unrecorded",
     "refused",
     "checking",
+    "verdicts",
+    # Read last, so a run of many pytests keeps its verdicts within the cap.
+    "finished",
 )
 # At most this many verdict markers (every kind but ``registered``), each at
 # most this big, are read back. More, or a bigger one, makes the read
@@ -6638,6 +7996,20 @@ for dir in "$@"; do
         fi
     done
 done
+# A conda base on that PATH (conda-meta beside its bin, as the kit record
+# finds one): the python3 of each of its environments takes a copy too. test.sh
+# activates one (`conda activate testbed`) where the PATH did not reach, and a
+# venv made from it later (by tox or nox) keeps its standard library on
+# sys.path, never PYTHONPATH: tox passes none, so the pytest of the SWT-bench
+# sphinx tasks (`tox -epy39`) could not import the guard. No quote mark in
+# these comments: the tests read this script with shlex.
+for dir in "$@"; do
+    case "$dir" in /*) ;; *) continue ;; esac
+    [ -d "${dir%/*}/conda-meta" ] || continue
+    for py in "${dir%/*}"/envs/*/bin/python3; do
+        if [ -f "$py" ] && [ -x "$py" ]; then install_guard "$py" || exit 1; fi
+    done
+done
 """.strip()
 
 # With a kit (PT-C8-CONF-2b): after the agent's turn hardening starts no
@@ -6829,6 +8201,7 @@ def _pytest_plugin_guard_source(
     verifier_root: bool = False,
     record: str | None = None,
     named_inputs: "list[str] | tuple[str, ...] | None" = None,
+    manifest: str = "",
 ) -> str:
     """Return the armed guard module *name*: its policy, then its load marker.
 
@@ -6882,6 +8255,10 @@ def _pytest_plugin_guard_source(
         + repr(workspace if workspace and snapshot else "")
         + "\n_BENCHFLOW_SNAPSHOT = "
         + repr(snapshot if workspace and snapshot else "")
+        + "\n_BENCHFLOW_MANIFEST = "
+        + repr(manifest or "")
+        + "\n_MANIFEST_PRUNED = "
+        + repr(tuple(_image_manifest_pruned()))
         + "\n_BENCHFLOW_VERIFIER_ROOT = "
         + repr(bool(verifier_root))
         + "\n_BENCHFLOW_RECORD = "
@@ -6893,6 +8270,23 @@ def _pytest_plugin_guard_source(
         + "\n_BENCHFLOW_ARMED = True"
         + "\nif _imported_by_pytest():\n    _mark('loading')\n"
     )
+
+
+def _image_manifest_pruned() -> tuple[str, ...]:
+    """The trees the image manifest leaves out (:data:`_image_manifest.PRUNED`),
+    for the guard's policy: it says nothing of a path there."""
+    from benchflow.sandbox import _image_manifest
+
+    return tuple(_image_manifest.PRUNED)
+
+
+def pytest_plugin_guard_judge_source(armed: str) -> str:
+    """The source the host runs ``--judge`` with on the pristine task image
+    (R): *armed*, the source :func:`_pytest_plugin_guard_source`
+    returned for the trial (the host's copy, never one read back from the
+    sandbox), then the guard file's judge section and its entry. The
+    section never goes into the sandbox (:data:`_PYTEST_PLUGIN_GUARD_JUDGE`)."""
+    return armed + "\n" + _PYTEST_PLUGIN_GUARD_JUDGE + PYTEST_PLUGIN_GUARD_JUDGE_ENTRY
 
 
 async def _install_pytest_plugin_guard(
@@ -6914,6 +8308,7 @@ async def _install_pytest_plugin_guard(
     record: bool = False,
     named_inputs: "list[str] | tuple[str, ...] | None" = None,
     runner_stub: bool = False,
+    manifest: str = "",
 ):
     """Create an unguessable protected bootstrap after solver quiescence.
 
@@ -6948,6 +8343,7 @@ async def _install_pytest_plugin_guard(
         agent_gids=agent_gids,
         workspace=workspace,
         snapshot=snapshot,
+        manifest=manifest,
         verifier_root=(verifier_uid == "0" if verifier_root is None else verifier_root),
         record=pytest_plugin_guard_record_file(name) if record else None,
         named_inputs=named_inputs,
@@ -6979,7 +8375,7 @@ async def _install_pytest_plugin_guard(
     # pre-agent copy, in the exec below; it must end, tainted if need be, by
     # this many seconds after the exec started, leaving the rest of the exec's
     # timeout to the guard's install (V2-R1-A-2). The clock is the sandbox's.
-    proof_budget = max(VERIFIER_SETUP_TIMEOUT_SEC - _INPUT_PROOF_RESERVE_SEC, 0)
+    proof_budget = max(verifier_setup_timeout_sec() - _INPUT_PROOF_RESERVE_SEC, 0)
     clock = "_bf_t0=$(date +%s 2>/dev/null || echo 0) && " if record else ""
     # On root's protected Python (C8, PY8-PT-R8-5).
     proof = root_python_sh(
@@ -7015,7 +8411,7 @@ async def _install_pytest_plugin_guard(
         f"{{\n{install_into_interpreters}\n}}",
         "Verifier hardening failed: installing protected pytest plugin guard",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     stdout = getattr(result, "stdout", "")
     lines = (stdout if isinstance(stdout, str) else "").splitlines()
@@ -7039,6 +8435,10 @@ async def _install_pytest_plugin_guard(
                 why[named.group(1)] = named.group(2)
     with contextlib.suppress(AttributeError):
         env._runtime_guard_why = why
+    # The pristine re-judgment runs this same guard, in these Pythons
+    # ((g2) R, sandbox/_guard_rejudge.py).
+    env._benchflow_guard_source = source
+    env._benchflow_guard_pythons = guarded
     return directory, f"-p {name} {plugin_flags}".strip(), guarded, unrecorded
 
 
@@ -8381,6 +9781,10 @@ class GuardMarker:
     ``installed`` does, the files of a refused plugin test.sh installed after
     the agent stopped from inputs the agent changed, and ``unlisted`` those
     of a vouched release the published table lacks (V2-R1-B-1, V2-R1-B-2).
+    ``finished`` is a pytest's end-of-session record, JSON: whether a session
+    ran, its exit status and its collected, failed and passed counts, left at
+    pytest's own last cleanup, which also takes that process's ``registered``
+    marker away ((g2)).
     """
 
     name: str
@@ -8553,7 +9957,7 @@ async def _distro_pip_env(env) -> dict[str, str]:
                 env,
                 _on_path(_OS_RELEASE_CMD),
                 user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                timeout_sec=verifier_setup_timeout_sec(),
             )
         except Exception as e:
             logger.warning("distro detection failed (%s); skipping pip env tweaks", e)
@@ -8625,7 +10029,7 @@ async def _probe_verifier_reads(env: Any) -> dict[str, StepAnswer]:
                 tag,
             ),
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     except Exception as exc:
         logger.debug("Verifier environment probe failed: %s", exc)
@@ -8663,7 +10067,7 @@ async def _verifier_uid(env: Any, user: str | int | None) -> str | None:
             env,
             _on_path(UID_COMMAND, user=user),
             user=user,
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     except Exception as exc:
         logger.debug("Cannot tell the verifier's uid: %s", exc)
@@ -8706,7 +10110,7 @@ async def _verifier_runtime_manifest(
         env,
         runtime_check_command(),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
         service=service,
     )
     code = _exec_return_code(result)
@@ -8777,13 +10181,14 @@ async def prepare_verifier_runtime(
         return None
     if service is None:
         service = getattr(task.config.verifier, "service", None) or "main"
-    if built_after_agent:
-        # This sandbox never ran the agent. Prepare its own C8 kit before
-        # probing Python; the solver's kit belongs to another sandbox.
-        await prepare_runtime_tree(env, service=service)
-    manifest = await _prepare(
-        env, task, tests_dir=_verifier_confcutdir(task), service=service
-    )
+    with verifier_setup_timeout_for(task):
+        if built_after_agent:
+            # This sandbox never ran the agent. Prepare its own C8 kit before
+            # probing Python; the solver's kit belongs to another sandbox.
+            await prepare_runtime_tree(env, service=service)
+        manifest = await _prepare(
+            env, task, tests_dir=_verifier_confcutdir(task), service=service
+        )
     env._benchflow_verifier_runtime = manifest
     return manifest
 
@@ -8807,12 +10212,13 @@ async def prepare_separate_verifier_runtime(
     # which the record does not hold (PT-C8-CONF-2b round 3). The transfer
     # unpacks as root, so its files would pass for the image's: an image
     # LD_PRELOAD or LD_LIBRARY_PATH naming the workspace is not admitted.
-    await prepare_runtime_tree(env, transfer_roots=(workspace, "/logs/artifacts"))
-    pins, ctrf = runtime_requested(task)
-    if not pins and not ctrf and not runner_requested(task):
-        return
-    await _seed_verifier_workspace(env, workspace=workspace)
-    await prepare_verifier_runtime(env, task, None, built_after_agent=True)
+    with verifier_setup_timeout_for(task):
+        await prepare_runtime_tree(env, transfer_roots=(workspace, "/logs/artifacts"))
+        pins, ctrf = runtime_requested(task)
+        if not pins and not ctrf and not runner_requested(task):
+            return
+        await _seed_verifier_workspace(env, workspace=workspace)
+        await prepare_verifier_runtime(env, task, None, built_after_agent=True)
 
 
 async def _agent_gids(env: Any, sandbox_user: str | None) -> tuple[int, ...] | None:
@@ -8829,7 +10235,7 @@ async def _agent_gids(env: Any, sandbox_user: str | None) -> tuple[int, ...] | N
             env,
             f"id -G {shlex.quote(sandbox_user)}",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     except Exception as exc:
         logger.debug("Cannot tell the sandbox user's groups: %s", exc)
@@ -8960,7 +10366,7 @@ async def _move_verifier_tool_state(
             directory,
         ),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     return_code = _exec_return_code(result)
     if return_code == 127 and await _python3_absent(env, path):
@@ -8995,7 +10401,7 @@ async def _move_verifier_tool_state(
             ),
             "Verifier hardening failed: creating the verifier's uv and pip state",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
         return found
     try:
@@ -9100,7 +10506,7 @@ async def _verifier_home_without_probe(
         ),
         "Verifier hardening failed: creating the verifier's home",
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     return found
 
@@ -9122,7 +10528,7 @@ async def _python3_absent(env: Any, path: str | None = None) -> bool:
             else (_select_verifier_python(path) + '[ -n "$bf_python" ]'),
         ),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     return _exec_return_code(available) == 1
 
@@ -9150,7 +10556,7 @@ async def _clear_system_route(env, blocked: PathExclusions) -> PathExclusions:
             env,
             await root_python_command(env, _system_route_walk.SYSTEM_ROUTE_WALK, spec),
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     except Exception as exc:
         logger.debug("The system route walk did not run; sh decides: %s", exc)
@@ -9185,7 +10591,7 @@ async def _judge_trusted_entries(
         env,
         _trusted_path_extras_cmd(raw, blocked, agent, fresh_image=fresh_image),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if _exec_return_code(result) != 0:
         if isinstance(blocked, PathExclusions):
@@ -9204,11 +10610,15 @@ async def _judge_trusted_entries(
     kept, other, dropped = _parse_trusted_path_output(output, entries)
     replacements: dict[str, str] = {}
     omitted: list[tuple[str, str]] = []
+    absent: list[str] = []
     pending = None
     for line in output.split("\n"):
         tag, _, encoded = line.partition(" ")
         value = decode_path_field(encoded)
-        if tag == "F" and value in kept:
+        if tag == "A" and value in entries and value not in absent:
+            # Absent, and only root could ever make it: kept, in its place.
+            absent.append(value)
+        elif tag == "F" and value in kept:
             pending = value
         elif tag == "P" and pending is not None:
             replacements[pending] = value
@@ -9220,12 +10630,16 @@ async def _judge_trusted_entries(
                     "route contains a control or PATH separator; install the tool at a representable image path",
                 )
             )
+    if absent:
+        held = set(kept) | set(absent)
+        kept = [entry for entry in entries if entry in held]
     return TrustedPathReport(
         path=_merge_trusted_verifier_path([replacements.get(p, p) for p in kept]),
         kept=tuple(kept),
         kept_other=tuple(other),
         dropped=tuple(dropped),
         omitted_tools=tuple(omitted),
+        absent_root_only=tuple(absent),
     )
 
 
@@ -9253,7 +10667,7 @@ async def _judge_verifier_path(
             PATH_QUERY_CMD,
             "Verifier hardening failed: reading image PATH",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
         encoded_path = path_result.stdout or ""
     else:
@@ -9272,7 +10686,7 @@ async def _judge_verifier_path(
             " && printf set; exit 0",
             "Verifier hardening failed: reading empty image PATH",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
         if (getattr(empty, "stdout", "") or "").strip() != "set":
             return TrustedPathReport(path=_SAFE_VERIFIER_PATH)
@@ -9378,11 +10792,14 @@ fi
 printf '%s: refused: it is only in a folder the verifier'"'"'s PATH leaves out (verifier/trusted-path.json)\\n' "$n" >&2
 exit 127
 """
-# $1 the stubs folder, $2 the stub, $3 the verifier's PATH, $4 the most names, then each
-# folder left out. Prints NUL-framed ``S <folder index> <name>`` records.
-# A name is left unstubbed only when a folder of the verifier's PATH has an
-# executable file of that name, tested with ``[`` alone: ``command -v`` takes
-# a name starting with ``-`` as an option.
+# $1 the stubs folder, $2 the stub, $3 the verifier's PATH, $4 the most names,
+# $5 the task's optional_tools, one per line, then each folder left out. Prints
+# NUL-framed ``S <folder index> <name>`` records.
+# A name is left unstubbed when a folder of the verifier's PATH has an
+# executable file of that name, tested with ``[`` alone (``command -v`` takes
+# a name starting with ``-`` as an option), or when the task lists it in
+# optional_tools: a lookup of an optional program then finds nothing, and the
+# task takes its own fallback.
 _REFUSAL_STUBS_SCRIPT = r"""
 nl='
 '
@@ -9401,6 +10818,7 @@ add() {
   b=${p##*/}
   case $b in *"$nl"*) printf '4\n' > "$d/error"; return 0 ;; esac
   kept "$b" && return 0
+  case "$nl$optional$nl" in *"$nl$b$nl"*) return 0 ;; esac
   if [ ! -e "$d/bin/$b" ] && [ ! -L "$d/bin/$b" ]; then
     n=$((n + 1))
     if [ "$n" -gt "$most" ]; then printf '3\n' > "$d/error"; return 0; fi
@@ -9417,8 +10835,8 @@ add() {
   fi
   printf 'S %s ' "$index"; bf_encode "$b"; printf '\000'
 }
-d=$1 stub=$2 trusted=$3 most=$4
-shift 4
+d=$1 stub=$2 trusted=$3 most=$4 optional=$5
+shift 5
 mkdir -m 755 "$d" "$d/bin" "$d/hits" || exit 1
 i=0 n=0
 for e in "$@"; do
@@ -9443,11 +10861,17 @@ class _InService:
         return await exec_raw(self._env.exec, command, service=self._service, **kwargs)
 
 
-async def _install_refusal_stubs(env, report: TrustedPathReport) -> TrustedPathReport:
+async def _install_refusal_stubs(
+    env, report: TrustedPathReport, optional: "list[str] | tuple[str, ...]" = ()
+) -> TrustedPathReport:
     """Stub each program found only in *report*'s folders left out.
 
     Returns *report* with the stubs folder and the stubs; a failure is a
     hardening failure, never a PATH that leaves those programs merely missing.
+    A program the task lists in *optional* (``[verifier] optional_tools``) is
+    left missing instead: its folder stays out of the PATH, and a verifier
+    that looks it up (``shutil.which``, ``command -v``) finds nothing and takes
+    its own fallback, where a stub would be found and refuse.
     """
     if not report.dropped:
         return report
@@ -9468,10 +10892,11 @@ async def _install_refusal_stubs(env, report: TrustedPathReport) -> TrustedPathR
             stub,
             report.path,
             str(_REFUSAL_STUBS_MAX),
+            "\n".join(optional),
             *folders,
         ),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     return_code = _exec_return_code(result)
     if return_code == 3:
@@ -9511,15 +10936,20 @@ async def _check_required_path_tools(env, report: TrustedPathReport, verifier) -
     lookups and subprocesses. Required tools must exist before verification in
     a kept directory; uploaded/generated tools must be invoked by explicit path.
     No inventory can prove future absence is harmless, even for absolute entries.
+    A refusal is :class:`VerifierToolsRefusedError`: the trial's own ending,
+    unscored with its reason, never a verifier crash or a 0.
     """
+    from benchflow.task.verifier_errors import VerifierToolsRefusedError
+
     required = getattr(verifier, "required_tools", None)
     if report.dropped and not isinstance(required, list):
-        raise RuntimeError(
-            "Verifier hardening failed: omitted PATH entries (including relative "
-            "entries) require an explicit "
-            "[verifier] required_tools contract (complete PATH dependencies; [] "
-            "for none). Use absolute paths for uploaded/generated helpers. "
-            "Entries left out: " + report.dropped_text()
+        raise VerifierToolsRefusedError(
+            "the verifier's PATH leaves out folders of the image's PATH, and "
+            "the task declares no [verifier] required_tools contract (complete "
+            "PATH dependencies; [] for none), so test.sh did not run. Make "
+            "each folder root's alone in the image, or declare required_tools; "
+            "use absolute paths for uploaded/generated helpers. Entries left "
+            "out: " + report.dropped_text()
         )
     if not isinstance(required, list) or not required:
         return
@@ -9556,7 +10986,7 @@ done
             user=verifier.user,
         ),
         user=verifier.user,
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if _exec_return_code(result) != 0:
         raise RuntimeError(
@@ -9566,11 +10996,12 @@ done
         decode_path_field(name) for name in (result.stdout or "").split("\x00") if name
     ]
     if missing:
-        raise RuntimeError(
-            "Verifier hardening failed: required_tools absent from the trusted PATH: "
+        raise VerifierToolsRefusedError(
+            "required_tools absent from the verifier's trusted PATH: "
             + repr(missing)
-            + "; install them in a trusted image directory or invoke uploaded/generated "
-            "helpers by absolute path. Entries left out: " + report.dropped_text()
+            + ", so test.sh did not run; install them in a trusted image directory "
+            "or invoke uploaded/generated helpers by absolute path. Entries left "
+            "out: " + report.dropped_text()
         )
 
 
@@ -9611,7 +11042,7 @@ async def _read_image_pythonpath(env) -> str:
             _PRINTENV_PYTHONPATH_CMD,
             "Verifier hardening failed: reading image PYTHONPATH",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     return pp_result.stdout or ""
 
@@ -9998,7 +11429,7 @@ async def _prepare_bash_env_inspector(
         command,
         # PATH, loader and start-up values: the exec route's alone (C8).
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
         **_in_service(service),
     )
     if _exec_return_code(result) == 0 and "ready" in (result.stdout or "").splitlines():
@@ -10063,7 +11494,7 @@ async def _image_bash_env(env, service: str = "main") -> str:
                 env,
                 "command printf '%s\\n' \"${BASH_ENV-}\"",
                 user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                timeout_sec=verifier_setup_timeout_sec(),
                 **_in_service(service),
             )
     except Exception as exc:
@@ -10170,7 +11601,7 @@ async def _trusted_verifier_bash_env(
             # PATH, loader and start-up values: the exec route's alone (C8).
             env={"LC_ALL": "C"},
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
             **_in_service(service),
         )
     except Exception as exc:
@@ -10233,6 +11664,25 @@ _CLEAR_VERIFIER_DIR_CLOSED_CMD = (
     _CLEAR_VERIFIER_DIR_CMD.removesuffix("chmod 777 /logs/verifier")
     + "chmod 755 /logs/verifier"
 )
+# The same clear in the hardening of a trial that keeps services, on a sandbox
+# whose /logs/verifier is the host's own folder (``is_mounted``: Docker's bind
+# mount of the trial's verifier/): the folder keeps its owner, the host user,
+# instead of becoming root's. The close that follows leaves it 0755
+# (_close_logs_cmd), and BenchFlow on the host still writes there before the
+# test command (test-stdout.txt) and reads it after; in root's 0755 a host
+# that is not root can create nothing, and the verifier crashed with no reward
+# An owner that is the agent user's uid (an image's own user can
+# have the host user's) is still closed: the release makes the folder root's
+# for the test command and gives it back after grading (K2-R1-B-1). Its
+# files are root's copies from then on (_close_logs_cmd), and a trial whose
+# agent user has the uid BenchFlow runs as is refused before the agent
+# starts (keep_services.refuse_host_uid).
+_CLEAR_HOST_VERIFIER_DIR_CMD = (
+    _CLEAR_VERIFIER_DIR_CMD.removesuffix(
+        "chown root:root /logs/verifier && chmod 777 /logs/verifier"
+    )
+    + "chmod 777 /logs/verifier"
+)
 
 # Legacy verifier rootdir fallback for main-container verification paths.
 _ENSURE_APP_DIR_CMD = "mkdir -p /app"
@@ -10293,12 +11743,10 @@ async def _checked_read(env: Any, command: str, label: str, /, **kwargs: Any) ->
 
 # Verifier-setup commands that walk the full rootfs (notably the conftest purge)
 # run on the verifier sandbox, whose filesystem can be slow/network-backed
-# (Daytona). The find is pruned (see _build_cleanup_cmd) so it completes well
-# within this budget; the larger-than-default ceiling keeps a slow-but-valid
-# setup from false-erroring the verifier. Owned here so every call site — the
-# scoring path (harden_before_verify) and the soft-verify path (rollout, via
-# cleanup_verifier_python_hooks) — shares one value rather than scattering it.
-VERIFIER_SETUP_TIMEOUT_SEC = 180
+# (Daytona). Each gets the trial's budget, verifier_setup_timeout_sec(): the
+# run's, else the task's, else VERIFIER_SETUP_TIMEOUT_SEC (benchflow._verifier_setup),
+# so every call site (the scoring path, harden_before_verify, and the
+# soft-verify path, the rollout via cleanup_verifier_python_hooks) shares one value.
 # What the guard's install exec keeps of that budget for its steps after the
 # input proof (the key, the copies into every Python), so a proof that
 # reads a workspace of many gigabytes ends tainted instead of timing the
@@ -10306,11 +11754,52 @@ VERIFIER_SETUP_TIMEOUT_SEC = 180
 _INPUT_PROOF_RESERVE_SEC = 60
 
 
+@contextlib.contextmanager
+def _outputs_clearing(env: Any, step: str) -> Iterator[None]:
+    """While *step* clears the output folder in integrity off or audit, the
+    agent's processes are alive: one that keeps writing there (or a flood of
+    names past the step's budget) holds the folder, which is the trial's
+    verifier failing, never BenchFlow's crash and never an unscored timeout
+    (C, VerifierOutputsHeldError). The step is named on the sandbox
+    while it runs, for a verifier deadline that lands inside it."""
+    from benchflow.sandbox.protocol import ExecTimeoutError
+    from benchflow.task.verifier_core import _OUTPUTS_HELD, VerifierOutputsHeldError
+
+    def done() -> None:
+        with contextlib.suppress(AttributeError):
+            env._benchflow_outputs_clearing = None
+
+    with contextlib.suppress(AttributeError):
+        env._benchflow_outputs_clearing = step
+    try:
+        yield
+    except asyncio.CancelledError:
+        # The verifier's deadline: the step stays named for its handler.
+        raise
+    except (TimeoutError, ExecTimeoutError):
+        done()
+        raise VerifierOutputsHeldError(
+            f"{_OUTPUTS_HELD} ({step} did not finish in {verifier_setup_timeout_sec()} s)"
+        ) from None
+    except RuntimeError as exc:
+        done()
+        if "Directory not empty" not in str(exc):
+            raise
+        raise VerifierOutputsHeldError(
+            f"{_OUTPUTS_HELD} ({step}: a folder kept filling while it was emptied)"
+        ) from exc
+    except BaseException:
+        done()
+        raise
+    done()
+
+
 async def clear_verifier_output_dir(
     env: Any,
     label: str = "Verifier setup failed: clearing verifier output directory",
     *,
     closed: bool = False,
+    host_owned: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Clear verifier outputs while preserving bind mounts.
@@ -10320,9 +11809,16 @@ async def clear_verifier_output_dir(
     still need its own writable ``/logs/verifier`` output directory.
 
     ``closed=True`` (the trial keeps services) leaves the folder root's 0755
-    instead of 0777 (``_CLEAR_VERIFIER_DIR_CLOSED_CMD``).
+    instead of 0777 (``_CLEAR_VERIFIER_DIR_CLOSED_CMD``). ``host_owned=True``
+    (the hardening of such a trial where the folder is the host's) keeps its
+    owner (``_CLEAR_HOST_VERIFIER_DIR_CMD``).
     """
-    command = _CLEAR_VERIFIER_DIR_CLOSED_CMD if closed else _CLEAR_VERIFIER_DIR_CMD
+    if host_owned:
+        command = _CLEAR_HOST_VERIFIER_DIR_CMD
+    elif closed:
+        command = _CLEAR_VERIFIER_DIR_CLOSED_CMD
+    else:
+        command = _CLEAR_VERIFIER_DIR_CMD
     return await _checked_exec(env, _on_path(command), label, **kwargs)
 
 
@@ -10361,20 +11857,42 @@ async def cleanup_verifier_python_hooks(
     task_dir: "Path | str | None",
     label: str = "Verifier setup failed: purging Python injection hooks",
     *,
-    timeout_sec: int = VERIFIER_SETUP_TIMEOUT_SEC,
+    timeout_sec: int | None = None,
     workspace: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Purge agent-injected Python hook files using task hardening settings.
 
-    The conftest purge walks the full rootfs, so the timeout defaults to
-    VERIFIER_SETUP_TIMEOUT_SEC (the same budget the scoring path uses in
-    harden_before_verify) rather than the caller guessing a value.
+    The conftest purge walks the full rootfs, so the timeout defaults to the
+    trial's verifier-setup budget (:func:`verifier_setup_timeout_sec`, the
+    same budget the scoring path uses in harden_before_verify) rather than the
+    caller guessing a value.
     """
+    if timeout_sec is None:
+        timeout_sec = verifier_setup_timeout_sec()
     hardening = _read_hardening_config(task_dir)
     workspace_aliases = (
         await _blocked_before_freeze(env, (workspace,)) if workspace else ()
     )
+    # The image's own conftest.py files stay, as on the scoring path.
+    manifest_token = _conftest_manifest.set(await _use_image_manifest(env, None))
+    try:
+        return await _cleanup_verifier_python_hooks_run(
+            env, hardening, workspace, workspace_aliases, label, timeout_sec, kwargs
+        )
+    finally:
+        _conftest_manifest.reset(manifest_token)
+
+
+async def _cleanup_verifier_python_hooks_run(
+    env: Any,
+    hardening: dict[str, bool],
+    workspace: str | None,
+    workspace_aliases: tuple[str, ...],
+    label: str,
+    timeout_sec: int,
+    kwargs: dict[str, Any],
+) -> Any:
     if _hook_cleanup_on_bfx(env):
         # No interpreter is judged or needed: the host decides, bfx changes.
         await _cleanup_hooks_on_bfx(
@@ -10477,12 +11995,20 @@ def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
 #   closed to everyone else. Such a file is written again as a new root-owned
 #   file renamed over the name, so no descriptor a kept service holds reaches
 #   what the verifier runs.
+# - the image's own file anywhere: byte for byte what the image
+#   manifest records at the same absolute path, inside or outside the
+#   workspace (argv ``manifest=<its path>``: the host's copy, written back
+#   root's alone before hardening; without one, this rule keeps nothing),
+#   written again the same way.
 # Every decision is made before anything is removed: the sweep's own matches
 # include the copy's conftest.py files. Every other one is removed.
 _CONFTEST_SWEEP_SCRIPT = r"""
-import base64, csv, hashlib, io, os, stat, sys
+import base64, csv, hashlib, io, json, os, stat, sys
 names = ("site-packages", "dist-packages")
 args = sys.argv[1:]
+manifest = ""
+if args and args[0].startswith("manifest="):
+    manifest, args = args[0][len("manifest="):], args[1:]
 baseline = ""
 if args and args[0].startswith("baseline="):
     baseline, args = args[0][len("baseline="):], args[1:]
@@ -10544,6 +12070,24 @@ def closed(path):
         return False
     return stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077
 base_ok = bool(baseline) and closed(baseline)
+image = {}
+def closed_file(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077
+if manifest and closed(os.path.dirname(manifest)) and closed_file(manifest):
+    try:
+        fd = os.open(manifest, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as f:
+            doc = json.loads(f.read(256 << 20))
+        if doc.get('version') == 1:
+            for p, e in doc.get('files', {}).items():
+                if p.endswith('/conftest.py') and isinstance(e, dict) and isinstance(e.get('sha256'), str):
+                    image[p] = e['sha256']
+    except Exception:
+        image = {}
 def read_at(fd, name):
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
@@ -10601,7 +12145,18 @@ def rewrite(path, data):
             pass
         return False
 found = [os.fsdecode(raw) for raw in sys.stdin.buffer.read().split(b"\0") if raw]
-decided = [(path, True, None) if owned(path) else (path, False, unchanged(path)) for path in found]
+def identical(path):
+    want = image.get(path)
+    if not want:
+        return None
+    here = read_at(None, path)
+    if here is not None and hashlib.sha256(here).hexdigest() == want:
+        return here
+    return None
+def kept(path):
+    data = unchanged(path)
+    return identical(path) if data is None else data
+decided = [(path, True, None) if owned(path) else (path, False, kept(path)) for path in found]
 for path, package, data in decided:
     if package or (data is not None and rewrite(path, data)):
         continue
@@ -10612,12 +12167,58 @@ for path, package, data in decided:
 """
 
 
+def _transfer_reaches(agent_paths: tuple[str, ...], path: str) -> bool:
+    """Whether a path the transfer wrote is *path*, inside it or above it."""
+    for written in agent_paths:
+        written = posixpath.normpath(written)
+        if written == path or path.startswith(written.rstrip("/") + "/"):
+            return True
+        if written.startswith(path + "/"):
+            return True
+    return False
+
+
+def _manifest_conftests(env: Any) -> dict[str, str] | None:
+    """path -> sha256 of the image's conftest.py files, from the host's copy
+    of the image manifest, while hardening may use it; else None."""
+    from benchflow.sandbox import _image_manifest
+
+    manifest = _image_manifest.kept(env)
+    if manifest is None or not _conftest_manifest.get():
+        return None
+    return manifest.named("conftest.py")
+
+
+async def _use_image_manifest(
+    env: Any, agent_paths: "tuple[str, ...] | list[str] | None"
+) -> str:
+    """The image manifest's path in the sandbox once the host's copy is
+    written back there, or "" when hardening must do without it: none was
+    recorded, the transfer could have written its folder, or it could not be
+    written back. Whoever the agent ran as: the host's copy decides, so a
+    copy the agent rewrote changes nothing."""
+    from benchflow.sandbox import _image_manifest
+
+    manifest = _image_manifest.kept(env)
+    if manifest is None:
+        return ""
+    if agent_paths is not None and _transfer_reaches(
+        tuple(agent_paths), _image_manifest.MANIFEST_DIR
+    ):
+        return ""
+    written = await _image_manifest.write_back(
+        env, manifest, timeout_sec=verifier_setup_timeout_sec()
+    )
+    return _image_manifest.MANIFEST_PATH if written else ""
+
+
 def _conftest_sweep_cmd(
     keep: tuple[str, ...] = (),
     workspace: str | None = None,
     workspace_aliases: tuple[str, ...] = (),
     *,
     agent_user: bool = False,
+    manifest: str | None = None,
 ) -> str:
     """The conftest.py sweep: every conftest.py outside /tests and /verifier,
     found by one ``find /`` with its prunes, goes, except an installed
@@ -10655,6 +12256,7 @@ def _conftest_sweep_cmd(
     baseline = _VERIFIER_WORKSPACE_COPY if agent_user and workspace else ""
     check = root_python_sh(
         _CONFTEST_SWEEP_SCRIPT,
+        f"manifest={manifest or ''}",
         f"baseline={baseline}",
         raw_args=" ".join(shlex.quote(p) for p in roots if p),
         fallback='"${__bf_root_python:-/nonexistent/benchflow-judged-python3}"',
@@ -10700,7 +12302,11 @@ def _build_cleanup_cmd(
     if h.get("cleanup_conftests", True):
         parts.append(
             _conftest_sweep_cmd(
-                keep, workspace, workspace_aliases, agent_user=agent_user
+                keep,
+                workspace,
+                workspace_aliases,
+                agent_user=agent_user,
+                manifest=_conftest_manifest.get() or None,
             )
         )
     if workspace:
@@ -11156,6 +12762,19 @@ _RESTORE_WORKSPACE_PY = (
 # group- or world-writable unless sticky (a sticky directory's entries
 # cannot be replaced by others). A home directory that is not ours fails the
 # ownership half.
+# Another process may remove entries while this runs: on Daytona with
+# workspace /root, the daemon deletes finished session folders under
+# /root/.daytona/sessions (#1238). The walk is os.walk, which follows no link
+# and skips a folder gone before it is listed; Path.rglob does so only from
+# 3.12, and before 3.12 it raised FileNotFoundError and failed hardening.
+# Only FileNotFoundError is skipped, from listing a folder or checking an
+# entry. Any other error fails the step: os.walk without onerror, or
+# os.path.islink, would pass over a folder or entry it cannot read (one
+# deeper than PATH_MAX, say) and leave the link to outside in it for the
+# verifier.
+# Only a link becomes a Path: a Path per entry walks slower than rglob does
+# from 3.12. A link gone before it is read or removed has nothing left to
+# purge (drop() is Path.unlink(missing_ok=True), which needs 3.8).
 _PURGE_EXTERNAL_SYMLINKS_SCRIPT = """\
 import errno, os, sys, pathlib, stat
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -11232,6 +12851,29 @@ def startup_files_recorded(rel):
     if rel.parent.parts:
         names.append(rel.parent.parent / 'pyvenv.cfg')
     return all(content(root, n.parts) == content(baseline, n.parts) for n in names)
+def unlisted(error):
+    if not isinstance(error, FileNotFoundError):
+        raise error
+def links(top):
+    for folder, dirs, files in os.walk(str(top), onerror=unlisted):
+        for name in dirs + files:
+            path = os.path.join(folder, name)
+            try:
+                mode = os.lstat(path).st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(mode):
+                yield pathlib.Path(path)
+def link_text(p):
+    try:
+        return os.readlink(str(p))
+    except FileNotFoundError:
+        return None
+def drop(p):
+    try:
+        os.unlink(str(p))
+    except FileNotFoundError:
+        pass
 original = {}
 try:
     st = baseline.lstat()
@@ -11240,11 +12882,11 @@ try:
                     for p in baseline.rglob('*') if p.is_symlink()}
 except OSError:
     original = {}
-for p in root.rglob('*'):
+for p in links(root):
     if not p.is_symlink():
         continue
     previous = original.get(p.relative_to(root))
-    if previous is not None and previous == os.readlink(str(p)):
+    if previous is not None and previous == link_text(p):
         try:
             recorded = pathlib.Path(real(str(baseline / p.relative_to(root))))
             if recorded == baseline or baseline in recorded.parents:
@@ -11260,10 +12902,10 @@ for p in root.rglob('*'):
     try:
         target = real(str(p))
     except (OSError, RuntimeError):
-        p.unlink()
+        drop(p)
         continue
     if target != str(root) and not (target + os.sep).startswith(root_str):
-        p.unlink()
+        drop(p)
 """
 
 # Workspace venv startup hooks run before the verifier's first Python command
@@ -13143,7 +14785,7 @@ async def _kill_sandbox_user_procs(
                 env,
                 kill_prelude(env, script, sandbox_user),
                 user="root",
-                timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                timeout_sec=verifier_setup_timeout_sec(),
             )
             stdout = result.stdout
         else:
@@ -13206,7 +14848,7 @@ async def _bfx_kill_receipt(env: Any, sandbox_user: str) -> str | None:
         answer = await env.bfx_call(
             "kill",
             {"accounts": [{"uid": identity.uid, "gid": identity.gid}]},
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     except (BfxUnavailable, BfxNotStarted) as exc:
         logger.debug("bfx kill did not start (%s); the shell kill runs", exc)
@@ -13316,7 +14958,7 @@ async def _kill_sandbox_user_procs_keeping(
                 sandbox_user,
             ),
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     stdout = result.stdout if isinstance(result.stdout, str) else ""
     killed = _confirmed_kill_count(result, result.stdout)
@@ -13356,9 +14998,11 @@ async def _kill_sandbox_user_procs_keeping(
 # that does (release_kept_services), and closes /logs again after the
 # verifier's own clear.
 #
-# What is in /logs/agent (the trajectory published for the verifier) and
-# /logs/artifacts (answers a verifier may read) is replaced, so nothing a
-# kept service holds or points at is what the verifier reads there:
+# What is in /logs/agent (the trajectory published for the verifier),
+# /logs/artifacts (answers a verifier may read) and /logs/verifier (what
+# BenchFlow wrote there for the test command: test-stdout.txt, which test.sh's
+# output is redirected into, and a criteria manifest) is replaced, so nothing
+# a kept service holds or points at is what the verifier reads there:
 #
 # - Every regular file becomes a fresh copy, root's, with its content, mode
 #   (without group or other write, setuid or setgid) and mtime: a new inode.
@@ -13372,12 +15016,23 @@ async def _kill_sandbox_user_procs_keeping(
 #   root read, as root, any path the agent names (a FIFO would hang).
 # - Folders become root's and lose group and other write.
 #
-# The two folders themselves keep their mode: on Docker they are the host
-# trial folder's, which BenchFlow on the host still writes into after
-# grading (Claude Code's session log), and /logs at 0700 keeps them out of a
-# kept service's reach by path. This runs only while services are kept; with
-# nothing kept no agent process is alive after the kill to use a link or a
-# descriptor.
+# In /logs/verifier nothing is the agent's, but on Docker the host's files
+# there keep the host user's uid, which can be the agent user's (K2-R1-B-1):
+# a kept service holding the folder through a descriptor in flight
+# (K2-R3-A-1) could open test-stdout.txt after the release and write what the
+# verifier reads once test.sh is done. Root's copies refuse it, and a
+# descriptor opened earlier (a verifier retried in place lets the services
+# run before its second release) reaches only the old file.
+#
+# The folders themselves keep their mode: on Docker they are the host trial
+# folder's, which BenchFlow on the host still writes into after grading
+# (Claude Code's session log), and /logs at 0700 keeps them out of a kept
+# service's reach by path. /logs/verifier also keeps its owner (0755): the
+# host replaces files in it during grading (reward.json's aggregate, the
+# plugin guard's markers), which root's copies allow; the release makes it
+# root's only when that owner is the agent user's uid. This runs only while
+# services are kept; with nothing kept no agent process is alive after the
+# kill to use a link or a descriptor.
 _FRESH_COPY = (
     "for f; do "
     '[ -f "$f" ] && [ ! -h "$f" ] || continue; '
@@ -13392,9 +15047,14 @@ _FRESH_COPY = (
 def _close_logs_cmd(logs: str = "/logs") -> str:
     """Close /logs (``logs``) to everything but root (see above)."""
     q = shlex.quote
+    verifier = q(logs + "/verifier")
     return (
         f"chown root:root {q(logs)} && chmod 700 {q(logs)} && "
-        f"chmod 755 {q(logs + '/verifier')} && "
+        f"chmod 755 {verifier} && "
+        f"find {verifier} -xdev -mindepth 1 ! -type d ! -type f -exec rm -f {{}} + && "
+        f"find {verifier} -xdev -mindepth 1 -type d -exec chown root:root {{}} + && "
+        f"find {verifier} -xdev -mindepth 1 -type d -exec chmod go-w {{}} + && "
+        f"find {verifier} -xdev -type f -exec sh -c {q(_FRESH_COPY)} sh {{}} + && "
         f"for d in {q(logs + '/agent')} {q(logs + '/artifacts')}; do "
         '[ -d "$d" ] || continue; '
         'find "$d" -xdev -mindepth 1 ! -type d ! -type f -exec rm -f {} + && '
@@ -13578,7 +15238,7 @@ async def probe_kept_service_freezer(env, *, proc_root: str = "/proc") -> None:
     # Root's PATH is the exec route's (the protected kit's once the sandbox
     # has one); this command never sets one of its own (C8, PT-C8-R3-3).
     result = await _read_exec(
-        env, script, user="root", timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+        env, script, user="root", timeout_sec=verifier_setup_timeout_sec()
     )
     stdout = getattr(result, "stdout", "")
     stdout = stdout if isinstance(stdout, str) else ""
@@ -13636,7 +15296,7 @@ async def release_kept_services(
         env,
         kill_prelude(env, script, sandbox_user),
         user="root",
-        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+        timeout_sec=verifier_setup_timeout_sec(),
     )
     if _exec_return_code(result) != 0:
         raise RuntimeError(
@@ -13719,7 +15379,7 @@ async def end_kept_services(
             cmd,
             "Restoring the log folders after the kept services",
             user="root",
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
     return killed
 
@@ -13798,14 +15458,14 @@ def _verifier_output_steps(*, bfx: bool = False) -> list[_PrepStep]:
             "clear_verifier_output",
             "clear_verifier_output",
             _clear_verifier_dir_cmd(bfx=bfx),
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
             "Verifier hardening failed: clearing verifier output directory",
         ),
         _PrepStep(
             "prepare_app_dir",
             "prepare_app_dir",
             _ENSURE_APP_DIR_CMD,
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
             "Verifier hardening failed: preparing /app",
         ),
     ]
@@ -13846,10 +15506,9 @@ def _reclaim_step(workspace: str | None) -> _PrepStep:
 def _bfx_in_scripts(env: Any) -> bool:
     """Whether root's scripts in this sandbox may start bfx from ``/.bfx``:
     delivered read-only at creation on a backend that runs it (Docker)."""
-    return (
-        getattr(env, "bfx_delivery", None) is not None
-        and getattr(type(env), "bfx_call", None) is not None
-    )
+    from benchflow.sandbox._bounded_exec import bfx_delivered
+
+    return bfx_delivered(env) and getattr(type(env), "bfx_call", None) is not None
 
 
 def _chown_workspace_cmd(workspace: str, *, bfx: bool = False) -> str:
@@ -13924,7 +15583,11 @@ def _chown_workspace_cmd(workspace: str, *, bfx: bool = False) -> str:
 
 
 def _freeze_steps(
-    workspace: str, *, bfx: bool = False, git: bool = True
+    workspace: str,
+    *,
+    bfx: bool = False,
+    git: bool = True,
+    modes: dict[str, str] | None = None,
 ) -> list[_PrepStep]:
     """Purge external symlinks, stale caches and startup hooks, then chown.
 
@@ -13938,26 +15601,45 @@ def _freeze_steps(
     chown workspace to root is belt-and-suspenders against any zombie
     sandbox-user process that survived the pkill above; a regular file with
     another name keeps its owner (see _chown_workspace_cmd).
+
+    *modes* are the workspace modes the sandbox user's grant changed for a
+    daemon folder (``_runtime_tree.WORKSPACE_MODE_ATTR``): they come back
+    first, as the image had them (#1232).
     """
+    from benchflow._runtime_tree import restore_mode_command
+
     return [
+        *(
+            [
+                _PrepStep(
+                    "restore_workspace_mode",
+                    "freeze_workspace",
+                    restore_mode_command(modes),
+                    verifier_setup_timeout_sec(),
+                    "Verifier hardening failed: restoring the workspace's mode",
+                )
+            ]
+            if modes
+            else []
+        ),
         _PrepStep(
             "purge_external_symlinks",
             "freeze_workspace",
             _purge_external_symlinks_cmd(workspace),
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
             "Verifier hardening failed: purging workspace symlinks",
         ),
         _PrepStep(
             "purge_pycache",
             "freeze_workspace",
             _purge_pycache_cmd(workspace),
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
         ),
         _PrepStep(
             "purge_workspace_python_hooks",
             "freeze_workspace",
             _purge_workspace_python_hooks_cmd(workspace),
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
             "Verifier hardening failed: purging workspace Python startup hooks",
         ),
         *(
@@ -13968,7 +15650,7 @@ def _freeze_steps(
                     _purge_git_controls_cmd(
                         workspace, agent_user=_hook_agent_user.get()
                     ),
-                    VERIFIER_SETUP_TIMEOUT_SEC,
+                    verifier_setup_timeout_sec(),
                     "Verifier hardening failed: purging workspace git hooks and config",
                 )
             ]
@@ -13979,7 +15661,7 @@ def _freeze_steps(
             "chown_workspace",
             "freeze_workspace",
             _chown_workspace_cmd(workspace, bfx=bfx),
-            VERIFIER_SETUP_TIMEOUT_SEC,
+            verifier_setup_timeout_sec(),
             "Verifier hardening failed: freezing workspace ownership",
         ),
     ]
@@ -14008,7 +15690,7 @@ def _cleanup_step(
         "cleanup_conftests",
         "cleanup_conftests",
         _build_cleanup_cmd(hardening, workspace, workspace_aliases),
-        VERIFIER_SETUP_TIMEOUT_SEC,
+        verifier_setup_timeout_sec(),
         "Verifier hardening failed: removing Python start-up hooks",
         ok_codes=(0, 127),
     )
@@ -14028,7 +15710,7 @@ async def _cleanup_hooks_on_bfx(
     workspace_aliases: tuple[str, ...],
     label: str,
     *,
-    timeout_sec: int = VERIFIER_SETUP_TIMEOUT_SEC,
+    timeout_sec: int | None = None,
     agent_user: bool | None = None,
 ) -> None:
     """Today's clean-up policy (:func:`_build_cleanup_cmd`) decided on the
@@ -14042,6 +15724,8 @@ async def _cleanup_hooks_on_bfx(
     from benchflow.sandbox import _hook_cleanup
 
     loop = asyncio.get_running_loop()
+    if timeout_sec is None:
+        timeout_sec = verifier_setup_timeout_sec()
     deadline = loop.time() + timeout_sec
 
     def left() -> float:
@@ -14089,6 +15773,7 @@ async def _cleanup_hooks_on_bfx(
                         _hook_agent_user.get() if agent_user is None else agent_user
                     ),
                     baseline=_VERIFIER_WORKSPACE_COPY if workspace else None,
+                    conftest_manifest=_manifest_conftests(env),
                 )
             finally:
                 await session.__aexit__(None, None, None)
@@ -14508,8 +16193,17 @@ async def _restore_workspace_state(env, workspace: str) -> None:
 async def _freeze_workspace(env, workspace: str, *, git: bool = True) -> None:
     """Purge external symlinks, stale caches and startup hooks, then chown
     (see _freeze_steps), one exec each."""
-    for step in _freeze_steps(workspace, bfx=_bfx_in_scripts(env), git=git):
+    for step in _freeze_steps(
+        workspace, bfx=_bfx_in_scripts(env), git=git, modes=_granted_modes(env)
+    ):
         await _run_prep_step(env, step)
+
+
+def _granted_modes(env) -> dict[str, str] | None:
+    """The workspace modes ``setup_sandbox_user`` kept on *env*, if any."""
+    from benchflow._runtime_tree import WORKSPACE_MODE_ATTR
+
+    return getattr(env, WORKSPACE_MODE_ATTR, None)
 
 
 async def _build_verifier_env(
@@ -14658,7 +16352,12 @@ async def _assemble_verifier_env(
     # Preserve the judged folders even when the contract itself refuses grading.
     report_trusted_path(path_report)
     await _check_required_path_tools(in_service, path_report, task.config.verifier)
-    path_report = await _install_refusal_stubs(in_service, path_report)
+    optional = getattr(task.config.verifier, "optional_tools", None)
+    path_report = await _install_refusal_stubs(
+        in_service,
+        path_report,
+        optional if isinstance(optional, list | tuple) else (),
+    )
     report_trusted_path(path_report)
     hardened_path = main_report.path
     hardened_pythonpath = pythonpath_read.get()
@@ -14724,6 +16423,11 @@ async def _assemble_verifier_env(
     verifier_uid = (
         await _verifier_uid(env, task.config.verifier.user) if in_main else None
     )
+    # The verifier's check that its user can write its output file reads the
+    # same answer (task/verifier_core.py): "" when this read could not
+    # tell, which a non-root image user gives, since the read takes a receipt.
+    with contextlib.suppress(AttributeError):
+        env._benchflow_verifier_uid = verifier_uid or ""
     verifier_root = _verifier_is_root(verifier_uid, task.config.verifier.user)
     # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
@@ -14810,6 +16514,9 @@ async def _assemble_verifier_env(
             optional=optional,
             agent_gids=agent_gids,
             snapshot=snapshot,
+            # The image manifest written back for this hardening:
+            # empty where it may not be trusted.
+            manifest=_conftest_manifest.get(),
             verifier_root=verifier_root,
             # A file test.sh installs in the agent's trees can be its own only
             # when uv and pip read configuration hardening protected (#1170).
@@ -14847,9 +16554,10 @@ async def _assemble_verifier_env(
             verifier_env["PYTHONPATH"] = ":".join(
                 filter(None, (guard_directory, hardened_pythonpath))
             )
-        # The image's own pytest configuration, where pytest itself would read
-        # it and while the agent left what pytest reads of it as it was; its
-        # -p plugins come after the guard, which judges them.
+        # Strict never reads the agent's configuration file: a copy of the
+        # image's where pytest itself would read one (the lead's
+        # 13:57Z ruling), else -c /dev/null. Its -p plugins come after the
+        # guard, which judges them.
         if workspace and _pytest_may_read_the_workspace_config(task, workspace):
             ini = await _image_pytest_ini(env, workspace)
     elif runner_stub:
@@ -14864,7 +16572,7 @@ async def _assemble_verifier_env(
             "Verifier setup failed: preparing the runner stub",
             user="root",
             service=task.config.verifier.service,
-            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+            timeout_sec=verifier_setup_timeout_sec(),
         )
         verifier_env["BENCHFLOW_PYTEST"] = stub
     verifier_env["PYTEST_ADDOPTS"] = _build_pytest_addopts(
@@ -14872,8 +16580,47 @@ async def _assemble_verifier_env(
         flags,
         verifier_confcutdir=_verifier_confcutdir(task),
         ini=ini,
+        rootdir=_image_pytests_take_rootdir(env),
     )
+    # The one configuration file strict gives pytest, for the pristine
+    # re-judgment of a guard stop (sandbox/_guard_rejudge.py).
+    env._benchflow_pytest_ini = ini
     return verifier_env
+
+
+# The first pytest with --rootdir.
+_PYTEST_ROOTDIR_SINCE = "3.5"
+
+
+def _image_pytests_take_rootdir(env: Any) -> bool:
+    """Whether strict passes ``--rootdir``: unless every pytest the image
+    manifest found (each install's metadata, read before the agent's turn or
+    the transfer) is older than 3.5, which has no such option. With no
+    record, or a newer pytest beside an old one, it is passed; the trial says
+    when it is not ((B)'s rule)."""
+    from packaging.version import InvalidVersion, Version
+
+    from benchflow.sandbox import _image_manifest
+
+    manifest = _image_manifest.kept(env)
+    versions = sorted(set(manifest.pytests.values())) if manifest is not None else []
+    if not versions:
+        return True
+    try:
+        old = [v for v in versions if Version(v) < Version(_PYTEST_ROOTDIR_SINCE)]
+    except InvalidVersion:
+        return True
+    if len(old) < len(versions):
+        return True
+    from benchflow._utils.trial_warnings import report_trial_warning
+
+    note = (
+        f"the image's pytest {', '.join(old)} has no --rootdir; "
+        "the verifier leaves it out"
+    )
+    logger.info(note)
+    report_trial_warning(note)
+    return False
 
 
 async def harden_before_verify(
@@ -14888,8 +16635,14 @@ async def harden_before_verify(
     restore_workspace: bool = False,
     *,
     agent_paths: "tuple[str, ...] | None" = None,
+    integrity: str | None = None,
 ) -> dict[str, float]:
     """Neutralize agent tampering before running the verifier.
+
+    *integrity* is the run's integrity mode (None is the default, ``audit``).
+    Only ``strict`` runs the steps below that change test.sh's inputs; ``off``
+    and ``audit`` run test.sh as its authors wrote it, with only the steps
+    every mode keeps (:func:`_faithful_steps`).
 
     1. Kill sandbox-user processes (prevent concurrent writes during teardown).
     2. Clear /logs/verifier/ contents while preserving remote bind mounts, and
@@ -14935,20 +16688,51 @@ async def harden_before_verify(
     # The image BASH_ENV is also read in that service; non-main activation
     # remains refused without shared-mount provenance.
     """
+    # The agent's turn is over: every root exec into main from here on, the
+    # task's own commands as root included, starts bounded.
+    from benchflow.sandbox._bounded_exec import end_agent_turn
+
+    end_agent_turn(env)
     seconds: dict[str, float] = {}
+    from benchflow.integrity.constants import normalize_integrity_mode
+
+    mode = normalize_integrity_mode(integrity)
+    if mode != "strict":
+        try:
+            with verifier_setup_timeout_for(task):
+                await _faithful_steps(
+                    env, task, sandbox_user, agent_paths, seconds, mode
+                )
+        finally:
+            for name, took in seconds.items():
+                _timing_spans.add(_timing_spans.HARDEN_BEFORE_VERIFY, name, took)
+        return seconds
     # A separate verifier sandbox (*agent_paths*) got the agent's files from
     # BenchFlow's transfer, written as root: there root's files prove nothing
     # about who chose them, so both rules stay as before.
     same_sandbox = agent_paths is None
     agent_token = _hook_agent_user.set(same_sandbox and _agent_not_root(sandbox_user))
     path_token = _path_workspace.set(workspace if same_sandbox else None)
+    manifest_token = _conftest_manifest.set("")
     try:
-        await _harden_steps(
-            env, task, sandbox_user, workspace, restore_workspace, agent_paths, seconds
-        )
+        with verifier_setup_timeout_for(task):
+            # The image's own conftest.py files stay wherever they are
+            # the host's copy of the image manifest, written back.
+            _conftest_manifest.set(await _use_image_manifest(env, agent_paths))
+            await _harden_steps(
+                env,
+                task,
+                sandbox_user,
+                workspace,
+                restore_workspace,
+                agent_paths,
+                seconds,
+                detect=mode,
+            )
     finally:
         _path_workspace.reset(path_token)
         _hook_agent_user.reset(agent_token)
+        _conftest_manifest.reset(manifest_token)
         for name, took in seconds.items():
             _timing_spans.add(_timing_spans.HARDEN_BEFORE_VERIFY, name, took)
     return seconds
@@ -14963,24 +16747,64 @@ def _prep_timing(seconds: dict[str, float], name: str):
         _add_seconds(seconds, name, _timing_spans.clock() - start)
 
 
-async def _harden_steps(
+async def _detect_step(
+    env: Any,
+    mode: str,
+    seconds: dict[str, float],
+    task: "Task | None" = None,
+    verifier_env: dict[str, str] | None = None,
+) -> None:
+    """The detector, after the agent-process kill and before test.sh:
+    the sandbox against the image manifest's record from before the turn, kept
+    on *env* for the trial's integrity record. It never changes the reward.
+    Timed only when it walks (a record to compare with, and not ``off``).
+
+    It is handed the host's own text of the task's verifier scripts (never
+    read back from the sandbox) and, where it is final, the env test.sh gets:
+    *verifier_env* in off and audit, None in strict, whose detector runs
+    before the hardening that builds it."""
+    import inspect
+
+    from benchflow.sandbox import _image_manifest
+
+    given: dict[str, Any] = {"verifier_env": verifier_env}
+    texts = _verifier_script_texts(task) if task is not None else None
+    given["test_script"] = "\n".join(texts) if texts else None
+    # Only what this detector takes: its newer form takes both.
+    accepted = inspect.signature(_image_manifest.detect).parameters
+    extra = {k: v for k, v in given.items() if k in accepted}
+    if mode == "off" or _image_manifest.kept(env) is None:
+        await _image_manifest.detect(
+            env, mode, timeout_sec=verifier_setup_timeout_sec(), **extra
+        )
+        return
+    with _prep_timing(seconds, "detect_verifier_inputs"):
+        await _image_manifest.detect(
+            env, mode, timeout_sec=verifier_setup_timeout_sec(), **extra
+        )
+
+
+async def _kept_steps(
     env: Any,
     task: "Task",
     sandbox_user: str | None,
-    workspace: str | None,
-    restore_workspace: bool,
     agent_paths: "tuple[str, ...] | None",
+    keep: Any,
     seconds: dict[str, float],
+    detect: str | None,
+    kill: bool = True,
 ) -> None:
-    # Each step is a sub-key of timing.json's harden_before_verify span, by
-    # the names in timing_spans.HARDEN_STEPS (a no-op outside a trial).
+    """The verifier's steps in every integrity mode (the faithful
+    default): the agent's processes stopped (its kept services spared), the
+    accounts it could switch to and a Muse login, the network rules proven
+    again, the disarmed delegates put back and the cloud metadata covered.
+    Then the detector, in *detect*'s mode (``off``, ``audit``, ``strict``;
+    None runs none): the sandbox against the image manifest, a record that
+    never changes the reward."""
     from benchflow.task import keep_services as _keep_services
 
-    keep = (
-        _keep_services.trial_keep(task, sandbox_user) if agent_paths is None else None
-    )
     # 1. Kill sandbox-user processes (prevent concurrent writes during teardown).
-    if sandbox_user:
+    if sandbox_user and kill:
         with _prep_timing(seconds, "kill_sandbox_user_procs"):
             if keep is None:
                 await _kill_sandbox_user_procs(env, sandbox_user)
@@ -15003,11 +16827,22 @@ async def _harden_steps(
             # Only a sandbox with a Muse login gets Muse's strict clean-up;
             # another agent's home may link .config anywhere (AG-R2-4).
             if await muse_login_present(
-                env, sandbox_user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+                env, sandbox_user, timeout_sec=verifier_setup_timeout_sec()
             ):
                 await remove_muse_credentials(
-                    env, sandbox_user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
+                    env, sandbox_user, timeout_sec=verifier_setup_timeout_sec()
                 )
+    # The agent's turn is over: BenchFlow's network rules from sandbox start
+    # and the agent's phases are proven again before any verifier step changes
+    # them. A rule gone or a counter back ends the trial "network
+    # policy breached" (benchflow.sandbox.policy_reproof).
+    from benchflow.sandbox import policy_reproof, rule_ledger
+
+    # Whatever the cloud metadata opt-out says: it
+    # proves every rule the ledger holds.
+    if rule_ledger.expected(env):
+        with _prep_timing(seconds, "network_policy_reproof"):
+            await policy_reproof.require_held_at_end_of_agent(env)
     # Put back what the cloud metadata block disarmed for the agent's turn
     # , on files whose path, owner, size, sha256, link count and
     # stripped mode are unchanged. Processes can still be alive here: kept
@@ -15022,6 +16857,104 @@ async def _harden_steps(
     if agent_paths is None and getattr(env, _delegate_disarm.DISARMED_ATTR, None):
         with _prep_timing(seconds, "restore_disarmed_delegates"):
             await _delegate_disarm.restore_disarmed_delegates(env)
+    # From here to the end of the verifier the cloud metadata endpoints are
+    # refused to root too: test.sh runs as root and runs the agent's code
+    # A separate verifier sandbox runs the agent's files there.
+    if _cloud_metadata_verifier_applies(env, task):
+        with _prep_timing(seconds, "cloud_metadata_verifier"):
+            cover = await cover_cloud_metadata_for_verifier(env, task)
+        with contextlib.suppress(AttributeError):
+            env._benchflow_metadata_cover = cover
+    if sandbox_user and not kill:
+        # Off and audit keep the sandbox user's processes through grading (a
+        # service the solution started is test.sh's to use) and stop them
+        # after it (the lead's 11:25Z ruling); a Muse login still goes.
+        from benchflow.agents.credentials import (
+            muse_login_present,
+            remove_muse_credentials,
+        )
+
+        if await muse_login_present(
+            env, sandbox_user, timeout_sec=verifier_setup_timeout_sec()
+        ):
+            await remove_muse_credentials(
+                env, sandbox_user, timeout_sec=verifier_setup_timeout_sec()
+            )
+    if detect is not None:
+        await _detect_step(env, detect, seconds, task, None)
+
+
+async def _faithful_steps(
+    env: Any,
+    task: "Task",
+    sandbox_user: str | None,
+    agent_paths: "tuple[str, ...] | None",
+    seconds: dict[str, float],
+    mode: str,
+) -> None:
+    """The verifier in integrity ``off`` and ``audit`` (the lead's
+    09:58Z ruling): test.sh runs as its authors wrote it, with the task's own
+    ``[verifier].env``. Kept, as in every mode: :func:`_kept_steps`, the
+    verifier output cleared, the verifier network, and test.sh's bounded
+    launch (verifier_core). Not run: the PATH judge and its refusal stubs,
+    the BASH_ENV, pip, git, Python, loader and pytest pins (PYTEST_ADDOPTS),
+    the root Python judge, the cache reclaim, the workspace freeze, the
+    conftest sweep, the /tmp purge, the start-up hook clean-up and the
+    pytest plugin guard; ``strict`` keeps them all. In ``audit`` the
+    detector diffs the sandbox against the image manifest; its flags never
+    change the reward."""
+    from benchflow.task import keep_services as _keep_services
+    from benchflow.task.env import resolve_env_vars
+
+    keep = (
+        _keep_services.trial_keep(task, sandbox_user) if agent_paths is None else None
+    )
+    await _kept_steps(
+        env, task, sandbox_user, agent_paths, keep, seconds, None, kill=False
+    )
+    with (
+        _prep_timing(seconds, "clear_verifier_output"),
+        _outputs_clearing(env, "the clear before test.sh"),
+    ):
+        await clear_verifier_output_dir(
+            env,
+            "Verifier hardening failed: clearing verifier output directory",
+            host_owned=keep is not None,
+            user="root",
+            timeout_sec=verifier_setup_timeout_sec(),
+        )
+    configured = task.config.verifier.env
+    task.config.verifier.env = resolve_env_vars(configured) if configured else {}
+    with contextlib.suppress(AttributeError):
+        # test.sh's command gets no pins (verifier_core), and no plugin
+        # guard verdict is read.
+        env._benchflow_verifier_faithful = True
+        env._benchflow_verifier_runtime = None
+        env._runtime_guard_unrecorded = ()
+        env._runtime_guard_why = {}
+    # After the kill, with test.sh's env final, before test.sh.
+    await _detect_step(env, mode, seconds, task, task.config.verifier.env)
+    await _arm_verifier_network(env, task, seconds, separate=agent_paths is not None)
+
+
+async def _harden_steps(
+    env: Any,
+    task: "Task",
+    sandbox_user: str | None,
+    workspace: str | None,
+    restore_workspace: bool,
+    agent_paths: "tuple[str, ...] | None",
+    seconds: dict[str, float],
+    detect: str | None = None,
+) -> None:
+    # Each step is a sub-key of timing.json's harden_before_verify span, by
+    # the names in timing_spans.HARDEN_STEPS (a no-op outside a trial).
+    from benchflow.task import keep_services as _keep_services
+
+    keep = (
+        _keep_services.trial_keep(task, sandbox_user) if agent_paths is None else None
+    )
+    await _kept_steps(env, task, sandbox_user, agent_paths, keep, seconds, detect)
     # Decide before clear/reclaim/restore/freeze changes any ownership. Even
     # main can mount its workspace a second time under an unblocked alias.
     # A file the agent could write must not become trusted merely because
@@ -15116,6 +17049,7 @@ async def _harden_steps(
                         workspace,
                         bfx=_bfx_in_scripts(env),
                         git=hardening.get("cleanup_git", True),
+                        modes=_granted_modes(env),
                     )
                     if workspace
                     else []
@@ -15149,8 +17083,13 @@ async def _harden_steps(
                 await clear_verifier_output_dir(
                     env,
                     "Verifier hardening failed: clearing verifier output directory",
+                    # Kept services leave the folder 0755 below: on Docker it
+                    # is the host's, and stays the host user's.
+                    host_owned=keep is not None
+                    and bool(sandbox_user)
+                    and getattr(env, "is_mounted", False) is True,
                     user="root",
-                    timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                    timeout_sec=verifier_setup_timeout_sec(),
                 )
                 if keep is not None and sandbox_user:
                     await _checked_exec(
@@ -15158,14 +17097,14 @@ async def _harden_steps(
                         _CLOSE_LOGS_CMD,
                         "Verifier hardening failed: closing /logs to the kept services",
                         user="root",
-                        timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                        timeout_sec=verifier_setup_timeout_sec(),
                     )
             with _prep_timing(seconds, "prepare_app_dir"):
                 await ensure_legacy_app_dir(
                     env,
                     "Verifier hardening failed: preparing /app",
                     user="root",
-                    timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                    timeout_sec=verifier_setup_timeout_sec(),
                 )
             # 3. Reclaim re-downloadable cache space before the verifier installs deps.
             with _prep_timing(seconds, "reclaim_disk"):
@@ -15206,7 +17145,7 @@ async def _harden_steps(
                             "Verifier hardening failed: closing the workspace to the "
                             "kept services",
                             user="root",
-                            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                            timeout_sec=verifier_setup_timeout_sec(),
                         )
                         # Frozen contents are insufficient if a kept process can rename
                         # an ancestor or replace a symlink in the path used by test.sh.
@@ -15234,7 +17173,7 @@ async def _harden_steps(
                             ancestry,
                             "Verifier hardening failed: protecting workspace ancestors",
                             user="root",
-                            timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC,
+                            timeout_sec=verifier_setup_timeout_sec(),
                         )
             # 6. Remove injected conftest.py, sitecustomize.py, .pth files. The rootfs
             #    conftest walk can be slow on network-backed FS, so use the shared
@@ -15267,5 +17206,10 @@ async def _harden_steps(
                 target_blocked=target_blocked,
                 image_pythonpath=image_pythonpath,
             )
+        # test.sh runs under the verifier's network, held for root too, last:
+        # nothing after it runs as root with the agent's code.
+        await _arm_verifier_network(
+            env, task, seconds, separate=agent_paths is not None
+        )
     finally:
         _root_python.reset(token)

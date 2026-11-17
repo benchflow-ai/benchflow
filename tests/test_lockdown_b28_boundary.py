@@ -42,6 +42,7 @@ async def test_grading_retains_literal_mount_aliases(
         sandbox_user=None if separate else "agent",
         workspace="/app",
         agent_paths=("/app",) if separate else None,
+        integrity="strict",
     )
     captured = build.call_args.kwargs["blocked"]
     assert isinstance(captured, lockdown.PathExclusions)

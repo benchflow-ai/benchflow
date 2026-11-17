@@ -26,6 +26,8 @@ and from an OpenCode trial on DeepSeek, a model BenchFlow has a price for:
 {"total_tokens": 247840, "cost_usd": 0.00857596, "usage_source": "provider_response", "price_source": "litellm"}
 ```
 
+A task graded by an LLM judge (an `llm-judge` or `agent-judge` verifier, or a task.md judge) records the judge's calls apart, in `judge_usage`, with the same fields: its tokens as each provider response reported them (`usage_source` `provider`) and their cost at list prices (`cost_source` `list_price_estimate`, with `price_table_date`), plus `calls`, `calls_without_usage` and the `models` that answered. It is null when no judge ran. The judge's tokens are never added to `agent_result`. A response that reported no usage leaves the judge's tokens and cost null, since a sum without it would read as the whole.
+
 `timing.json` has seconds per step, including how much of the agent's turn was spent waiting for the model (`provider_wait`) and how much doing anything else (`agent_without_provider_wait`); [How BenchFlow works](../start/how-it-works.md#one-rollout-step-by-step) shows a whole one.
 
 Each model call is a line in `trajectory/llm_trajectory.jsonl`: the request as sent, the response, its HTTP status and how long it took. The first call of the same Claude Code trial:
@@ -62,7 +64,23 @@ Claude Code sent effort `high` on each call and no sampling settings; an OpenCod
 | `agent_native_acp` | reported by the agent itself over ACP, as with a subscription login, which the proxy doesn't route |
 | `unavailable` | not recorded; treat token and cost figures for the trial as missing, not zero |
 
-`price_source` says where the price came from: `litellm`, the price table of LiteLLM, the library BenchFlow's model proxy runs on; `agent_session_log`, an estimate from the agent's own session log, as for Claude Code on a subscription login; or `null` when there's no price for the model. The proxy is always used for agents it can route, so usage and `llm_trajectory.jsonl` are always captured for them; `--usage-tracking required` additionally makes trusted usage (`provider_response` or `agent_native_acp`) a requirement of the run.
+codex-acp reports only its last model call's tokens over ACP. For a codex-acp trial the proxy doesn't meter, the tokens come from Codex's own session log instead, copied into the trial's `agent/codex-sessions/`: every response's usage, summed. `usage_details.token_count` then names the log and keeps what ACP reported; a codex-acp trial without it reports its last call's tokens only.
+
+A count that misses calls says so. When a turn ends without its usage report (a timeout, a cancel, a lost sandbox) and no log of the agent's can count it, the trial's tokens are those of the turns that reported: result.json's `agent_result` then has `usage_incomplete: true` with `usage_incomplete_reason`, and `cost_incomplete: true` beside a cost priced from that count. ATIF's `final_metrics.extra` says the same, and summary.json and the run card count such trials as `trials_usage_incomplete` and `trials_cost_incomplete`, so a job's totals say when they are short. On the ACP path the agent's session log is copied out of the sandbox every 30 seconds while a turn runs and once more when it ends. A sandbox lost before a copy takes the calls since the last one with it; the count from what was copied is marked `usage_incomplete`. That gap is accepted. The trial export (`bench results --json`) carries the same three fields, and the `bench results` table shows such a trial's cost with a trailing `+`: a floor. The copy is redacted in a worker thread, so it never holds up the turn. The native harness keeps Claude Code's output stream on the host, so a lost sandbox costs it no tokens.
+
+`price_source` says where the price came from: `litellm`, the price table of LiteLLM, the library BenchFlow's model proxy runs on; `agent_session_log`, an estimate from the agent's own session log, as for Claude Code on a subscription login; or `null` when there's no price for the model. `bench results` shows every cost whose `cost_source` is not `provider` as `~$…`: an estimate, not a bill. The proxy is always used for agents it can route, so usage and `llm_trajectory.jsonl` are always captured for them; `--usage-tracking required` additionally makes trusted usage (`provider_response` or `agent_native_acp`) a requirement of the run.
+
+## What a job's summary counts
+
+`summary.json` totals the trials two ways:
+
+| Keys | Count |
+|---|---|
+| `total_input_tokens` ... `total_tokens`, `total_cost_usd`, `avg_cost_per_trial_usd`, `usage_sources`, `cost_sources` | the agents' usage over each task's final attempt (the trials the score reads) and the trials stopped before they finished |
+| `judge_totals` | the LLM judges' usage over the same trials (`trials`, `calls`, the same token and cost totals, `usage_sources`, `cost_sources`) |
+| `spend_all_attempts` | what the job spent over every attempt it recorded, retries and resumed runs included: `cost_usd` and `tokens` (agents' and judges' together), `judge_cost_usd` and `judge_tokens` (the judges' part), `attempts`, `attempts_without_cost` and `attempts_without_tokens` (unknown, never 0), `attempts_without_model_call` (an oracle, a nop, a script), and `stopped_attempts` (stopped by Ctrl-C, SIGTERM or a budget before they finished: what each one's receipt recorded counts; `stopped_attempts_without_usage` recorded nothing, `stopped_attempts_without_cost` tokens with no cost), and `attempts_cost_incomplete` (a cost priced from some of the attempt's calls only, so `cost_usd` is a floor) |
+
+A task that failed twice on infrastructure and then passed counts once in `total_cost_usd` and three times in `spend_all_attempts.cost_usd`. `spend_all_attempts` counts each attempt by the rule a job budget uses, so with a budget it agrees with `budget.spent` as the run recorded it. `bench backfill-cost` updates `spend_all_attempts` with the trials it prices, not `budget.spent`, which stays what the cap saw while the job ran. A total no trial reported is null, never 0. A run split across worker processes (`--worker-concurrency`) adds the workers' totals into the same keys. `bench eval metrics` shows the two as labelled rows, `Cost (total_cost_usd)` ("kept trials: …") and `Spend (spend_all_attempts)` ("every attempt: …"), each with how many trials or attempts reported no cost, and how many counted only some of their calls, which makes the total a floor.
 
 ## OpenTelemetry
 
@@ -100,7 +118,7 @@ call  otel: input  cache_read  output   proxy: prompt_tokens  completion_tokens
 
 The two records agree call by call once you know how each counts. Claude Code's `input_tokens` leave out the tokens read from the cache, and the proxy's `prompt_tokens` include them, so input plus cache_read is the prompt. Output tokens are the same number in both. Each event also carries a `cost_usd`: that is Claude Code's own estimate from its price table, which isn't MiMo's price, so price a non-Claude model's tokens yourself, as below.
 
-The trial's `config.json` keeps every variable you pass with `--agent-env`, values included, under `agent_env`. BenchFlow leaves out a variable whose name looks secret (it contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH` or `SESSION`, among others) or whose value looks like a credential.
+The trial's `config.json` keeps every variable you pass with `--agent-env`, values included, under `agent_env`. BenchFlow leaves out a variable whose name looks secret (it contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `AUTH` or `SESSION`, among others), unless the name is a setting's such as `MAX_OUTPUT_TOKENS` or `SESSION_TIMEOUT`, and one whose value looks like a credential.
 
 ## Cost, and models without a price
 

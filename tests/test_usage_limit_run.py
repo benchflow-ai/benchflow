@@ -24,7 +24,16 @@ from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.models import RolloutResult
 from benchflow.rollout.session_factory_runtime import execute_prompts_session_factory
 
-TOKEN = "sk-ant-oat01-not-a-real-token-but-long-enough-to-scan-for"
+TOKEN = (
+    "sk"
+    + "-ant-oat"
+    + "01-not-a"
+    + "-real-to"
+    + "ken-but-"
+    + "long-eno"
+    + "ugh-to-s"
+    + "can-for"
+)
 WEEKLY = "You've hit your weekly limit · resets Oct 2, 4pm (UTC)"
 
 

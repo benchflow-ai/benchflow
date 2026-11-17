@@ -10,10 +10,12 @@ import contextvars
 import hashlib
 import importlib
 import inspect
+import io
 import json
 import logging
 import os
 import posixpath
+import re
 import secrets
 import shlex
 import shutil
@@ -23,7 +25,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +62,7 @@ from benchflow.agents.registry import (
     OPENCODE_GOOGLE_BASE_URL_ENV,
     agent_routes_own_model,
     is_scripted_agent,
+    opencode_google_provider,
     routed_model,
     routes_gemini_natively,
 )
@@ -136,6 +139,9 @@ _REQUEST_MARK_SUFFIX = ".requests"
 # Beside it: the call id of each request whose record the callback wrote
 # (litellm_logging's _note_logged).
 _LOGGED_MARK_SUFFIX = ".logged"
+# Beside it: the proxy's own count of its log, written on SIGUSR1
+# (litellm_request_guard's _write_tally).
+_TALLY_SUFFIX = ".tally"
 _PATCH_MODULE = "benchflow_litellm_bedrock_patch"
 _GEMINI_PATCH_MODULE = "benchflow_litellm_gemini_passthrough_patch"
 _TOKEN_CAPTURE_PATCH_MODULE = "benchflow_litellm_token_capture_patch"
@@ -307,12 +313,22 @@ class LiteLLMProcess:
     # refused for the trial's budget (benchflow.trial_budget) that one read.
     _live_capture_passes: int = 0
     _trial_budget_refusal: dict[str, Any] | None = None
+    # Whether the proxy runs in the sandbox, where the trial's own processes
+    # (root's) can stop it or change its log.
+    runs_in_sandbox: bool = False
+    # Why the log stop() imported may miss calls, when it may (an in-sandbox
+    # proxy's _usage_log_shortfall, or _salvage_live_capture when the log
+    # could not be read); None when it was read whole.
+    usage_log_shortfall: str | None = None
 
     @property
     def base_url(self) -> str:
         raise NotImplementedError
 
-    async def stop(self) -> None:
+    async def stop(self, *, retry_later: bool = False) -> None:
+        """Stop the proxy and import its log. ``retry_later``: a stop the
+        caller will repeat if this one raises (the one before the verifier),
+        so a log that cannot be read now is not settled for good here."""
         raise NotImplementedError
 
     async def is_running(self) -> bool:
@@ -340,12 +356,23 @@ class LiteLLMProcess:
             Path(path),
             preceding_trajectories=getattr(self, "_preceding_trajectories", ()),
         )
-        self._live_trajectory = Trajectory(
+        # Every callback line the live capture reads goes through one reader,
+        # so what it has read is also the import of the log so far, its cost
+        # and bills included: what stop() keeps when the sandbox is lost
+        # before the log can be read.
+        self._live_reader = CallbackLogReader(
             session_id=self.session_id,
             agent_name=self.agent_name,
+            keep=published_exchange,
         )
+        self._live_trajectory = self._live_reader.trajectory
         self._live_callback_offset = 0
+        self._live_capture_closed = False
+        # The SHA-256 of the log's first ``_live_callback_offset`` bytes, as
+        # read: the log read back at the stop must begin with them.
+        self._live_read_digest = hashlib.sha256()
         self._live_callback_remainder = b""
+        self._live_pending_lines = deque()
         self._live_reconciled = False
         self._request_events = {}
         # Clear ``seen`` BEFORE the total so a racing render-thread read can
@@ -495,11 +522,49 @@ class LiteLLMProcess:
     async def _read_callback_chunk(self, offset: int, limit: int) -> _CallbackChunk:
         raise NotImplementedError
 
+    def _live_read_hash(self) -> Any:
+        digest = getattr(self, "_live_read_digest", None)
+        if digest is None:
+            digest = self._live_read_digest = hashlib.sha256()
+        return digest
+
+    def _live_read_prefix(self) -> tuple[int, str] | None:
+        """How many bytes of the log the live capture read while the turn
+        ran, and their SHA-256; None when it read none."""
+        size = int(getattr(self, "_live_callback_offset", 0) or 0)
+        digest = getattr(self, "_live_read_digest", None)
+        if size <= 0 or digest is None:
+            return None
+        return size, digest.hexdigest()
+
+    def _pending_live_lines(self) -> deque[bytes]:
+        pending = getattr(self, "_live_pending_lines", None)
+        if pending is None:
+            pending = self._live_pending_lines = deque()
+        return pending
+
+    async def _parse_pending_live_lines(
+        self, trajectory: Trajectory, writer: LiveLLMTrajectoryWriter
+    ) -> None:
+        """Parse the lines read and not parsed yet, in order. A line is taken
+        off before its parse: a cancellation lets the line in flight finish
+        (_capture_to_thread) and leaves the rest for the next call, so a stop
+        that lands mid-chunk drops no line already read."""
+        pending = self._pending_live_lines()
+        while pending:
+            raw_line = pending.popleft()
+            await _capture_to_thread(
+                lambda raw_line=raw_line: self._parse_live_record(raw_line, writer),
+                lambda result: self._publish_live_record(trajectory, result),
+            )
+
     async def _capture_live_records(self) -> None:
         trajectory = getattr(self, "_live_trajectory", None)
         writer = getattr(self, "_live_writer", None)
         if trajectory is None or writer is None:
             return
+        # A chunk a cancelled poll read and did not finish parsing.
+        await self._parse_pending_live_lines(trajectory, writer)
 
         start_offset = int(getattr(self, "_live_callback_offset", 0))
         caught_up = False
@@ -530,16 +595,12 @@ class LiteLLMProcess:
                 caught_up = chunk.size is not None and offset >= chunk.size
                 break
             self._live_callback_offset = offset + len(chunk.data)
+            self._live_read_hash().update(chunk.data)
             data = getattr(self, "_live_callback_remainder", b"") + chunk.data
             lines = data.split(b"\n")
             self._live_callback_remainder = lines.pop()
-            for raw_line in lines:
-                if not raw_line.strip():
-                    continue
-                await _capture_to_thread(
-                    lambda raw_line=raw_line: self._parse_live_record(raw_line, writer),
-                    lambda result: self._publish_live_record(trajectory, result),
-                )
+            self._pending_live_lines().extend(line for line in lines if line.strip())
+            await self._parse_pending_live_lines(trajectory, writer)
             if len(chunk.data) < _LIVE_CAPTURE_CHUNK_BYTES:
                 caught_up = True
                 break
@@ -562,8 +623,11 @@ class LiteLLMProcess:
             )
         if parsed.exchanges:
             # Each exchange is published once, as it arrives; the mirror keeps
-            # only what a stopped proxy is read for.
-            trajectory.exchanges.extend(parsed.exchanges)
+            # only what a stopped proxy is read for. The live reader's own
+            # trajectory has it already.
+            reader = getattr(self, "_live_reader", None)
+            if reader is None or trajectory is not reader.trajectory:
+                trajectory.exchanges.extend(parsed.exchanges)
             # Live token counter for the eval dashboard: accumulate the same
             # canonical per-exchange accounting scoring sums at stop()
             # (Trajectory.total_provider_tokens over the same parser's output),
@@ -581,9 +645,13 @@ class LiteLLMProcess:
     ) -> tuple[Trajectory, str | None]:
         """Parse, redact and publish off-loop; return only the compact mirror."""
         text = raw_line.decode("utf-8", errors="replace")
-        parsed = trajectory_from_litellm_callback_log(
-            text, session_id=self.session_id, agent_name=self.agent_name
-        )
+        reader = getattr(self, "_live_reader", None)
+        if reader is None:
+            parsed = trajectory_from_litellm_callback_log(
+                text, session_id=self.session_id, agent_name=self.agent_name
+            )
+        else:
+            parsed = _read_live_line(reader, text, self.session_id, self.agent_name)
         if parsed.exchanges:
             writer.append(parsed.exchanges)
             parsed.exchanges = [published_exchange(e) for e in parsed.exchanges]
@@ -608,6 +676,36 @@ class LiteLLMProcess:
             else None
         )
         return parsed, event
+
+    def _salvage_live_capture(
+        self, error: BaseException, *, sandbox_lost: bool = True
+    ) -> bool:
+        """The log could not be read at the stop: keep what the live capture
+        read of it while the turn ran, and say the count may miss calls, and
+        why. False when nothing was captured live."""
+        reader = getattr(self, "_live_reader", None)
+        if reader is None:
+            return False
+        self.trajectory = reader.finish()
+        calls = len(self.trajectory.exchanges)
+        what = (
+            "the sandbox was lost before the log could be read at the end"
+            if sandbox_lost
+            else "the log could not be read at the end, though the sandbox answers"
+        )
+        self.usage_log_shortfall = (
+            f"{what} ({describe_exception(error)}): the {calls} call(s) read from "
+            "it while the turn ran are counted, any after the last read are not"
+        )
+        # The published llm_trajectory.jsonl already holds every exchange
+        # read; the reader keeps only what the import needs.
+        self._live_reconciled = True
+        logger.warning(
+            "The model proxy's usage log may miss calls: %s",
+            self.usage_log_shortfall,
+        )
+        _warn_refused_requests(self.trajectory)
+        return True
 
     def _note_live_capture_lag(
         self, *, start_offset: int, caught_up: bool, log_size: int | None
@@ -761,6 +859,24 @@ class LiteLLMProcess:
             self._import_callback_lines(lines)
 
 
+def _read_live_line(
+    reader: CallbackLogReader, text: str, session_id: str, agent_name: str
+) -> Trajectory:
+    """One callback line through the live capture's reader: its exchange
+    (whole) and any refusal it records, as the line's own trajectory, as
+    :func:`trajectory_from_litellm_callback_log` would make it."""
+    held = reader.trajectory.metadata.get("refused_requests") or []
+    before = len(held)
+    exchange = reader.add_line(text)
+    parsed = Trajectory(session_id=session_id, agent_name=agent_name)
+    if exchange is not None:
+        parsed.exchanges.append(exchange)
+    refused = (reader.trajectory.metadata.get("refused_requests") or [])[before:]
+    if refused:
+        parsed.metadata["refused_requests"] = list(refused)
+    return parsed
+
+
 def _live_usage_gateway_conformance(process: LiteLLMProcess) -> LiveUsageGateway:
     """Static assertion: LiteLLMProcess satisfies the contract the rollout
     kernel's dashboard read binds to (``contracts.planes.LiveUsageGateway``).
@@ -806,7 +922,8 @@ class HostLiteLLMProcess(LiteLLMProcess):
     async def is_running(self) -> bool:
         return self.process.poll() is None
 
-    async def stop(self) -> None:
+    async def stop(self, *, retry_later: bool = False) -> None:
+        del retry_later  # the host's own log can always be read
         await self._stop_live_capture()
         await _await_log_stable(
             self._log_size, requested=self._requested, logged=self._all_logged
@@ -894,7 +1011,342 @@ class HostLiteLLMProcess(LiteLLMProcess):
         return "\n".join(chunks)
 
 
+@dataclass(frozen=True)
+class _ProxyTally:
+    """What the in-sandbox proxy said of its own log when asked.
+
+    ``state`` is ``answered`` (``report`` holds its count), ``not-running``
+    (no live process at its pid), ``no-answer`` (alive, but no count came
+    back from it) or ``unasked`` (the question could not be put; ``detail``
+    says why).
+    """
+
+    state: str
+    report: dict[str, Any] | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class _ReadBack:
+    """The callback log as the host read it back for its import."""
+
+    size: int
+    records: int
+    sha256: str
+    # The SHA-256 of its first ``prefix`` bytes (what the live capture read);
+    # None when it is shorter.
+    prefix_sha256: str | None = None
+
+
+def _read_back(data: bytes, prefix: int = 0) -> _ReadBack:
+    return _ReadBack(
+        size=len(data),
+        records=data.count(b"\n"),
+        sha256=hashlib.sha256(data).hexdigest(),
+        prefix_sha256=hashlib.sha256(data[:prefix]).hexdigest()
+        if len(data) >= prefix
+        else None,
+    )
+
+
+def _read_back_file(path: Path, prefix: int = 0) -> _ReadBack:
+    digest, head = hashlib.sha256(), hashlib.sha256()
+    size = records = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1 << 20):
+            if size < prefix:
+                head.update(chunk[: prefix - size])
+            digest.update(chunk)
+            size += len(chunk)
+            records += chunk.count(b"\n")
+    return _ReadBack(
+        size=size,
+        records=records,
+        sha256=digest.hexdigest(),
+        prefix_sha256=head.hexdigest() if size >= prefix else None,
+    )
+
+
+@dataclass(frozen=True)
+class _HeldCount:
+    """The proxy's count the stop before the verifier took before its
+    SIGTERM and kept when it could not read the log: what the
+    proxy had written then, and the calls it had in flight."""
+
+    size: int
+    records: int
+    sha256: str
+    open_requests: int
+    awaiting: int
+    awaiting_ids: Any
+
+    @property
+    def in_flight(self) -> int:
+        """At most this many calls can still add a record: a request still
+        being answered and a call LiteLLM had not logged may be the same."""
+        return self.open_requests + self.awaiting
+
+
+def _held_count(held: _ProxyTally | None) -> _HeldCount | None:
+    """The kept count, or None when the stop before the verifier took none."""
+    report = held.report if held is not None and held.state == "answered" else None
+    if not isinstance(report, dict):
+        return None
+    counts = [
+        _report_count(report, key) for key in ("bytes", "records", "open", "awaiting")
+    ]
+    digest = report.get("sha256")
+    if any(count is None for count in counts) or not isinstance(digest, str):
+        return None
+    size, records, open_requests, awaiting = (int(count or 0) for count in counts)
+    return _HeldCount(
+        size, records, digest, open_requests, awaiting, report.get("awaiting_ids")
+    )
+
+
+@dataclass(frozen=True)
+class _RetryCut:
+    """What cleanup's re-read of the log imports, by the kept count:
+    the log up to ``offset`` (None: all of it), or, with ``live_only``, none
+    of it and the live capture's records instead; ``reason`` says why the
+    count may miss calls when it does."""
+
+    offset: int | None = None
+    live_only: bool = False
+    reason: str | None = None
+
+
+# The proxy's records of a call (the callback's), and the request
+# boundary's lifecycle lines, which carry no usage.
+_CALL_EVENTS = frozenset({"success", "failure", "refused"})
+_LIFECYCLE_EVENTS = frozenset(
+    {"request_start", "response_start", "request_end", "upstream_start", "upstream_end"}
+)
+# The longest line read after the counted bytes, and lifecycle lines allowed
+# there for each call in flight (and one more set).
+_RECORD_LINE_LIMIT = 64 << 20
+_LIFECYCLE_LINES_PER_CALL = 16
+
+
+def _record_event(line: bytes) -> str | None:
+    """The event of a whole line the proxy writes, or None for anything else."""
+    if not line.endswith(b"\n"):
+        return None
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    event = record.get("event") if isinstance(record, dict) else None
+    return event if event in _CALL_EVENTS or event in _LIFECYCLE_EVENTS else None
+
+
+def _retry_cut(handle: Any, read_back: _ReadBack, held: _HeldCount) -> _RetryCut:
+    """What cleanup's re-read imports, after test.sh.
+
+    The kept count vouches for the log's first ``held.size`` bytes (their
+    SHA-256). When they are intact, exactly they are imported: what follows
+    was written after the agent's turn (a call in flight at the count writes
+    its record at the SIGTERM), and test.sh's lines cannot be told from it,
+    so it is cut, and the reason says what it held. When they are not
+    intact, none of the log is imported: the live capture's records, read
+    until the end of the turn, are counted instead. So an edit by test.sh
+    never raises or sets the figure.
+    """
+    counted = (
+        f"the {held.records} record(s) ({held.size} bytes) the proxy had written "
+        "when the stop before the verifier asked it"
+    )
+    if read_back.prefix_sha256 != held.sha256:
+        return _RetryCut(
+            live_only=True,
+            reason=f"the log read back at cleanup is not {counted} "
+            "(rewritten after the live read)",
+        )
+    handle.seek(held.size)
+    calls = lines = 0
+    limit = _LIFECYCLE_LINES_PER_CALL * (held.in_flight + 1)
+    after: str | None = None
+    while line := handle.readline(_RECORD_LINE_LIMIT):
+        lines += 1
+        event = _record_event(line)
+        if event is None or lines > limit:
+            after = (
+                f"the log read back at cleanup holds lines after {counted} that "
+                "are not the proxy's records; they are not counted (rewritten after "
+                "the live read)"
+            )
+            break
+        if event in _CALL_EVENTS:
+            calls += 1
+            if calls > held.in_flight:
+                after = (
+                    f"the log read back at cleanup holds more call records after "
+                    f"{counted} than the {held.in_flight} call(s) it then had in "
+                    "flight; none after it is counted (written after the count, or "
+                    "by test.sh)"
+                )
+                break
+    if after is None and calls:
+        after = (
+            f"the log read back at cleanup holds {calls} call record(s) after "
+            f"{counted}; they are not counted (written at the stop, or by test.sh)"
+        )
+    # Nothing after the counted bytes is counted: it was written after the
+    # agent's turn (an in-flight call's record lands at the SIGTERM), where
+    # test.sh's records cannot be told from it. The calls in flight at the
+    # count are named as a cut-off call is on the normal path.
+    reasons = [
+        *(
+            [_cut_calls(held.open_requests, held.awaiting, held.awaiting_ids)]
+            if held.in_flight
+            else []
+        ),
+        *([after] if after else []),
+    ]
+    return _RetryCut(
+        offset=held.size if lines else None,
+        reason="; ".join(reasons) if reasons else None,
+    )
+
+
+def _retry_cut_file(path: Path, read_back: _ReadBack, held: _HeldCount) -> _RetryCut:
+    with path.open("rb") as handle:
+        return _retry_cut(handle, read_back, held)
+
+
+def _live_prefix_mismatch(
+    live: tuple[int, str] | None, read_back: _ReadBack | None
+) -> str | None:
+    """Why the log read back is not the one the live capture read from
+    while the turn ran, or None.
+
+    The proxy only appends, so the log must begin with the bytes read live.
+    It matters when the read comes after test.sh: a stop before the verifier
+    that could not read the log leaves it to cleanup, after test.sh, which
+    can rewrite it.
+    """
+    if live is None or read_back is None:
+        return None
+    size, digest = live
+    if read_back.prefix_sha256 == digest:
+        return None
+    return (
+        f"the log read back does not begin with the {size} bytes the live "
+        "capture read from it during the agent's turn (rewritten or truncated "
+        "after them)"
+    )
+
+
+def _report_count(report: dict[str, Any], key: str) -> int | None:
+    value = report.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+# A LiteLLM call id the proxy reported, as a shortfall may quote it.
+_CALL_ID = re.compile(r"[A-Za-z0-9._:-]{1,80}")
+
+
+def _cut_calls(open_requests: int, awaiting: int, ids: Any) -> str:
+    """The model calls the stop cut off: requests the proxy was
+    still answering, and LiteLLM calls it had no record of yet, named by
+    their call ids when the proxy reported them."""
+    cut = []
+    if open_requests:
+        cut.append(f"{open_requests} request(s) still being answered")
+    if awaiting:
+        named = (
+            [i for i in ids if isinstance(i, str) and _CALL_ID.fullmatch(i)][:5]
+            if isinstance(ids, list)
+            else []
+        )
+        cut.append(
+            f"{awaiting} call(s) LiteLLM had not logged"
+            + (f" ({', '.join(named)})" if named else "")
+        )
+    return (
+        "the proxy was stopped with model calls cut off, so its log has no "
+        "record of them: " + ", ".join(cut)
+    )
+
+
+def _usage_log_shortfall(tally: _ProxyTally, read_back: _ReadBack | None) -> str | None:
+    """Why the log an in-sandbox proxy's stop() read back may miss calls, or
+    None when it is the whole log.
+
+    Whole means: the proxy was alive at the end of the agent's turn and
+    reported its own count, kept in its memory, of what it appended to the
+    log (records, bytes and their SHA-256); no request was still open or
+    without its record; and the log read back is exactly those bytes. A
+    killed proxy cannot report, and a truncated or rewritten log does not
+    match the count of the process that wrote it.
+    """
+    if tally.state == "not-running":
+        return "the proxy was not running at the end of the agent's turn (killed or exited)"
+    if tally.state == "unasked":
+        return f"the proxy could not be asked for its count of the log ({tally.detail})"
+    report = tally.report
+    if tally.state != "answered" or report is None:
+        detail = f" ({tally.detail})" if tally.detail else ""
+        return f"the proxy did not report its own count of the log{detail}"
+    counts = {
+        key: _report_count(report, key)
+        for key in ("records", "bytes", "open", "awaiting")
+    }
+    digest = report.get("sha256")
+    if any(value is None for value in counts.values()) or not isinstance(digest, str):
+        return "the proxy's count of the log was unreadable"
+    open_requests, awaiting = counts["open"] or 0, counts["awaiting"] or 0
+    if open_requests or awaiting:
+        return _cut_calls(open_requests, awaiting, report.get("awaiting_ids"))
+    if read_back is None:
+        return "the log could not be read back"
+    if read_back.size != counts["bytes"] or read_back.records != counts["records"]:
+        return (
+            f"the log read back holds {read_back.records} record(s) "
+            f"({read_back.size} bytes), not the {counts['records']} "
+            f"({counts['bytes']} bytes) the proxy wrote (truncated or rewritten)"
+        )
+    if read_back.sha256 != digest:
+        return (
+            f"the log read back is not the one the proxy wrote: same size "
+            f"({read_back.size} bytes), different content (rewritten)"
+        )
+    return None
+
+
+def _parse_tally(stdout: str) -> _ProxyTally:
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if "BF_TALLY_GUARD" in lines:
+        return _ProxyTally(
+            "unasked", detail="its runtime folder or pid file is not root's alone"
+        )
+    if "BF_TALLY_DEAD" in lines:
+        return _ProxyTally("not-running")
+    if "BF_TALLY_NOHANDLER" in lines:
+        return _ProxyTally("no-answer", detail="it does not take the count signal")
+    pid = next(
+        (line.split()[1] for line in lines if line.startswith("BF_TALLY_PID ")), None
+    )
+    if pid is None:
+        return _ProxyTally("unasked", detail="no answer from the sandbox")
+    report = None
+    for line in lines:
+        if line.startswith("{"):
+            with contextlib.suppress(ValueError):
+                report = json.loads(line)
+    if not isinstance(report, dict):
+        return _ProxyTally("no-answer")
+    if str(report.get("pid")) != pid:
+        return _ProxyTally(
+            "no-answer",
+            detail=f"the count came from pid {report.get('pid')}, not {pid}",
+        )
+    return _ProxyTally("answered", report=report)
+
+
 class SandboxLiteLLMProcess(LiteLLMProcess):
+    runs_in_sandbox = True
+
     def __init__(
         self,
         *,
@@ -941,8 +1393,13 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         )
         return result.return_code == 0 and (result.stdout or "").strip() == "yes"
 
-    async def stop(self) -> None:
-        await self._stop_live_capture()
+    async def stop(self, *, retry_later: bool = False) -> None:
+        if not getattr(self, "_live_capture_closed", False):
+            await self._stop_live_capture()
+            # The live capture ends with the agent's turn: a later
+            # stop (cleanup's, after the verifier) reads nothing more into it,
+            # so nothing written after the turn feeds what it counts.
+            self._live_capture_closed = True
         # The host proxy's settle rule: without the request/logged
         # marks, an agent that never called this proxy held every Daytona
         # trial's teardown for the whole 12 s deadline. One exec per poll
@@ -961,6 +1418,8 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         # Checked again at use: root kills the pid the file names and removes
         # the folder (FF-install-C2, C10).
         guard = _runtime_use_guard(self.runtime_dir, self.pid_path)
+        # The proxy's own count of its log, before it stops.
+        tally = await self._ask_tally(guard)
         with contextlib.suppress(Exception):
             await exec_raw(
                 self.sandbox.exec,
@@ -971,7 +1430,51 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 ),
                 timeout_sec=10,
             )
-        await self._load_callback_log()
+        live = self._live_read_prefix()
+        held = _held_count(getattr(self, "_tally_before_retry", None))
+        prefix = held.size if held is not None else live[0] if live else 0
+        # A read after a stop before the verifier that could not read the log
+        # comes after test.sh: without the proxy's count, only what the live
+        # capture read until the end of the turn is counted.
+        keep_live = (
+            held is None
+            and hasattr(self, "_tally_before_retry")
+            and getattr(self, "_live_reader", None) is not None
+        )
+        self._retry_cut = None
+        try:
+            read_back = await self._load_callback_log(
+                prefix=prefix, held=held, keep_live=keep_live
+            )
+        except Exception as exc:
+            lost = not await self._sandbox_answers()
+            # A sandbox that still answers can be read again: a stop that
+            # will be retried (the one before the verifier) raises,
+            # and cleanup reads the log again, after test.sh, importing only
+            # what this count vouches for (_retry_cut). A lost one, or the
+            # last stop, keeps what the live capture read.
+            if retry_later and not lost:
+                self._tally_before_retry = tally
+                raise
+            if not self._salvage_live_capture(exc, sandbox_lost=lost):
+                raise
+        else:
+            if keep_live:
+                changed = self._kept_live_reason(live, read_back)
+            elif held is None:
+                changed = _live_prefix_mismatch(live, read_back)
+            else:
+                cut = self._retry_cut or _RetryCut()
+                changed = cut.reason
+                if cut.live_only:
+                    calls = self._keep_live_capture_records()
+                    changed = (
+                        f"{changed}: only the {calls} call(s) the live capture "
+                        "read during the agent's turn are counted"
+                    )
+            self._note_usage_log_shortfall(
+                _usage_log_shortfall(tally, read_back), changed
+            )
         await _capture_to_thread(self._reconcile_live_capture)
         with contextlib.suppress(Exception):
             await exec_raw(
@@ -979,6 +1482,101 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 f"{guard} && rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )
+
+    def _kept_live_reason(
+        self, live: tuple[int, str] | None, read_back: _ReadBack | None
+    ) -> str | None:
+        """Count the live capture's records in place of a log read back after
+        test.sh with no count to check it by; why that count may miss calls,
+        or None when the log read back is what the live capture read."""
+        calls = self._keep_live_capture_records()
+        size = live[0] if live else 0
+        changed = _live_prefix_mismatch(live, read_back)
+        if changed is not None:
+            return (
+                f"{changed}: only the {calls} call(s) the live capture read during "
+                "the agent's turn are counted"
+            )
+        if read_back is not None and read_back.size > size:
+            return (
+                f"the log read back at cleanup holds {read_back.size - size} byte(s) "
+                f"after the {size} the live capture read during the agent's turn; "
+                "they are not counted (written after the turn, or by test.sh)"
+            )
+        return None
+
+    def _keep_live_capture_records(self) -> int:
+        """Count what the live capture read while the turn ran, not the log
+        read back; the number of calls."""
+        reader = getattr(self, "_live_reader", None)
+        self.trajectory = (
+            reader.finish()
+            if reader is not None
+            else Trajectory(session_id=self.session_id, agent_name=self.agent_name)
+        )
+        # The published llm_trajectory.jsonl holds what the live capture read.
+        self._live_reconciled = True
+        _warn_refused_requests(self.trajectory)
+        return len(self.trajectory.exchanges)
+
+    def _note_usage_log_shortfall(
+        self, shortfall: str | None, rewritten: str | None
+    ) -> None:
+        """Keep the first reason the count may miss calls (an earlier stop's
+        is kept over this one's), and add that the log was rewritten when the
+        live capture's bytes say so."""
+        previous = self.usage_log_shortfall
+        reason = previous if previous is not None else shortfall
+        if rewritten is not None:
+            reason = rewritten if reason is None else f"{reason}; {rewritten}"
+        if reason != previous:
+            self.usage_log_shortfall = reason
+            logger.warning(
+                "The in-sandbox model proxy's usage log may miss calls: %s", reason
+            )
+
+    async def _ask_tally(self, guard: str) -> _ProxyTally:
+        """Ask the proxy for its count of its log (SIGUSR1) and read
+        the answer, in one exec. Any count left from before is removed first,
+        so only the live process at the pid can answer."""
+        pid = shlex.quote(self.pid_path)
+        tally = shlex.quote(f"{self.log_path}{_TALLY_SUFFIX}")
+        command = (
+            f"{guard} || {{ echo BF_TALLY_GUARD; exit 0; }}\n"
+            f"rm -f {tally}\n"
+            f"pid=$(cat {pid} 2>/dev/null)\n"
+            'if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then '
+            "echo BF_TALLY_DEAD; exit 0; fi\n"
+            # Only a process that catches SIGUSR1 (bit 10 of its SigCgt) is
+            # sent it: its default action would end the proxy.
+            "cgt=\n"
+            'while read -r key value; do [ "$key" = SigCgt: ] && cgt=$value; '
+            'done < "/proc/$pid/status"\n'
+            'case "$cgt" in *[!0-9a-fA-F]*|"") echo BF_TALLY_NOHANDLER; exit 0;; esac\n'
+            "if [ $(( 0x$cgt & 0x200 )) -eq 0 ]; then echo BF_TALLY_NOHANDLER; exit 0; fi\n"
+            'kill -USR1 "$pid" 2>/dev/null || { echo BF_TALLY_DEAD; exit 0; }\n'
+            "i=0\n"
+            f'while [ ! -s {tally} ] && [ "$i" -lt 50 ]; do\n'
+            "  sleep 0.1 2>/dev/null || { sleep 1; i=$((i+9)); }; i=$((i+1))\n"
+            "done\n"
+            'echo "BF_TALLY_PID $pid"\n'
+            f"cat {tally} 2>/dev/null; echo\n"
+        )
+        try:
+            result = await exec_raw(self.sandbox.exec, command, timeout_sec=20)
+        except Exception as exc:
+            return _ProxyTally("unasked", detail=describe_exception(exc))
+        if result.return_code != 0:
+            return _ProxyTally("unasked", detail=f"exit status {result.return_code}")
+        return _parse_tally(result.stdout or "")
+
+    async def _sandbox_answers(self) -> bool:
+        """Whether the sandbox still runs a command: a lost one does not."""
+        try:
+            result = await exec_raw(self.sandbox.exec, "true", timeout_sec=10)
+        except Exception:
+            return False
+        return result.return_code == 0
 
     async def _remote_marks(self) -> _RemoteMarks:
         """The callback log's size, whether any request reached the proxy
@@ -1060,7 +1658,14 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
         except ValueError:
             return _CallbackChunk(b"", None)
 
-    async def _load_callback_log(self) -> None:
+    async def _load_callback_log(
+        self, prefix: int = 0, held: _HeldCount | None = None, keep_live: bool = False
+    ) -> _ReadBack | None:
+        """Import the callback log; return what was read back (None when it
+        could not be read), with the SHA-256 of its first ``prefix`` bytes.
+        With ``held``, the count the stop before the verifier kept, only what
+        it vouches for is imported (``_retry_cut``); with ``keep_live``,
+        nothing is (the live capture's records are counted)."""
         download_file = getattr(self.sandbox, "download_file", None)
         if download_file is not None:
             with tempfile.NamedTemporaryFile("r", delete=False) as tmp:
@@ -1068,25 +1673,56 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             try:
                 await download_file(self.log_path, tmp_path)
                 if tmp_path.stat().st_size:
+                    read_back = await asyncio.to_thread(
+                        _read_back_file, tmp_path, prefix
+                    )
+                    if keep_live:
+                        return read_back
+                    if held is not None:
+                        cut = await asyncio.to_thread(
+                            _retry_cut_file, tmp_path, read_back, held
+                        )
+                        self._retry_cut = cut
+                        if cut.live_only:
+                            return read_back
+                        if cut.offset is not None:
+                            os.truncate(tmp_path, cut.offset)
                     # Read from the downloaded file line by line, never as
                     # one string (_import_callback_lines).
                     await _capture_to_thread(
                         lambda: self._import_callback_file(tmp_path)
                     )
-                    return
+                    return read_back
             except Exception as exc:
                 logger.debug("LiteLLM callback download failed: %s", exc)
             finally:
                 tmp_path.unlink(missing_ok=True)
-        text = ""
         result = await exec_raw(
             self.sandbox.exec,
             f"cat {shlex.quote(self.log_path)} 2>/dev/null || true",
             timeout_sec=15,
         )
-        if result.return_code == 0:
-            text = result.stdout or ""
+        if result.return_code != 0:
+            # `|| true`: only the exec itself failed (a lost sandbox). An
+            # empty import would read as a trial that made no call.
+            raise RuntimeError(
+                f"the callback log could not be read (exit {result.return_code})"
+            )
+        text = result.stdout or ""
+        # The callback's records are ASCII JSON lines.
+        data = text.encode("utf-8")
+        read_back = _read_back(data, prefix)
+        if keep_live:
+            return read_back
+        if held is not None:
+            cut = _retry_cut(io.BytesIO(data), read_back, held)
+            self._retry_cut = cut
+            if cut.live_only:
+                return read_back
+            if cut.offset is not None:
+                text = data[: cut.offset].decode("utf-8", "replace")
         await _capture_to_thread(lambda: self._import_callback_lines(text.splitlines()))
+        return read_back
 
     async def log_tail(self) -> str:
         chunks: list[str] = []
@@ -1442,11 +2078,16 @@ def _sitecustomize_source(
         lazy
         + "import sys as _bf_sys\n"
         + "_bf_path = list(_bf_sys.path)\n"
-        + f"import {_PATCH_MODULE}\n"
-        f"import {_GEMINI_PATCH_MODULE}\n"
-        f"import {_TOKEN_CAPTURE_PATCH_MODULE}\n"
-        f"import {_PROVIDER_RETRY_PATCH_MODULE}\n"
-        f"{_PATCH_MODULE}.register_claude_effort_capabilities({models!r})\n"
+        # A patch whose LiteLLM target moved stops the proxy's start and
+        # names itself, as the request boundary below does.
+        + "try:\n"
+        + f"    import {_PATCH_MODULE}\n"
+        f"    import {_GEMINI_PATCH_MODULE}\n"
+        f"    import {_TOKEN_CAPTURE_PATCH_MODULE}\n"
+        f"    import {_PROVIDER_RETRY_PATCH_MODULE}\n"
+        f"    {_PATCH_MODULE}.register_claude_effort_capabilities({models!r})\n"
+        "except Exception as exc:\n"
+        "    raise SystemExit(f'BenchFlow LiteLLM patch failed: {exc}') from exc\n"
         "try:\n"
         f"    import {_REQUEST_GUARD_MODULE}\n"
         f"    {_REQUEST_GUARD_MODULE}.install()\n"
@@ -2960,6 +3601,12 @@ async def _start_sandbox_litellm(
                 stderr_path=paths["stderr"],
             )
             port = int(state["port"])
+            # BenchFlow's own, on the host's record: R1. The pid
+            # the launcher reported for the process it started.
+            if str(state.get("pid", "")).isdigit():
+                from benchflow.sandbox.lockdown import note_own_process
+
+                await note_own_process(sandbox, pid=int(state["pid"]))
             await _poll_sandbox_health(
                 sandbox,
                 python=python,
@@ -3277,7 +3924,7 @@ def _wire_litellm_agent_env(
         )
         return updated
     if agent == "opencode":
-        if route.upstream_model.lower().startswith("gemini/"):
+        if opencode_google_provider(route.upstream_model):
             # OpenCode's own Gemini client through LiteLLM's byte-preserving
             # Gemini pass-through, as for Gemini CLI below: the chat-completions
             # alias would drop Gemini's thought signatures and thinking config.
@@ -3752,12 +4399,17 @@ def _budget_used(runtimes: Iterable[Any]) -> dict[str, int]:
     return used
 
 
-async def stop_litellm_runtime(runtime: Any | None) -> None:
+async def stop_litellm_runtime(
+    runtime: Any | None, *, retry_later: bool = False
+) -> None:
     if runtime is None or getattr(runtime, "stopped", False):
         return
     server = getattr(runtime, "server", None)
     if getattr(runtime, "kind", None) == "litellm" and server is not None:
-        await server.stop()
+        if retry_later:
+            await server.stop(retry_later=True)
+        else:
+            await server.stop()
         # Only a completed import is final. A failed stop stays retryable.
         runtime.stopped = True
 

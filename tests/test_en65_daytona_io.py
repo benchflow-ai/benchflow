@@ -23,7 +23,7 @@ from benchflow._utils.reachable_write import UnsafeDownloadEntryError
 from benchflow.sandbox import _transport
 from benchflow.sandbox._base import SYSTEM_PATH, ExecResult, ExecRoute
 from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
-from benchflow.sandbox.daytona_dind import _DaytonaDinD
+from benchflow.sandbox.daytona_dind import DIAL_STDIO_HELD, _DaytonaDinD
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.task.verifier import Verifier
 from tests import test_exec_transport_contract as transport
@@ -120,7 +120,7 @@ def _dind_files(files, *, metadata=None, copy_error=False, reply_error=None):
     async def vm(command, **kwargs):
         if command.startswith("rm -f "):
             return ExecResult(stdout="", return_code=0)
-        assert command == "docker system dial-stdio"
+        assert command == DIAL_STDIO_HELD
         request = kwargs["stdin_payload"].decode()
         url = request.split()[1]
         source = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["path"][0]
@@ -198,7 +198,10 @@ async def test_dind_metadata_transport_error_remains_an_error(tmp_path, reply):
     strategy, copies, _ = _dind_files({}, reply_error=reply)
     if not reply:
         strategy._vm_exec = AsyncMock(return_value=ExecResult(stdout="", return_code=1))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError,
+        match=r"DinD archive metadata (failed \(HTTP 500\)|response is not HTTP/1\.1|is invalid)",
+    ):
         await strategy.download_file("/logs/verifier/reward.json", tmp_path / "reward")
     assert copies == []
 

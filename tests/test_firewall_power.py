@@ -34,6 +34,7 @@ import pytest
 
 from tests._firewall_tools import audit_image_tools  # noqa: F401
 from tests._receipt_fakes import receipt_aware
+from tests._system_bin import system_bin
 
 pytestmark = pytest.mark.usefixtures("audit_image_tools")
 
@@ -284,7 +285,10 @@ async def test_without_setpriv_a_fixture_image_is_refused_before_the_agent(
     env = FixtureEnv(fixture, setpriv=False, mode=mode)
     trial = _rollout(tmp_path, env, mode)
 
-    with pytest.raises(RuntimeError, match="sandbox startup refused") as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"the restricted agent launch could not be verified: the image has no setpriv",
+    ) as caught:
         await _connect(trial)
 
     message = str(caught.value)
@@ -315,7 +319,10 @@ async def test_a_clean_busybox_image_needs_the_full_launch_barrier(tmp_path, mod
     env = FixtureEnv("busybox", mode=mode)
     trial = _rollout(tmp_path, env, mode)
 
-    with pytest.raises(RuntimeError, match="sandbox startup refused"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"the agent user's commands could not be started with no_new_privs",
+    ):
         await _connect(trial)
 
     record = json.loads((tmp_path / RECORD).read_text())
@@ -337,7 +344,10 @@ async def test_the_refusal_is_a_sandbox_setup_failure_a_retry_would_repeat(tmp_p
     )
 
     trial = _rollout(tmp_path, FixtureEnv("cap", setpriv=False), "denylist")
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"the image has no setpriv \(util-linux's or BusyBox's\); root found /usr/sbin/xtables-nft-multi",
+    ) as caught:
         await _connect(trial)
 
     assert classify_error(str(caught.value)) == SANDBOX_SETUP
@@ -699,18 +709,11 @@ class Stub:
         self.bin.mkdir()
         self.fs = tmp_path / "fs"
         (self.fs / "usr" / "bin").mkdir(parents=True)
-        self.sys_bin = tmp_path / "sysbin"
-        self.sys_bin.mkdir()
-        hidden = {"getcap", "setpriv", "nft"}
-        for d in ("/usr/bin", "/bin"):
-            for src in Path(d).iterdir():
-                name = src.name
-                if name in hidden or name.startswith(
-                    ("iptables", "ip6tables", "python")
-                ):
-                    continue
-                if not (self.sys_bin / name).exists():
-                    (self.sys_bin / name).symlink_to(src)
+        self.sys_bin = system_bin(
+            tmp_path,
+            {"getcap", "setpriv", "nft"},
+            ("iptables", "ip6tables", "python"),
+        )
         self.status(BND_NET_ADMIN)
         self.env = {
             "FW_LOG": str(tmp_path / "fw.log"),
@@ -1249,6 +1252,26 @@ async def test_file_capabilities_read_by_python3_count_like_getcaps():
     )
 
 
+DENYLIST_UNCHECKED = (
+    "sandbox startup refused: BenchFlow could not check that the agent user "
+    "'agent' cannot undo the denylist's uid firewall: "
+)
+NO_DROP_TAIL = (
+    ", and BenchFlow cannot take NET_ADMIN away from its commands: BenchFlow runs "
+    "this agent's commands one by one in the sandbox, not through a launch it can "
+    "drop NET_ADMIN from."
+)
+UNREAD_CAPS_FIX = (
+    " Put libcap's getcap (libcap2-bin on Debian and Ubuntu, libcap-getcap on "
+    "Alpine) in the task's image so BenchFlow can read its file capabilities."
+)
+UNREAD_CAPS_REASON = {
+    "none": "the image has no getcap (libcap) or python3 to read its file "
+    "capabilities with",
+    "unread": "python3 could not read the image's file capabilities",
+}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("caps", "words"),
@@ -1272,7 +1295,22 @@ async def test_without_a_drop_unread_file_capabilities_stop_the_trial(
     record, refusal = await _check(env, can_drop=can_drop)
     assert record["state"] == "refused", record
     assert record["file_capabilities_checked"] is False
-    assert refusal and refusal.startswith("sandbox startup refused")
+    if can_drop:
+        assert refusal == (
+            "sandbox startup refused: the restricted agent launch could not be "
+            "verified: the image's setpriv cannot set no_new_privs. Install "
+            "util-linux setpriv with no_new_privs and bounding-set support in the "
+            "task's image, and fix the image's agent-user setup or failing firewall "
+            "probe before retrying. BenchFlow will not retry agent code without the "
+            "restricted launcher."
+        ), refusal
+    else:
+        assert refusal == (
+            DENYLIST_UNCHECKED
+            + UNREAD_CAPS_REASON[caps]
+            + NO_DROP_TAIL
+            + UNREAD_CAPS_FIX
+        ), refusal
     if can_drop:
         assert "util-linux setpriv" in refusal
         assert not any("BF fwpower-agent" in c for c in env.calls)
@@ -1434,8 +1472,11 @@ async def test_a_check_that_did_not_report_stops_the_trial(missing):
     )
     record, refusal = await _check(env, can_drop=False)
     assert record["state"] == "refused"
-    assert refusal and refusal.startswith("sandbox startup refused")
-    assert "did not report" in refusal
+    did_not_report = {
+        "scan": "root's scan did not report (no output)",
+        "agent": "the agent user's check did not report (no output)",
+    }[missing]
+    assert refusal == DENYLIST_UNCHECKED + did_not_report + NO_DROP_TAIL, refusal
 
 
 @pytest.mark.asyncio
@@ -1503,3 +1544,51 @@ def test_the_check_scripts_are_posix_sh():
         ):
             subprocess.run([shell, "-n", "-c", cmd], check=True)
     assert sys.executable  # the suite's own interpreter ran these
+
+
+# --- no "holds" before the rules are in (the lead's 08:59Z rule) ------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["docker", "daytona"])
+@pytest.mark.parametrize("mode", MODES)
+async def test_an_install_that_fails_leaves_no_holds_in_the_trials_records(
+    tmp_path, mode, backend, caplog
+):
+    """PROBE on rc and 0.9.2 Modal: firewall-power.json said "holds: the
+    no-web uid firewall" before that firewall failed to install. The check
+    runs before the rules go in, so its record says "installing"; when the
+    install then fails, nothing in the trial folder or the log says
+    "holds"."""
+    # The check passes (the image is disarmed), then the install fails.
+    env = FixtureEnv("cap", mode=mode)
+    if backend == "daytona":
+        env.sandbox_daemon_guard = "container"  # one container beside the daemon
+    trial = _rollout(tmp_path, env, mode)
+
+    async def install_fails(**kwargs):
+        raise RuntimeError("the agent's firewall could not be installed (forced)")
+
+    with (
+        caplog.at_level("DEBUG"),
+        patch.object(trial, "_connect_live_agent", side_effect=install_fails),
+        patch.object(
+            trial._planes,
+            "ensure_litellm_runtime",
+            AsyncMock(side_effect=lambda **kw: (kw["agent_env"], None)),
+        ),
+        patch(
+            "benchflow.rollout.enforce_codex_apps_policy",
+            AsyncMock(side_effect=lambda env, **kw: kw["agent_env"]),
+        ),
+        pytest.raises(RuntimeError, match="could not be installed"),
+    ):
+        await trial.connect()
+    record = json.loads((tmp_path / RECORD).read_text())
+    assert record.get("installing"), record
+    if backend == "daytona":
+        assert "Daytona's daemon guard" in record["installing"]
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert "holds" not in path.read_text(errors="replace"), path
+    assert not [r for r in caplog.records if "holds" in r.getMessage()]

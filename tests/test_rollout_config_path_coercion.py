@@ -1,6 +1,6 @@
 """RolloutConfig coerces string path inputs to :class:`pathlib.Path`.
 
-Regression for #368.2 (ENG-166): passing ``task_path='tasks/foo'`` used to
+Regression for #368.2: passing ``task_path='tasks/foo'`` used to
 leave ``self.task_path`` as ``str``, then downstream callers that access
 ``task_path.name`` raised ``AttributeError: 'str' object has no attribute
 'name'``. ``RolloutConfig.__post_init__`` now normalises ``task_path``,

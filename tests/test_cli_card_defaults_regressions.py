@@ -164,7 +164,9 @@ def _dry_run(tmp_path, *args):
     the card's printed Model line."""
     argv = ["run", *args, "--sandbox", "docker"]
     argv += ["--jobs-dir", str(tmp_path / "jobs"), "--dry-run"]
-    result = CliRunner().invoke(app, argv, env={"COLUMNS": "400"})
+    # The dry run resolves the agent's env as each trial does.
+    keys = {"ANTHROPIC_API_KEY": "fake-not-a-key", "GEMINI_API_KEY": "fake-not-a-key"}
+    result = CliRunner().invoke(app, argv, env={"COLUMNS": "400", **keys})
     assert result.exit_code == 0, result.output
     plan = json.loads(result.stdout)
     line = next(x for x in result.stderr.splitlines() if x.startswith("  Model:"))

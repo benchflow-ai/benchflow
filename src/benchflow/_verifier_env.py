@@ -88,7 +88,9 @@ def sandbox_verifier_env(task: Any) -> dict[str, str] | None:
     return resolve_env_vars(configured) if configured else None
 
 
-def pinned_shell_prefix(env: Mapping[str, str] | None, *, bash_env: str = "") -> str:
+def pinned_shell_prefix(
+    env: Mapping[str, str] | None, *, bash_env: str = "", faithful: bool = False
+) -> str:
     """Shell builtins that set the pins first in a verifier command.
 
     ``BASH_ENV`` is always *bash_env*, the value a trust check validated
@@ -97,8 +99,12 @@ def pinned_shell_prefix(env: Mapping[str, str] | None, *, bash_env: str = "") ->
     configuration and its file may be agent-written (b143 PY8-MAIN-28).
     ``ENV`` is always empty, as hardening sets it. :data:`VERIFIER_UNSET_ENV`
     is unset. *env* is accepted for the callers that pass the exec env along.
+    *faithful* (integrity off or audit) sets nothing.
     """
     del env
+    # Integrity off and audit run test.sh as its authors wrote it.
+    if faithful:
+        return ""
     pins = dict(VERIFIER_PINNED_ENV)
     pins["BASH_ENV"] = bash_env
     pins["ENV"] = ""

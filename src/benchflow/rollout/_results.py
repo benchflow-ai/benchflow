@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -40,23 +40,31 @@ from benchflow._utils.config_redaction import (
 )
 from benchflow._utils.result_metadata import (
     final_metrics_from_agent_result,
+    incomplete_usage_fields,
     trajectory_summary_from_events,
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
 from benchflow._utils.scoring import (
+    AGENT_INTEGRATION,
     API_ERROR,
+    IDLE_TIMEOUT,
     PROVIDER_STALL,
     classify_error,
     classify_verifier_error,
 )
 from benchflow._utils.source_provenance import artifact_source_provenance
+from benchflow.build_info import benchflow_build
 from benchflow.contracts import (
     BaseUser,
     DocumentNudgeUser,
     ModelDocumentNudgeUser,
 )
-from benchflow.diagnostics import RolloutDiagnostics
+from benchflow.diagnostics import AgentPromptTimeoutDiagnostic, RolloutDiagnostics
 from benchflow.environment.manifest import EnvironmentManifest
+from benchflow.integration_health import (
+    IntegrationFailure,
+    diagnose_kept_idle_timeout,
+)
 from benchflow.loop_strategies import LoopStrategySpec, loop_block
 from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.review.outcome import ScoringResult
@@ -84,8 +92,17 @@ from benchflow.trajectories.model_calls import (
     subagent_usage,
 )
 from benchflow.trajectories.otel_spans import emit_trial_spans
-from benchflow.trajectories.types import stamp_observation_ids
-from benchflow.usage_tracking import UsageTrackingConfig, normalize_usage_source
+from benchflow.trajectories.types import (
+    redact_trajectory_obj,
+    redact_trajectory_text,
+    stamp_observation_ids,
+)
+from benchflow.usage_tracking import (
+    NO_MODEL_CALL,
+    UsageTrackingConfig,
+    normalize_usage_source,
+    token_split,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +157,10 @@ def _write_config(
     context_root: str | Path | None,
     sandbox_locked_paths: list[str] | None = None,
     sandbox_setup_timeout: int = 120,
+    sandbox_setup_timeout_given: bool | None = None,
+    sandbox_user_setup_timeout: int | None = None,
+    verifier_setup_timeout: int | None = None,
+    verifier_setup_timeout_run: int | None = None,
     skip_agent_install: bool = False,
     timeout: int,
     started_at: datetime,
@@ -164,7 +185,7 @@ def _write_config(
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
     freeze_workspace: bool = False,
-    integrity: str = "off",
+    integrity: str = "audit",
     verifier_sandbox: str = "task",
     harness: str = "acp",
     litellm_proxy: dict[str, Any] | None = None,
@@ -214,6 +235,29 @@ def _write_config(
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
+        # Whether the run named it, and what handing the workspace to the
+        # sandbox user had; absent before.
+        **(
+            {"sandbox_setup_timeout_given": sandbox_setup_timeout_given}
+            if sandbox_setup_timeout_given is not None
+            else {}
+        ),
+        **(
+            {"sandbox_user_setup_timeout": sandbox_user_setup_timeout}
+            if sandbox_user_setup_timeout is not None
+            else {}
+        ),
+        # Seconds each verifier-setup command had; absent before.
+        # The budget used, and the run's own value (null: the run named
+        # none), which a regrade or a recovery passes on as the run's.
+        **(
+            {
+                "verifier_setup_timeout": verifier_setup_timeout,
+                "verifier_setup_timeout_run": verifier_setup_timeout_run,
+            }
+            if verifier_setup_timeout is not None
+            else {}
+        ),
         "skip_install": skip_agent_install,
         "agent_install_timeout": None
         if skip_agent_install
@@ -242,17 +286,15 @@ def _write_config(
         config_data["dataset_version"] = dataset.get("version")
     if task_digest is not None:
         config_data["task_digest"] = task_digest
-    # C-axis provenance: persist the bound config overlay + its content hash so
-    # the run records exactly which configuration it ran with (symmetric to
-    # environment_manifest above).
+    # C-axis provenance: which configuration overlay the run bound
+    # (symmetric to environment_manifest above). The values that look secret
+    # are not persisted, nor hashed; a command that runs part of the trial
+    # again is given them again
+    # (benchflow._utils.config_override.recorded_overlay).
     if config_override:
-        from benchflow._utils.config_override import overlay_hash
+        from benchflow._utils.config_override import overlay_record
 
-        config_data["config_override"] = {
-            "keys": sorted(config_override),
-            "sha256": overlay_hash(config_override),
-            "patch": config_override,
-        }
+        config_data["config_override"] = overlay_record(config_override)
     if verifier_recovery is not None:
         config_data["verifier_recovery"] = verifier_recovery
     if review is not None:
@@ -301,6 +343,11 @@ def _record_harness_versions_in_config(
         write_json_atomic(path, config)
     except OSError as e:
         logger.warning(f"Cannot record the harness versions in {path}: {e}")
+
+
+def _masked(text: str | None) -> str | None:
+    """Error text as result.json keeps it: secret shapes masked."""
+    return redact_trajectory_text(text) if isinstance(text, str) else text
 
 
 def _record_effort_in_config(
@@ -404,6 +451,7 @@ def _build_rollout_result(
     verifier_error: str | None,
     trajectory: list[dict],
     partial_trajectory: bool,
+    error_category: str | None = None,
     export_error: str | None = None,
     trajectory_source: TrajectorySource | None = None,
     stop_reason: str | None = None,
@@ -413,6 +461,7 @@ def _build_rollout_result(
     reasoning_effort: str | None = None,
     effort_applied: str | None = None,
     effort_route: str | None = None,
+    effort_requested_from: str | None = None,
     rewards: dict | None,
     started_at: datetime,
     timing: dict[str, Any],
@@ -425,7 +474,19 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    usage_source_legacy: str | None = None,
+    cost_source: str | None = None,
+    price_table_date: str | None = None,
+    n_cache_write_tokens: int | None = None,
+    n_cache_write_5m_tokens: int | None = None,
+    n_cache_write_1h_tokens: int | None = None,
+    no_usage_reason: str | None = None,
+    cost_usd_provider: float | None = None,
+    n_calls_cost_estimated: int | None = None,
+    usage_incomplete: bool | None = None,
+    usage_incomplete_reason: str | None = None,
     usage_details: dict[str, Any] | None = None,
+    judge_usage: dict[str, Any] | None = None,
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
     source_provenance: dict[str, Any] | None = None,
@@ -439,11 +500,15 @@ def _build_rollout_result(
     purpose: Literal["task", "reviewer"] = "task",
     parent_rollout: str | None = None,
     result_filename: str | None = "result.json",
+    send_spans: bool = True,
     branches: dict[str, Any] | None = None,
     verifier_isolation: tuple[str, str] | None = None,
     cloud_metadata: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     trial_budget: dict[str, Any] | None = None,
+    host_ptrace_scope: int | str | None = None,
+    agent_user: dict[str, Any] | None = None,
+    test_sh_preflight: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -467,6 +532,15 @@ def _build_rollout_result(
     one (the rollout's ``_trial_budget_block``): result.json's
     ``trial_budget`` adds what the trial used, by the model calls the proxy
     recorded, and what its subagents used, by the agent's own session log.
+    ``host_ptrace_scope`` is the Yama ``kernel.yama.ptrace_scope`` the
+    sandbox read when it started (0 to 3, ``"absent"`` on a kernel without
+    Yama), None when it was not read; every result.json holds it.
+    ``agent_user`` is the user the task's own harness runs the agent as and
+    the one BenchFlow ran it as, with the ``--sandbox-user`` that matches
+    (sandbox/agent_user.py); every result.json holds it.
+    ``error_category`` is given when the code that recorded the error also
+    decided its category (the host hard deadline's ``infra_failure``); it
+    wins over the diagnostics, which may still hold an earlier agent timeout.
     """
     if diagnostics is None:
         diagnostics = RolloutDiagnostics()
@@ -479,24 +553,62 @@ def _build_rollout_result(
         )
     finished_at = datetime.now()
     n_skill_invocations = count_skill_invocations(trajectory)
-    error_category = (
-        diagnostics.category_for_channel("error") if error is not None else None
-    ) or classify_error(error)
-    if classify_error(error) == "invalid_provider_response":
-        error_category = "invalid_provider_response"
-    if error is not None and error.startswith(PROVIDER_STALL):
-        # Over the timeout diagnostic it ended with: the provider's error.
-        error_category = API_ERROR
+    # A script agent stopped at its time limit has no error text (its
+    # workspace is graded as it stands), and is still a timeout.
+    timed_out = diagnostics.get(AgentPromptTimeoutDiagnostic.field) is not None
+    if error_category is None:
+        error_category = (
+            diagnostics.category_for_channel("error")
+            if error is not None or timed_out
+            else None
+        ) or classify_error(error)
+        if classify_error(error) == "invalid_provider_response":
+            error_category = "invalid_provider_response"
+        if error is not None and error.startswith(PROVIDER_STALL):
+            # Over the timeout diagnostic it ended with: the provider's error.
+            error_category = API_ERROR
     verifier_error_category = (
         diagnostics.category_for_channel("verifier_error")
         if verifier_error is not None
         else None
     ) or classify_verifier_error(verifier_error)
+    if verifier_error_category is None:
+        from benchflow._utils.scoring import (
+            PROVENANCE_INCOMPLETE,
+            provenance_incomplete,
+        )
+
+        if provenance_incomplete(
+            {"verifier_error": verifier_error, "warnings": warnings}
+        ):
+            verifier_error_category = PROVENANCE_INCOMPLETE
     # Before the result and the final write share the list: each tool call's
     # observation identity is fixed once, before any redaction.
     stamp_observation_ids(trajectory)
     if harness_versions is None:
         harness_versions = _recorded_harness_versions(rollout_dir)
+    # One token split: cache writes under their own name (the
+    # old name stays as an alias), and a total only of known parts.
+    if n_cache_write_tokens is None:
+        n_cache_write_tokens = n_cache_creation_tokens
+    n_cache_creation_tokens = n_cache_write_tokens
+    from benchflow.agents.registry import is_scripted_agent
+
+    if no_usage_reason is None and is_scripted_agent(agent):
+        # An oracle, a nop or a script made no model call: nothing to count.
+        no_usage_reason = NO_MODEL_CALL
+    if no_usage_reason == NO_MODEL_CALL:
+        n_input_tokens = n_output_tokens = n_cache_read_tokens = None
+        n_cache_write_tokens = n_cache_creation_tokens = None
+        n_cache_write_5m_tokens = n_cache_write_1h_tokens = None
+        cost_usd = None
+        usage_incomplete = usage_incomplete_reason = None
+    total_tokens = token_split(
+        n_input_tokens=n_input_tokens,
+        n_output_tokens=n_output_tokens,
+        n_cache_read_tokens=n_cache_read_tokens,
+        n_cache_write_tokens=n_cache_write_tokens,
+    )
     result = RolloutResult(
         harness_versions=harness_versions,
         task_name=task_name,
@@ -520,7 +632,19 @@ def _build_rollout_result(
         cost_usd=cost_usd,
         usage_source=normalize_usage_source(usage_source),
         price_source=price_source,
+        usage_source_legacy=usage_source_legacy,
+        cost_source=cost_source,
+        price_table_date=price_table_date,
+        n_cache_write_tokens=n_cache_write_tokens,
+        n_cache_write_5m_tokens=n_cache_write_5m_tokens,
+        n_cache_write_1h_tokens=n_cache_write_1h_tokens,
+        no_usage_reason=no_usage_reason,
+        cost_usd_provider=cost_usd_provider,
+        n_calls_cost_estimated=n_calls_cost_estimated,
+        usage_incomplete=usage_incomplete,
+        usage_incomplete_reason=usage_incomplete_reason,
         usage_details=usage_details,
+        judge_usage=judge_usage,
         error=error,
         error_category=error_category,
         verifier_error=verifier_error,
@@ -543,11 +667,30 @@ def _build_rollout_result(
         "n_input_tokens": result.n_input_tokens,
         "n_output_tokens": result.n_output_tokens,
         "n_cache_read_tokens": result.n_cache_read_tokens,
+        "n_cache_write_tokens": result.n_cache_write_tokens,
+        "n_cache_write_5m_tokens": result.n_cache_write_5m_tokens,
+        "n_cache_write_1h_tokens": result.n_cache_write_1h_tokens,
+        # Alias of n_cache_write_tokens for one release.
         "n_cache_creation_tokens": result.n_cache_creation_tokens,
         "total_tokens": result.total_tokens,
         "cost_usd": result.cost_usd,
         "usage_source": result.usage_source,
+        "cost_source": result.cost_source,
+        "price_table_date": result.price_table_date,
+        # The part of cost_usd the provider billed, and how many calls were
+        # filled at list price because their responses carried no bill.
+        "cost_usd_provider": result.cost_usd_provider,
+        "n_calls_cost_estimated": result.n_calls_cost_estimated,
         "price_source": result.price_source,
+        # The earlier name, for readers that tell a metered run from a
+        # login's or an agent-routed one (trajectories/results.py,
+        # job_export.py's cost_status, summaries' trust rule).
+        "usage_source_legacy": result.usage_source_legacy,
+        # Why a result has no tokens when nothing was there to count (an
+        # oracle made no model call); None otherwise.
+        "no_usage_reason": result.no_usage_reason,
+        # A count that misses calls says so, and so does its cost.
+        **incomplete_usage_fields(result),
     }
     if result.usage_details is not None:
         agent_result["usage_details"] = result.usage_details
@@ -573,6 +716,7 @@ def _build_rollout_result(
         requested=reasoning_effort,
         applied=effort_applied,
         route=effort_route,
+        requested_from=effort_requested_from,
     )
     warnings = list(warnings or [])
     if (effort_note := effort_warning(effort)) is not None:
@@ -597,7 +741,9 @@ def _build_rollout_result(
                 "tokens": result.total_tokens,
                 "turns": (calls_summary or {}).get("calls"),
             },
-            "subagents": subagent_usage(rollout_dir),
+            "subagents": trial_budget["subagents"]
+            if "subagents" in trial_budget
+            else subagent_usage(rollout_dir),
         }
     result_data = {
         "task_name": result.task_name,
@@ -605,6 +751,9 @@ def _build_rollout_result(
         "rewards": result.rewards,
         "agent": result.agent,
         "agent_name": result.agent_name,
+        # Which build of BenchFlow wrote it: version, source commit and
+        # whether that tree had uncommitted changes (benchflow.build_info).
+        "benchflow_build": benchflow_build(),
         "harness_versions": result.harness_versions,
         "model": result.model,
         **skill_policy.config_metadata(),
@@ -612,6 +761,9 @@ def _build_rollout_result(
         "n_skill_invocations": result.n_skill_invocations,
         "n_prompts": result.n_prompts,
         "agent_result": agent_result,
+        # The verifier's LLM judge, in agent_result's fields and never in
+        # them: its tokens and cost (rewards.judge_usage); null without one.
+        "judge_usage": result.judge_usage,
         "agent_outcome": outcome,
         # The trial ended on a model refusal or a content filter: which call
         # and why (agent_outcome's status refusal), else None.
@@ -624,7 +776,7 @@ def _build_rollout_result(
         "input_delivery": inputs,
         # What the agent's main calls carried (benchflow.run_checks): the
         # job compares it with what the run card asked for.
-        "settings_sent": settings_sent(calls, model)
+        "settings_sent": settings_sent(calls, model, agent)
         if calls_summary is not None
         else None,
         # Claude Code's compactions in the trial (rollout._session_log); None
@@ -633,11 +785,13 @@ def _build_rollout_result(
         "final_metrics": final_metrics,
         "trajectory_summary": trajectory_summary,
         "usage_tracking": usage_tracking,
-        "error": result.error,
+        # Error text can quote a provider's answer or a command line: masked
+        # here by the rules results.jsonl and the trajectory are written with.
+        "error": _masked(result.error),
         "error_category": result.error_category,
-        "verifier_error": result.verifier_error,
+        "verifier_error": _masked(result.verifier_error),
         "verifier_error_category": result.verifier_error_category,
-        "export_error": result.export_error,
+        "export_error": _masked(result.export_error),
         **diagnostics.to_result_fields(),
         "partial_trajectory": result.partial_trajectory,
         "trajectory_source": result.trajectory_source,
@@ -667,8 +821,21 @@ def _build_rollout_result(
         "verifier_isolation_source": (
             verifier_isolation[1] if verifier_isolation else None
         ),
+        # The host's Yama ptrace_scope as the sandbox read it at start, in
+        # every record: under 0 or "absent" a PID 1 of the sandbox user's is
+        # refused (sandbox/pid1_ptrace.py); None when it was not read.
+        "host_ptrace_scope": host_ptrace_scope,
+        # The task's own harness user beside the one BenchFlow ran the agent
+        # as, in every record; nothing here changed who ran it.
+        "agent_user": agent_user,
+        # What test.sh needs, resolved before the agent's turn as the
+        # verifier runs it (task/test_sh_preflight.py); None when unchecked.
+        "test_sh_preflight": test_sh_preflight,
     }
     result.model_refusal = result_data["model_refusal"]
+    # The finding of a trial the writer withheld as an integration failure,
+    # as result.json records it (benchflow.integration_health).
+    result.integration_failure_info = result_data.get("integration_failure_info")
     result.trial_budget = trial_budget
     if scoring is not None:
         result_data["scoring"] = scoring.to_dict()
@@ -702,11 +869,17 @@ def _build_rollout_result(
         trajectory=trajectory,
         rewards=rewards,
         model=model,
+        effort=effort,
+        error=error,
         verifier_error=verifier_error,
-        total_prompt_tokens=n_input_tokens,
-        total_completion_tokens=n_output_tokens,
-        total_cached_tokens=n_cache_read_tokens,
-        total_cost_usd=cost_usd,
+        partial_trajectory=partial_trajectory,
+        scoring=scoring,
+        # ATIF's own meaning: the prompt counts the cache.
+        total_prompt_tokens=final_metrics["total_prompt_tokens"],
+        total_completion_tokens=final_metrics["total_completion_tokens"],
+        total_cached_tokens=final_metrics["total_cached_tokens"],
+        total_cost_usd=final_metrics["total_cost_usd"],
+        metrics_extra=final_metrics["extra"],
     )
     _write_results_jsonl(
         rollout_dir,
@@ -735,8 +908,9 @@ def _build_rollout_result(
     )
     write_json_atomic(rollout_dir / "result.json", result_data)
     # The trial and its model calls as OpenTelemetry spans (and sent where
-    # OTEL_EXPORTER_OTLP_*ENDPOINT says); never fails the trial.
-    emit_trial_spans(rollout_dir)
+    # OTEL_EXPORTER_OTLP_*ENDPOINT says, unless the run sends them when it
+    # decides the attempt: send_spans); never fails the trial.
+    emit_trial_spans(rollout_dir, send=send_spans)
     return result
 
 
@@ -827,12 +1001,18 @@ def _write_trainer_artifact(
     trajectory: list[dict],
     rewards: dict | None,
     model: str | None,
+    effort: dict[str, Any] | None = None,
     verifier_error: str | None,
+    error: str | None = None,
+    partial_trajectory: bool = False,
+    scoring: ScoringResult | None = None,
     total_prompt_tokens: int | None = None,
     total_completion_tokens: int | None = None,
     total_cached_tokens: int | None = None,
     total_cost_usd: float | None = None,
+    metrics_extra: dict[str, Any] | None = None,
     strict: bool = False,
+    atif: bool = True,
 ) -> None:
     """Emit the trainer-format artifacts for this scored rollout.
 
@@ -843,7 +1023,8 @@ def _write_trainer_artifact(
     which the schema forbids) and ADP (``trainer/adp.jsonl``). Each format
     is written independently; failures are logged by default. Terminal scoring
     commits use ``strict=True`` so a failed export cannot publish a healthy
-    final result before its required artifacts exist.
+    final result before its required artifacts exist. ``atif=False`` leaves
+    ``trainer/atif.json`` as it is (it carries no reward and no ending).
     """
     from benchflow.trajectories.export import write_rollout_verifiers_jsonl
     from benchflow.trajectories.export_adp import write_rollout_adp_jsonl
@@ -855,34 +1036,43 @@ def _write_trainer_artifact(
         trajectory_id = rollout_name
     else:
         trajectory_id = f"{task_name}__{rollout_name}"
+    # The same completion and verdict results.jsonl writes: an errored,
+    # truncated or unscored trial is not completed, and a failed scoring has
+    # no reward (audit RECORDS-4).
+    unscored = scoring is not None and scoring.status == "error"
     try:
         write_rollout_verifiers_jsonl(
             rollout_dir,
             task_id=task_name,
             prompts=prompts,
             trajectory=trajectory,
-            rewards=rewards,
+            rewards=None if unscored else rewards,
             model=model,
             environment=task_name,
-            error=verifier_error,
+            is_completed=not (error or verifier_error or partial_trajectory),
+            is_truncated=bool(partial_trajectory),
+            error=verifier_error or (scoring.error if unscored and scoring else None),
         )
     except Exception as e:  # pragma: no cover - defensive
         if strict:
             raise
         logger.warning("Trainer artifact write failed: %s", e)
     try:
-        write_rollout_atif_json(
-            rollout_dir,
-            session_id=trajectory_id,
-            agent_name=agent_name,
-            prompts=prompts,
-            trajectory=trajectory,
-            model=model,
-            total_prompt_tokens=total_prompt_tokens,
-            total_completion_tokens=total_completion_tokens,
-            total_cached_tokens=total_cached_tokens,
-            total_cost_usd=total_cost_usd,
-        )
+        if atif:
+            write_rollout_atif_json(
+                rollout_dir,
+                session_id=trajectory_id,
+                agent_name=agent_name,
+                prompts=prompts,
+                trajectory=trajectory,
+                model=model,
+                effort=effort,
+                total_prompt_tokens=total_prompt_tokens,
+                total_completion_tokens=total_completion_tokens,
+                total_cached_tokens=total_cached_tokens,
+                total_cost_usd=total_cost_usd,
+                metrics_extra=metrics_extra,
+            )
     except Exception as e:  # pragma: no cover - defensive
         if strict:
             raise
@@ -896,7 +1086,7 @@ def _write_trainer_artifact(
             trajectory=trajectory,
             model=model,
             environment=task_name,
-            reward=(rewards or {}).get("reward"),
+            reward=None if unscored else (rewards or {}).get("reward"),
         )
     except Exception as e:  # pragma: no cover - defensive
         if strict:
@@ -916,6 +1106,203 @@ def _write_trainer_artifact(
         )
     except Exception as e:  # an optional format never fails the rollout
         logger.warning("Embodied trainer artifact write failed: %s", e)
+
+
+def judge_kept_idle_timeout(result: RolloutResult) -> bool:
+    """Judge an idle timeout the run keeps as its trial's result.
+
+    A rollout the run's retry loop owns leaves an idle timeout unjudged so
+    the loop can retry it: an integration failure is never retried. Once the
+    run keeps the attempt (its ``final`` record,
+    :mod:`benchflow._utils.attempt_decision`), it is judged
+    as a wall-clock timeout is when it is written
+    (:func:`benchflow.integration_health.diagnose_kept_idle_timeout`): an agent
+    that did nothing before it went idle is an ``agent_integration`` failure,
+    unscored, its verifier's reward kept as ``reward_withheld``. result.json
+    is rewritten first and is the commit point: if it cannot be written,
+    every file and *result* stay as they were. Once it is, *result* says the
+    same, and the files derived from it follow (rewards.jsonl removed, the
+    results.jsonl row, the reward-bearing trainer files, the trial span
+    file; ``atif.json`` carries no reward and stays as written). A derived
+    file that cannot be rewritten is removed rather than left saying
+    otherwise. The spans are sent when the run records its decision. True
+    when it was judged; never fails the trial.
+    """
+    folder = result.rollout_dir
+    if result.error_category != IDLE_TIMEOUT or folder is None:
+        return False
+    folder = Path(folder)
+    try:
+        recorded = json.loads((folder / "result.json").read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(recorded, dict):
+        return False
+    failure = diagnose_kept_idle_timeout(folder, recorded)
+    if failure is None:
+        return False
+    try:
+        _withhold_kept_idle_timeout(folder, recorded, failure)
+    except Exception as e:  # the trial keeps the ending it was written with
+        logger.warning(
+            "Could not record the idle timeout of %s as an integration failure: %s",
+            folder.name,
+            e,
+        )
+        return False
+    result.rewards = None
+    result.error = failure.error_text()
+    result.error_category = AGENT_INTEGRATION
+    info = recorded.get("integration_failure_info")
+    result.integration_failure_info = info if isinstance(info, dict) else None
+    logger.warning(
+        "Agent integration failure [%s]: %s — trial unscored",
+        failure.cause,
+        failure.evidence,
+    )
+    return True
+
+
+def _withhold_kept_idle_timeout(
+    folder: Path, recorded: dict[str, Any], failure: IntegrationFailure
+) -> None:
+    """Rewrite a kept idle timeout's records as the rollout writes a judged
+    wall-clock timeout's: the reward withheld and the finding recorded.
+    Raises only up to the commit (result.json written)."""
+    trajectory: list[dict[str, Any]] = []
+    for line in (
+        (folder / "trajectory" / "acp_trajectory.jsonl").read_text().splitlines()
+    ):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            trajectory.append(event)
+    prompts = json.loads((folder / "prompts.json").read_text())
+    info = failure.diagnostic(reward_withheld=recorded.get("rewards"))
+    recorded.update(
+        {
+            "rewards": None,
+            "error": _masked(failure.error_text()),
+            "error_category": AGENT_INTEGRATION,
+            info.field: redact_trajectory_obj(info.to_dict()),
+        }
+    )
+    outcome = recorded.get("agent_outcome")
+    if isinstance(outcome, dict):
+        # The ending a judged trial has (run_checks.harness_ending): its
+        # category is no longer the harness's idle timeout.
+        outcome.update(harness_ending(AGENT_INTEGRATION, outcome.get("stop_reasons")))
+    task_name = recorded["task_name"]
+    rollout_name = recorded.get("rollout_name") or folder.name
+    agent_result = recorded.get("agent_result") or {}
+    scoring = recorded.get("scoring")
+    scoring = (
+        ScoringResult.model_validate(scoring, strict=False)
+        if isinstance(scoring, dict)
+        else None
+    )
+    partial = bool(recorded.get("partial_trajectory"))
+    # The commit point: once result.json is written the trial is judged, and
+    # every file derived from it follows it or is removed (_derive).
+    write_json_atomic(folder / "result.json", recorded)
+    _derive(folder, "rewards.jsonl", lambda: _drop_rewards(folder), [])
+    # What _build_rollout_result gives the trainer writer, but the reward and
+    # the error: atif.json, which alone takes the token totals, stays as it is.
+    _derive(
+        folder,
+        "the trainer files",
+        lambda: _write_trainer_artifact(
+            folder,
+            task_name=task_name,
+            rollout_name=rollout_name,
+            agent_name=recorded.get("agent_name") or recorded.get("agent") or "",
+            prompts=prompts,
+            trajectory=trajectory,
+            rewards=None,
+            model=recorded.get("model"),
+            error=recorded["error"],
+            verifier_error=recorded.get("verifier_error"),
+            partial_trajectory=partial,
+            scoring=scoring,
+            strict=True,
+            atif=False,
+        ),
+        [folder / "trainer" / name for name in ("verifiers.jsonl", "adp.jsonl")],
+    )
+
+    def row() -> None:
+        from benchflow.trajectories.results import write_rollout_results_jsonl
+
+        write_rollout_results_jsonl(
+            folder,
+            task_name=task_name,
+            rollout_name=rollout_name,
+            agent=recorded.get("agent") or "",
+            agent_name=recorded.get("agent_name") or "",
+            model=recorded.get("model"),
+            n_tool_calls=recorded.get("n_tool_calls") or 0,
+            prompts=prompts,
+            trajectory=trajectory,
+            partial_trajectory=partial,
+            rewards=None,
+            error=recorded["error"],
+            verifier_error=recorded.get("verifier_error"),
+            error_category=AGENT_INTEGRATION,
+            verifier_error_category=recorded.get("verifier_error_category"),
+            diagnostics=RolloutDiagnostics.from_result_fields(recorded),
+            export_error=recorded.get("export_error"),
+            timing=recorded.get("timing"),
+            agent_result=agent_result,
+            scoring=scoring,
+            purpose=recorded.get("purpose") or "task",
+            parent_rollout=recorded.get("parent_rollout"),
+            branches=recorded.get("branches"),
+        )
+
+    _derive(folder, "results.jsonl", row, [folder / "results.jsonl"])
+
+    def spans() -> None:
+        # The judged ending; the run sends the file with its decision.
+        if emit_trial_spans(folder, send=False) is None:
+            raise OSError("the trial spans were not written")
+
+    _derive(
+        folder, "the trial spans", spans, [folder / "trajectory" / "otel-spans.json"]
+    )
+
+
+def _derive(
+    folder: Path, what: str, step: Callable[[], object], stale: list[Path]
+) -> None:
+    """Rewrite one file derived from a judged result.json; one that cannot
+    be rewritten (a full disk, a read-only folder) is removed, so no record
+    says otherwise than result.json. Never raises."""
+    try:
+        step()
+    except Exception as e:
+        logger.warning(
+            "Could not rewrite %s of %s after judging it (%s); removing them",
+            what,
+            folder.name,
+            e,
+        )
+        for path in stale:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as gone:
+                logger.warning("Could not remove %s either: %s", path, gone)
+
+
+def _drop_rewards(folder: Path) -> None:
+    """Remove rewards.jsonl; if the folder refuses that, empty the file (a
+    withheld trial has no reward events)."""
+    path = folder / "rewards.jsonl"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        path.write_text("")
 
 
 def _is_document_user(user: BaseUser) -> bool:

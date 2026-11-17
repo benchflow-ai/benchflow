@@ -125,6 +125,7 @@ def uv_install_command(
     sums: Mapping[str, str] | None = None,
     bases: Sequence[str] = UV_DOWNLOAD_BASES,
     install_packages: bool = True,
+    apt_helper: str = "/usr/lib/apt/apt-helper",
 ) -> str:
     """One line of POSIX sh that leaves the pinned uv at ``<uv_dir>/uv``.
 
@@ -143,7 +144,11 @@ def uv_install_command(
     ``install_packages=False`` never changes system packages. On minimal
     Debian/Ubuntu it downloads with the existing apt-helper; authenticity is
     established by the pinned SHA-256, including when no CA store exists.
-    ``sums`` and ``bases`` exist for tests; real installs use the pins.
+    With packages allowed, a failed curl install falls back to apt-helper the
+    same way: a package mirror that fails (apt-get's exit 100) no longer
+    stops the install, and never ends it under a caller's ``set -e`` before
+    this command's own message. ``sums``, ``bases`` and ``apt_helper`` exist
+    for tests; real installs use the pins.
     """
     sums = UV_SHA256 if sums is None else sums
     version = UV_VERSION
@@ -189,15 +194,18 @@ def uv_install_command(
         (
             "if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; "
             "then if command -v apt-get >/dev/null 2>&1; then "
+            # A failed install is no failure here (|| :): the downloaders
+            # below decide, so a caller's set -e cannot end the subshell
+            # with the package manager's status and no message.
             "{ DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
             "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
-            "--no-install-recommends curl ca-certificates; } >/dev/null 2>&1; "
+            "--no-install-recommends curl ca-certificates; } >/dev/null 2>&1 || :; "
             "elif command -v apk >/dev/null 2>&1; then "
-            "apk add --no-cache curl ca-certificates >/dev/null 2>&1; "
+            "apk add --no-cache curl ca-certificates >/dev/null 2>&1 || :; "
             "elif command -v dnf >/dev/null 2>&1; then "
-            "dnf -y install curl ca-certificates >/dev/null 2>&1; "
+            "dnf -y install curl ca-certificates >/dev/null 2>&1 || :; "
             "elif command -v yum >/dev/null 2>&1; then "
-            "yum -y install curl ca-certificates >/dev/null 2>&1; fi; fi"
+            "yum -y install curl ca-certificates >/dev/null 2>&1 || :; fi; fi"
             if install_packages
             else ":"
         ),
@@ -209,16 +217,12 @@ def uv_install_command(
         # package install: only the pinned archive is written, in the private
         # download folder. The mandatory digest below authenticates the bytes
         # even on images without ca-certificates. No downloaded code runs first.
-        + (
-            "elif [ -x /usr/lib/apt/apt-helper ]; then "
-            "fetch() { /usr/lib/apt/apt-helper -o Acquire::https::Verify-Peer=false "
-            '-o Acquire::Retries=3 download-file "$1" "$2" "SHA256:$want"; }; '
-            if not install_packages
-            else ""
-        )
+        + f"elif [ -x {shlex.quote(apt_helper)} ]; then "
+        + f"fetch() {{ {shlex.quote(apt_helper)} -o Acquire::https::Verify-Peer=false "
+        + '-o Acquire::Retries=3 download-file "$1" "$2" "SHA256:$want"; }; '
         + f'else echo "benchflow: cannot download uv {version}: the image has '
         + (
-            "neither curl nor wget, and installing curl failed"
+            "neither curl nor wget, installing curl failed, and it has no apt-helper"
             if install_packages
             else "no supported downloader; requires curl, wget, or Debian's apt-helper"
         )

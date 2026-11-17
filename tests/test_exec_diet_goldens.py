@@ -73,9 +73,25 @@ _SNAPSHOT_CASES = {
 }
 
 
+def _opens_proc_mem(box: str) -> bool:
+    """Whether root in *box* can open another process's memory file, as
+    _snapshot_build_config's cp does in copy_fails (Yama ptrace_scope 0 on
+    the host lets it; 1, Ubuntu's and GitHub's default, refuses it)."""
+    probe = (
+        "if (exec 3</proc/1/mem) 2>/dev/null; then echo opens; else echo refused; fi"
+    )
+    return as_root(box, probe).strip() == "opens"
+
+
 @pytest.mark.parametrize("case", sorted(_SNAPSHOT_CASES))
 async def test_snapshot_manifest_bytes(box_factory, case):  # noqa: F811
     box = box_factory(UBUNTU)
+    if case == "copy_fails" and _opens_proc_mem(box):
+        pytest.skip(
+            "root in this host's containers can open /proc/1/mem (Yama "
+            "ptrace_scope 0), so cp creates setup.py before its read fails; "
+            "the golden was made where the open is refused"
+        )
     as_root(box, f"mkdir -p /app && {_SNAPSHOT_CASES[case]}")
     await lockdown._snapshot_build_config(BoxSandbox(box), "/app")
     snapshot = as_root(

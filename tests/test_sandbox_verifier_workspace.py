@@ -137,7 +137,12 @@ async def test_harden_restore_fallback_uses_shutil():
         patch("benchflow.sandbox.lockdown._refresh_verifier_workspace", AsyncMock()),
     ):
         await harden_before_verify(
-            env, task, sandbox_user=None, workspace="/testbed", restore_workspace=True
+            env,
+            task,
+            sandbox_user=None,
+            workspace="/testbed",
+            restore_workspace=True,
+            integrity="strict",
         )
 
     restore = next(
@@ -171,7 +176,8 @@ def test_oracle_branch_setup_calls():
 
     from benchflow import rollout as rollout_mod
 
-    source = inspect.getsource(rollout_mod.Rollout.install_agent)
+    # install_agent's steps (install_agent wraps them, item 6).
+    source = inspect.getsource(rollout_mod.Rollout._install_agent_steps)
     cwd_source = inspect.getsource(rollout_mod._resolve_agent_cwd)
     # The oracle and nop share this branch (is_scripted_agent).
     oracle_pos = source.find("is_scripted_agent(cfg.primary_agent)")

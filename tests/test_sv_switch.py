@@ -232,8 +232,11 @@ def test_the_switch_moves_a_shared_task_and_records_why(
     tmp_path: Path, monkeypatch
 ) -> None:
     task = _task(tmp_path, "shared-task")
+    # integrity off explicitly: an unset integrity is audit now.
     rollout, env, calls = _trial(
-        _rollout_config(task, tmp_path / "jobs", verifier_sandbox="separate"),
+        _rollout_config(
+            task, tmp_path / "jobs", verifier_sandbox="separate", integrity="off"
+        ),
         monkeypatch,
     )
     assert calls == ["separate"]
@@ -1363,9 +1366,10 @@ def _legacy_yaml(tmp_path: Path, tasks: Path, extra: str, env: str = "docker") -
 @pytest.mark.parametrize(
     ("extra", "mode", "integrity"),
     [
-        ("verifier_sandbox: separate\n", "separate", "off"),
+        # An unset integrity is audit.
+        ("verifier_sandbox: separate\n", "separate", "audit"),
         ("integrity: strict\n", "task", "strict"),
-        ("", "task", "off"),
+        ("", "task", "audit"),
     ],
 )
 def test_a_legacy_run_yaml_keeps_the_switch_and_integrity(

@@ -1740,7 +1740,7 @@
           "description": "sandbox.json, written when the sandbox was created (1.1)"
         },
         "schema_minor": {
-          "default": 3,
+          "default": 5,
           "description": "optional fields added within schema_version; see the changelog",
           "title": "Schema Minor",
           "type": "integer"
@@ -1914,6 +1914,32 @@
           "description": "when cost_usd is the agent's own estimate (1.3): source (claude-code-session-log), method (claude-code-cost: Claude Code's totals; usage-at-list-price: its logged usage at list prices), path, sessions, responses, models (USD per model), context_1m",
           "title": "Cost Estimate"
         },
+        "cost_incomplete": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "true when cost_usd was priced from an incomplete count, so it is what was counted, never the whole; null otherwise (1.5)",
+          "title": "Cost Incomplete"
+        },
+        "cost_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "who set cost_usd (1.4): provider (the provider's billed figure) or list_price_estimate (tokens at list prices); null when cost_usd is null",
+          "title": "Cost Source"
+        },
         "cost_status": {
           "anyOf": [
             {
@@ -1945,6 +1971,19 @@
           "default": null,
           "title": "Cost Usd"
         },
+        "cost_usd_provider": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the provider-billed part of cost_usd, when some calls were billed and others estimated (1.5)",
+          "title": "Cost Usd Provider"
+        },
         "n_cache_creation_tokens": {
           "anyOf": [
             {
@@ -1968,6 +2007,19 @@
           ],
           "default": null,
           "title": "N Cache Read Tokens"
+        },
+        "n_calls_cost_estimated": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the calls cost_usd prices at list price for want of a bill (1.5); null when unknown",
+          "title": "N Calls Cost Estimated"
         },
         "n_input_tokens": {
           "anyOf": [
@@ -2003,8 +2055,21 @@
             }
           ],
           "default": null,
-          "description": "who priced cost_usd (1.3): litellm (BenchFlow's gateway), agent_session_log (an estimate from the agent's own session log, see cost_estimate), agent_native_cli, or null",
+          "description": "who priced cost_usd (1.3): litellm (BenchFlow's gateway), agent_session_log (an estimate from the agent's own session log, see cost_estimate), agent_native_cli, agent_usage_update (Claude Code's running cost over ACP), list_price (BenchFlow's list prices, 1.4), the billing provider's name or provider (a provider's bill, 1.4), or null; cost_source says whether the figure is a bill",
           "title": "Price Source"
+        },
+        "price_table_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the date of the price table cost_usd used, when known (1.4)",
+          "title": "Price Table Date"
         },
         "total_tokens": {
           "anyOf": [
@@ -2018,6 +2083,32 @@
           "default": null,
           "title": "Total Tokens"
         },
+        "usage_incomplete": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "true when the tokens are those of some of the trial's calls only: a turn cut off before its usage report that no log counted, or a log copy that had not caught up; null otherwise (1.5)",
+          "title": "Usage Incomplete"
+        },
+        "usage_incomplete_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "why usage_incomplete is true (1.5)",
+          "title": "Usage Incomplete Reason"
+        },
         "usage_source": {
           "anyOf": [
             {
@@ -2028,8 +2119,21 @@
             }
           ],
           "default": null,
-          "description": "provider_response, agent_native_acp or unavailable; for an agent that routes its own model calls, agent-reported or none (never metered)",
+          "description": "where the tokens came from (1.4): stream_log, session_log, end_of_turn, proxy or provider; null when nothing counted them",
           "title": "Usage Source"
+        },
+        "usage_source_legacy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the pre-1.4 name: provider_response, agent_native_acp or unavailable; for an agent that routes its own model calls, agent-reported or none (never metered)",
+          "title": "Usage Source Legacy"
         }
       },
       "title": "UsageExport",
@@ -2134,7 +2238,7 @@
       "type": "array"
     },
     "interrupted": {
-      "description": "attempt folders that never wrote result.json (1.1)",
+      "description": "the attempt folders of the tasks Job.unfinished() lists as interrupted, and of no other task: folders that never wrote result.json, folders whose result.json cannot be read, and folders of attempts the run retried without keeping one. A task a later resume finished has none here (1.1). A job read from its results.jsonl has no folders: each such row names the file",
       "items": {
         "$ref": "#/$defs/InterruptedExport"
       },
@@ -2161,7 +2265,7 @@
       "type": "string"
     },
     "schema_minor": {
-      "default": 1,
+      "default": 2,
       "description": "optional fields added within schema_version; see the changelog",
       "title": "Schema Minor",
       "type": "integer"
@@ -2226,6 +2330,19 @@
       },
       "title": "Trials",
       "type": "array"
+    },
+    "trials_cost_incomplete": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "trials whose cost_usd was priced from some of their calls only (usage_incomplete), so cost_usd is a floor when this is not 0; summary.json's name for the same count. Null in a document below minor 2, which did not count them (2.2)",
+      "title": "Trials Cost Incomplete"
     }
   },
   "required": [

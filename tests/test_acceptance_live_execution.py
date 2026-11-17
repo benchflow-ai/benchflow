@@ -586,8 +586,9 @@ class TestOracleCase:
                     verifier_error=None,
                     rewards={"reward": 2.0},
                 ),
-                "acceptance-live case 'oracleproof' run 1 "
-                "did not produce scalar reward",
+                "acceptance-live case 'oracleproof' run 1 failed: reward out "
+                "of range: reward = 2.0 is outside [0.0, 1.0]; live acceptance "
+                "takes a reward in 0-1 only, so this run is unscored",
                 id="out-of-range-reward",
             ),
         ],

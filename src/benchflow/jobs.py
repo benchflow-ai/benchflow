@@ -28,7 +28,7 @@ import json
 import logging
 import math
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -339,11 +339,13 @@ class Trial:
     def integration_failure(self) -> dict[str, Any] | None:
         """Why the agent did nothing useful, when its integration broke.
 
-        Recorded at run time as ``integration_failure_info``; for results
-        written before that existed it is detected here from the trajectory
-        and agent logs (:mod:`benchflow.integration_health`). Such a trial is
-        an execution failure (``integration_failed``) and unscored: its
-        verifier reward is withheld, never counted as 0.
+        Recorded by the writer as ``integration_failure_info``. A result
+        that records no ending (no ``error_category``: one written before
+        that existed) is judged here from the trajectory and agent logs
+        (:func:`benchflow.integration_health.diagnose_trial_dir`); one with a
+        category is read as written, since its writer decided how it ended.
+        Such a trial is an execution failure (``integration_failed``) and
+        unscored: its verifier reward is withheld, never counted as 0.
         """
         from benchflow.integration_health import (
             diagnose_trial_dir,
@@ -595,6 +597,7 @@ def _write_json(document: dict[str, Any], path: str | Path | None, indent: int) 
 
 def load_trial(path: str | Path) -> Trial:
     """Read one trial directory (or its ``result.json``) into a :class:`Trial`."""
+    from benchflow._utils.result_paths import with_placeholder_settings
     from benchflow.checkpoints import load_checkpoints
 
     path = Path(path)
@@ -607,20 +610,7 @@ def load_trial(path: str | Path) -> Trial:
         )
     data = _normalize_legacy(data)
     config = _read_json(trial_dir / "config.json") or {}
-    fields = data
-    if data.get("no_rollout_folder") is True and isinstance(config, dict):
-        # A trial that failed before its own folder existed (a full disk) has
-        # its agent and model only in the config.json the job wrote for it.
-        # Without them it never joins its rerun's attempts and is counted as
-        # one more trial than the job's summary.json has.
-        fields = {
-            **data,
-            **{
-                k: config[k]
-                for k in ("agent", "model")
-                if config.get(k) and not data.get(k)
-            },
-        }
+    fields = with_placeholder_settings(trial_dir, data)
     timing = _read_json(trial_dir / "timing.json")
     try:
         checkpoints = load_checkpoints(trial_dir)
@@ -666,8 +656,14 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
     Verifiers-style export). Rows carry less than a trial folder: no
     trajectory, verifier output, lineage or review. A BenchFlow row written
     before ``info.schema_version`` 2 held reward 0.0 for an unscored rollout;
-    it is read as unscored (its ``metrics`` has no ``reward``), never as 0.
+    it is read as unscored (its ``metrics`` has no ``reward``), never as 0, as
+    is an older ``trainer/verifiers.jsonl`` row's 0.0 beside
+    ``info.reward_valid`` false. Every row is read, whatever its
+    ``attempt_decision``; :func:`load_job` given the file keeps one trial per
+    task, as for the job's folder.
     """
+    from benchflow._utils.result_rows import row_reward
+
     path = Path(path)
     trials = []
     unreadable: list[int] = []
@@ -690,16 +686,8 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
             row.get("token_usage") if isinstance(row.get("token_usage"), dict) else {}
         )
         metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
-        reward = row.get("reward")
-        if (
-            info.get("source") == "benchflow"
-            and "schema_version" not in info
-            and reward == 0.0
-            and "reward" not in metrics
-        ):
-            # A version-1 BenchFlow row wrote 0.0 for an unscored rollout; a
-            # scored one also has its reward in metrics. Unscored is never 0.
-            reward = None
+        # Older rows wrote 0.0 for an unscored trial (result_rows.row_reward).
+        reward = row_reward(row)
         error, verifier_error = _row_error(row.get("error"))
 
         def _int(value: Any) -> int | None:
@@ -714,9 +702,7 @@ def load_results_jsonl(path: str | Path) -> list[Trial]:
         data: dict[str, Any] = {
             "task_name": str(task_name),
             "rollout_name": info.get("rollout_name") or "",
-            "rewards": {"reward": float(reward)}
-            if isinstance(reward, (int, float)) and not isinstance(reward, bool)
-            else None,
+            "rewards": {"reward": reward} if reward is not None else None,
             "agent": info.get("agent") or "",
             "agent_name": info.get("agent_name") or "",
             "model": info.get("model"),
@@ -907,6 +893,12 @@ class Job:
     # Trial folders whose result.json is there but could not be read: not
     # in any figure, which every reader says (never a silent exclusion).
     unreadable: list[Path] = field(default_factory=list, repr=False)
+    # The attempts of a task whose every finished attempt the run retried and
+    # that has none it kept: the run stopped during a retry. The task has no
+    # result (it is interrupted, :meth:`unfinished`); what these attempts
+    # spent is still the job's. With ``attempts="all"`` they are in
+    # ``trials`` as well, and are still not a finished task.
+    retried: list[Trial] = field(default_factory=list, repr=False)
 
     def __repr__(self) -> str:
         return f"Job(path={str(self.path)!r}, trials={len(self.trials)}, kind={self.kind!r})"
@@ -1011,7 +1003,12 @@ class Job:
                 f"- Control runs left out: {len(controls)} ({kinds}); they check "
                 "the task, not an agent"
             )
-        lines.append("- " + _cost_line([a for t in self.trials for a in t.attempts]))
+        # Every attempt once: with attempts="all" a retried chain's attempts
+        # are trials too, and each trial lists its whole chain.
+        spent: dict[tuple[str, int | None], Trial] = {}
+        for attempt in (*(a for t in self.trials for a in t.attempts), *self.retried):
+            spent.setdefault((str(attempt.path), attempt.row), attempt)
+        lines.append("- " + _cost_line(list(spent.values())))
         return "\n".join(lines) + "\n"
 
     @property
@@ -1055,15 +1052,22 @@ class Job:
         return None
 
     def unfinished(self) -> tuple[list[str], list[str]]:
-        """``(interrupted, not_started)``: tasks whose trial started but wrote
-        no result (a kill, Ctrl-C, a cancelled run), and planned tasks with no
-        trial at all. ``not_started`` needs :attr:`planned_tasks`; without it
-        it is empty. A task finished since (resumed) is in neither. While
-        :meth:`running`, the first list holds the trials still running."""
-        finished = {t.task_name for t in self.trials}
-        interrupted = sorted(
-            {_attempt_task_name(p) for p in self.interrupted} - finished
-        )
+        """``(interrupted, not_started)``: tasks that started and have no
+        result, and planned tasks with no attempt folder at all.
+
+        A task is interrupted when it has an attempt folder and no trial: an
+        attempt that wrote no result (a kill, Ctrl-C, a cancelled run), one
+        whose result cannot be read, or attempts the run retried with none
+        kept (it stopped during a retry). ``not_started`` needs
+        :attr:`planned_tasks`; without it it is empty. A task finished since
+        (resumed) is in neither. While :meth:`running`, the first list holds
+        the trials still running."""
+        # A results.jsonl row is its file and its row: rows share the path.
+        retried = {(t.path, t.row) for t in self.retried}
+        finished = {t.task_name for t in self.trials if (t.path, t.row) not in retried}
+        started = {_attempt_task_name(p) for p in (*self.interrupted, *self.unreadable)}
+        started.update(t.task_name for t in self.retried)
+        interrupted = sorted(started - finished)
         planned = self.planned_tasks or []
         not_started = sorted(set(planned) - finished - set(interrupted))
         return interrupted, not_started
@@ -1278,10 +1282,13 @@ def _unscored_reason(trial: Trial) -> str:
 
 
 def _cost_line(rollouts: list[Trial]) -> str:
-    """What ``rollouts`` cost: known USD, how much of it is estimated, and
-    how many reported none."""
+    """What ``rollouts`` cost: known USD, how much of it is estimated (no
+    provider's bill), how much counted only some calls, and how many
+    reported none."""
     priced = [t for t in rollouts if t.cost_usd is not None]
-    estimated = [t for t in priced if t.result.price_source == "agent_session_log"]
+    estimated = [t for t in priced if t.result.cost_source != "provider"]
+    from_log = [t for t in estimated if t.result.price_source == "agent_session_log"]
+    partial = [t for t in priced if t.result.usage_incomplete]
     unknown = len(rollouts) - len(priced)
     if not priced:
         if rollouts and all(t.control is not None for t in rollouts):
@@ -1289,10 +1296,20 @@ def _cost_line(rollouts: list[Trial]) -> str:
         return f"Cost: unknown (none of {len(rollouts)} rollout(s) reported USD)"
     usd = math.fsum(t.cost_usd or 0.0 for t in priced)
     line = f"Cost: ${usd:.4f} over {len(priced)} rollout(s)"
-    if estimated:
+    if estimated and len(from_log) == len(estimated):
         line += f" ({len(estimated)} estimated from the agent's session log)"
+    elif estimated:
+        line += f" ({len(estimated)} estimated, not a provider's bill"
+        if from_log:
+            line += f"; {len(from_log)} of them from the agent's session log"
+        line += ")"
+    floors = []
+    if partial:
+        floors.append(f"{len(partial)} rollout(s) counted only some of their calls")
     if unknown:
-        line += f"; {unknown} rollout(s) reported no USD, so the total is a floor"
+        floors.append(f"{unknown} rollout(s) reported no USD")
+    if floors:
+        line += "; " + " and ".join(floors) + ", so the total is a floor"
     return line
 
 
@@ -1302,36 +1319,95 @@ def _rank(trial: Trial) -> tuple[bool, float, str]:
     return attempt_rank(trial.path / "result.json", scored=trial.assessment == "scored")
 
 
-def _final_attempts(trials: list[Trial]) -> list[Trial]:
+def _decision(trial: Trial) -> dict[str, Any] | None:
+    """What the run decided about *trial*'s attempt: the record in its
+    folder, or for a results.jsonl row, which has no folder, the label the
+    row carries (``attempt_decision``)."""
+    from benchflow._utils.attempt_decision import read_decision, row_decision
+
+    if trial.source == "results.jsonl":
+        return row_decision(trial.raw.get("row"))
+    return read_decision(trial.path)
+
+
+def _row_job(trial: Trial) -> Path | None:
+    """The job folder a results.jsonl row's attempt ran in: the parent of
+    its ``info.rollout_dir``, which every BenchFlow row records. None for a
+    row that records none (another runner's)."""
+    row = trial.raw.get("row")
+    info = row.get("info") if isinstance(row, dict) else None
+    rollout_dir = info.get("rollout_dir") if isinstance(info, dict) else None
+    if not isinstance(rollout_dir, str) or not rollout_dir:
+        return None
+    return Path(rollout_dir).parent
+
+
+def _final_attempts(
+    trials: list[Trial], unkept: list[Trial] | None = None
+) -> list[Trial]:
     """One trial per retried task of an Evaluation job; every other rollout.
 
     Attempts of one task, agent and model in an Evaluation job folder are one
-    trial, whose result is the best attempt (:func:`_rank`). Rollouts in any
-    other folder (``bf.run_batch``, ``bf.run`` calls sharing a job name) are
-    independent samples and all kept.
+    trial, whose result is the attempt the run kept
+    (:func:`benchflow._utils.attempt_decision.final_attempt`): an attempt the
+    run retried is never it. A task whose every attempt was retried has no
+    result yet (the run stopped during a retry); its attempts are added to
+    ``unkept``, so the task stays in the job as interrupted and its spend
+    stays counted. In a job from before those records the trial is the best
+    attempt (:func:`_rank`). A folder that carries the run's records (a job
+    folder copied without its job files) is read as its job folder is
+    (:func:`benchflow._utils.attempt_decision.groups_attempts`). Rollouts in
+    any other folder (``bf.run_batch``, ``bf.run`` calls sharing a job name)
+    are independent samples and all kept.
+
+    A results.jsonl row has no folder to hold that record; its
+    ``attempt_decision`` says it instead, and a row that carries one is an
+    attempt wherever the file lies. Rows are attempts of the job their
+    ``info.rollout_dir`` ran in, so a file that joins several jobs' rows
+    keeps each job's trials apart; a row that names no rollout folder
+    (another runner's) is a trial of its own, whose decision still holds.
     """
-    from benchflow._utils.result_paths import holds_attempts
+    from benchflow._utils.attempt_decision import final_attempt, groups_attempts
 
     folders: dict[Path, bool] = {}
     kept: list[Trial] = []
-    chains: dict[tuple[str, Path, str, str | None], list[Trial]] = {}
+    chains: dict[tuple[str, Any, str, str | None], list[Trial]] = {}
     for t in trials:
         folder = t.path.parent
         if folder not in folders:
-            folders[folder] = holds_attempts(folder)
-        if not folders[folder]:
+            folders[folder] = groups_attempts(folder)
+        group: Any = folder
+        if t.source == "results.jsonl":
+            # A row of no known job is never joined with another row.
+            group = _row_job(t) or (t.path, t.row)
+        if not folders[folder] and not (
+            t.source == "results.jsonl" and _decision(t) is not None
+        ):
             kept.append(t)
             continue
-        chains.setdefault((t.task_name, folder, t.agent, t.model), []).append(t)
+        chains.setdefault((t.task_name, group, t.agent, t.model), []).append(t)
     for chain in chains.values():
         chain.sort(key=_started)
-        best = chain[0]
         for t in chain:
             t._attempts = chain
-            if _rank(t) >= _rank(best):  # ties go to the newer attempt
-                best = t
-        kept.append(best)
+        best = final_attempt(
+            chain, folder=lambda t: t.path, record=_decision, earlier_rule=_best_ranked
+        )
+        if best is not None:
+            kept.append(best)
+        elif unkept is not None:
+            unkept.extend(chain)
     return kept
+
+
+def _best_ranked(chain: Sequence[Trial]) -> Trial:
+    """The rule for a job with no attempt records: a scored attempt, then the
+    newer (ties go to the newer attempt)."""
+    best = chain[0]
+    for t in chain:
+        if _rank(t) >= _rank(best):
+            best = t
+    return best
 
 
 def _started(trial: Trial) -> tuple[str, float, str, int]:
@@ -1389,9 +1465,17 @@ def load_job(
     Retries: an Evaluation job (a folder with ``evaluation.json`` or
     ``summary.json``) runs each task once and retries it in the same folder,
     so there the attempts of one task, agent and model are one trial. With
-    ``attempts="best"`` (the default) that trial is its best attempt: the
-    scored one first, then the newest, the rule resume and ``summary.json``
-    use; its :attr:`Trial.attempts` lists every attempt, oldest first.
+    ``attempts="best"`` (the default) that trial is the attempt the run
+    kept: the last one it started, never one it retried, as its
+    ``attempt-decision.json`` records say and as resume and ``summary.json``
+    read them (in a job from before those records: the scored attempt, then
+    the newest). Its :attr:`Trial.attempts` lists every attempt, oldest first.
+    A job's results.jsonl read on its own gives the same trials: each row
+    says what its attempt is (``attempt_decision``), the row marked
+    ``final`` is the trial, and a ``retried`` or ``superseded`` row never is.
+    A task whose attempts were all retried, with none kept, has no trial: it
+    is interrupted (:meth:`Job.unfinished`), and its attempts are in
+    :attr:`Job.retried`.
     ``attempts="all"`` keeps every attempt as a trial. Rollouts in any other folder
     (``bf.run_batch``, ``bf.run`` calls sharing a job name) are independent
     samples and are always all kept, so repeated rollouts of one task count
@@ -1437,7 +1521,7 @@ def load_job(
             files = [root] if root.is_file() else _results_jsonl_files(root)
             for results_file in files:
                 trials.extend(load_results_jsonl(results_file))
-    if not trials:
+    if not trials and not unreadable:
         for root in roots:
             started = (
                 _interrupted(root)
@@ -1454,7 +1538,8 @@ def load_job(
         )
     if attempts not in ("best", "all"):
         raise ValueError(f"attempts is 'best' or 'all', got {attempts!r}")
-    kept = _final_attempts(trials)
+    unkept: list[Trial] = []
+    kept = _final_attempts(trials, unkept)
     if attempts == "best":
         trials = kept
     trials.sort(key=lambda t: (t.task_name, str(t.path)))
@@ -1465,7 +1550,23 @@ def load_job(
         evaluation=_read_json(path / "evaluation.json"),
         interrupted=[p for root in roots if root.is_dir() for p in _interrupted(root)],
         unreadable=unreadable,
+        retried=sorted(unkept, key=lambda t: (t.task_name, str(t.path))),
     )
+
+
+def _started_tasks(root: Path) -> set[str]:
+    """The tasks with any attempt folder under ``root``: started, whether an
+    attempt of theirs finished, was retried, or wrote no result at all."""
+    from benchflow._utils.result_paths import iter_task_result_paths
+
+    names = {_attempt_task_name(p) for p in _interrupted(root)}
+    for path in iter_task_result_paths(root):
+        result = _read_json(path)
+        name = result.get("task_name") if isinstance(result, dict) else None
+        names.add(
+            name if isinstance(name, str) and name else _attempt_task_name(path.parent)
+        )
+    return names
 
 
 def _attempt_task_name(folder: Path) -> str:
@@ -1479,15 +1580,19 @@ def _attempt_task_name(folder: Path) -> str:
 
 
 def _interrupted(root: Path) -> list[Path]:
-    """Attempt folders under ``root`` with a config.json but no result.json.
+    """Attempt folders under ``root`` with a config.json but no result.json
+    (or only a stopped trial's spend record).
 
     Folders inside a trial (branch children, reviewer runs, evidence) and
     folders awaiting review (solver.json) are not attempts of their own, and
     neither are trials a rerun with other settings set aside.
     """
-    from benchflow._utils.result_paths import is_set_aside
+    from benchflow._utils.result_paths import _reads_interrupted, is_set_aside
 
-    trial_dirs = {p.parent for p in root.rglob("result.json")}
+    # A stopped trial's spend record leaves it interrupted.
+    trial_dirs = {
+        p.parent for p in root.rglob("result.json") if not _reads_interrupted(p)
+    }
     trial_dirs.update(p.parent for p in root.rglob("solver.json"))
     found = []
     for config in sorted(root.rglob("config.json")):
@@ -1787,9 +1892,10 @@ class Comparison:
             scored = [
                 f"Score by {sa.rule} on the {self.scoring['tasks']} task"
                 f"{'' if self.scoring['tasks'] == 1 else 's'} both sides ran: "
-                f"{la} {sa.score or 0.0:.1%} ({sa.passed} of {sa.n} trials; "
-                f"{sa.interval_text()}), {lb} {sb.score or 0.0:.1%} ({sb.passed} of "
-                f"{sb.n} trials; {sb.interval_text()}); {lb} - {la} = "
+                f"{la} {sa.score or 0.0:.1%} ({sa.passed} of {sa.n} trials"
+                f"{sa.note_part()}; {sa.interval_text()}), "
+                f"{lb} {sb.score or 0.0:.1%} ({sb.passed} of {sb.n} trials"
+                f"{sb.note_part()}; {sb.interval_text()}); {lb} - {la} = "
                 f"{self.scoring['gap'] * 100:+.1f} points ({interval}).",
                 *(f"Warning: {w}." for w in self.scoring.get("warnings") or []),
                 "",

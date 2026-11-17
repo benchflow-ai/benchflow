@@ -9,6 +9,7 @@ import pytest
 from benchflow._utils.task_authoring import (
     _check_ctrf_path,
     check_task,
+    check_task_warnings,
     init_task,
     scaffold_task,
 )
@@ -429,8 +430,9 @@ class TestCtrfPathLint:
         (tests / "test.sh").write_text(
             "pytest --ctrf /logs/verifier/ctrf-report.json /tests\n"
         )
-        issues = check_task(task)
-        assert any("non-standard CTRF path" in i for i in issues)
+        # A warning since that change (F2b, 2026-11-16 12:27Z): the task grades itself.
+        assert not any("non-standard CTRF path" in i for i in check_task(task))
+        assert any("non-standard CTRF path" in w for w in check_task_warnings(task))
 
 
 class TestTaskMdScaffoldAgentNeutral:

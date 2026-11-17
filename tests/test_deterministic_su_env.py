@@ -19,6 +19,15 @@ util-linux setpriv and four without it:
 - ``su-alp-shadow``: Alpine with shadow's su and no setpriv (shadow's su
   resets PATH even when it keeps the environment).
 
+Every trial starts as every real run does since #234: BenchFlow's
+helper container adds main's rules from outside it, and main holds neither
+NET_ADMIN nor NET_RAW. The suite set ``BENCHFLOW_METADATA_MAIN_NET_ADMIN=1``
+before, to keep main's NET_ADMIN and so the firewall-power drop; #234 refuses
+that old start, so the suite drives the helper start and pins the old one as
+refused (``test_the_old_in_main_start_is_refused``). The unsupported
+images are refused by the metadata block's check of the agent's launch, each
+with that refusal's own text, never any refusal.
+
 Alpine's images carry musl Node (Node's own builds are glibc), so BenchFlow's
 JS agent install keeps it. Root's rc files export ``BF_ROOT_ONLY``, the
 agent's home gets rc files (from /etc/skel) and ``BASH_ENV`` that append
@@ -86,10 +95,17 @@ RUN mkdir -p /logs/verifier /logs/agent /logs/artifacts
 """
 
 # Exercise the remaining identity-only su fallback under S2's full barrier.
-# The real util-linux executable still applies every requested restriction.
+# The launch resolves setpriv on its pinned system PATH, never /usr/local, so
+# the wrapper takes the place of the setpriv found there (/usr/bin/setpriv on
+# both images; the build fails if not). Its --help hides --reuid, so the
+# launch drops through su; the real util-linux executable, moved aside, still
+# applies every requested restriction. A call without --reuid (the su
+# branch's) appends a line to the rc log the probe prints.
 BOUNDED_SU = """
-RUN printf '#!/bin/sh\\nif [ "$1" = --help ]; then /usr/bin/setpriv --help | sed /reuid/d; else exec /usr/bin/setpriv "$@"; fi\\n' > /usr/local/bin/setpriv \\
-    && chmod 755 /usr/local/bin/setpriv
+RUN test "$(PATH=/usr/sbin:/usr/bin:/sbin:/bin; command -v setpriv)" = /usr/bin/setpriv \\
+    && mkdir -p /usr/lib/bf-setpriv && mv /usr/bin/setpriv /usr/lib/bf-setpriv/setpriv \\
+    && printf '#!/bin/sh\\nr=/usr/lib/bf-setpriv/setpriv\\nif [ "$1" = --help ]; then "$r" --help | sed /reuid/d; exit 0; fi\\ncase " $* " in *" --reuid="*) ;; *) echo setpriv-call no-reuid >> /tmp/bf-rc.log && chmod 666 /tmp/bf-rc.log ;; esac\\nexec "$r" "$@"\\n' > /usr/bin/setpriv \\
+    && chmod 755 /usr/bin/setpriv
 """
 
 FIXTURES = {
@@ -122,6 +138,23 @@ REFERENCE = {
 SET_BY_THE_DROP = {"HOME", "USER", "LOGNAME", "SHELL", "PATH"}
 AGENT_ENV = ["--agent-env", "BF_SU_MARK=1", "--agent-env", "BASH_ENV=/etc/bf-bash-env"]
 UNSUPPORTED = {"su-deb-nosp", "su-alp-bb", "su-alp-nosp", "su-alp-shadow"}
+# The images whose launch drops through su (BOUNDED_SU).
+BOUNDED = {name for name in FIXTURES if name.endswith("-bounded")}
+# Their one refusal, word for word: the metadata block cannot verify the
+# agent's launch (no util-linux setpriv), so no agent code runs.
+UNSUPPORTED_REFUSAL = (
+    "CloudMetadataPowerError: sandbox startup refused: the agent privilege "
+    "construction could not be verified from /proc as root. The shared launch "
+    "must set NoNewPrivs, remove NET_ADMIN and NET_RAW from CapBnd, and clear "
+    "CapAmb. Provide util-linux setpriv and a readable /proc."
+)
+# The old start the suite used (main keeping NET_ADMIN), as #234 refuses it.
+OLD_START_REFUSAL = (
+    "RuntimeError: sandbox startup refused: the task's network policy (public) "
+    "needs BenchFlow's helper container to add main's rules from outside it; "
+    "BENCHFLOW_METADATA_MAIN_NET_ADMIN=1 would leave main holding NET_ADMIN, able "
+    "to remove its own rules"
+)
 
 
 def materialize(root: Path, names=tuple(FIXTURES)) -> Path:
@@ -147,8 +180,10 @@ def su_job(tmp_path_factory) -> h.CliRun:
         pytest.MonkeyPatch.context() as env,
         h.host_fake_llm(root / "host-fake-llm.jsonl") as url,
     ):
-        # PERF-A b21700ed3 otherwise bypasses the drop this suite guards.
-        env.setenv("BENCHFLOW_METADATA_MAIN_NET_ADMIN", "1")
+        # The helper start: main without NET_ADMIN, every rule from
+        # BenchFlow's helper. Never the old start, which #234 refuses.
+        env.delenv("BENCHFLOW_METADATA_MAIN_NET_ADMIN", raising=False)
+        env.setenv("BENCHFLOW_METADATA_HELPER", "1")
         return h.run_bench(
             ["eval", "run"],
             tasks_dir=tasks,
@@ -156,6 +191,30 @@ def su_job(tmp_path_factory) -> h.CliRun:
             sandbox=SANDBOX,
             host_fake_url=url,
             extra=["--concurrency", "6", "--retry-attempts", "0", *AGENT_ENV],
+        )
+
+
+@pytest.fixture(scope="module")
+def old_start_job(tmp_path_factory) -> h.CliRun:
+    """The suite's old setup (main keeping NET_ADMIN), on one supported image."""
+    if SANDBOX is None:
+        (pytest.fail if REQUESTED else pytest.skip)(SKIP_REASON)
+    if SANDBOX != "docker":
+        pytest.skip("the fixtures' images are built on Docker")
+    root = tmp_path_factory.mktemp("su-env-old-start")
+    tasks = materialize(root, ("su-deb-setpriv",))
+    with (
+        pytest.MonkeyPatch.context() as env,
+        h.host_fake_llm(root / "host-fake-llm.jsonl") as url,
+    ):
+        env.setenv("BENCHFLOW_METADATA_MAIN_NET_ADMIN", "1")
+        return h.run_bench(
+            ["eval", "run"],
+            tasks_dir=tasks,
+            jobs_dir=root / "jobs",
+            sandbox=SANDBOX,
+            host_fake_url=url,
+            extra=["--retry-attempts", "0", *AGENT_ENV],
         )
 
 
@@ -177,6 +236,7 @@ def probe(trial: Path) -> dict[str, Any]:
                 ),
                 "uid": next((ln[4:] for ln in lines if ln.startswith("uid ")), ""),
                 "rc": [ln for ln in lines if ln.startswith(("rc ", "bash_env "))],
+                "calls": [ln for ln in lines if ln.startswith("setpriv-call ")],
             }
     return {}
 
@@ -186,14 +246,29 @@ def _result(trial: Path) -> dict[str, Any]:
 
 
 def _assert_refused(trial: Path) -> None:
-    """S2-CONF-9 at 85b87bc9 supersedes SU's unrestricted image routes."""
+    """S2-CONF-9 at 85b87bc9 supersedes SU's unrestricted image routes: the
+    metadata block's own refusal, word for word (any refusal passed
+    here before, the old start's included)."""
     result = _result(trial)
     error = str(result.get("error") or "")
-    assert (
-        "sandbox startup refused" in error or "requires util-linux setpriv" in error
-    ), result
-    assert "Authentication required" not in error
+    assert error == UNSUPPORTED_REFUSAL, result
+    assert not result.get("rewards"), result
     assert not probe(trial)
+
+
+def _assert_helper_start(trial: Path) -> None:
+    """The trial started as every real run does: the metadata block's rules
+    from BenchFlow's helper, main without NET_ADMIN, nothing for the agent to
+    take, and no record saying "holds" before the rules were in."""
+    metadata = h.read_json(trial / "cloud-metadata.json")
+    assert metadata["state"] == "on", metadata
+    assert metadata["rules_from"] == "helper", metadata
+    assert metadata["main_net_admin"] is False, metadata
+    power = h.read_json(trial / "firewall-power.json")
+    assert power["state"] == "clear", power
+    assert power.get("drop") is None, power
+    assert power["installing"] == ["the cloud metadata block"], power
+    assert "holds" not in power, power
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
@@ -211,6 +286,7 @@ def test_the_agent_starts_with_its_env_and_finishes(su_job, name):
     assert "ANTHROPIC_API_KEY" in found["keys"] or "ANTHROPIC_BASE_URL" in found["keys"]
     assert found["uid"] not in ("", "0"), found
     assert result["rewards"]["reward"] == 1.0, result
+    _assert_helper_start(trial)
 
 
 @pytest.mark.parametrize("name", sorted(REFERENCE))
@@ -247,17 +323,54 @@ def test_nothing_of_roots_own_and_no_rc_file_as_root(su_job, name):
     assert not [ln for ln in found["rc"] if ln.endswith(" uid=0")], found
 
 
-def test_the_drop_is_unchanged(su_job):
-    """S3's drop: util-linux setpriv drops NET_ADMIN; BusyBox's setpriv sets
-    no_new_privs before su; without setpriv nothing found, nothing dropped."""
+@pytest.mark.parametrize("name", sorted(FIXTURES))
+def test_the_bounded_images_drop_through_su(su_job, name):
+    """Each "-bounded" image's launch takes the su branch: its setpriv on the
+    launch's PATH logged that branch's calls (restrictions, then su). The
+    wrapper sat at /usr/local/bin before, which the launch's pinned PATH
+    never reads, so no image reached su and breaking su went unnoticed
+    (R647). No other image has the wrapper, so none logs a call."""
+    if name in UNSUPPORTED:
+        _assert_refused(su_job.trial(name))
+        return
+    found = probe(su_job.trial(name))
+    assert found, su_job.output[-3000:]
+    if name in BOUNDED:
+        assert found["calls"], found
+        assert set(found["calls"]) == {"setpriv-call no-reuid"}, found
+    else:
+        assert found["calls"] == [], found
+
+
+def test_the_helper_start_leaves_no_firewall_power_to_drop(su_job):
+    """Was test_the_drop_is_unchanged (S3's drop: util-linux setpriv drops
+    NET_ADMIN), which needed the old start. Under the helper start main holds
+    no NET_ADMIN, so S3's check is clear on every image and drops nothing; the
+    supported images score, and the unsupported ones meet the metadata
+    block's own refusal."""
     records = {
         name: h.read_json(su_job.trial(name) / "firewall-power.json")
         for name in FIXTURES
     }
-    for name in ("su-deb-setpriv", "su-alp-setpriv"):
-        assert records[name]["state"] == "disarmed", records[name]
-        assert records[name]["drop"] == "setpriv", records[name]
+    for name, record in records.items():
+        assert record["state"] == "clear", (name, record)
+        assert record.get("drop") is None, (name, record)
+        assert record["installing"] == ["the cloud metadata block"], (name, record)
+        assert "holds" not in record, (name, record)
+    for name in sorted(set(FIXTURES) - UNSUPPORTED):
+        assert _result(su_job.trial(name))["rewards"]["reward"] == 1.0, name
+        _assert_helper_start(su_job.trial(name))
     for name in UNSUPPORTED:
         _assert_refused(su_job.trial(name))
-        assert records[name]["state"] == "refused", records[name]
-        assert records[name]["drop"] is None, records[name]
+
+
+def test_the_old_in_main_start_is_refused(old_start_job):
+    """The suite's old setup, BENCHFLOW_METADATA_MAIN_NET_ADMIN=1, keeps main's
+    NET_ADMIN, which root there could use to remove its own rules: #234
+    refuses it before any agent code, with its own words."""
+    trial = old_start_job.trial("su-deb-setpriv")
+    result = _result(trial)
+    assert result.get("error") == OLD_START_REFUSAL, result
+    assert not result.get("rewards"), result
+    assert not probe(trial)
+    assert not (trial / "firewall-power.json").exists()

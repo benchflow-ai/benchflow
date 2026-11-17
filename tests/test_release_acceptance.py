@@ -283,3 +283,31 @@ def test_publication_checks_acceptance_before_upload() -> None:
     publish = next(i for i, cmd in enumerate(commands) if "uv publish" in cmd)
     helper = next(i for i, cmd in enumerate(commands) if "check_dist_bfx.py" in cmd)
     assert helper < check < publish
+
+
+def test_publication_waits_for_the_tagged_commits_tests() -> None:
+    """Guards PR #146: v0.10.0rc3's tag published to PyPI at 20:03Z while
+    the test run on the same commit (public run 42891406130) failed at 21:31Z;
+    public-release.yml and test.yml ran side by side and nothing waited."""
+    root = Path(__file__).resolve().parent.parent / ".github" / "workflows"
+    release = yaml.load(
+        (root / "public-release.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    tests = yaml.load((root / "test.yml").read_text(), Loader=yaml.BaseLoader)
+    assert "workflow_call" in tests["on"]
+    # Only the tag push starts it: no input or dispatch that skips the tests.
+    assert set(release["on"]) == {"push"}
+    jobs = release["jobs"]
+    assert jobs["tests"]["uses"] == "./.github/workflows/test.yml"
+    for name, job in jobs.items():
+        commands = " ".join(step.get("run", "") for step in job.get("steps", []))
+        if "uv publish" in commands or "gh release" in commands:
+            assert job["needs"] == ["tests"], name
+            condition = job["if"]
+            assert condition.startswith("success() &&"), name
+            for status in ("always()", "failure()", "cancelled()"):
+                assert status not in condition, name
+    # Write access only where the release is published.
+    assert release["permissions"] == {"contents": "read"}
+    assert jobs["tests"]["permissions"] == {"contents": "read"}
+    assert jobs["publish"]["permissions"] == {"contents": "write", "id-token": "write"}

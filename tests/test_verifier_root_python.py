@@ -259,7 +259,7 @@ async def test_the_interpreter_is_judged_before_any_root_python_step(monkeypatch
     monkeypatch.setattr(lockdown, "_build_verifier_env", AsyncMock(return_value={}))
     env = _make_env(execute)
     await lockdown.harden_before_verify(
-        env, _make_task(), sandbox_user="agent", workspace="/app"
+        env, _make_task(), sandbox_user="agent", workspace="/app", integrity="strict"
     )
     judge = next(i for i, c in enumerate(seen) if "bf-root-python" in c)
     python_steps = [i for i, c in enumerate(seen) if "__bf_root_python" in c]
@@ -282,9 +282,16 @@ async def test_rejected_candidates_refuse_grading_naming_the_image(monkeypatch):
     monkeypatch.setattr(lockdown, "_build_verifier_env", build)
     task = _make_task()
     task.config.environment.docker_image = "python:3.12-slim"
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"no python3 in the image python:3\.12-slim passed the trusted-route check",
+    ) as caught:
         await lockdown.harden_before_verify(
-            _make_env(execute), task, sandbox_user="agent", workspace="/app"
+            _make_env(execute),
+            task,
+            sandbox_user="agent",
+            workspace="/app",
+            integrity="strict",
         )
     assert "python:3.12-slim" in str(caught.value)
     assert "/usr/local/bin/python3" in str(caught.value)
@@ -325,7 +332,11 @@ async def test_kept_services_on_a_conda_image_check_ancestry_with_its_python(
     build = AsyncMock(return_value={})
     monkeypatch.setattr(lockdown, "_build_verifier_env", build)
     await lockdown.harden_before_verify(
-        _make_env(execute), _make_task(), sandbox_user="agent", workspace=str(workspace)
+        _make_env(execute),
+        _make_task(),
+        sandbox_user="agent",
+        workspace=str(workspace),
+        integrity="strict",
     )
     (command,) = ancestry
     assert "/opt/conda/bin/python3 -I -S -c " in command

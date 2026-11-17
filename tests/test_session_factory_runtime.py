@@ -14,6 +14,7 @@ import pytest
 
 from benchflow.acp.runtime import AgentPromptTimeoutError
 from benchflow.acp.types import StopReason
+from benchflow.agents.errors import AgentTurnFailedError
 from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.rollout.session_factory_runtime import (
     _load_session_factory,
@@ -171,9 +172,13 @@ async def test_session_factory_partial_trajectory_on_non_timeout_failure():
     A session-factory agent that appends steps then blows up mid-run (e.g. the
     one-shot CLI raises ``RuntimeError``) must not lose the steps captured so
     far. ``execute_prompts_session_factory`` wraps the failure in an
-    ``AgentPromptTimeoutError`` carrying the partial trajectory (marked partial,
-    not terminal-complete) so the kernel's existing handler commits it — instead
-    of the bare exception bubbling up and discarding the trajectory entirely.
+    ``AgentTurnFailedError`` carrying the partial trajectory, so the kernel
+    commits it instead of the bare exception bubbling up and discarding the
+    trajectory entirely.
+
+    The carrier was ``AgentPromptTimeoutError`` until the audit fix on
+    branch ``audit-agent-turn-failed``: that recorded the crash as the
+    agent running out of time (graded 0, never retried).
     """
 
     class _FailSession(_FakeSession):
@@ -190,7 +195,7 @@ async def test_session_factory_partial_trajectory_on_non_timeout_failure():
             return StopReason.END_TURN
 
     session = _FailSession()
-    with pytest.raises(AgentPromptTimeoutError) as ei:
+    with pytest.raises(AgentTurnFailedError) as ei:
         await execute_prompts_session_factory(session, ["one", "two"], timeout=30)
 
     # the partial trajectory captured before the RuntimeError survives
@@ -198,9 +203,9 @@ async def test_session_factory_partial_trajectory_on_non_timeout_failure():
     assert {"type": "user_message", "text": "two"} in ei.value.trajectory
     assert ei.value.n_tool_calls == 0
     assert ei.value.executed_prompts == ["one", "two"]
-    # a non-timeout failure is partial, not a clean terminal snapshot
-    assert ei.value.terminal_trajectory_complete is False
-    # the real cause is preserved on the exception chain (not masked as a timeout)
+    # a failure is not a timeout, of any kind
+    assert not isinstance(ei.value, TimeoutError)
+    # the real cause is preserved on the exception chain
     assert isinstance(ei.value.__cause__, RuntimeError)
 
 

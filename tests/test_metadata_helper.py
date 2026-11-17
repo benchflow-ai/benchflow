@@ -11,6 +11,7 @@ themselves are tested in test_cloud_metadata_block.py; here, where they run.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import stat
@@ -212,7 +213,14 @@ class FakeDocker:
         self.calls.append(list(args))
         self.stdin.append(stdin)
         out, code = "", 0
-        if args[:2] == ["image", "inspect"]:
+        if args[:1] == ["inspect"] and "{{.HostConfig.NetworkMode}}" in args:
+            # A main on a network of its own (never the host's).
+            out = "bf_default\n"
+        elif args[:1] == ["run"] and "stat" in args:
+            # The netns probes: a namespace of its own, not the host's.
+            host = args[args.index("--network") + 1] == "host"
+            out = "4026531992\n" if host else "4026532900\n"
+        elif args[:2] == ["image", "inspect"]:
             out, code = (helper_mod.HELPER_RECIPE + "\n", 0) if self.image else ("", 1)
         elif args[:1] == ["build"]:
             code = 1 if self.build_fails else 0
@@ -242,7 +250,8 @@ class FakeDocker:
         return SimpleNamespace(stdout=out, stderr="", return_code=code)
 
     def runs(self) -> list[list[str]]:
-        return [c for c in self.calls if c[:1] == ["run"]]
+        """The helper's own runs (its netns probes, ``stat``, aside)."""
+        return [c for c in self.calls if c[:1] == ["run"] and "stat" not in c]
 
     def of(self, verb: str) -> list[list[str]]:
         return [c for c in self.calls if c[:1] == [verb]]
@@ -501,7 +510,11 @@ async def test_a_run_with_no_container_id_back_runs_nothing_by_name():
 
     assert await helper.installed(MAIN, "echo rules") is None
     assert "did not start" in helper.unavailable
-    assert docker.of("exec") == [] and docker.of("inspect") == []
+    # Nothing by name: no exec, no inspect but main's own network mode (by id).
+    assert docker.of("exec") == []
+    assert [
+        c for c in docker.of("inspect") if "{{.HostConfig.NetworkMode}}" not in c
+    ] == []
     await helper.aclose()
     (rm,) = docker.of("rm")
     (run,) = docker.runs()
@@ -611,8 +624,16 @@ def _helper_aware_docker():
                 proc.communicate = built
             elif words[1:2] == ["build"]:
                 out = f"{IMAGE_ID}\n"
+            elif words[1:2] == ["run"] and "stat" in words:
+                # The netns probes: main's namespace is its own.
+                host = words[words.index("--network") + 1] == "host"
+                out = "4026531992\n" if host else "4026532900\n"
             elif words[1:2] == ["run"]:
                 out = f"{HELPER_CONTAINER}\n"
+            elif words[1:3] == ["inspect", "--format"] and (
+                "{{.HostConfig.NetworkMode}}" in words
+            ):
+                out = "bf_default\n"
             elif words[1:3] == ["inspect", "--format"]:
                 out = f"true {IMAGE_ID}\n"
             elif words[1:3] == ["exec", HELPER_CONTAINER]:
@@ -629,6 +650,58 @@ def _helper_aware_docker():
 async def _settle() -> None:
     for _ in range(50):
         await asyncio.sleep(0)
+
+
+class _TimerWait:
+    """How long the running event loop sat waiting on a timer.
+
+    Counts each wait of the loop's selector that ended with nothing ready
+    (the loop woke for a timer), capped at the timeout the loop asked for.
+    A bounded wait on something that does not finish
+    (``asyncio.wait_for(build, 0.5)``) counts in full however loaded the
+    host is; time the process spends runnable but not scheduled does not,
+    since the loop is not in its selector then, or the timeout caps it.
+    Wall time counts both, and CPU time neither."""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+
+    def __enter__(self) -> _TimerWait:
+        import time
+
+        self._selector = asyncio.get_running_loop()._selector  # ty: ignore[unresolved-attribute]
+        select = self._selector.select
+
+        def timed(timeout: float | None = None) -> list:
+            began = time.monotonic()
+            ready = select(timeout)
+            if not ready and timeout:
+                self.seconds += min(time.monotonic() - began, timeout)
+            return ready
+
+        self._selector.select = timed
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        del self._selector.select
+
+
+@pytest.mark.asyncio
+async def test_the_timer_wait_counts_a_bounded_wait_and_not_work():
+    """The meter the start test below reads: a 0.3 s bounded wait on an
+    event that never fires counts about 0.3 s, and 0.3 s of the loop's own
+    work counts none."""
+    import time
+
+    with _TimerWait() as waited, contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(asyncio.Event().wait(), 0.3)
+    assert 0.25 <= waited.seconds <= 0.35, waited.seconds
+
+    with _TimerWait() as worked:
+        until = time.monotonic() + 0.3
+        while time.monotonic() < until:
+            await asyncio.sleep(0)
+    assert worked.seconds < 0.05, worked.seconds
 
 
 @pytest.mark.asyncio
@@ -648,7 +721,8 @@ async def test_an_armed_start_puts_the_helper_in_mains_namespace(
     await direct._started(sandbox)
     await _settle()
 
-    runs = [c for c in docker.commands() if c[1:2] == ["run"]]
+    # The helper's runs (its netns probes, ``stat``, aside:).
+    runs = [c for c in docker.commands() if c[1:2] == ["run"] and "stat" not in c]
     if not armed:
         assert runs == [] and sandbox._metadata_helper is None
         return
@@ -943,7 +1017,14 @@ async def test_with_the_image_built_before_the_start_every_freeze_reads_one_set_
 async def test_a_build_still_running_is_not_waited_for(tmp_path, monkeypatch):
     """A process's first sandbox usually starts before its build is done:
     main then keeps NET_ADMIN, and the start does not wait on the build
-    (84a2f2ed waited up to 0.5 s for it, about what dropping it saved)."""
+    (84a2f2ed waited up to 0.5 s for it, about what dropping it saved).
+
+    The start's wall time (bound 0.5 s) measured the host's load as well:
+    0.56 s and 1.23 s in suite runs at 10 workers. What it guards is an
+    idle wait, which costs no CPU time, so a CPU-time bound alone would
+    pass 84a2f2ed. The loop's waits on a timer measure that wait and not
+    the load (_TimerWait); the CPU-time bound keeps a start that works
+    instead of waiting from passing."""
     import time
 
     from tests import test_docker_direct_exec as direct
@@ -955,13 +1036,17 @@ async def test_a_build_still_running_is_not_waited_for(tmp_path, monkeypatch):
     sandbox.task_env_config.arm_cloud_metadata_block()
 
     started = time.monotonic()
+    cpu = time.process_time()
     try:
-        await direct._started(sandbox)
+        with _TimerWait() as waited:
+            await direct._started(sandbox)
+        cpu = time.process_time() - cpu
         took = time.monotonic() - started
         overlays = _net_admin_overlay(docker)
         assert overlays and overlays[-1] is True
         assert not getattr(sandbox.task_env_config, "cloud_metadata_by_helper", False)
-        assert took < 0.5, took
+        assert waited.seconds < 0.1, (waited.seconds, cpu, took)
+        assert cpu < 0.5, (waited.seconds, cpu, took)
     finally:
         docker.build_gate.set()
         await _settle()

@@ -4,7 +4,7 @@ The rule is ``benchflow.score.v1`` (:data:`RULE_ID`, in one sentence in
 :data:`RULE_TEXT`):
 
 - Every finished trial is in the denominator: ``n`` is the number of
-  finished trials (a retried task's best attempt is one trial). A planned
+  finished trials (a retried task is one trial, the attempt the run kept). A planned
   trial that never finished is not; summary.json's ``score_of_plan`` counts
   it, and readers name it.
 - A trial counts 1 when it was scored and passed (reward 1, or the rubric
@@ -249,6 +249,19 @@ class Score:
             "tests passed)"
         )
 
+    def unscored_note(self) -> str:
+        """``counts K unscored trials as 0; scored only: X%`` when the score
+        counts unscored trials as 0 (``errors`` above 0), for the same line
+        as the number; "" when every trial was scored."""
+        from benchflow._utils.scoring import unscored_note
+
+        return unscored_note(self.errors, self.score_excl_errors)
+
+    def note_part(self) -> str:
+        """:meth:`unscored_note` as ``"; <note>"``, or "" (inside a parenthesis)."""
+        note = self.unscored_note()
+        return f"; {note}" if note else ""
+
     def interval_text(self) -> str:
         """The interval in words, as reports print it."""
         if self.ci95 is None:
@@ -396,11 +409,7 @@ def outcome(result: Mapping[str, Any], *, integration_failed: bool = False) -> s
     (``Trial.integration_failure``); the trial is then ``errored`` whatever
     reward its verifier wrote.
     """
-    from benchflow._utils.scoring import (
-        classify_score_outcome,
-        is_guard_refusal,
-        is_unusable_reward,
-    )
+    from benchflow._utils.scoring import classify_score_outcome, reward_less_verdict
 
     if integration_failed:
         return "errored"
@@ -408,8 +417,7 @@ def outcome(result: Mapping[str, Any], *, integration_failed: bool = False) -> s
     if bucket in ("passed", "failed"):
         return bucket
     if bucket == "verifier_errored":
-        verifier_error = result.get("verifier_error")
-        if is_guard_refusal(verifier_error) or is_unusable_reward(verifier_error):
+        if reward_less_verdict(result.get("verifier_error")) == "refused":
             return "refused"
         return "verifier_errored"
     return "errored" if result.get("error") else "no_verdict"
@@ -604,7 +612,8 @@ def card_lines(block: Mapping[str, Any]) -> list[str]:
         return []
     lines = [
         f"  Score:     {figures.passed} of {figures.n} trials passed "
-        f"({figures.score or 0.0:.1%}; {figures.interval_text()}) by {figures.rule}"
+        f"({figures.score or 0.0:.1%}{figures.note_part()}; "
+        f"{figures.interval_text()}) by {figures.rule}"
     ]
     refusals = figures.model_refusals_text()
     if not refusals and "model_refusals" in block:

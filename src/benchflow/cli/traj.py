@@ -18,6 +18,11 @@ import typer
 from rich.markup import escape
 
 import benchflow.cli._traj_tui as tui
+from benchflow._utils.raw_evidence import (
+    raw_evidence_refusal,
+    refuse_workspace,
+    workspace_refusal,
+)
 from benchflow.cli._shared import console, exit_if_missing, print_error
 from benchflow.cli._traj_upload_ui import (
     UploadProgressHooks,
@@ -304,7 +309,8 @@ def register_traj(app: typer.Typer) -> None:
             Path | None,
             typer.Option(
                 "--workspace-dir",
-                help="Workspace folder to attach instead of auto-detection",
+                help="Workspace folder to attach instead of auto-detection. The "
+                "folder is uploaded as it is, with nothing masked",
             ),
         ] = None,
         direct: Annotated[
@@ -460,6 +466,13 @@ def _run_upload(options: _UploadOptions) -> None:
                     "excluded) — archived as-is; VCS internals and "
                     "secret-like filenames stay local"
                 )
+                if attach.run_folders_excluded:
+                    print(
+                        f"Left out {attach.run_folders_excluded} trial or job "
+                        "folder(s) inside the workspace: a run's own folder is "
+                        "never uploaded as it is (upload the trial itself; its "
+                        "trajectory is masked)"
+                    )
             else:
                 print(f"Workspace skipped: {attach.skipped_reason}")
 
@@ -622,6 +635,7 @@ def _resolve_workspace_dir(
         explicit = options.workspace_dir.expanduser()
         if not explicit.is_dir():
             raise ValueError(f"workspace folder not found: {explicit}")
+        refuse_workspace(explicit)
         print(f"Workspace: {explicit} (from --workspace-dir)")
         return explicit, False
     if not sys.stdin.isatty():
@@ -635,9 +649,20 @@ def _resolve_workspace_dir(
         if not raw:
             return None, True
         candidate = Path(raw.strip("'\"")).expanduser()
-        if candidate.is_dir():
+        if not candidate.is_dir():
+            print_error(f"not a folder: {candidate}")
+        elif (refusal := workspace_refusal(candidate)) is not None:
+            print_error(
+                refusal,
+                next_step=(
+                    "enter the run folder, or Enter to skip"
+                    if raw_evidence_refusal(candidate) is not None
+                    else "enter the project folder the agent worked in, or Enter "
+                    "to skip"
+                ),
+            )
+        else:
             return candidate, True
-        print_error(f"not a folder: {candidate}")
 
 
 def _session_cwd(path: Path) -> Path | None:

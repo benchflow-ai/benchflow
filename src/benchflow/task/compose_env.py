@@ -275,9 +275,70 @@ def host_program_variable(name: str) -> bool:
     return name in _HOST_PROGRAM_NAMES or name.startswith(_HOST_PROGRAM_PREFIXES)
 
 
+#: The second opt-in a machine where a cloud metadata server answers needs
+#: for host access: there a task given this machine (its network,
+#: the Docker socket, a privileged container) gives the agent the VM's cloud
+#: credentials.
+ALLOW_HOST_ACCESS_ON_CLOUD_VAR = "BENCHFLOW_ALLOW_HOST_ACCESS_ON_CLOUD"
+_CLOUD_PROBE: list[bool] = []
+
+
+def cloud_metadata_server_answers() -> bool:
+    """Whether a cloud metadata server answers on this machine: an HTTP GET
+    for GCE's instance id at 169.254.169.254 WITHOUT the Metadata-Flavor
+    header (GCE answers 403, AWS 401 or 404, Azure 400), read for its status
+    only; never the header, never a token path. Asked once per process."""
+    if not _CLOUD_PROBE:
+        import http.client
+
+        answered = False
+        try:
+            conn = http.client.HTTPConnection("169.254.169.254", 80, timeout=1.5)
+            try:
+                conn.request("GET", "/computeMetadata/v1/instance/id")
+                answered = conn.getresponse().status > 0
+            finally:
+                conn.close()
+        except (OSError, http.client.HTTPException):
+            answered = False
+        _CLOUD_PROBE.append(answered)
+    return _CLOUD_PROBE[0]
+
+
+def _truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+def host_access_refused_on_cloud() -> bool:
+    """Whether :data:`ALLOW_HOST_ACCESS_VAR` is set but does not hold: a cloud
+    metadata server answers here and :data:`ALLOW_HOST_ACCESS_ON_CLOUD_VAR`
+    is not set."""
+    return (
+        _truthy(ALLOW_HOST_ACCESS_VAR)
+        and not _truthy(ALLOW_HOST_ACCESS_ON_CLOUD_VAR)
+        and cloud_metadata_server_answers()
+    )
+
+
 def host_access_allowed() -> bool:
-    """Whether the operator set :data:`ALLOW_HOST_ACCESS_VAR`."""
-    return os.environ.get(ALLOW_HOST_ACCESS_VAR, "").strip().lower() in _TRUTHY
+    """Whether the operator set :data:`ALLOW_HOST_ACCESS_VAR`, and, on a
+    machine where a cloud metadata server answers, also
+    :data:`ALLOW_HOST_ACCESS_ON_CLOUD_VAR`."""
+    return _truthy(ALLOW_HOST_ACCESS_VAR) and not host_access_refused_on_cloud()
+
+
+def _host_remedy() -> str:
+    """The host refusal's remedy; on a cloud VM with only the first opt-in
+    set, it says what a second one would give the agent."""
+    if host_access_refused_on_cloud():
+        return (
+            f"{ALLOW_HOST_ACCESS_VAR}=1 is set, but this machine is a cloud VM (its "
+            "metadata server answers): a task given this machine (its network, the "
+            "Docker socket, a privileged container) gives the agent this VM's cloud "
+            f"credentials. Set {ALLOW_HOST_ACCESS_ON_CLOUD_VAR}=1 as well only if you "
+            "accept that"
+        )
+    return _HOST_REMEDY
 
 
 def compose_process_env(
@@ -421,7 +482,10 @@ _client_configs: dict[str, str] = {}
 _client_configs_lock = threading.Lock()
 
 
-def _remove_client_configs() -> None:
+def remove_hermetic_docker_configs() -> None:
+    """Remove every client configuration folder this process made
+    (:func:`hermetic_docker_config`): at exit, and when a dry run, which
+    launches nothing, is done with its checks."""
     with _client_configs_lock:
         folders = list(_client_configs.values())
         _client_configs.clear()
@@ -429,7 +493,7 @@ def _remove_client_configs() -> None:
         shutil.rmtree(folder, ignore_errors=True)
 
 
-atexit.register(_remove_client_configs)
+atexit.register(remove_hermetic_docker_configs)
 
 
 def operator_docker_config_dir(environ: Mapping[str, str] | None = None) -> Path:
@@ -449,7 +513,8 @@ def hermetic_docker_config(environ: Mapping[str, str] | None = None) -> str:
     :data:`_CLIENT_CONFIG_KEYS` (no proxies), their plugins found where they
     are (``cliPluginsExtraDirs``), and their contexts and buildx builders
     reached through links. A ``0700`` folder of this process's, one per
-    distinct configuration, removed at exit."""
+    distinct configuration, removed at exit (a dry run removes it once its
+    checks are done: :func:`remove_hermetic_docker_configs`)."""
     folder = operator_docker_config_dir(environ)
     try:
         data = json.loads((folder / "config.json").read_text(encoding="utf-8"))
@@ -582,7 +647,7 @@ def _remote(value: str) -> bool:
 
 def _host_refusal(field_name: str, what: str) -> TaskEnvRequest:
     return TaskEnvRequest(
-        field_name, "", None, f"{field_name} {what}", remedy=_HOST_REMEDY
+        field_name, "", None, f"{field_name} {what}", remedy=_host_remedy()
     )
 
 
@@ -1776,6 +1841,9 @@ class ComposeCheck:
     defaulted: list[TaskEnvRequest] = field(default_factory=list)
     #: The frozen launch, when the check passed and one was asked for.
     launch: ComposeLaunch | None = None
+    #: The project as Compose resolved it for the run (``config --format
+    #: json``), the document the launch freezes: what the run gets.
+    project: dict[str, Any] | None = None
 
 
 def _config_refusal(error: str | None, where: str = "") -> TaskEnvRequest:
@@ -1786,6 +1854,9 @@ def _config_refusal(error: str | None, where: str = "") -> TaskEnvRequest:
         None,
         f"{field_name} does not resolve with docker compose config{where}: {error}",
         remedy=_CONFIG_REMEDY,
+        # A variable with no value (``${VAR:?}``) or a file Compose refuses:
+        # nothing reaches outside the task (the lead's ruling).
+        headline="Compose files that do not resolve",
     )
 
 
@@ -1953,7 +2024,7 @@ def freeze_compose(
             environment_dir,
             compose_file,
             host_access=host_access,
-            host_remedy=_HOST_REMEDY,
+            host_remedy=_host_remedy(),
             outside=lambda path: staged.stage_file(Path(staged.original(str(path)))),
             original=staged.original,
             path_alias=read_alias,
@@ -2041,6 +2112,7 @@ def freeze_compose(
         result.refused += check.check(project)
     if result.refused:
         return result
+    result.project = project
     frozen_sources: dict[str, str] = {}
     error = _environment_sources(
         printed, command, env, staged, frozen=frozen_sources if freeze else None
@@ -2123,8 +2195,13 @@ def freeze_compose(
 
 
 def _gate_files(
-    environment_dir: Path, sandbox_config: Any, *, remote: bool
+    environment_dir: Path, sandbox_config: Any, *, remote: bool, rules_by_helper: bool
 ) -> list[Path]:
+    """The ``-f`` files the gate resolves: the run's own list
+    (``compose_file_paths``, which every Docker start reads), with
+    *rules_by_helper* decided as the start decides it, so the gate never
+    resolves an overlay the run does not start with (the
+    NET_ADMIN overlay of an old start)."""
     from benchflow.sandbox._compose import (
         COMPOSE_BASE_PATH,
         COMPOSE_REMOTE_BASE_PATH,
@@ -2137,6 +2214,7 @@ def _gate_files(
         base=COMPOSE_REMOTE_BASE_PATH if remote else COMPOSE_BASE_PATH,
         prebuilt=bool(sandbox_config.docker_image),
         no_network=False,
+        rules_by_helper=rules_by_helper,
     )
     return [path.resolve().absolute() for path in paths]
 
@@ -2617,9 +2695,16 @@ def _check_compose(
         remote = sandbox_type == "remote-docker"
         local_proof = daemon_filesystem_local(environ, docker_args)
         project = f"benchflow-check-{os.getpid()}-{os.urandom(4).hex()}"
+        from benchflow.sandbox._metadata_helper import old_start_reason
+
         checked = freeze_compose(
             staged=staged,
-            files=_gate_files(staged.environment_dir, sandbox_config, remote=remote),
+            files=_gate_files(
+                staged.environment_dir,
+                sandbox_config,
+                remote=remote,
+                rules_by_helper=not old_start_reason(),
+            ),
             project_name=project,
             env=env,
             docker_args=docker_args,
@@ -2643,6 +2728,9 @@ def _check_compose(
         )
         result.refused += checked.refused
         result.defaulted += checked.defaulted
+        # What the run gets (include and extends applied), for checks that
+        # read services: the plan's allowlist check (L1).
+        result.project = checked.project
     finally:
         staged.remove()
     if hook and not host_access and sandbox_type in COMPOSE_ON_HOST:
@@ -2656,7 +2744,7 @@ def _hook_refusal() -> TaskEnvRequest:
         "",
         None,
         f"environment/{PRE_COMPOSE_HOOK} runs on this machine before Compose starts",
-        remedy=_HOST_REMEDY,
+        remedy=_host_remedy(),
     )
 
 
@@ -2721,7 +2809,7 @@ def _dind_preflight(
         environment_dir,
         compose_path(environment_dir),
         host_access=host_access,
-        host_remedy=_HOST_REMEDY,
+        host_remedy=_host_remedy(),
         original=staged.original,
         path_alias=(DIND_ENVIRONMENT_DIR, environment_dir),
     )
@@ -2795,7 +2883,11 @@ def _dind_preflight(
     )
     checked = freeze_compose(
         staged=resolver,
-        files=_gate_files(resolver_dir, sandbox_config, remote=False),
+        # Daytona's DinD has no helper: its run stacks the NET_ADMIN overlay
+        # where the policy needs it (daytona_dind.py), and so does its gate.
+        files=_gate_files(
+            resolver_dir, sandbox_config, remote=False, rules_by_helper=False
+        ),
         project_name=f"benchflow-check-{os.getpid()}-{os.urandom(4).hex()}",
         env=env,
         docker_args=docker_args,

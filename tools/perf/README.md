@@ -29,6 +29,7 @@ Rules these scripts assume: both arms on the same VM in one session, interleaved
 | `harden_before_verify` | `total` and one sub-key per step: `kill_sandbox_user_procs`, `clear_verifier_output`, `prepare_app_dir`, `reclaim_disk`, `restore_workspace`, `freeze_workspace`, `cleanup_conftests`, `build_verifier_env` | `verifier` |
 | `cleanup` | the trial's teardown, sandbox stop included. In separate verifier mode, when the agent's sandbox stops before the transfer, only what is left: closing the agent, the usage-tracking check, the lease, and the stop again if the early one failed (the rest moved to `agent_release`) | `total` |
 | `agent_stop_to_reward` | the solver's end (`verify()`'s entry), to the rewards being set; shared and separate mode | `total` (it holds `verifier`) |
+| `agent_sandbox_reproof` | separate verifier mode: proving the agent sandbox's network rules again before the transfer (only where they came from BenchFlow's helper) | `agent_stop_to_reward` |
 | `agent_release` | separate verifier mode: skill export, the usage runtime's stop, the egress proxy's stop, usage finalization, the session-log price, and the agent sandbox's stop | `agent_stop_to_reward` |
 | `agent_sandbox_stop_before_verify` | separate verifier mode: the agent sandbox's stop alone | `agent_release` |
 | `verifier_sandbox_ready_wait` | separate verifier mode: the wait for the verifier sandbox once the transfer is packed | `agent_stop_to_reward` |
@@ -39,7 +40,7 @@ Rules these scripts assume: both arms on the same VM in one session, interleaved
 
 On Docker and Daytona, the clear, app-directory, reclaim, freeze and hook-cleanup commands share one script after the kill and pre-freeze trust checks (two scripts around an opt-in workspace restore). Their sub-keys are each step's seconds inside the sandbox (from `/proc/uptime`, 10 ms steps, so a quick step can read 0), without the saved exec round trips; `total` stays the host wall time. The kill, `restore_workspace` and `build_verifier_env` stay timed on the host. Trials with kept services retain the separate command path and host timings.
 
-`setup_trials` adds `unnamed`: `total` minus `environment_setup`, `install_agent`, `agent_setup`, `agent_execution`, `verifier` and `cleanup` (the spans that do not overlap). In separate verifier mode the capture, `agent_release` and the verifier sandbox's setup, transfer and teardown are outside `verifier`, so they land in `unnamed`; `agent_stop_to_reward` holds all of them.
+`setup_trials` adds `unnamed`: `total` minus `environment_setup`, `install_agent`, `agent_setup`, `agent_execution`, `verifier` and `cleanup` (the spans that do not overlap). In separate verifier mode the capture, `agent_sandbox_reproof`, `agent_release` and the verifier sandbox's setup, transfer and teardown are outside `verifier`, so they land in `unnamed`; `agent_stop_to_reward` holds all of them.
 
 ## The fake-provider route
 

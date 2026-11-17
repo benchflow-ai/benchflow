@@ -13,6 +13,7 @@
 //!   bfx serve [--journal JOURNAL]          JSON lines in, JSON lines out
 //!   bfx serve --frames [JOURNAL]           the exec channel's helper
 //!   bfx serve --verdict JOURNAL PID        after a channel died
+//!   bfx launch -- PROGRAM [ARG...]         start the verifier's test.sh held
 //!
 //! Commands: exec, kill, scan, tar-out, tar-in, mkdir, chown, chmod, clear,
 //! remove, write, walk, stat (see each module). One-shot `exec` replaces
@@ -33,6 +34,7 @@ mod fsx;
 mod glob;
 mod harden;
 mod kill;
+mod launch;
 mod ops;
 mod scan;
 mod serve;
@@ -59,7 +61,7 @@ pub fn self_sha256() -> Option<String> {
 }
 
 fn usage() -> i32 {
-    let _ = std::io::stderr().write_all(b"usage: bfx version | bfx <command> --json '<arguments>'|- | bfx serve [--journal JOURNAL | --frames [JOURNAL] | --verdict JOURNAL PID]\n");
+    let _ = std::io::stderr().write_all(b"usage: bfx version | bfx <command> --json '<arguments>'|- | bfx serve [--journal JOURNAL | --frames [JOURNAL] | --verdict JOURNAL PID] | bfx launch -- PROGRAM [ARG...]\n");
     2
 }
 
@@ -136,6 +138,10 @@ fn run() -> i32 {
         [b"serve", b"--frames", _] => channel::frames(Some(&args[3])),
         [b"serve", b"--verdict", _, pid] => channel::verdict(&args[3], std::str::from_utf8(pid).unwrap_or("")),
         [b"_as-user", arg] => asuser::main(std::str::from_utf8(arg).unwrap_or("")),
+        // NET_ADMIN, NET_RAW and SYS_PTRACE out, no new privileges, then exec
+        // (launch.rs): an image without util-linux setpriv still
+        // starts test.sh held.
+        [b"launch", b"--", ..] => launch::main(&args[3..]),
         [b"_populate", dir] => {
             let (env, code) = envelope(ops::populate(std::str::from_utf8(dir).unwrap_or("")));
             print_line(false, &env);

@@ -66,6 +66,12 @@ def _rendered(node: ast.JoinedStr) -> str:
 # Every Python launch outside the entry point, with why it is not root's
 # stdlib helper on the protected interpreter. A new one fails the scan.
 NOT_ROOT_HELPERS = {
+    # The verifier's egress proxy's health, asked from inside its own
+    # container: the pinned helper image's python3, not main's.
+    (
+        "sandbox/_egress_container.py",
+        "wait_healthy",
+    ): "the egress proxy container's own python3 (pinned helper image), never main",
     # The kit's own interpreter, smoke-tested while the kit is built (before
     # the agent's turn).
     ("_runtime_tree.py", "kit_prepare_command"): "the kit's build",
@@ -122,6 +128,9 @@ NOT_ROOT_HELPERS = {
     ("adapters/*", "*"): "benchmark adapters' task content",
     ("_utils/task_authoring/structural_checks.py", "workspace_plugin_installs"): (
         "describes a task's own commands"
+    ),
+    ("sandbox/process/_acp_lines.py", "filter_command"): (
+        "the agent's ACP output filter, run in the agent's launch as its user"
     ),
     # Usage text for BenchFlow's own host-side modules.
     ("_utils/build_context_stage.py", "main"): "host usage text",

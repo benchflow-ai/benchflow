@@ -676,6 +676,129 @@ def _resolve(
     )
 
 
+# Before any sandbox, the image's Python is not known: a dependency
+# counts when any Linux CPython a verifier may have needs it, so nothing
+# resolve() refuses in the sandbox for a missing or mismatched pin gets past
+# the plan gate.
+_PLAN_PYTHONS = ("3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14")
+
+
+def _plan_environments() -> list[dict[str, str]]:
+    base = _marker_environment(None)
+    return [
+        {**base, "python_version": v, "python_full_version": f"{v}.0", "extra": ""}
+        for v in _PLAN_PYTHONS
+    ]
+
+
+def _any_wheel(name: str, version: str) -> dict[str, Any]:
+    """One wheel of the release, for its Requires-Dist: a pure one first,
+    else the first by file name."""
+    wheels = sorted(
+        (
+            entry
+            for entry in _release_files(name, version)
+            if entry.get("packagetype") == "bdist_wheel" and not entry.get("yanked")
+        ),
+        key=lambda entry: (
+            not str(entry.get("filename", "")).endswith("-none-any.whl"),
+            str(entry.get("filename", "")),
+        ),
+    )
+    if not wheels:
+        raise RuntimePinError(
+            f"{name}=={version} has no wheel the verifier's Python can load"
+        )
+    return wheels[0]
+
+
+def plan_closure_problem(
+    pins: list[str],
+    *,
+    ctrf: bool,
+    runner: bool,
+    wheelhouses: tuple[str, ...] = (),
+) -> str | None:
+    """Why *pins* cannot make the protected runtime, decided before any
+    sandbox, or None: :func:`resolve`'s rule (every release a plugin needs
+    is pinned, at a version its requirement allows) on the same pinned PyPI
+    releases (the host's cache, each wheel checked against the sha256 PyPI
+    lists). The task's sandbox is never asked. A requirement counts under
+    any Python in :data:`_PLAN_PYTHONS`; BenchFlow's own pytest releases are
+    checked against, never walked. What depends on the image (its Python
+    version, a wheel for its platform) is still the sandbox's to refuse.
+    Raises :class:`RuntimeUnavailable` when neither PyPI nor the cache can
+    say."""
+    token = _WHEELHOUSES.set(tuple(wheelhouses))
+    try:
+        _plan_closure(pins, ctrf=ctrf, runner=runner)
+    except RuntimePinError as exc:
+        return str(exc)
+    finally:
+        _WHEELHOUSES.reset(token)
+    return None
+
+
+def _plan_closure(pins: list[str], *, ctrf: bool, runner: bool) -> None:
+    environments = _plan_environments()
+    versions: dict[str, str] = {}
+    for pin in BENCHFLOW_PYTEST:
+        name, version = parse_pin(pin)
+        versions[name] = version
+    benchflows = set(versions)
+    roots: list[str] = []
+    if ctrf:
+        name, version = parse_pin(CTRF)
+        versions[name] = version
+        roots.append(name)
+    for pin in pins:
+        name, version = parse_pin(pin)
+        versions[name] = version
+        roots.append(name)
+    benchflows -= set(roots)
+    walked: set[str] = set()
+    queue: list[tuple[str, str | None]] = [
+        (root, None) for root in dict.fromkeys(roots)
+    ]
+    while queue:
+        name, needed_by = queue.pop(0)
+        if name in walked:
+            continue
+        walked.add(name)
+        if name not in versions:
+            raise RuntimePinError(
+                f"{needed_by} needs {name}, which the task does not pin"
+            )
+        version = versions[name]
+        requires, _, _ = wheel_metadata(_wheel_bytes(_any_wheel(name, version)))
+        for line in requires:
+            try:
+                requirement = Requirement(line)
+            except InvalidRequirement as exc:
+                raise RuntimePinError(f"{name}=={version}: {exc}") from exc
+            if requirement.marker is not None and not any(
+                requirement.marker.evaluate(environment) for environment in environments
+            ):
+                continue
+            dependency = canonicalize_name(requirement.name)
+            if dependency in {"pytest", "pluggy"} and not runner:
+                # The pytest that test.sh starts provides itself.
+                continue
+            pinned = versions.get(dependency)
+            if pinned is None:
+                raise RuntimePinError(
+                    f"{name}=={version} needs {requirement}, which the task does not pin"
+                )
+            if requirement.specifier and not requirement.specifier.contains(
+                Version(pinned), prereleases=True
+            ):
+                raise RuntimePinError(
+                    f"{name}=={version} needs {requirement}; the pin is {pinned}"
+                )
+            if dependency not in benchflows:
+                queue.append((dependency, f"{name}=={version}"))
+
+
 def _top_level(data: bytes) -> set[str]:
     names = set()
     with zipfile.ZipFile(io.BytesIO(data)) as wheel:
@@ -1634,9 +1757,45 @@ PytestPluginManager.import_plugin = _import_plugin
 
 
 class _Report:
+    session = None
+
     @staticmethod
     def pytest_configure(config):
         _mark("registered")
+        config.add_cleanup(lambda: _Report.finished(config))
+
+    @staticmethod
+    def pytest_sessionstart(session):
+        _Report.session = session
+
+    @staticmethod
+    def finished(config):
+        # The guard's end-of-session record ((g2)); then this
+        # process's registered marker goes, as the guard's does.
+        session = _Report.session
+        record = {"session": session is not None}
+        if session is not None:
+            for key, name in (
+                ("exitstatus", "exitstatus"),
+                ("collected", "testscollected"),
+                ("failed", "testsfailed"),
+            ):
+                value = getattr(session, name, None)
+                record[key] = int(value) if isinstance(value, int) else None
+            stats = getattr(
+                config.pluginmanager.get_plugin("terminalreporter"), "stats", None
+            )
+            record["passed"] = (
+                sum(1 for r in stats.get("passed", ()) if getattr(r, "when", "") == "call")
+                if isinstance(stats, dict)
+                else None
+            )
+        _mark("finished", json.dumps(record))
+        if _markers:
+            try:
+                os.remove(".".join((_markers, _token, "registered")))
+            except OSError:
+                pass
 
 
 args = ["-p", "no:cacheprovider", "--confcutdir=" + TESTS]
@@ -1877,6 +2036,11 @@ def runtime_requested(task: Any) -> tuple[list[str], bool]:
 
     verifier = getattr(getattr(task, "config", None), "verifier", None)
     pins = list(getattr(verifier, "pytest_plugin_releases", None) or [])
+    # And the pinned releases test.sh installs itself: the guard
+    # never loads its own copy, the runtime serves the release instead.
+    from benchflow.task.verifier_plugin_installs import implied_pins
+
+    pins += implied_pins(task)
     declared = list(getattr(verifier, "pytest_plugins", None) or [])
     ctrf = "ctrf" in _infer_pytest_plugins_from_test_script(task) or "ctrf" in declared
     if any(parse_pin(pin)[0] == "pytest-json-ctrf" for pin in pins):

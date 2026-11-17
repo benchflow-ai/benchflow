@@ -83,6 +83,10 @@ class TrustedPathReport:
     stubs: tuple[tuple[str, str], ...] = ()
     service: str = "main"
     omitted_tools: tuple[tuple[str, str], ...] = ()
+    # Entries of *kept* absent when judged, that only root could ever make:
+    # every part that exists is root's alone, with no link another user
+    # controls.
+    absent_root_only: tuple[str, ...] = ()
 
     @property
     def run_path(self) -> str:
@@ -97,6 +101,8 @@ class TrustedPathReport:
             "kept_not_root_owned": list(self.kept_other),
             "dropped": [{"folder": f, "why": why} for f, why in self.dropped],
         }
+        if self.absent_root_only:
+            record["absent_root_only"] = list(self.absent_root_only)
         if self.omitted_tools:
             record["omitted_tools"] = [
                 {"tool": tool, "why": why} for tool, why in self.omitted_tools

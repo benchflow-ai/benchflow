@@ -12,7 +12,7 @@ SUITE_PATH = Path("tests/integration/suites/release.yaml")
 
 
 def test_trace_evidence_generates_checked_tasks(tmp_path: Path) -> None:
-    """Guards ENG-93 trace evidence covers both JSONL and opentraces sources."""
+    """Guards trace evidence covers both JSONL and opentraces sources."""
     summary = generate_trace_evidence(
         suite_path=SUITE_PATH,
         repo_root=Path.cwd(),
@@ -38,7 +38,7 @@ def test_trace_evidence_generates_checked_tasks(tmp_path: Path) -> None:
 
 
 def test_trace_evidence_main_writes_summary(tmp_path: Path) -> None:
-    """Guards ENG-93 trace evidence CLI produces a durable summary artifact."""
+    """Guards trace evidence CLI produces a durable summary artifact."""
     rc = main(
         [
             "--suite",

@@ -26,8 +26,13 @@ def protected_exec_argv(
     shell: tuple[str, ...] | None = None,
     route: Any = None,
     cwd: str | None = None,
+    launch: tuple[str, ...] | None = None,
 ) -> list[str]:
-    """Clear all container startup inputs before even env or the shell loads."""
+    """Clear all container startup inputs before even env or the shell loads.
+
+    *launch*: :func:`benchflow.sandbox._bounded_exec.launch_for` of the exec
+    once the agent's turn has started: bfx launch ahead of ``env``,
+    or ``()`` for the shell's own launch in its text."""
     entries = config.get("Env")
     if entries is None:
         entries = []
@@ -43,6 +48,10 @@ def protected_exec_argv(
     if route is None:
         route = ExecRoute(pin=SYSTEM_PATH, system_shell=True, task_root=False)
     shell = shell or (route.shell, "-c")
+    if launch == ():
+        from benchflow.sandbox._bounded_exec import shell_launch
+
+        command = shell_launch(shell[0], command, kit=route.kit)
     executable = f"{KIT_BIN}/env" if route.kit else "/usr/bin/env"
     shell_argv = [
         executable,
@@ -59,10 +68,11 @@ def protected_exec_argv(
         user="root",
         cwd=cwd,
         shell_argv=shell_argv,
+        launch=launch or None,
     )
     # The route's own loader flags (-e LD_PRELOAD=, ...) become removals, so
     # no loader name reaches the exec with any value, an empty one included.
-    end = len(argv) - len(shell_argv) - 1
+    end = len(argv) - len(shell_argv) - len(launch or ()) - 1
     for i in range(1, end):
         flag = argv[i]
         if argv[i - 1] == "-e" and flag.endswith("=") and loader_variable(flag[:-1]):

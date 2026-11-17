@@ -134,7 +134,10 @@ def test_pre_job_check_refuses_an_unreachable_host(tmp_path, monkeypatch):
     fake = _fake_docker_cli.install(tmp_path, monkeypatch)
     fake.set(fail={"info": "Cannot connect to the Docker daemon at tcp://x:2376."})
     monkeypatch.setenv(REMOTE_DOCKER_HOST_ENV, SSH_URL)
-    with pytest.raises(RuntimeError) as info:
+    with pytest.raises(
+        RuntimeError,
+        match=r"The remote Docker host is not ready for environment='remote-docker'; nothing was started",
+    ) as info:
         runtime.check_host([_config("remote-docker")])
     message = str(info.value)
     assert "nothing was started" in message

@@ -604,7 +604,9 @@ async def test_exit_status_and_output_capture_are_kept(tmp_path, monkeypatch):
 
     assert rewards == {"reward": 0.0}
     assert _stdout(tmp_path) == "checked\n"
-    (command,) = [c for c in sandbox.commands if "test-stdout.txt" in c]
+    (command,) = [
+        c for c in sandbox.commands if "test-stdout.txt" in c and "TEST_DIR=" in c
+    ]
     assert command.startswith("umask 022 && { ")
     assert command.endswith(
         " /tests/test.sh\n}; } > /logs/verifier/test-stdout.txt 2>&1"

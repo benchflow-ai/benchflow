@@ -230,6 +230,52 @@ def _link_refusal(path: str, target: str | None) -> dict[str, Any]:
     return {"path": path, "reason": "symlink_refused", "link_target": target}
 
 
+#: The trial folders a sandbox can reach through a bind mount, and where
+#: the agent can leave links: its logs and its artifacts (F37).
+_SANDBOX_REACHED = ("agent", "artifacts")
+
+
+def drop_escaping_links(rollout_dir: Path) -> list[dict[str, Any]]:
+    """Once nothing in the sandbox can write any more (after teardown),
+    remove every link left in the trial's agent/ and artifacts/ whose text
+    does not stay inside its folder (:func:`plain_link_targets`: absolute,
+    ``..``, or through another link), in every integrity mode (F37). The
+    link itself goes, never what it points at, so nothing that copies the
+    trial folder later and follows links (a mirror, ``cp -rL``) copies a
+    host file. Each one is recorded in the artifacts manifest
+    (``links_dropped_at_end``) as copy-out records a refused link."""
+    dropped: list[dict[str, Any]] = []
+    for folder in _SANDBOX_REACHED:
+        root = Path(rollout_dir) / folder
+        if root.is_symlink() or not root.is_dir():
+            continue
+        links: dict[str, str] = {}
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            for name in (*dirnames, *filenames):
+                path = Path(dirpath) / name
+                if path.is_symlink():
+                    links[path.relative_to(root).as_posix()] = os.readlink(path)
+        _, escaping = plain_link_targets(links)
+        for name in sorted(escaping):
+            record = dict(_link_refusal(f"{folder}/{name}", links[name]))
+            try:
+                (root / name).unlink()
+            except OSError as exc:
+                record["error"] = str(exc)
+                logger.warning("a link left in %s/ was not removed: %s", folder, exc)
+            dropped.append(record)
+    if dropped:
+        manifest_path = Path(rollout_dir) / MANIFEST_NAME
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (OSError, ValueError):
+            manifest = {"version": 1, "collections": []}
+        if isinstance(manifest, dict):
+            manifest["links_dropped_at_end"] = dropped
+            write_json_atomic(manifest_path, manifest)
+    return dropped
+
+
 def _filter_captured_links(
     manifest: Any, tree: Path
 ) -> tuple[set[str], list[dict[str, Any]]]:

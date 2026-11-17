@@ -13,6 +13,7 @@ from typing import Any
 from typer.testing import CliRunner
 
 from benchflow.cli.main import app
+from tests.test_validate_branch_tree import _export as _export_branch_rows
 
 runner = CliRunner()
 
@@ -166,6 +167,167 @@ def test_train_convert_names_rollouts_left_out_for_an_error(tmp_path: Path) -> N
     assert result.exit_code == 0, result.output
     assert "Converted 1 row(s)" in result.output
     assert "left out 1 rollout(s) that did not end cleanly" in result.output
+
+
+def _bench_without_a_terminal(
+    *args: str, prelude: str = "", env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """``bench *args`` in a child process with no standard stream on a terminal
+    and COLUMNS unset, so Rich uses 80 columns, as in a pipe, a CI log or the
+    release gate. ``prelude`` runs in the child first, to stub what the
+    command calls."""
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"COLUMNS", "LINES", "FORCE_COLOR", "BENCHFLOW_DAEMON"}
+    }
+    child_env.update(env or {})
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"{prelude}\nfrom benchflow.cli.main import main\nmain()\n",
+            *args,
+        ],
+        env=child_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+def test_train_convert_keeps_its_paths_on_one_line_without_a_terminal(
+    tmp_path: Path,
+) -> None:
+    """Guards the summary line of 75e9b0a98 (rollouts left out for an error)
+    and convert's ``Stats:`` line. Printed through Rich without ``soft_wrap``,
+    they were wrapped at 80 columns whenever no terminal was attached (a pipe,
+    a CI log, the release gate), which split the ``--out`` path and the phrase
+    the test above looks for. The command runs in a child process with no
+    standard stream on a terminal and COLUMNS unset."""
+    jobs = tmp_path / "jobs"
+    _write_rollout(jobs / "run" / "task-a__abc123")
+    timed_out = jobs / "run" / "task-a__def456"
+    _write_rollout(timed_out)
+    result_path = timed_out / "result.json"
+    result_json = json.loads(result_path.read_text())
+    result_json["error"] = "Agent prompt exceeded wall-clock budget 600s"
+    result_path.write_text(json.dumps(result_json))
+    out_dir = tmp_path / ("a-folder-name-longer-than-a-terminal-line-" * 2)
+    out_dir.mkdir()
+    out = out_dir / "train.jsonl"
+    manifest = out_dir / "stats.json"
+    assert len(str(out)) > 80
+
+    completed = _bench_without_a_terminal(
+        "train", "convert", str(jobs), "--out", str(out), "--manifest", str(manifest)
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    lines = completed.stdout.splitlines()
+    for text in (
+        f"-> {out}",
+        "left out 1 rollout(s) that did not end cleanly",
+        f"Stats: {manifest}",
+    ):
+        assert any(text in line for line in lines), (text, completed.stdout)
+
+
+_STUB_PRIME_RL_SFT = """
+import os
+from pathlib import Path
+
+import benchflow.training.backends.prime_rl as prime_rl
+from benchflow.publish.huggingface import HfPublishResult
+
+
+def _stub_run_prime_rl_sft(spec):
+    manifest = Path(os.environ["STUB_SFT_MANIFEST"])
+    return prime_rl.PrimeRlSftResult(
+        manifest_path=manifest,
+        command_path=manifest.with_name("command.sh"),
+        returncode=0,
+        published=(
+            HfPublishResult(
+                repo_id="org/model",
+                repo_type="model",
+                path_in_repo="",
+                url=os.environ["STUB_SFT_URL"],
+                created="private",
+            ),
+        ),
+    )
+
+
+prime_rl.run_prime_rl_sft = _stub_run_prime_rl_sft
+"""
+
+
+def test_train_run_sft_keeps_its_manifest_and_published_url_on_one_line_without_a_terminal(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #184: ``bench train run sft`` printed its "Published HF" line
+    through Rich without ``soft_wrap``, so with no terminal a URL longer than
+    80 columns was split across lines and could not be copied or grepped from
+    a pipe or CI log. The Prime-RL run is stubbed in the child process; only
+    what the command prints is under test."""
+    config = tmp_path / "sft.toml"
+    config.write_text("")
+    folder = tmp_path / ("a-folder-name-longer-than-a-terminal-line-" * 2)
+    manifest = folder / "manifest.json"
+    url = "https://huggingface.co/org/model/tree/main/" + "checkpoints/step-100/" * 3
+    assert len(url) > 80
+
+    completed = _bench_without_a_terminal(
+        "train",
+        "run",
+        "sft",
+        "--config",
+        str(config),
+        "--work-dir",
+        str(tmp_path / "work"),
+        prelude=_STUB_PRIME_RL_SFT,
+        env={"STUB_SFT_MANIFEST": str(manifest), "STUB_SFT_URL": url},
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    lines = completed.stdout.splitlines()
+    for text in (
+        f"(manifest: {manifest})",
+        f"Published HF model: {url} (new private model repo)",
+    ):
+        assert any(text in line for line in lines), (text, completed.stdout)
+
+
+def test_train_validate_prints_json_that_parses_without_a_terminal(
+    tmp_path: Path,
+) -> None:
+    """Guards PR #184: ``bench train validate`` printed its JSON through Rich.
+    With no terminal Rich wrapped it at 80 columns, putting a newline inside a
+    long string value, and read a ``[...]`` in a path as markup and dropped
+    it, so ``json.loads`` of the output failed or got another path."""
+    children, _pairs = _export_branch_rows(tmp_path)
+    folder = "run[a]-" + "a-folder-name-longer-than-a-terminal-line-" * 2
+    jsonl = tmp_path / folder / "children.jsonl"
+    jsonl.parent.mkdir()
+    children.rename(jsonl)
+    assert len(str(jsonl)) > 80
+
+    completed = _bench_without_a_terminal(
+        "train",
+        "validate",
+        str(jsonl),
+        "--format",
+        "branch-tree",
+        "--expected-rows",
+        "2",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["path"] == str(jsonl)
+    assert result["rows"] == 2
 
 
 def test_train_convert_accepts_results_jsonl_cli(tmp_path: Path) -> None:
@@ -2072,9 +2234,13 @@ def test_train_run_sft_prime_rl_publish_flags_update_manifest(
             return 0
 
     class FakePublishResult:
-        def __init__(self, url: str) -> None:
+        created = None
+        visibility = "existing repo, its visibility left as it is"
+
+        def __init__(self, url: str, repo_type: str) -> None:
             self.url = url
             self.commit_url = f"{url}/commit/abc"
+            self.repo_type = repo_type
 
     published: list[tuple[str, str, str]] = []
     dataset_manifest_seen: dict[str, Any] = {}
@@ -2089,7 +2255,7 @@ def test_train_run_sft_prime_rl_publish_flags_update_manifest(
             )
         published.append((repo_id, repo_type, path_in_repo))
         return FakePublishResult(
-            f"https://huggingface.co/{repo_id}/tree/main/{path_in_repo}"
+            f"https://huggingface.co/{repo_id}/tree/main/{path_in_repo}", repo_type
         )
 
     config = tmp_path / "sft.toml"

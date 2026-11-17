@@ -12,6 +12,8 @@ DFR-p3-10).
 from __future__ import annotations
 
 import json
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,10 @@ from benchflow._utils.command_hints import command_arg
 _DEPTH = 4
 
 
+# The score summary.json carries, as BenchFlow writes it.
+_SCORE_TEXT = re.compile(r"\d{1,3}\.\d%")
+
+
 @dataclass(frozen=True)
 class JobRow:
     label: str
@@ -31,6 +37,8 @@ class JobRow:
     memory: float | None = None
     # A dim line after the table: how to finish an unfinished job.
     next_step: str | None = None
+    # The summary holds the score's unscored-trials note.
+    unscored_note: bool = False
 
 
 def _read(path: Path) -> Any:
@@ -76,6 +84,29 @@ def _is_job(folder: Path) -> bool:
     return (folder / "summary.json").is_file() and not _child_jobs(folder)
 
 
+def _count(value: Any) -> str:
+    """A count summary.json holds, as digits, or "?": a crafted value prints
+    no text or markup of its own in the Summary cell."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    return "?"
+
+
+def _score(value: Any) -> str:
+    """summary.json's score as BenchFlow writes it ("90.0%"), or a ratio
+    formatted so; anything else "?"."""
+    if isinstance(value, str) and _SCORE_TEXT.fullmatch(value):
+        return value
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and 0 <= value <= 1
+    ):
+        return f"{value:.1%}"
+    return "?"
+
+
 def _summary_row(label: str, data: Any, planned: int | None) -> JobRow:
     if not isinstance(data, dict):
         return JobRow(label, "?", "[dim]corrupt summary[/dim]")
@@ -84,7 +115,12 @@ def _summary_row(label: str, data: Any, planned: int | None) -> JobRow:
     # which names a verifier error first even when the trial was scored).
     scoring = data.get("scoring") if isinstance(data.get("scoring"), dict) else {}
     passed = scoring.get("passed", data.get("passed", "?"))
-    text = f"{passed}/{total} ({data.get('score', '?')})"
+    from benchflow._utils.scoring import summary_unscored_note
+
+    # Beside the score, what it does with unscored trials.
+    note = summary_unscored_note(data)
+    note = f"; {note}" if note else ""
+    text = f"{_count(passed)}/{_count(total)} ({_score(data.get('score'))}{note})"
     settings = scoring.get("settings") if isinstance(scoring, dict) else None
     if (isinstance(settings, dict) and settings.get("mixed")) or isinstance(
         data.get("restarted_after_change"), dict
@@ -92,7 +128,7 @@ def _summary_row(label: str, data: Any, planned: int | None) -> JobRow:
         text += " [yellow]mixed settings[/yellow]"
     # summary.json's own plan, else evaluation.json's.
     planned = data.get("planned", planned)
-    tasks = str(total)
+    tasks = _count(total)
     if isinstance(planned, int) and isinstance(total, int) and planned > total:
         # A budget or usage-limit stop: score is over what ran; the plan's
         # figure goes beside it.
@@ -103,20 +139,23 @@ def _summary_row(label: str, data: Any, planned: int | None) -> JobRow:
         if data.get("stopped") is True:
             # A partial summary, written when the run was stopped (DFR-p3-11).
             left = (
-                f"stopped: {data.get('interrupted', 0)} interrupted, "
-                f"{data.get('not_started', 0)} not started"
+                f"stopped: {_count(data.get('interrupted', 0))} interrupted, "
+                f"{_count(data.get('not_started', 0))} not started"
             )
         text = (
-            f"{passed}/{total} run ({data.get('score', '?')}), {passed}/{planned} "
+            f"{_count(passed)}/{_count(total)} run "
+            f"({_score(data.get('score'))}{note}), "
+            f"{_count(passed)}/{_count(planned)} "
             f"({of_plan:.1%}) of the plan; {left}"
         )
-        tasks = str(planned)
+        tasks = _count(planned)
     memory = data.get("memory_score")
     return JobRow(
         label,
         tasks,
         text,
         memory if isinstance(memory, int | float) else None,
+        unscored_note=bool(note),
     )
 
 

@@ -26,6 +26,13 @@ from tests.test_native_provider_provenance import native, response, transport
 from tests.test_r5_release_contract import observe, prime
 from tests.test_verifier_own_failures import _assess, _task
 
+# These tests check what a judge reaches, not its deadlines. With native()'s
+# 1 s default a session on a loaded VM (a cold worker's first judge session
+# takes ~0.6 s alone) ran out after the read: attempt 2 then began, the
+# fake provider answered it as the second call, and the 'file' citation was
+# never checked.
+BUDGET = "60s"
+
 
 def reference_response(channel, path, *, score=1, quote="print(42)"):
     value = response()
@@ -90,7 +97,7 @@ REFERENCE_CASES = [
 async def test_provider_reference_failure_is_saved_sanitized(
     tmp_path, monkeypatch, prior, channel, path, lookup_limit
 ):
-    sandbox, verifier = native(tmp_path, monkeypatch, prior)
+    sandbox, verifier = native(tmp_path, monkeypatch, prior, timeout=BUDGET)
     reached = trace_references(monkeypatch)
     calls, lookups = [], []
     original = rw.ReachablePath.stat
@@ -131,7 +138,7 @@ async def test_provider_reference_failure_is_saved_sanitized(
 async def test_valid_native_references_keep_numeric_results(
     tmp_path, monkeypatch, prior, channel, score
 ):
-    sandbox, verifier = native(tmp_path, monkeypatch, prior)
+    sandbox, verifier = native(tmp_path, monkeypatch, prior, timeout=BUDGET)
     reached = trace_references(monkeypatch)
     calls = []
     path = "/judge/instruction.md" if channel == "view" else "/app/main.py"
@@ -173,7 +180,7 @@ async def test_valid_native_references_keep_numeric_results(
 async def test_reference_source_denial_and_private_view_failure_stay_distinct(
     tmp_path, monkeypatch, prior, channel, private_view
 ):
-    sandbox, verifier = native(tmp_path, monkeypatch, prior)
+    sandbox, verifier = native(tmp_path, monkeypatch, prior, timeout=BUDGET)
     calls, reads = [], []
     path = "/judge/instruction.md" if private_view else "/app/main.py"
     original = rw.ReachablePath.read_bytes
@@ -201,7 +208,7 @@ async def test_reference_source_denial_and_private_view_failure_stay_distinct(
 
 async def judge_environment(tmp_path, monkeypatch, kind, prior):
     if kind == "native":
-        sandbox, verifier = native(tmp_path, monkeypatch, False)
+        sandbox, verifier = native(tmp_path, monkeypatch, False, timeout=BUDGET)
     else:
         from tests.test_taskmd_verify import _Sandbox
         from tests.test_verifier_strategies import _AGENT_JUDGE_VERIFIER_MD

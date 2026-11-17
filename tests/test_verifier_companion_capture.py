@@ -73,7 +73,10 @@ async def test_canonical_recovery_never_accepts_a_higher_partial_reward(
         assert rewards is None and "fixture companion transport" in error
         assert "DownloadVerifierDirError" in error and not warnings
     elif failure == "absent":
-        assert rewards == {"reward": 1.0} and error is None and not warnings
+        # This fake cannot answer the verifier uid read: the reward's
+        # provenance warning is not what this test counts.
+        others = [w for w in warnings if not w.startswith("Reward provenance")]
+        assert rewards == {"reward": 1.0} and error is None and not others
     else:
         # An unsafe or unreadable companion is no usable reward: the verifier's
         # error, never a higher partial reward.
@@ -169,7 +172,10 @@ async def test_daytona_capture_preserves_unsafe_or_absent_companions(
     else:
         assert saved["rewards"] == {"reward": 1.0}
         assert saved["verifier_error"] is None
-        assert not warnings
+        # This fake cannot answer the verifier uid read, so the reward's
+        # provenance is unverifiable (test_reward_provenance_*): its
+        # warning is not what this test counts.
+        assert not [w for w in warnings if not w.startswith("Reward provenance")]
     if not recovery:
         assert fs.batch_calls == 1
         assert "/logs/verifier/reward.txt" in fs.calls

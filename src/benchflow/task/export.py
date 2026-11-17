@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 
 import tomli_w
 
+from benchflow.task._document_parse import CONVERTED_FROM_KEY
 from benchflow.task.config import (
     convert_legacy_environment_keys,
     convert_native_keys_to_legacy_environment,
@@ -354,6 +355,9 @@ def _detect_losses(package: TaskPackage) -> list[CompatibilityExportLoss]:
             )
         for key in sorted(document.benchflow):
             if key == "compat" and _compat_extra(document):
+                continue
+            if key == CONVERTED_FROM_KEY:
+                # Exporting a converted task gives back the format it came from.
                 continue
             losses.append(
                 CompatibilityExportLoss(

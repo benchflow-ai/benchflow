@@ -103,9 +103,12 @@ def test_a_host_export_the_agent_never_gets_is_not_its_setting(tmp_path, monkeyp
     assert (cap["value"], cap["source"]) == ("128000", "benchflow_default")
 
 
+_BEDROCK_OPUS = "aws-bedrock/us.anthropic.claude-opus-4-8"
+
+
 def test_an_inherited_setting_names_the_host_or_the_dotenv(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCHFLOW_BEDROCK_THINKING_EFFORT", "medium")
-    card, lines = _card(tmp_path)
+    card, lines = _card(tmp_path, model=_BEDROCK_OPUS)
     effort = _setting(card, "BENCHFLOW_BEDROCK_THINKING_EFFORT")
     assert effort is not None
     assert (effort["value"], effort["source"]) == ("medium", "host_env")
@@ -116,10 +119,21 @@ def test_an_inherited_setting_names_the_host_or_the_dotenv(tmp_path, monkeypatch
     dotenv = tmp_path / ".env"
     dotenv.write_text("BENCHFLOW_BEDROCK_THINKING_EFFORT=low\n")
     monkeypatch.setenv("BENCHFLOW_DOTENV_PATH", str(dotenv))
-    card, _lines = _card(tmp_path / "again")
+    card, _lines = _card(tmp_path / "again", model=_BEDROCK_OPUS)
     effort = _setting(card, "BENCHFLOW_BEDROCK_THINKING_EFFORT")
     assert effort is not None
     assert (effort["value"], effort["source"]) == ("low", "dotenv")
+
+
+def test_a_bedrock_effort_no_route_reads_is_no_setting(tmp_path, monkeypatch):
+    """R383 N2: only a Bedrock Claude route reads it, so off one a value
+    from the shell or .env is not listed as the run's setting."""
+    monkeypatch.setenv("BENCHFLOW_BEDROCK_THINKING_EFFORT", "low")
+    card, lines = _card(
+        tmp_path, model="anthropic/claude-opus-5-5", reasoning_effort="max"
+    )
+    assert _setting(card, "BENCHFLOW_BEDROCK_THINKING_EFFORT") is None
+    assert "BENCHFLOW_BEDROCK_THINKING_EFFORT" not in "\n".join(lines)
 
 
 def test_a_bedrock_claude_model_shows_the_proxy_s_default_effort(tmp_path):

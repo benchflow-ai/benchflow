@@ -674,14 +674,18 @@ def test_a_dry_run_the_reference_would_refuse_exits_1(tmp_path):
     (tasks / "run-reference.toml").write_text(DRUG_TARGET + "strict = true\n")
     argv = ["run", str(tasks), "--agent", "claude-agent-acp", "--sandbox", "docker"]
     argv += ["--jobs-dir", str(tmp_path / "jobs"), "--dry-run"]
-    result = CliRunner().invoke(app, argv)
+    # The dry run resolves the agent's env as each trial does.
+    keys = {"ANTHROPIC_API_KEY": "fake-not-a-key"}
+    result = CliRunner().invoke(app, argv, env=keys)
     assert result.exit_code == 1, result.output
     plan = json.loads(
         result.output[result.output.index("{") : result.output.rindex("}") + 1]
     )
     assert "differs from the setup" in plan["run_card_refusal"]
     assert "--accept-deviations" in result.output
-    accepted = CliRunner().invoke(app, [*argv, "--accept-deviations", "a test"])
+    accepted = CliRunner().invoke(
+        app, [*argv, "--accept-deviations", "a test"], env=keys
+    )
     assert accepted.exit_code == 0, accepted.output
 
 

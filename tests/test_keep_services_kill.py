@@ -325,7 +325,9 @@ async def test_the_kill_before_grading_keeps_named_listeners(tmp_path):
     from benchflow._utils import kill_record
 
     with kill_record.recording_into(record):
-        await harden_before_verify(_env_on(proc), task, "agent", workspace="/app")
+        await harden_before_verify(
+            _env_on(proc), task, "agent", workspace="/app", integrity="strict"
+        )
 
     live = proc.live_pids()
     assert str(v4) in live and str(v6) in live
@@ -397,7 +399,11 @@ async def test_a_listener_outside_no_new_privs_is_not_kept_where_files_go_back(
 
     with kill_record.recording_into(record):
         await harden_before_verify(
-            env, _task([{"port": 5000}, {"port": 8080}]), "agent", workspace="/app"
+            env,
+            _task([{"port": 5000}, {"port": 8080}]),
+            "agent",
+            workspace="/app",
+            integrity="strict",
         )
 
     live = proc.live_pids()
@@ -423,7 +429,11 @@ async def test_root_that_cannot_read_fd_links_still_keeps(tmp_path):
     proc.hold(pid, proc.listen(5000), ptrace_only=True)
     other = proc.add(_LIVE)
     await harden_before_verify(
-        _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+        _env_on(proc),
+        _task([{"port": 5000}]),
+        "agent",
+        workspace="/app",
+        integrity="strict",
     )
     assert str(pid) in proc.live_pids()
     assert str(other) not in proc.live_pids()
@@ -441,7 +451,9 @@ async def test_a_named_port_with_no_listener_keeps_nothing_and_waits(tmp_path):
     from benchflow._utils import kill_record
 
     with kill_record.recording_into(record):
-        await harden_before_verify(_env_on(proc), task, "agent", workspace="/app")
+        await harden_before_verify(
+            _env_on(proc), task, "agent", workspace="/app", integrity="strict"
+        )
     assert proc.live_pids() == [] or str(pid) not in proc.live_pids()
     assert record["kept_services"] == []
     assert record["kept_services_no_listener"] == [5000]
@@ -456,7 +468,9 @@ async def test_a_task_without_the_key_kills_its_listeners(tmp_path):
     proc.hold(pid, proc.listen(5000))
     task = _task([])
     task.config.metadata = {}
-    await harden_before_verify(_env_on(proc), task, "agent", workspace="/app")
+    await harden_before_verify(
+        _env_on(proc), task, "agent", workspace="/app", integrity="strict"
+    )
     assert str(pid) not in proc.live_pids()
 
 
@@ -489,7 +503,11 @@ async def test_the_turn_end_kill_keeps_named_listeners_frozen_for_the_capture(
     rollout = SimpleNamespace(
         _branch_child_active=False,
         _review_plan=object(),
-        _config=SimpleNamespace(purpose="task", sandbox_user="agent"),
+        # The turn-end kill is strict's; off and audit kill after grading
+        # .
+        _config=SimpleNamespace(
+            purpose="task", sandbox_user="agent", integrity="strict"
+        ),
         _env=proc,
         _agent_env={},
         _planes=DefaultRolloutPlanes(),
@@ -521,7 +539,9 @@ async def test_kept_services_go_on_only_with_the_tests_closed(tmp_path):
     proc.hold(pid, proc.listen(5000))
     proc.place(pid)
     env = _env_on(proc)
-    await harden_before_verify(env, _task([{"port": 5000}]), "agent", workspace="/app")
+    await harden_before_verify(
+        env, _task([{"port": 5000}]), "agent", workspace="/app", integrity="strict"
+    )
     assert proc.stopped(pid)
     from benchflow.sandbox.lockdown import release_kept_services
 
@@ -548,7 +568,9 @@ async def test_hardening_closes_logs_and_the_workspace_while_keeping(tmp_path):
     pid = proc.add(_LIVE)
     proc.hold(pid, proc.listen(5000))
     env = _env_on(proc)
-    await harden_before_verify(env, _task([{"port": 5000}]), "agent", workspace="/app")
+    await harden_before_verify(
+        env, _task([{"port": 5000}]), "agent", workspace="/app", integrity="strict"
+    )
     cmds = [c.args[0] for c in env.exec.call_args_list]
     assert any("chmod 700 /logs" in c and "chmod 755 /logs/verifier" in c for c in cmds)
     # K2-R2-B-2: what is in /logs/agent and /logs/artifacts becomes root's.
@@ -585,7 +607,7 @@ async def test_without_kept_ports_the_kill_is_k1s_byte_for_byte(tmp_path):
     env = _make_env(side_effect=_manifest_env(_blank_manifest()))
     task = _task([])
     task.config.metadata = {}
-    await harden_before_verify(env, task, "agent", workspace="/app")
+    await harden_before_verify(env, task, "agent", workspace="/app", integrity="strict")
     first = inner_command(env.exec.call_args_list[0].args[0])
     # No PATH prefix of its own any more: the exec route's PATH.
     assert first == golden.rstrip("\n")
@@ -755,7 +777,11 @@ async def test_the_kept_line_is_not_read_from_the_command_line(tmp_path):
 
     with kill_record.recording_into(record):
         await harden_before_verify(
-            _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+            _env_on(proc),
+            _task([{"port": 5000}]),
+            "agent",
+            workspace="/app",
+            integrity="strict",
         )
     assert [r["pid"] for r in record["kept_services"]] == [pid]
     assert record["kept_services"][0]["command"].startswith(r"server.py \nBF")
@@ -835,7 +861,9 @@ async def test_a_dropped_zombie_is_gone_unless_a_thread_lives(
         )
         assert out.released == 1 and not proc.stopped(clean)
     else:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(
+            RuntimeError, match=r"Cannot hold the kept services in a frozen cgroup"
+        ):
             await release_kept_services(
                 _Async(proc), "agent", (clean, held), (), logs_dir=str(logs)
             )
@@ -956,7 +984,11 @@ async def test_with_nothing_else_left_the_kept_get_no_sigcont(tmp_path):
     pid = proc.add(_LIVE, cmdline="python3 app.py")
     proc.hold(pid, proc.listen(5000))
     await harden_before_verify(
-        _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+        _env_on(proc),
+        _task([{"port": 5000}]),
+        "agent",
+        workspace="/app",
+        integrity="strict",
     )
     signals = proc.signalled()
     assert f"CONT {pid}" not in signals and "CONT -1" not in signals, signals
@@ -1000,7 +1032,11 @@ async def test_a_kept_jobs_shell_and_session_die_before_the_grace(tmp_path):
 
     with kill_record.recording_into(record):
         await harden_before_verify(
-            _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+            _env_on(proc),
+            _task([{"port": 5000}]),
+            "agent",
+            workspace="/app",
+            integrity="strict",
         )
     assert [r["pid"] for r in record["kept_services"]] == [kept]
     live = proc.live_pids()
@@ -1050,7 +1086,11 @@ async def test_a_kept_process_with_no_parent_to_lose_stays_frozen(tmp_path):
     sleeper = proc.add(_LIVE, cmdline="sleep 1000")
     proc.pgrp(sleeper, sleeper)
     await harden_before_verify(
-        _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+        _env_on(proc),
+        _task([{"port": 5000}]),
+        "agent",
+        workspace="/app",
+        integrity="strict",
     )
     live = proc.live_pids()
     assert str(master) in live and proc.stopped(master)
@@ -1105,7 +1145,11 @@ async def test_a_launcher_above_a_kept_process_gets_sigkill_not_sigterm(tmp_path
     other = proc.add(_LIVE, cmdline="sleep 1000")
     proc.pgrp(other, other)
     await harden_before_verify(
-        _env_on(proc), _task([{"port": 5000}]), "agent", workspace="/app"
+        _env_on(proc),
+        _task([{"port": 5000}]),
+        "agent",
+        workspace="/app",
+        integrity="strict",
     )
     signals = proc.signalled()
     for pid in (launcher, shell):
@@ -1250,7 +1294,9 @@ async def test_after_grading_every_agent_process_dies_before_the_folders_reopen(
         calls.append(cmd)
         return SimpleNamespace(stdout="", stderr="writers remain", exit_code=1)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError, match=r"quiescence check exited with rc=1\nstderr: writers remain"
+    ):
         await end_kept_services(
             SimpleNamespace(exec=receipt_aware(fail)),
             "agent",

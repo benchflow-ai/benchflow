@@ -94,6 +94,10 @@ async def test_single_client_timeout_does_not_require_posix_signals(monkeypatch)
 @pytest.mark.parametrize(
     "pid",
     [None, False, True, -1, 0, 1, 1.0, "12", os.getpgrp() if os.name == "posix" else 0],
+    # Named, not derived from the values: the last is this run's own process
+    # group, a number that differs on every run, and junit comparisons between
+    # runs match tests by node id.
+    ids=["None", "False", "True", "-1", "0", "1", "1.0", "12", "own-pgrp"],
 )
 async def test_group_cleanup_refuses_non_child_process_identities(monkeypatch, pid):
     """Guards 6525eea1: an invalid PID must never become a broadcast signal."""

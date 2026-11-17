@@ -11,6 +11,7 @@ from benchflow.errors import MissingCredentialError
 from benchflow.task.plan_validation import validate_task_plan
 from tests.test_check_run_plan import _task
 from tests.test_connect_as_env import TestConnectAsEnvMerge as _ConnectAsFixtures
+from tests.test_en374_login_by_contents import login_file_text
 
 FAMILIES = (
     ("claude", "claude-sonnet-4-6", "anthropic", "https://api.anthropic.com"),
@@ -50,7 +51,7 @@ def host_logins(tmp_path, monkeypatch):
     for folder, filename in ((".claude", ".credentials.json"), (".codex", "auth.json")):
         directory = tmp_path / folder
         directory.mkdir()
-        (directory / filename).write_text('{"dummy_account":"unrelated-B"}')
+        (directory / filename).write_text(login_file_text(filename, "unrelated-B"))
 
 
 def _model(family, qualified):

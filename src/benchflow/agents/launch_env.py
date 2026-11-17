@@ -50,7 +50,12 @@ from benchflow.agents.env import (
     uses_native_subscription_auth,
     uses_native_vertex_login,
 )
-from benchflow.agents.registry import AGENTS, launcher_guard_env, routed_model
+from benchflow.agents.registry import (
+    AGENTS,
+    launcher_guard_env,
+    pinned_catalog_env,
+    routed_model,
+)
 
 # Inherited or derived names that never hold a credential. Every other name
 # the resolver can inherit counts as a credential, so a name added to the
@@ -365,4 +370,7 @@ def agent_launch_env(
     # explicit empty writer guards even when credential filtering removed
     # the corresponding slot, or Codex's launch producer removed stale TOML.
     launch.update(launcher_guard_env(agent, launch))
+    # OpenCode reads the model catalog its install wrote and no other
+    # (agents/opencode_catalog), whatever the run's env says.
+    launch.update(pinned_catalog_env(agent))
     return launch

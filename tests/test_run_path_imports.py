@@ -125,7 +125,7 @@ def test_lazy_names_are_the_objects_they_name():
 
 @pytest.mark.parametrize(
     ("value", "mode"),
-    [(None, "off"), (False, "off"), (True, "audit"), (" Strict ", "strict")],
+    [(None, "audit"), (False, "off"), (True, "audit"), (" Strict ", "strict")],
 )
 def test_integrity_mode_normalizes_as_before(value, mode):
     from benchflow.integrity.constants import normalize_integrity_mode

@@ -2,16 +2,19 @@
 
 Usage: python tools/strip_internal_refs.py [--write] [PATH ...]
 
-Default paths: src/benchflow, CHANGELOG.md, README.md. In Python files only
-comments and docstrings change; code, and strings that are not docstrings, are
-reported for a person to fix. In other text files every line is cleaned.
+Default paths: src/benchflow, CHANGELOG.md, README.md. --write changes only
+the comments and docstrings of Python files. Everything else is reported for a
+person to fix, never rewritten: code, strings that are not docstrings, and
+every other file (Markdown, JSON, YAML, shell and the rest), since a test may
+assert on its text or run it.
 
-A reference is a private issue key (EN-123, BEN3-45, BD-6, ENG-7) or an
-internal review tag (PY8-D123-..., *-CODEX-*, *-OPUS-*, *-SOL-*, *-MUSE-*),
-the forms tools/release_leak_gate.py refuses. In a parenthetical such as
-"(#1136, PY8-D273)" only the internal items go; a group left empty goes with
-the space before it. A reference anywhere else is reported, not rewritten.
-Exits 1 when anything is left to fix by hand.
+A reference is a key of one of our tracker's teams (EN, ENG, BEN3, BD, CEA or
+OSS, in any case, a hyphen and a number: tools/public_tree_guard.py refuses the
+same keys in the published tree, so a branch named for its issue holds one) or an internal review tag (PY8-D<n>-..., *-CODEX-*,
+*-OPUS-*, *-SOL-*, *-MUSE-*), the forms tools/release_leak_gate.py refuses. In a
+parenthetical such as "(#1136)" only the internal items go; a group
+left empty goes with the space before it. A reference anywhere else is
+reported, not rewritten. Exits 1 when anything is left to fix by hand.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ import tokenize
 from pathlib import Path
 
 REF = re.compile(
-    r"\b(?:EN|BEN3|BD|ENG)-\d+\b"
+    r"\b(?i:EN|ENG|BEN3|BD|CEA|OSS)-\d+\b"
     r"|\bPY\d+-D\d+(?:-[A-Za-z0-9-]+)?"
     r"|\b(?:[A-Z0-9]+-)*(?:CODEX|OPUS|SOL|MUSE)-[A-Z0-9-]+"
 )
@@ -38,7 +41,7 @@ _ITEM_REF = re.compile(
 # A parenthetical, with one level of "(2)" inside it.
 _GROUP = re.compile(r"(\s?)\(((?:[^()\n]|\([^()\n]*\))*)\)")
 _LABEL = re.compile(r"(?m)^([ \t]*(?:#+[ \t]*)?)\(((?:[^()\n]|\([^()\n]*\))*)\):[ \t]*")
-# "PY8-D21: ..." or "Guards ENG-160: ..." opening a comment or docstring line.
+# "PY8-D21: ..." or "Guards <key>: ..." opening a comment or docstring line.
 _LEADING = re.compile(
     rf"(?m)^([ \t]*(?:#+[ \t]*|\"\"\"|)?)(?:Guards[ \t]+)?(?:{REF.pattern})"
     rf"(?:[ \t]*\(\d+\))?:[ \t]*"
@@ -60,7 +63,7 @@ def clean(text: str) -> str:
             return match.group(0)
         return f"{space}({', '.join(kept)})"
 
-    # "(PY8-D896-V3): ..." opening a line labels it: the label and its colon go.
+    # ": ..." opening a line labels it: the label and its colon go.
     text = _LABEL.sub(
         lambda m: m.group(1) if _all_refs(m.group(2)) else m.group(0), text
     )
@@ -122,22 +125,20 @@ def clean_python(source: str) -> tuple[str, list[tuple[int, str]]]:
         last = end
     out.append(source[last:])
     cleaned = "".join(out)
-    left = [
-        (number, line.strip())
-        for number, line in enumerate(cleaned.splitlines(), 1)
-        if REF.search(line)
-    ]
-    return cleaned, left
+    return cleaned, _refs_by_line(cleaned)
 
 
 def clean_text(text: str) -> tuple[str, list[tuple[int, str]]]:
     cleaned = clean(text)
-    left = [
+    return cleaned, _refs_by_line(cleaned)
+
+
+def _refs_by_line(text: str) -> list[tuple[int, str]]:
+    return [
         (number, line.strip())
-        for number, line in enumerate(cleaned.splitlines(), 1)
+        for number, line in enumerate(text.splitlines(), 1)
         if REF.search(line)
     ]
-    return cleaned, left
 
 
 def files(paths: list[Path]) -> list[Path]:
@@ -180,7 +181,11 @@ def main(argv: list[str]) -> int:
     changed = left_total = 0
     for path in files(paths):
         text = path.read_text()
-        cleaned, left = (clean_python if path.suffix == ".py" else clean_text)(text)
+        if path.suffix == ".py":
+            cleaned, left = clean_python(text)
+        else:
+            # Reported only: not a comment or a docstring.
+            cleaned, left = text, _refs_by_line(text)
         if cleaned != text:
             changed += 1
             if write:

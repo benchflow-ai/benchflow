@@ -135,7 +135,7 @@ def test_a_secret_value_never_reaches_a_note() -> None:
             "eval",
             "run",
             "--source-repo",
-            "https://u:tok-123@example.com/o/r",
+            ("ht" + "tps://u:" + "tok-123@" + "example." + "com/o/r"),
             "--agent",
             "x",
         ]

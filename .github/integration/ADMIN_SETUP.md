@@ -15,7 +15,7 @@ UI / API. Workflows:
 
 On the protected `main` branch, mark these checks **required**:
 
-- `test` (L0 unit/lint/type lane). It is one job in `test.yml` that passes only when every `unit (<python>)` leg passed, so the per-Python checks need not be required one by one, and adding a Python to the matrix needs no protection change.
+- `test` (L0 unit/lint/type lane). It is one job in `test.yml` that passes only when every `unit (<python>, <shard>/4)` leg passed, so the per-Python, per-shard checks need not be required one by one, and adding a Python or a shard to the matrix needs no protection change. `unit (3.13, ubuntu-latest)` is an early look at the next runner image and is never required: it runs with `continue-on-error`, and the `test` job does not need it.
 - L1 job check from `integration-light` — the `detect-scope` + `rollout-smoke`
   jobs. Because `detect-scope` reports a **green no-op** (`should_run=false`)
   when a diff needs no rollout, this check can be required **unconditionally**

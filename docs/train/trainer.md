@@ -218,5 +218,5 @@ The step trained on 50 tokens: the 29 of the tool call and the 19 of the reply, 
 BenchFlow 0.9.2 has no adapter for other trainers. 0.10.0rc2's `bench train convert` also writes `verl-sft` (parquet for verl's multi-turn SFT trainer), `skyrl-sft` (rows for SkyRL's SFT trainer) and `openenv-episodes` (OpenEnv episode records). On 0.9.2, connect one through the files:
 
 - `bench train convert --format trl-sft` writes rows TRL's SFT trainer reads; `prime-sft` is the default.
-- Each trial's `trainer/verifiers.jsonl` holds one verifiers-style row: prompt, completion, reward.
+- Each trial's `trainer/verifiers.jsonl` holds one verifiers-style row: prompt, completion, reward. A trial the verifier never scored has `reward: null` and `is_completed: false`: skip it, never count it as 0 (`bench train convert` skips it).
 - The stream above is plain JSON lines with a published schema, for a trainer of your own.

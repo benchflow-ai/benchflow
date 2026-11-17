@@ -907,3 +907,230 @@ def test_the_verbs_run_on_a_typer_with_its_own_click(tmp_path, monkeypatch) -> N
         result = _bench(*args)
         assert result.exit_code == 2, (args, result.output, result.exception)
         assert step in _flat(result.output), (args, result.output)
+
+
+# --- review of PR #145, 2026-11-13: the note never echoes a credential --------
+
+# Made up: a key under a key's name, and one shaped like a key.
+_MADE_UP_KEY = "tuesday-made-up-7Q2w"
+_MADE_UP_SK = "sk-" + "a1B2c3D4" * 4
+
+
+def _stdio(*args: str) -> dict:
+    return {"name": "gh", "transport": "stdio", "command": "npx", "args": [*args]}
+
+
+_SECRET_OVERRIDES = {
+    "secret-named-key": (
+        {"metadata": {"api_key": _MADE_UP_KEY}, "agent": {"timeout_sec": 120}},
+        _MADE_UP_KEY,
+    ),
+    "secret-shaped-value": (
+        {"metadata": {"note": _MADE_UP_SK}, "agent": {"timeout_sec": 120}},
+        _MADE_UP_SK,
+    ),
+    "after-api-key-in-mcp-args": (
+        {"sandbox": {"mcp_servers": [_stdio("--api-key", _MADE_UP_KEY, "-y")]}},
+        _MADE_UP_KEY,
+    ),
+}
+
+
+def _flag_value(line: str, flag: str) -> str:
+    """The value *flag* has in a printed command *line*, in either form."""
+    words = shlex.split(line)
+    if flag in words:
+        return words[words.index(flag) + 1]
+    return next(w for w in words if w.startswith(f"{flag}=")).split("=", 1)[1]
+
+
+@pytest.mark.parametrize("form", ["space", "equals"])
+@pytest.mark.parametrize("case", sorted(_SECRET_OVERRIDES))
+def test_the_eval_run_note_echoes_no_value_the_config_override_withholds(
+    tmp_path, caplog, case, form
+) -> None:
+    """Review of PR #145, 2026-11-13 (the lead): the note echoed the typed
+    command, --config-override's value whole, so a key in the override
+    reached stderr. It shows the override with <withheld> in place of each
+    value the job's record withholds and the rest as typed: put the key
+    back and the line is the override again."""
+    tasks = tmp_path / "tasks"
+    _task(tasks)
+    overlay, secret = _SECRET_OVERRIDES[case]
+    given = json.dumps(overlay)
+    typed = (
+        ["--config-override", given]
+        if form == "space"
+        else [f"--config-override={given}"]
+    )
+    with caplog.at_level("DEBUG"):
+        result = _bench(
+            "eval", "run", "--tasks-dir", str(tasks), "--agent", "oracle",
+            *typed, "--dry-run",
+        )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert secret not in result.stdout + result.stderr + caplog.text
+    shown = _flag_value(_one_note(result, "run").split(": ", 2)[2], "--config-override")
+    assert "<withheld>" in shown
+    assert json.loads(shown.replace("<withheld>", secret)) == overlay
+
+
+@pytest.mark.parametrize("form", ["space", "equals"])
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--source-env-api-key-var", "ghp_" + "Q7w2E9r4T6y1U3i5" * 2),
+        ("--extra-instruction", f"Call the API with {_MADE_UP_SK}."),
+    ],
+    ids=["secret-named-flag", "secret-shaped-value"],
+)
+def test_the_eval_run_note_hides_a_credential_after_another_flag(
+    tmp_path, form, flag, value
+) -> None:
+    """Review of PR #145, 2026-11-13 (the lead): the note showed what was
+    typed after --source-env-api-key-var, which takes a variable's name, a
+    key typed in its place too, and a key-shaped value under any flag. A
+    flag named like a credential by the override record's rule hides its
+    value unless it is a variable's name, and so does a key-shaped value."""
+    tasks = tmp_path / "tasks"
+    _task(tasks)
+    typed = [flag, value] if form == "space" else [f"{flag}={value}"]
+    result = _bench(
+        "eval", "run", "--tasks-dir", str(tasks), "--agent", "oracle",
+        *typed, "--dry-run",
+    )  # fmt: skip
+    note = _one_note(result, "run")
+    # stdout is the dry run's plan, which holds the run's own prompt.
+    assert value not in result.stderr
+    if flag != "--extra-instruction":
+        assert value not in result.stdout
+    assert _flag_value(note.split(": ", 2)[2], flag) == "<hidden>"
+
+
+def test_a_harmless_eval_run_line_is_echoed_as_typed_and_plans_the_same_run(
+    tmp_path,
+) -> None:
+    """Review of PR #145, 2026-11-13 (the lead): the masking keeps flags and
+    harmless values as typed: an override with nothing withheld, a count
+    flag (--max-tokens) and an env entry a job's record keeps
+    (MY_FLAG=on, which the note used to show as "$MY_FLAG"), so the line
+    plans the run the old one did."""
+    tasks = tmp_path / "tasks"
+    _task(tasks)
+    override = '{"agent":{"timeout_sec":120},"metadata":{"max_tokens":4096}}'
+    result = _bench(
+        "eval", "run", "--tasks-dir", str(tasks), "--agent", "oracle",
+        "--config-override", override, "--max-tokens", "100",
+        "--agent-env", "MY_FLAG=on", "--dry-run",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    line = _one_note(result, "run").split(": ", 2)[2]
+    assert line == (
+        f"bench run {tasks} --agent oracle --config-override {shlex.quote(override)}"
+        " --max-tokens 100 --env MY_FLAG=on --dry-run"
+    )
+    after = _bench(*shlex.split(line)[1:])
+    assert after.exit_code == 0, after.output
+    assert json.loads(after.stdout) == json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("spelling", ["eval-run", "run"])
+def test_an_override_that_does_not_parse_is_not_echoed(tmp_path, spelling) -> None:
+    """Review of PR #145, 2026-11-13 (the lead): an override that does not
+    parse reached stderr twice, whole in the note and its first 80
+    characters in the parse error. The note shows '<hidden>' and the error
+    says where it failed, never what the text was."""
+    tasks = tmp_path / "tasks"
+    _task(tasks)
+    broken = '{"metadata": {"api_key": "' + _MADE_UP_KEY + '"'
+    line = (
+        ["eval", "run", "--tasks-dir", str(tasks)]
+        if spelling == "eval-run"
+        else ["run", str(tasks)]
+    )
+    result = _bench(
+        *line, "--agent", "oracle", "--config-override", broken, "--dry-run"
+    )
+    assert result.exit_code == 2, result.output
+    assert _MADE_UP_KEY not in result.stdout + result.stderr
+    assert "Invalid --config-override: could not parse" in result.stderr
+    if spelling == "eval-run":
+        note = _one_note(result, "run").split(": ", 2)[2]
+        assert _flag_value(note, "--config-override") == "<hidden>"
+
+
+def _eval_run_value_flags() -> list[str]:
+    """The long flags of `bench eval run` that take a value."""
+    import click
+    import typer
+
+    command = typer.main.get_command(app)
+    ctx = click.Context(command)
+    run = command.get_command(ctx, "eval").get_command(ctx, "run")
+    return sorted(
+        name
+        for param in run.params
+        if isinstance(param, click.Option) and not param.is_flag
+        for name in param.opts
+        if name.startswith("--")
+    )
+
+
+def test_every_eval_run_flag_goes_through_the_name_rule_in_its_note() -> None:
+    """The lead's ruling of 2026-11-13 (fifth round): a credential's word
+    beside a companion word names a setting, so --source-env-max-tokens,
+    which the fourth round hid, is shown as typed, as --max-tokens and
+    --token-budget are. Every bench eval run flag that takes a value is
+    walked through the rule: one named like a credential still shows
+    '<hidden>' for a made-up value.
+
+    Changed by the lead's ruling of 2026-11-13 (review of PR #173): `var` as
+    a name's last word, right after the credential word, names a setting.
+    --source-env-api-key-var holds the NAME of the environment variable that
+    carries the key, not the key, so it is shown as typed; this test asserted
+    it was hidden. No bench eval run flag is named like a credential now, so
+    the hidden half is kept alive two ways: a made-up flag that is, and a
+    value shaped like a key typed into the name flag, which is hidden by its
+    shape."""
+    from benchflow._utils.credential_names import name_kind
+    from benchflow.cli import verbs
+
+    def note(flag: str, value: str) -> str:
+        words = ["eval", "run", "--tasks-dir", "t", "--agent", "oracle", flag, value]
+        return verbs.note_for(words) or ""
+
+    flags = _eval_run_value_flags()
+    name_flag = "--source-env-api-key-var"
+    assert name_flag in flags and name_kind(name_flag.lstrip("-")) == "setting"
+    assert f"{name_flag} OPENAI_API_KEY" in note(name_flag, "OPENAI_API_KEY")
+    # A key pasted where the variable's name belongs is not echoed.
+    pasted = "sk-ant-" + "FAKEfake0123456789abcd"
+    assert pasted not in note(name_flag, pasted)
+    assert f"{name_flag} '<hidden>'" in note(name_flag, pasted)
+    credentials = [f for f in flags if name_kind(f.lstrip("-")) == "credential"]
+    for flag in (*credentials, "--made-up-api-key", "--my-secret-token"):
+        assert name_kind(flag.lstrip("-")) == "credential"
+        assert "tuesday7" not in note(flag, "tuesday7"), flag
+        assert f"{flag} '<hidden>'" in note(flag, "tuesday7"), flag
+    for flag in ("--max-tokens", "--token-budget", "--source-env-max-tokens"):
+        assert flag in flags and name_kind(flag.lstrip("-")) == "setting"
+        assert f"{flag} 4096" in note(flag, "4096"), flag
+
+
+def test_an_agent_env_setting_is_shown_and_a_credential_is_not() -> None:
+    """The lead's ruling of 2026-11-13 (PR #145, sixth round): an
+    env entry named like a setting is recorded, so the note shows it as
+    typed (--agent-env MAX_OUTPUT_TOKENS=8192); MS_GRAPH_TOKEN (token with
+    no limit, count or time word) is still shown as a reference."""
+    from benchflow.cli import verbs
+
+    words = [
+        "eval", "run", "--tasks-dir", "t", "--agent", "oracle",
+        "--agent-env", "MAX_OUTPUT_TOKENS=8192",
+        "--agent-env=MS_GRAPH_TOKEN=tuesday-made-up",
+    ]  # fmt: skip
+    note = verbs.note_for(words) or ""
+
+    assert "--env MAX_OUTPUT_TOKENS=8192" in note
+    assert '--env MS_GRAPH_TOKEN="$MS_GRAPH_TOKEN"' in note
+    assert "tuesday-made-up" not in note

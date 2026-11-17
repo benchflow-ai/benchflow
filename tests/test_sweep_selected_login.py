@@ -59,6 +59,10 @@ def bare_host(tmp_path, monkeypatch):
 
 
 def _value(name: str, account: str) -> str:
+    if name == "ANTHROPIC_AUTH_TOKEN":
+        # Its contents decide its route (CRED-4): a login's dummy
+        # there is shaped like a Claude OAuth token.
+        return f"sk-ant-oat01-{account}"
     return json.dumps({"dummy": account}) if name.endswith("_JSON") else account
 
 

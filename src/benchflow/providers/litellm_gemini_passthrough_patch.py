@@ -48,12 +48,29 @@ def _apply_patch() -> None:
         from litellm.types.passthrough_endpoints.pass_through_endpoints import (
             EndpointType,
         )
-    except Exception:
-        return
+    except Exception as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch 'gemini_passthrough': its target moved: {exc}"
+        ) from exc
 
     original = PassThroughStreamingHandler._build_passthrough_logging_result
     if getattr(original, "__benchflow_gemini_passthrough_patch__", False):
         return
+    _require(
+        "gemini_passthrough",
+        original,
+        (
+            "litellm_logging_obj",
+            "passthrough_success_handler_obj",
+            "url_route",
+            "request_body",
+            "endpoint_type",
+            "start_time",
+            "raw_bytes",
+            "end_time",
+            "model",
+        ),
+    )
 
     def build_passthrough_logging_result(
         *,
@@ -111,6 +128,27 @@ def _apply_patch() -> None:
         "_build_passthrough_logging_result",
         staticmethod(build_passthrough_logging_result),
     )
+
+
+def _require(patch: str, target: Any, params: tuple[str, ...]) -> None:
+    """Fail the proxy's start, naming the patch, when LiteLLM moved the
+    target it wraps: a silent no-op would quietly drop what it adds."""
+    import inspect
+
+    try:
+        names = tuple(inspect.signature(target).parameters)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target's signature is "
+            f"unreadable: {exc}"
+        ) from exc
+    missing = [name for name in params if name not in names]
+    if missing:
+        raise RuntimeError(
+            f"BenchFlow LiteLLM patch {patch!r}: its target "
+            f"{getattr(target, '__qualname__', target)} no longer takes "
+            + ", ".join(missing)
+        )
 
 
 _apply_patch()

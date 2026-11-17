@@ -214,9 +214,16 @@ def test_agent_tool_environment(task_image, agent, mode, tmp_path, monkeypatch):
             for line in text.splitlines()
             if line.startswith("credential-mode=")
         }
+        # Every credential file the real CLI left in $HOME is private.
+        assert all(mode.startswith("600:") for mode in credential_modes), text
         if agent == "codex-acp":
-            assert {"600:.codex/auth.json", "600:.codex/config.toml"}.issubset(
-                credential_modes
+            # BenchFlow writes auth.json only. The app-server launcher routes
+            # every Codex thread through global overrides, so no home
+            # config.toml is created (test_codex_home_config,
+            # test_codex_title_thread_guard), and none is left in the image.
+            assert "600:.codex/auth.json" in credential_modes, text
+            assert not any(
+                mode.endswith(":.codex/config.toml") for mode in credential_modes
             ), text
         elif agent == "openhands":
             assert "600:.openhands/agent_settings.json" in credential_modes, text

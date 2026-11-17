@@ -185,7 +185,8 @@ def test_filter_uses_trusted_python_or_runs_unfiltered(tmp_path, trusted_availab
     if not trusted_available:
         # Inject only the absence of the pinned interpreter, not a different
         # PATH program: this is the optional host-filter fallback.
-        command = command.replace("/usr/bin/python3", "/missing/dummy-python3")
+        for python in ("/usr/bin/python3", "/usr/local/bin/python3"):
+            command = command.replace(python, "/missing/dummy-python3")
     done = _run(command, env=env)
     assert done.returncode == 0
     if trusted_available:
@@ -199,7 +200,16 @@ def test_the_filter_is_off_when_the_limit_is(monkeypatch):
     monkeypatch.setenv("BENCHFLOW_ACP_LINE_LIMIT", "0")
     assert filter_command("claude-agent-acp") == "claude-agent-acp"
     monkeypatch.setenv("BENCHFLOW_ACP_LINE_LIMIT", "2048")
-    assert "/usr/bin/python3 -I -S -u -c" in filter_command("claude-agent-acp")
+    assert '"$bf_acp_py" -I -S -u -c' in filter_command("claude-agent-acp")
+
+
+def test_the_filter_tries_the_image_pythons_behind_the_ownership_check():
+    """FP patch 47: python:3.12-slim has python3 in /usr/local/bin only, so
+    the filter tries it after /usr/bin/python3, each only when it and its
+    folders are root's and closed to group and others."""
+    filtered = filter_command("claude-agent-acp")
+    assert "for bf_c in /usr/bin/python3 /usr/local/bin/python3; do" in filtered
+    assert 'if bf_acp_root_only "$bf_c" && "$bf_r" -I -S -c' in filtered
 
 
 async def test_docker_starts_the_agent_through_the_filter(monkeypatch):
@@ -224,10 +234,9 @@ async def test_docker_starts_the_agent_through_the_filter(monkeypatch):
     # isolated absolute interpreter (an earlier role's startup files never
     # load, df6e024f3).
     filtered = filter_command("claude-agent-acp --acp")
-    assert filtered.startswith(
-        "if /usr/bin/python3 -I -S -c 'import json, re, shlex, sys'"
-    )
-    assert "{ claude-agent-acp --acp\n} | /usr/bin/python3 -I -S -u -c" in filtered
+    assert filtered.startswith("bf_acp_root_only() { ")
+    assert "\"$bf_r\" -I -S -c 'import json, re, shlex, sys'" in filtered
+    assert '{ claude-agent-acp --acp\n} | "$bf_acp_py" -I -S -u -c' in filtered
     assert filtered.endswith("else claude-agent-acp --acp\nfi")
     assert command.endswith(f"; exec /bin/bash -c {shlex.quote(filtered)}")
 
@@ -242,9 +251,7 @@ async def test_daytona_pty_starts_the_agent_through_the_filter():
     process = DaytonaPtyProcess(sandbox, "", "docker compose -p t")
     await process.start(command="claude-agent-acp --acp")
     script = sandbox.process.exec.await_args_list[-1].args[0]
-    assert (
-        "/usr/bin/python3 -I -S -u -c" in script and "claude-agent-acp --acp" in script
-    )
+    assert '"$bf_acp_py" -I -S -u -c' in script and "claude-agent-acp --acp" in script
     await process.close()
 
 

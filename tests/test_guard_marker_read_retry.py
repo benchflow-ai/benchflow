@@ -111,14 +111,16 @@ async def test_a_checker_that_runs_pytest_through_a_library_registers_the_guard(
 ):
     """pytest.main in the checker's own process (once, or twice) reads
     PYTEST_ADDOPTS as a pytest command does: the guard loads, registers and
-    leaves its ``registered`` marker, and the reward is scored as written.
+    leaves its end-of-session record, and the reward is scored as written.
     Pins what the sweep's diagnosis of music-harmony assumed was broken."""
     guard, paths, rewards, error, warnings, _ = await _verify(
         tmp_path, monkeypatch, checker=LIBRARY_PYTEST, runs=runs
     )
     assert "passed" in (paths.verifier_dir / "test-stdout.txt").read_text()
     left = [path.name for path in (tmp_path / guard / ".markers").iterdir()]
-    assert [name.rsplit(".", 1)[1] for name in left] == ["registered"]
+    # Each pytest ran to its own cleanup: one end-of-session record each,
+    # the registered markers taken away ((g2)).
+    assert {name.rsplit(".", 1)[1] for name in left} == {"finished"}
     assert (error, rewards, warnings) == (None, {"reward": 1.0}, [])
 
 

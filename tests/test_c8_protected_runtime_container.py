@@ -641,7 +641,16 @@ async def test_a_root_home_the_agent_owns_gets_a_protected_one_for_ssh():
 
     with _fresh() as name:
         sandbox = await _setup(name, workspace="/root")
-        with pytest.raises(RuntimeError):
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                r"^the SSH session starts a root shell that reads root's HOME /root "
+                r"before BenchFlow's first line, and another user can change it, so "
+                r"BenchFlow will not start the agent through it; use the Docker or "
+                r"Daytona PTY transport, or keep root's HOME and /etc profile files "
+                r"out of the workspace$"
+            ),
+        ):
             await require_protected_root_terminal(sandbox, "the SSH session")
         await protect_root_terminal_home(sandbox, "the SSH session")
         home = _dx(name, "getent passwd root | cut -d: -f6").stdout.strip()

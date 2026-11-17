@@ -169,7 +169,10 @@ def copy_tree(
     folder) is made again as a relative link. Refused (raises
     :class:`StagingRefused` naming every one): a link whose target leaves
     *source* (unless *allow_outside*: then it is made again pointing at
-    that target), and a FIFO, socket or device. Modes and times are kept.
+    that target), and a FIFO, socket or device. Times are kept, and modes
+    but for group and other write: git records only 644 and 755, and the
+    task digest no modes, so the copy of a checkout made under umask 002 is
+    the same as under 022 (a loader seal refused a group-writable file).
     """
     real = os.path.realpath(source)
     refused: list[TaskEnvRequest] = []
@@ -195,7 +198,7 @@ def copy_tree(
                     walk(child, rel)
                 finally:
                     os.close(child)
-                os.chmod(target, stat.S_IMODE(info.st_mode) | 0o700)
+                os.chmod(target, (stat.S_IMODE(info.st_mode) | 0o700) & ~0o022)
                 os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
             elif stat.S_ISREG(info.st_mode):
                 if _copy_data is None:
@@ -235,10 +238,15 @@ def copy_tree(
 
     # Pin every component of the root as well, starting at /. A single
     # absolute open would leave the root's ancestors open to substitution.
-    directory = _open_directory(os.sep)
+    # An ancestor is only passed through, so it needs search permission
+    # alone (a task below a root-owned 0711 folder, benchflow#1237); the
+    # root is opened to be listed.
+    parts = Path(real).parts[1:]
+    directory = _open_ancestor(os.sep) if parts else _open_directory(os.sep)
     try:
-        for component in Path(real).parts[1:]:
-            child = _open_directory(component, directory)
+        for index, component in enumerate(parts, 1):
+            opener = _open_directory if index == len(parts) else _open_ancestor
+            child = opener(component, directory)
             os.close(directory)
             directory = child
         walk(directory, "")
@@ -257,6 +265,25 @@ def _open_directory(path: str, parent: int | None = None) -> int:
     return os.open(
         path,
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent,
+    )
+
+
+def _open_ancestor(path: str, parent: int | None = None) -> int:
+    """A folder above a copied one, pinned for the next open below it.
+
+    With ``O_PATH`` (Linux) the open needs search permission alone, as
+    passing through the folder does; its descriptor serves only as the
+    ``dir_fd`` of that next open. Like :func:`_open_directory` it refuses a
+    link (``ENOTDIR``) and a missing folder. Without ``O_PATH`` (macOS) the
+    folder is opened to be read, as before.
+    """
+    return os.open(
+        path,
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | os.O_CLOEXEC,
         dir_fd=parent,
     )
 
@@ -288,7 +315,7 @@ def _copy_file(
                 _copy_file_data(fd, out)
             else:
                 copy_data(fd, out, opened)
-            os.fchmod(out, stat.S_IMODE(opened.st_mode) | 0o600)
+            os.fchmod(out, (stat.S_IMODE(opened.st_mode) | 0o600) & ~0o022)
             os.utime(out, ns=(info.st_atime_ns, info.st_mtime_ns))
         finally:
             os.close(out)

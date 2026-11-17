@@ -6,6 +6,7 @@ import contextlib
 import errno
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1454,16 +1455,37 @@ def _can_unshare_net() -> list[str] | None:
 
 @pytest.mark.skipif(
     _can_unshare_net() is None,
-    reason="needs a network namespace (root or user namespaces)",
+    reason=(
+        "cannot create a network namespace here: needs root (unshare --net) or "
+        "unprivileged user namespaces (unshare -rn), which a host can refuse "
+        "(on Ubuntu 24.04, kernel.apparmor_restrict_unprivileged_userns=1; "
+        "elsewhere user.max_user_namespaces=0 or no unshare)"
+    ),
 )
 def test_a_caller_in_another_network_namespace_runs_cold(tmp_path):
     """Guards PERF-F-r3-B-M1: a caller with no network (its own
-    namespace) never gets a worker in the runtime's."""
+    namespace) never gets a worker in the runtime's.
+
+    As root the caller differs in its network namespace alone. Without root it
+    gets one inside a user namespace of its own (``unshare -rn``), where it is
+    uid 0 with that namespace's capabilities, gids and groups: the call reports
+    those from inside, they differ too, and the reasons list every attribute
+    that differs, alphabetically: namespaces is no longer the first
+    (on Debian 12, where unprivileged user namespaces are allowed)."""
     wrap = _can_unshare_net()
     with _runtime(tmp_path) as env:
         accepted, log = _attach_counted(tmp_path, env, wrap=wrap)
         assert accepted == 0
-        assert "process attributes: namespaces (" in log and "net" in log
+        found = re.search(
+            r"process attributes: (?:[^\n]*; )?namespaces \(([^)]*)\)", log
+        )
+        assert found is not None, log
+        namespaces = found[1].split(", ")
+        assert "net" in namespaces, log
+        if wrap == ["unshare", "--net"]:
+            assert "process attributes: namespaces (net)" in log, log
+        else:
+            assert "user" in namespaces, log
 
 
 @pytest.mark.skipif(

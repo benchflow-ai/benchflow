@@ -818,7 +818,9 @@ async def test_environment_start_obeys_scaled_build_phase_budget(project) -> Non
     then = time.monotonic()
     # By behaviour first: at db8fd328a the 100 ms start ran to its end.
     try:
-        await _start_env_and_upload(env, task, {}, upload_task_files=False)
+        await _start_env_and_upload(
+            env, task, {}, task=None, agent=None, upload_task_files=False
+        )
     except Exception as exc:
         stopped = exc
     else:
@@ -837,7 +839,9 @@ async def test_environment_start_obeys_scaled_build_phase_budget(project) -> Non
 
     # No build multiplier in the overlay: no bound of its own (as before).
     free = SimpleNamespace(start=start, task_env_config=TaskConfig().sandbox)
-    await _start_env_and_upload(free, task, {}, upload_task_files=False)
+    await _start_env_and_upload(
+        free, task, {}, task=None, agent=None, upload_task_files=False
+    )
 
 
 def test_a_job_configs_start_is_bounded_by_its_build_budget(project) -> None:
@@ -962,3 +966,133 @@ def test_the_same_agent_twice_must_share_one_cap(project, ran) -> None:
     )
     assert _bench("run", "--config", str(unset), "--dry-run").exit_code == 2
     assert ran == []
+
+
+@pytest.mark.parametrize("form", ["space", "equals"])
+def test_a_stopped_matrix_line_holds_no_override_value(project, monkeypatch, form):
+    """PR #145 (sixth-round review): the line a stopped matrix
+    prints to rerun it, and matrix-summary.json's "resume", held the typed
+    --config-override whole, a GH_TOKEN in it too (they masked only what
+    _secrets(argv) finds, never inside the override). They show it as the
+    0.8 note does, <withheld> in place of a withheld value, so the line runs
+    again once the key is put back."""
+    import shlex
+
+    from benchflow.cli._errors import _CLI_ARGV
+    from benchflow.cli._termination import RunStopped
+    from benchflow.evaluation import Evaluation, EvaluationResult
+
+    token = "tuesday-made-up-gh"
+    overlay = {
+        "sandbox": {"env": {"GH_TOKEN": token, "MAX_OUTPUT_TOKENS": "4096"}},
+        "agent": {"timeout_sec": 120},
+    }
+    calls: list[str] = []
+
+    async def run(self):
+        calls.append(str(self.job_dir))
+        self.job_dir.mkdir(parents=True, exist_ok=True)
+        if len(calls) == 2:
+            raise RunStopped("Terminated (SIGTERM)", 143)
+        return EvaluationResult(
+            job_name=self._job_name, config=self._config, total=1, passed=1
+        )
+
+    monkeypatch.setattr(Evaluation, "run", run)
+    path = _config(
+        project, job_name="stop", agents=[{"name": "oracle"}, {"name": "nop"}]
+    )
+    given = json.dumps(overlay)
+    typed = (
+        ["--config-override", given]
+        if form == "space"
+        else [f"--config-override={given}"]
+    )
+    argv = ["run", "--config", str(path), *typed]
+    typed_line = _CLI_ARGV.set(argv)  # as run_cli sets it for `bench`
+    try:
+        stopped = _bench(*argv)
+    finally:
+        _CLI_ARGV.reset(typed_line)
+
+    assert stopped.exit_code == 143, stopped.output
+    summary = (project / "jobs" / "matrix-summary.json").read_text()
+    assert token not in stopped.output and token not in summary
+    rerun = json.loads(summary)["resume"]
+    assert "<withheld>" in rerun and rerun in " ".join(stopped.output.split())
+    assert shlex.split(rerun.replace("<withheld>", token)) == ["bench", *argv]
+
+
+# Made-up flags, as the note test's --made-up-api-key: no bench flag has a
+# name whose kind depends on its value today. A test's pass, a count's pass,
+# a passphrase's flag and a prefixed Authorization header (entry_kind), a
+# credential's name and a setting's; the typed words, then the words the line
+# shows.
+_TYPED_FLAGS = [
+    (["--tests-pass", "12"], ["--tests-pass", "12"]),
+    (["--tests-pass=hunter2FAKE"], ["--tests-pass=<hidden>"]),
+    (["--tests-pass", "hunter2FAKE"], ["--tests-pass", "<hidden>"]),
+    (["--n-pass", "123456"], ["--n-pass", "123456"]),
+    (["--has-passphrase", "false"], ["--has-passphrase", "false"]),
+    (["--has-passphrase=hunter2FAKE"], ["--has-passphrase=<hidden>"]),
+    # Every name that ends in `authorization` holds a credential, a word too
+    # (the lead, 2026-11-16 10:53Z; F2b, 2026-11-16 00:25Z).
+    (["--http-authorization=required"], ["--http-authorization=<hidden>"]),
+    (["--http-authorization", "FAKEtok0123"], ["--http-authorization", "<hidden>"]),
+    (["--my-secret-token", "tuesday7"], ["--my-secret-token", "<hidden>"]),
+    (
+        ["--resume-session", "--tests-pass", "12"],
+        ["--resume-session", "--tests-pass", "12"],
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("typed", "shown"), _TYPED_FLAGS, ids=[" ".join(t) for t, _ in _TYPED_FLAGS]
+)
+def test_a_stopped_matrix_line_hides_a_flag_by_its_name_and_value(
+    project, monkeypatch, typed, shown
+):
+    """Review of PR #173 (N1, 2026-11-14): the line a stopped matrix prints
+    to rerun it, and matrix-summary.json's "resume" (_shown_argv), hid a
+    flag's value by the flag's name alone, so --tests-pass=<password> was
+    shown. It asks entry_kind with the value, as the override record and the
+    CLI note do: a test result under a test's pass flag is shown, anything
+    else hidden; a credential's flag is hidden and a setting's shown as
+    before. The typed line (_CLI_ARGV) holds the made-up flags; the matrix
+    runs without them."""
+    import shlex
+
+    from benchflow.cli._errors import _CLI_ARGV
+    from benchflow.cli._termination import RunStopped
+    from benchflow.evaluation import Evaluation, EvaluationResult
+
+    calls: list[str] = []
+
+    async def run(self):
+        calls.append(str(self.job_dir))
+        self.job_dir.mkdir(parents=True, exist_ok=True)
+        if len(calls) == 2:
+            raise RunStopped("Terminated (SIGTERM)", 143)
+        return EvaluationResult(
+            job_name=self._job_name, config=self._config, total=1, passed=1
+        )
+
+    monkeypatch.setattr(Evaluation, "run", run)
+    path = _config(
+        project, job_name="stop", agents=[{"name": "oracle"}, {"name": "nop"}]
+    )
+    argv = ["run", "--config", str(path)]
+    typed_line = _CLI_ARGV.set([*argv, *typed])
+    try:
+        stopped = _bench(*argv)
+    finally:
+        _CLI_ARGV.reset(typed_line)
+
+    assert stopped.exit_code == 143, stopped.output
+    summary = (project / "jobs" / "matrix-summary.json").read_text()
+    rerun = json.loads(summary)["resume"]
+    assert rerun == "bench " + shlex.join([*argv, *shown])
+    assert rerun in " ".join(stopped.output.split())
+    if "hunter2FAKE" in " ".join(typed):
+        assert "hunter2FAKE" not in stopped.output and "hunter2FAKE" not in summary

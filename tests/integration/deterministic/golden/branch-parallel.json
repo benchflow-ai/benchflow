@@ -105,9 +105,38 @@
         "name": "@agentclientprotocol/claude-agent-acp",
         "version": "unknown"
       },
+      "extra": {
+        "effort": {
+          "applied": null,
+          "calls_with_budget": null,
+          "calls_with_effort": null,
+          "calls_without_effort": null,
+          "matches": null,
+          "reason": "nothing_to_compare",
+          "requested": null,
+          "requested_from": null,
+          "route": null,
+          "sent": null,
+          "sent_source": null
+        }
+      },
       "final_metrics": {
+        "extra": {
+          "cost_source": "list_price_estimate",
+          "cost_usd_provider": null,
+          "n_cache_read_tokens": 0,
+          "n_cache_write_1h_tokens": null,
+          "n_cache_write_5m_tokens": null,
+          "n_cache_write_tokens": 0,
+          "n_calls_cost_estimated": null,
+          "n_input_tokens": 4000,
+          "n_output_tokens": 200,
+          "price_table_date": null,
+          "usage_source": "end_of_turn"
+        },
         "total_cached_tokens": 0,
         "total_completion_tokens": 200,
+        "total_cost_usd": 0.005,
         "total_prompt_tokens": 4000,
         "total_steps": 10
       },
@@ -211,27 +240,59 @@
     },
     "result": {
       "agent_result": {
-        "cost_usd": null,
+        "cost_source": "list_price_estimate",
+        "cost_usd": 0.005,
+        "cost_usd_provider": null,
         "n_cache_creation_tokens": 0,
         "n_cache_read_tokens": 0,
+        "n_cache_write_1h_tokens": null,
+        "n_cache_write_5m_tokens": null,
+        "n_cache_write_tokens": 0,
+        "n_calls_cost_estimated": null,
         "n_input_tokens": 4000,
         "n_output_tokens": 200,
         "n_prompts": 2,
         "n_skill_invocations": 0,
         "n_tool_calls": 2,
-        "price_source": null,
+        "no_usage_reason": null,
+        "price_source": "list_price",
+        "price_table_date": null,
         "total_tokens": 4200,
         "usage_details": {
+          "cost_estimate": {
+            "method": "usage-at-list-price",
+            "models": {
+              "claude-haiku-4-5": 0.005
+            },
+            "source": "benchflow-list-price",
+            "tables": {
+              "claude-haiku-4-5": "litellm"
+            }
+          },
           "thought_tokens": 0
         },
-        "usage_source": "agent_native_acp"
+        "usage_source": "end_of_turn",
+        "usage_source_legacy": "agent_native_acp"
       },
       "agent_timeout": null,
       "error_category": null,
       "final_metrics": {
+        "extra": {
+          "cost_source": "list_price_estimate",
+          "cost_usd_provider": null,
+          "n_cache_read_tokens": 0,
+          "n_cache_write_1h_tokens": null,
+          "n_cache_write_5m_tokens": null,
+          "n_cache_write_tokens": 0,
+          "n_calls_cost_estimated": null,
+          "n_input_tokens": 4000,
+          "n_output_tokens": 200,
+          "price_table_date": null,
+          "usage_source": "end_of_turn"
+        },
         "total_cached_tokens": 0,
         "total_completion_tokens": 200,
-        "total_cost_usd": null,
+        "total_cost_usd": 0.005,
         "total_prompt_tokens": 4000
       },
       "n_prompts": 2,
@@ -271,7 +332,8 @@
       "usage_tracking": {
         "requested": "auto",
         "status": "enabled",
-        "usage_source": "agent_native_acp"
+        "usage_source": "end_of_turn",
+        "usage_source_legacy": "agent_native_acp"
       },
       "verifier_error_category": null
     }

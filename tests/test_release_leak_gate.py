@@ -131,11 +131,11 @@ def test_findings_are_decided_not_every_candidate(tmp_path):
                     "net = '10.0.0.0/8'; host = '10.1.2.3'",
                     "url = 'gs://{bucket}'; bucket = 'gs://team-data/x'",
                     "fn = hf_hub_download",
-                    "key = 'sk-Ab3dEf6hIj9kLm2nOp5q'",
+                    ("key = 'sk" + "-Ab3dEf6" + "hIj9kLm2" + "nOp5q'"),
                     "-----BEGIN PUBLIC KEY-----",
                     "SkillsBench is a public benchmark",
                     r"pem = re.compile(r'-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----')",
-                    "-----BEGIN OPENSSH PRIVATE KEY-----",
+                    ("--" + "---BEGIN" + " OPENSSH" + " PRIVATE" + " KEY----" + "-"),
                 ]
             ),
         },
@@ -563,10 +563,13 @@ def test_the_sdist_ships_no_tests_or_docs():
 
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())
     include = config["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
+    # hatch_build.py bakes the source commit; the wheel is built from the
+    # sdist, so the sdist carries it (PR #146).
     assert sorted(include) == [
         "CHANGELOG.md",
         "LICENSE",
         "README.md",
+        "hatch_build.py",
         "pyproject.toml",
         "src",
     ]

@@ -953,10 +953,28 @@ def test_check_results_accepts_reachable_sibling_clone_source(tmp_path: Path) ->
     assert findings["ok"] is True, findings["issues"]
 
 
+def _origin_url() -> str:
+    """This checkout's origin URL as git reports it (not through the code
+    under test), or "" without one."""
+    done = subprocess.run(
+        ["git", "-C", str(task_download._repo_root()), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+    )
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
 def test_check_results_accepts_symlinked_current_repo_inferred_source(
     tmp_path: Path,
 ) -> None:
     """Guards v0.5 feature rollout tasksets symlinked to this repo."""
+    origin = _origin_url()
+    if not origin.startswith("git@github.com:") and "github.com/" not in origin:
+        pytest.skip(
+            "this checkout's origin remote is not a GitHub URL (a git-bundle "
+            "clone, as on the gate VMs), so no GitHub provenance can be "
+            "inferred for it"
+        )
     taskset = tmp_path / "taskset"
     taskset.mkdir()
     linked_task = taskset / "hello-world-task"

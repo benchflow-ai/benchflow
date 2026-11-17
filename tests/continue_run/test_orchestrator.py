@@ -13,6 +13,7 @@ from benchflow.continue_run.orchestrator import (
     LiteLLMLiveForwarder,
     _continue_run_with_sandbox_proxy,
     _safe_sandbox_continuation_teardown,
+    _stop_continuation_proxies,
     build_agent_env,
     build_rollout_config,
     continued_rollout_name,
@@ -258,7 +259,9 @@ def test_update_continued_metadata_writes_model_and_usage(tmp_path):
     assert config["model"] == "aws-bedrock/us.anthropic.claude-opus-4-8"
     assert result["model"] == "aws-bedrock/us.anthropic.claude-opus-4-8"
     assert result["agent_result"]["total_tokens"] == 12
-    assert result["agent_result"]["usage_source"] == "provider_response"
+    # vocabulary, the old name beside it.
+    assert result["agent_result"]["usage_source"] == "proxy"
+    assert result["agent_result"]["usage_source_legacy"] == "provider_response"
     assert result["usage_tracking"]["requested"] == "required"
     assert result["usage_tracking"]["endpoint_kind"] == "sandbox"
     assert result["usage_tracking"]["status"] == "captured_from_stitched_llm_trajectory"
@@ -429,3 +432,258 @@ async def test_bare_timeout_waits_for_continuation_usage(
         assert persisted["agent_result"]["total_tokens"] == (
             123 if usage_origin == "cleanup" else 2
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "where,step", [("install", "install"), ("replay proxy", "agent set-up")]
+)
+async def test_a_continued_runs_step_timeout_is_not_the_agents(
+    tmp_path, monkeypatch, where, step
+):
+    """Review of PR #141, 2026-11-13 (S3.5): continue_run's own lifecycle
+    recorded a timeout of its install or of the replay proxy it starts in the
+    sandbox as the agent's, "Agent timed out after 0s elapsed in rollout
+    (budget 0s)", category timeout, never retried. It follows run()'s rule."""
+    from benchflow._utils.scoring import PHASE_TIMEOUT, PHASE_TIMEOUT_HEADER
+    from benchflow.rollout import RolloutConfig
+
+    run = _load(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n[agent]\ntimeout_sec = 900\n')
+    (task / "instruction.md").write_text("Do the thing.\n")
+    output = tmp_path / "out" / "continued"
+    output.mkdir(parents=True)
+    (output / "config.json").write_text("{}")
+    rollout = Rollout(RolloutConfig(task_path=task, agent="openhands"))
+    rollout._rollout_dir = output
+    rollout._rollout_name = output.name
+    rollout._started_at = datetime.now()
+    rollout._timeout = 0
+    rollout._env = SimpleNamespace()
+
+    def entering(phase):
+        async def step(*_args, **_kwargs):
+            rollout._phase = phase
+
+        return step
+
+    rollout.setup = AsyncMock(side_effect=entering("setup"))
+    rollout.start = AsyncMock(side_effect=entering("started"))
+    rollout.install_agent = AsyncMock(
+        side_effect=TimeoutError() if where == "install" else entering("installed")
+    )
+    rollout.cleanup = AsyncMock()
+    monkeypatch.setattr(
+        rollout._planes, "resolve_agent_env", lambda *args: {}, raising=False
+    )
+    monkeypatch.setattr(Rollout, "create", AsyncMock(return_value=rollout))
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.ensure_litellm_runtime",
+        AsyncMock(
+            return_value=(
+                {
+                    "LLM_BASE_URL": "http://unused",
+                    "LLM_API_KEY": "dummy",
+                    "LLM_MODEL": "test",
+                },
+                object(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.stop_provider_runtime", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "benchflow.continue_run.orchestrator.SandboxReplayProxy.start",
+        AsyncMock(side_effect=TimeoutError()),
+    )
+
+    result = await _continue_run_with_sandbox_proxy(
+        run,
+        task_path=task,
+        live_model="test-model",
+        timeout=None,
+        output_dir=output.parent,
+        rollout_name=output.name,
+        strict_divergence=False,
+    )
+
+    assert result.error.startswith(f"{PHASE_TIMEOUT_HEADER} [{step}] after "), (
+        result.error
+    )
+    assert "Agent timed out" not in result.error
+    saved = json.loads((output / "result.json").read_text())
+    assert saved["error_category"] == PHASE_TIMEOUT
+    assert saved["phase_timeout_info"]["step"] == step
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("later", ["exec timeout", "connection lost"])
+async def test_a_continued_runs_later_failure_keeps_the_agents_timeout(
+    tmp_path, monkeypatch, later
+):
+    """Review of PR #141, 2026-11-13 (F1, F3): continue_run follows run()'s
+    rule. After the agent's prompt timeout, the verify step raised
+    ExecTimeoutError or lost its connection, and continue_run's own handlers
+    replaced the agent's timeout with it. The timeout stays the trial's error
+    and category, is not retried, the failure is recorded beside it, and the
+    trial is unscored."""
+    import benchflow.rollout as rollout_module
+    from benchflow._utils.scoring import TIMED_OUT
+    from benchflow.diagnostics import (
+        AgentPromptTimeoutDiagnostic,
+        AgentPromptTimeoutError,
+    )
+    from benchflow.evaluation import RetryConfig
+    from benchflow.rollout import RolloutConfig
+    from benchflow.sandbox.protocol import ExecTimeoutError
+
+    run = _load(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text('version = "1.0"\n[agent]\ntimeout_sec = 900\n')
+    (task / "instruction.md").write_text("Do the thing.\n")
+    output = tmp_path / "out" / "continued"
+    output.mkdir(parents=True)
+    (output / "config.json").write_text("{}")
+    rollout = Rollout(RolloutConfig(task_path=task, agent="openhands"))
+    rollout._rollout_dir = output
+    rollout._rollout_name = output.name
+    rollout._started_at = datetime.now()
+    rollout._env = SimpleNamespace()
+    for name in ("setup", "start", "install_agent", "cleanup"):
+        setattr(rollout, name, AsyncMock())
+
+    async def turn(_steps):
+        rollout._n_tool_calls = 2
+        raise AgentPromptTimeoutError(
+            "Agent prompt timed out after 900s",
+            trajectory=[],
+            diagnostic=AgentPromptTimeoutDiagnostic(timeout_sec=900.0),
+        )
+
+    rollout._run_steps = turn
+
+    async def probe(_rollout, _phase):
+        return None
+
+    monkeypatch.setattr(rollout_module, "_probe_integrity_access", probe)
+    if later == "exec timeout":
+        monkeypatch.setattr(
+            rollout_module,
+            "capture_terminal_workspace",
+            AsyncMock(side_effect=ExecTimeoutError(600)),
+        )
+        expected = (
+            "exec_timeout",
+            "ExecTimeoutError: Command timed out after 600 seconds",
+        )
+    else:
+        rollout._muse_credentials_staged = True
+        rollout.disconnect = AsyncMock(side_effect=ConnectionError("transport lost"))
+        expected = ("connection_lost", "ConnectionError: transport lost")
+    monkeypatch.setattr(
+        rollout._planes, "resolve_agent_env", lambda *args: {}, raising=False
+    )
+    monkeypatch.setattr(Rollout, "create", AsyncMock(return_value=rollout))
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.ensure_litellm_runtime",
+        AsyncMock(
+            return_value=(
+                {
+                    "LLM_BASE_URL": "http://unused",
+                    "LLM_API_KEY": "dummy",
+                    "LLM_MODEL": "test",
+                },
+                object(),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "benchflow.providers.runtime.stop_provider_runtime", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "benchflow.continue_run.orchestrator.SandboxReplayProxy.start",
+        AsyncMock(return_value=SimpleNamespace(live_exchanges=[], stop=AsyncMock())),
+    )
+
+    result = await _continue_run_with_sandbox_proxy(
+        run,
+        task_path=task,
+        live_model="test-model",
+        timeout=None,
+        output_dir=output.parent,
+        rollout_name=output.name,
+        strict_divergence=False,
+    )
+
+    assert result.error == "Agent prompt timed out after 900s", result.error
+    assert result.rewards is None
+    saved = json.loads((output / "result.json").read_text())
+    assert saved["error_category"] == TIMED_OUT
+    assert not RetryConfig().should_retry(result.error, category=TIMED_OUT)
+    later_info = saved["post_turn_failure_info"]
+    assert (later_info["step"], later_info["kind"], later_info["detail"]) == (
+        "verify",
+        *expected,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_continuation_s_proxies_stop_before_the_verifier():
+    """the live suffix and the LiteLLM log are read before test.sh,
+    which runs as root, can stop the proxies or change their logs; one that
+    cannot be stopped there is left to the teardown."""
+    order: list[str] = []
+
+    async def replay_stop():
+        order.append("replay proxy")
+
+    async def provider_stop(runtime):
+        order.append(f"provider {runtime}")
+        raise RuntimeError("exec channel lost")
+
+    await _stop_continuation_proxies(
+        SimpleNamespace(stop=replay_stop), "runtime", provider_stop
+    )
+    assert order == ["replay proxy", "provider runtime"]
+    await _stop_continuation_proxies(None, None, provider_stop)
+    assert order == ["replay proxy", "provider runtime"]
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_replay_proxy_keeps_the_live_suffix_it_read(tmp_path):
+    from pathlib import Path
+
+    """The teardown stops the replay proxy again: the second stop must not
+    read the removed log as no live calls."""
+    from benchflow.continue_run.sandbox_proxy import SandboxReplayProxy
+
+    live = tmp_path / "live_exchanges.jsonl"
+    live.write_text(exchange(completion(content="live")).model_dump_json() + "\n")
+
+    class Sandbox:
+        async def download_file(self, source, target):
+            Path(target).write_bytes(Path(source).read_bytes())
+
+        async def exec(self, command, **_kwargs):
+            if command.startswith("rm -rf"):
+                live.unlink(missing_ok=True)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    proxy = SandboxReplayProxy(
+        sandbox=Sandbox(),
+        runtime_dir=str(tmp_path),
+        port=1,
+        pid_path=str(tmp_path / "pid"),
+        live_log_path=str(live),
+        state_path=str(tmp_path / "state.json"),
+        stdout_path=str(tmp_path / "stdout.log"),
+        stderr_path=str(tmp_path / "stderr.log"),
+    )
+    await proxy.stop()
+    assert len(proxy.live_exchanges) == 1 and not live.exists()
+    await proxy.stop()
+    assert len(proxy.live_exchanges) == 1

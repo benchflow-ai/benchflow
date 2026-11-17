@@ -54,13 +54,13 @@ The interval over tasks comes from the snippet in [Compare runs](./compare-runs.
 
 ## Share trajectories
 
-`bench traj upload` sends a trial's trajectory to BenchFlow's public trajectory dataset on Hugging Face, after showing you the redacted steps and asking you to confirm:
+`bench traj upload` sends a trial's trajectory to BenchFlow's upload service, which stores it in private Azure storage, after showing you the redacted steps and asking you to confirm:
 
 ```bash
 bench traj upload jobs/<job>/<trial>
 ```
 
-It also asks for your GitHub username and email (`--github-id`, `--email`), which go with the upload to credit you. It redacts secrets before upload; read the preview anyway.
+It also asks for your GitHub username and email (`--github-id`, `--email`), which go with the upload to credit you. It redacts secrets before upload; read the preview anyway. With `--direct`, the upload goes to an Azure container you name instead, under your own Azure login.
 
 ## The report file (0.10)
 

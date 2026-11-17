@@ -417,7 +417,7 @@ async def test_default_verify_hardens_with_the_transferred_paths(
     rollout = SimpleNamespace(
         _trajectory=[],
         _planes=SimpleNamespace(),
-        _config=SimpleNamespace(primary_agent="codex-acp"),
+        _config=SimpleNamespace(primary_agent="codex-acp", integrity="off"),
     )
     verify = _separate_verifier._default_verify(rollout)
 
@@ -943,6 +943,7 @@ def _fake_rollout(tmp_path: Path, trial: Path, task: Path, workspace: str):
             task_path=task,
             sandbox_setup_timeout=60,
             primary_agent="codex",
+            integrity="off",
         ),
         _rollout_dir=trial,
         _rollout_paths=paths,
@@ -1418,7 +1419,7 @@ async def test_default_verify_hardens_the_verifier_sandbox_without_an_agent_user
         _trajectory=[],
         _planes=SimpleNamespace(),
         _diagnostics=None,
-        _config=SimpleNamespace(primary_agent="claude-agent-acp"),
+        _config=SimpleNamespace(primary_agent="claude-agent-acp", integrity="off"),
     )
     verify = _separate_verifier._default_verify(rollout)
     paths = SimpleNamespace(agent_dir=tmp_path / "agent")

@@ -1,0 +1,12 @@
+{
+  "about": "Tasks BenchFlow refuses before the agent's turn, unscored, for every agent (benchflow.task.refused_tasks). Each entry is keyed by benchmark, task id (the task folder's name) and BenchFlow's task digest (benchflow._utils.task_authoring.task_digest): a task with any byte changed has another digest and runs.",
+  "tasks": [
+    {
+      "benchmark": "seta-env",
+      "task": "1243",
+      "digest": "sha256:4723dae6c5cadd8300021e72fbf7d29a29227ba63542c171580ef7e6ddd4600b",
+      "source": "https://github.com/camel-ai/seta-env.git b186880140373a38d394984facaec41d43a8fcef Harbor-Dataset/1243 (Harbor registry seta-env 1.0)",
+      "reason": "this task's reference solution fails under BenchFlow's root-exec limit; not scored"
+    }
+  ]
+}

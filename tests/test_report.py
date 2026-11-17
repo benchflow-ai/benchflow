@@ -75,7 +75,8 @@ def test_the_report_shows_each_task_s_tries_and_the_sampling_sent(tmp_path):
     # design effect is below 1, so it is Wilson's over the 3 trials).
     assert (
         "3 trials of 2 tasks, mini-swe-agent on hosted_vllm/Qwen/Qwen3.8-27B: 1 passed "
-        "(33.3%; 95% interval 6.1% to 79.2%, clustered by task), mean reward "
+        "(33.3%; counts 1 unscored trial as 0; scored only: 50.0%; 95% interval "
+        "6.1% to 79.2%, clustered by task), mean reward "
         "0.33 (a trial with no score counts 0), 1 with no score."
     ) in text
     assert "| dock-a | 2 | 1 | 50% | 9% to 91% | 1, 0 | █████░░░░░ |" in text

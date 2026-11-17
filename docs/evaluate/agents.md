@@ -63,6 +63,8 @@ bench run <task> -a claude -m sonnet
 
 An agent with no such option stops the trial instead: `reasoning_effort='max' was requested for agent '...', but that agent does not declare or advertise an ACP effort config option`. The values each option takes are the agent's own.
 
+The effort can also ride the model, `-m 'gpt-6-astra[ultra]'`, or the agent's own settings (`model_reasoning_effort` in Codex's `CODEX_CONFIG`); each is the request, recorded as `effort.requested`. Two that differ are refused before launch, and so is a level the model cannot take: for Codex, the pinned Codex's catalog decides (`gpt-6-astra` and `gpt-6.1-sol` take `low`, `medium`, `high`, `xhigh`, `max` and `ultra`). After the run, `effort.matches` says whether the session and its calls ran at that level ([The effort that ran](../reference/model-outcomes.md#the-effort-that-ran)).
+
 > **Pass `-m`.** Without it, an agent falls back to a default model, which for Claude Code in 0.9.2 is `claude-haiku-4-5-20251001`, an older one (0.10.0rc2's is `claude-haiku-5-5`).
 
 The model and effort you pass are recorded in the trial's `config.json` (`model`, `reasoning_effort`). What the provider actually received is in `trajectory/llm_trajectory.jsonl`, one line per model call. Check it when a score depends on the setting: a provider can ignore one it doesn't support.
@@ -95,7 +97,7 @@ Claude Code can use a provider that serves Anthropic's API. The [Quick start](..
 
 ### The provider prefixes
 
-These are the prefixes 0.9.2 knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Claude Code and Codex are refused before the run starts when the provider doesn't serve their API; the other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
+These are the prefixes 0.9.2 knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Codex is refused before the run starts, and by its dry run, when the provider doesn't serve the Responses API. Claude Code runs any provider's model: BenchFlow's gateway turns its calls into the provider's own API. The other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
 
 ```text
 Agent 'codex-acp' requires provider protocol 'openai-responses', but provider 'xiaomi' for model 'xiaomi/mimo-v2.6-flash' only supports anthropic-messages, openai-completions. Use a provider prefix that matches the agent protocol.

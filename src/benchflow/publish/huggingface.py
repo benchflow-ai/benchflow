@@ -1,9 +1,15 @@
-"""Hugging Face publishing helpers with optional read-after-write checks."""
+"""Hugging Face publishing helpers with optional read-after-write checks.
+
+A repo or bucket these helpers create is private unless the caller passes
+``private=False``. One that already exists keeps its visibility: the Hub reads
+``private`` only from a create request, and nothing here changes a visibility.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Literal
 
 import httpx
 
@@ -17,6 +23,17 @@ class HfPublishResult:
     path_in_repo: str
     url: str
     commit_url: str | None = None
+    # What this publish created the repo or bucket as; None when it was there
+    # already, so its visibility was left as it is.
+    created: Literal["private", "public"] | None = None
+
+    @property
+    def visibility(self) -> str:
+        """The publish line's note: what was created, or that it was there."""
+        kind = "bucket" if self.repo_type == "bucket" else f"{self.repo_type} repo"
+        if self.created is None:
+            return f"existing {kind}, its visibility left as it is"
+        return f"new {self.created} {kind}"
 
 
 def _require_hf_api():
@@ -48,13 +65,54 @@ def _bucket_tree_url(bucket_id: str, path_in_repo: str) -> str:
     return f"https://huggingface.co/buckets/{bucket_id}{suffix}"
 
 
-def _check_public_files(repo_id: str, repo_type: str, path_in_repo: str) -> None:
+def _create_repo(
+    api: Any, repo_id: str, repo_type: str, *, private: bool
+) -> Literal["private", "public"] | None:
+    """Create the repo with the visibility asked for, or find it there.
+
+    Returns what it created, or None for a repo that exists: the Hub refuses
+    that create with 409, and its visibility is left as it is.
+    """
+    from huggingface_hub.errors import HfHubHTTPError
+
+    try:
+        api.create_repo(repo_id, repo_type=repo_type, private=private)
+    except HfHubHTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 409:
+            return None
+        if status != 403:
+            raise
+        # No right to create in the namespace; the repo may be there and
+        # writable all the same (what create_repo's exist_ok=True allows).
+        try:
+            api.repo_info(repo_id, repo_type=repo_type)
+        except HfHubHTTPError:
+            raise exc from None
+        return None
+    return "private" if private else "public"
+
+
+def _read_check_failed(
+    url: str, status: int, repo_id: str, created: str | None
+) -> ValueError:
+    message = f"HF public read check failed: {url} -> {status}"
+    if created == "private":
+        message += (
+            f"; this publish created {repo_id} private (a new repo is public "
+            "only with --public): make it public on Hugging Face, or publish "
+            "to a new repo with --public"
+        )
+    return ValueError(message)
+
+
+def _check_public_files(
+    repo_id: str, repo_type: str, path_in_repo: str, created: str | None
+) -> None:
     index_url = _tree_url(repo_id, repo_type, path_in_repo)
     response = httpx.get(index_url, follow_redirects=True, timeout=20)
     if response.status_code >= 400:
-        raise ValueError(
-            f"HF public read check failed: {index_url} -> {response.status_code}"
-        )
+        raise _read_check_failed(index_url, response.status_code, repo_id, created)
 
 
 def publish_folder_to_hf(
@@ -65,12 +123,13 @@ def publish_folder_to_hf(
     repo_type: str = "dataset",
     public_read_check: bool = False,
     commit_message: str | None = None,
+    private: bool = True,
 ) -> HfPublishResult:
     if not folder.is_dir():
         raise ValueError(f"publish source folder not found: {folder}")
     api = _require_hf_api()
     with staged_folder(folder) as snapshot:
-        api.create_repo(repo_id, repo_type=repo_type, exist_ok=True)
+        created = _create_repo(api, repo_id, repo_type, private=private)
         commit = api.upload_folder(
             repo_id=repo_id,
             repo_type=repo_type,
@@ -80,13 +139,14 @@ def publish_folder_to_hf(
             or f"Upload BenchFlow artifacts to {path_in_repo}",
         )
     if public_read_check:
-        _check_public_files(repo_id, repo_type, path_in_repo)
+        _check_public_files(repo_id, repo_type, path_in_repo, created)
     return HfPublishResult(
         repo_id=repo_id,
         repo_type=repo_type,
         path_in_repo=path_in_repo,
         url=_tree_url(repo_id, repo_type, path_in_repo),
         commit_url=getattr(commit, "commit_url", None),
+        created=created,
     )
 
 
@@ -95,7 +155,7 @@ def publish_folder_to_bucket(
     *,
     bucket_id: str,
     path_in_repo: str = "",
-    private: bool = False,
+    private: bool = True,
 ) -> HfPublishResult:
     if not folder.is_dir():
         raise ValueError(f"publish source folder not found: {folder}")
@@ -111,18 +171,22 @@ def publish_folder_to_bucket(
     remote = (
         f"hf://buckets/{bucket_id}/{prefix}" if prefix else f"hf://buckets/{bucket_id}"
     )
+    created: Literal["private", "public"] | None = "private" if private else "public"
     with staged_folder(folder) as snapshot:
         try:
             create_bucket(bucket_id, private=private)
         except HfHubHTTPError as exc:
             if exc.response is None or exc.response.status_code != 409:
                 raise
+            # It is there already: the refused create changed nothing.
+            created = None
         sync_bucket(str(snapshot), remote)
     return HfPublishResult(
         repo_id=bucket_id,
         repo_type="bucket",
         path_in_repo=prefix,
         url=_bucket_tree_url(bucket_id, prefix),
+        created=created,
     )
 
 
@@ -199,11 +263,12 @@ def publish_file_to_hf(
     repo_type: str = "dataset",
     public_read_check: bool = False,
     commit_message: str | None = None,
+    private: bool = True,
 ) -> HfPublishResult:
     if not file_path.is_file():
         raise ValueError(f"publish source file not found: {file_path}")
     api = _require_hf_api()
-    api.create_repo(repo_id, repo_type=repo_type, exist_ok=True)
+    created = _create_repo(api, repo_id, repo_type, private=private)
     commit = api.upload_file(
         repo_id=repo_id,
         repo_type=repo_type,
@@ -215,13 +280,12 @@ def publish_file_to_hf(
         url = _resolve_url(repo_id, repo_type, path_in_repo.strip("/"))
         response = httpx.head(url, follow_redirects=True, timeout=20)
         if response.status_code >= 400:
-            raise ValueError(
-                f"HF public read check failed: {url} -> {response.status_code}"
-            )
+            raise _read_check_failed(url, response.status_code, repo_id, created)
     return HfPublishResult(
         repo_id=repo_id,
         repo_type=repo_type,
         path_in_repo=path_in_repo,
         url=_tree_url(repo_id, repo_type, str(Path(path_in_repo).parent)),
         commit_url=getattr(commit, "commit_url", None),
+        created=created,
     )
