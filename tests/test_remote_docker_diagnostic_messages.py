@@ -83,7 +83,10 @@ async def test_proxy_certificate_rotation_hides_dummy_names(
     )
     monkeypatch.setattr(DockerSandbox, call, mock)
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[tcp\]: cannot connect to the Docker daemon",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "true"])
         outputs = [str(caught.value)]
     else:
@@ -130,7 +133,10 @@ async def test_exec_result_and_exception_never_copy_transport_details(
     )
     monkeypatch.setattr(DockerSandbox, call, mock)
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[tcp\]: (cannot connect to the Docker daemon|tls: failed to verify certificate: <remote certificate error>)",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "true"])
         outputs = [str(caught.value)]
     else:

@@ -790,8 +790,12 @@ def _write_run_artifacts(
         "n_cache_creation_tokens": None,
         "total_tokens": v1.total_tokens if v1 else None,
         "cost_usd": None,
-        "usage_source": "unavailable",
+        # Nothing BenchFlow trusts counted these tokens (vocabulary).
+        "usage_source": None,
+        "cost_source": None,
+        "price_table_date": None,
         "price_source": None,
+        "usage_source_legacy": "unavailable",
     }
 
     (result.run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(

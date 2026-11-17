@@ -282,7 +282,9 @@ class Policy:
         if port in SANDBOX_DAEMON_PORTS:
             return False
         parsed = self._address(address)
-        if parsed is None:
+        if parsed is None or _never(str(parsed)):
+            # A cloud metadata endpoint or a link-local address, listed or
+            # not.
             return False
         if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
             return False
@@ -832,6 +834,73 @@ class _PrivateDestination(Exception):
     """The destination resolves to a loopback, private or otherwise non-global address."""
 
 
+#: Every cloud metadata endpoint (benchflow.sandbox.cloud_metadata's list; a
+#: test keeps the two equal) and the link-local ranges: never reached through
+#: the proxy, whatever the policy lists, even by a listed host name that
+#: resolves there (rebinding, a CNAME to metadata.google.internal).
+_NEVER = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "169.254.169.254/32",
+        "169.254.170.2/32",
+        "169.254.170.23/32",
+        "100.100.100.200/32",
+        "168.63.129.16/32",
+        "169.254.0.23/32",
+        "fd00:ec2::254/128",
+        "fd00:ec2::23/128",
+        "fd20:ce::254/128",
+        "fd00:c1::a9fe:a9fe/128",
+        "169.254.0.0/16",
+        "fe80::/10",
+    )
+)
+#: The mark the proxy puts on its own upstream sockets (``--mark``): in the
+#: verifier phase the only packets that leave the sandbox. Setting
+#: it needs NET_ADMIN, which the bounded test.sh lacks, so nothing else can.
+_UPSTREAM_MARK = [0]
+
+
+def _never(address: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return True
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return any(parsed.version == n.version and parsed in n for n in _NEVER)
+
+
+def _marked(sock: socket.socket) -> socket.socket:
+    if _UPSTREAM_MARK[0]:
+        sock.setsockopt(
+            socket.SOL_SOCKET, getattr(socket, "SO_MARK", 36), _UPSTREAM_MARK[0]
+        )
+    return sock
+
+
+def _create_connection(address: tuple[str, int], timeout: float) -> socket.socket:
+    """socket.create_connection, but the socket carries the proxy's mark
+    before it connects (unmarked without ``--mark``: as before)."""
+    if not _UPSTREAM_MARK[0]:
+        return socket.create_connection(address, timeout=timeout)
+    host, port = address
+    error: OSError | None = None
+    for family, kind, proto, _name, sockaddr in socket.getaddrinfo(
+        host, port, type=socket.SOCK_STREAM
+    ):
+        sock = socket.socket(family, kind, proto)
+        try:
+            _marked(sock)
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            error = exc
+            sock.close()
+    raise error or OSError(f"cannot connect to {host}:{port}")
+
+
 def _resolve(host: str, port: int) -> list[str]:
     addresses: dict[str, None] = {}
     for _family, _type, _proto, _name, sockaddr in socket.getaddrinfo(
@@ -842,6 +911,8 @@ def _resolve(host: str, port: int) -> list[str]:
 
 
 def _upstream_allowed(address: str, port: int = 0) -> bool:
+    if _never(address):
+        return False
     try:
         return ipaddress.ip_address(address).is_global
     except ValueError:
@@ -865,14 +936,14 @@ def _connect_upstream(
     # gateway. Permit only the endpoint BenchFlow created; do not resolve a
     # hostname or expose any other private address/loopback port.
     if (host, port) == ("127.0.0.1", model_gateway_port):
-        return socket.create_connection((host, port), timeout=HEAD_TIMEOUT)
+        return _create_connection((host, port), timeout=HEAD_TIMEOUT)
     addresses = _resolve(host, port)
     if not addresses or not all(address_allowed(a, port) for a in addresses):
         raise _PrivateDestination(host)
     error: OSError | None = None
     for address in addresses:
         try:
-            return socket.create_connection((address, port), timeout=HEAD_TIMEOUT)
+            return _create_connection((address, port), timeout=HEAD_TIMEOUT)
         except OSError as exc:
             error = exc
     raise error or OSError(f"cannot connect to {host}:{port}")
@@ -1411,7 +1482,7 @@ def _forward_udp(query: bytes, upstreams: list[str]) -> bytes:
     for upstream in upstreams:
         host, port = _split_upstream(upstream)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
-        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+        with _marked(socket.socket(family, socket.SOCK_DGRAM)) as sock:
             sock.settimeout(DNS_TIMEOUT)
             try:
                 sock.sendto(query, (host, port))
@@ -1438,7 +1509,7 @@ def _forward_tcp(query: bytes, upstreams: list[str]) -> bytes:
     for upstream in upstreams:
         host, port = _split_upstream(upstream)
         try:
-            with socket.create_connection((host, port), timeout=DNS_TIMEOUT) as sock:
+            with _create_connection((host, port), timeout=DNS_TIMEOUT) as sock:
                 sock.sendall(struct.pack("!H", len(query)) + query)
                 size = struct.unpack("!H", _recv_exact(sock, 2))[0]
                 return _recv_exact(sock, size)
@@ -1586,7 +1657,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dns-port", type=int, help="allow mode: loopback port of the DNS filter"
     )
+    parser.add_argument(
+        "--mark", type=int, default=0, help="SO_MARK for upstream sockets"
+    )
     args = parser.parse_args(argv)
+    _UPSTREAM_MARK[0] = args.mark
+    # Not dumpable: a process of the same uid without CAP_SYS_PTRACE (the
+    # bounded test.sh) can neither trace it nor read its memory.
+    with contextlib.suppress(Exception):
+        import ctypes
+
+        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
     policy = Policy.load(args.policy)
     log = Log(args.log, policy)
     if args.dns_port is not None:

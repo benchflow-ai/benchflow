@@ -7,8 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
 
 from benchflow.rollout import Rollout, RolloutConfig
+from benchflow.sandbox._compose import COMPOSE_KEPT_FREEZER_PATH
 from benchflow.sandbox.lockdown import (
     _kill_sandbox_user_procs_keeping,
     end_kept_services,
@@ -26,6 +28,24 @@ from tests.test_script_agent_docker import (
 PYTHON_IMAGE = (
     "python@sha256:5560e9ab8709f459489e5b8aa696eda8a07ef821e14bb122be62d91234bfa98b"
 )
+
+
+def _kept_freezer_flags():
+    """docker run's form of what Compose stacks on main when the task keeps
+    services (docker-compose-kept-freezer.yaml): a private cgroup namespace
+    with writable-cgroups, where root holds the kept processes in a frozen
+    cgroup (lockdown._KEPT_FREEZER)."""
+    main = yaml.safe_load(COMPOSE_KEPT_FREEZER_PATH.read_text())["services"]["main"]
+    # A new setting in the overlay needs its docker run flag here.
+    assert set(main) == {"cgroup", "security_opt"}, main
+    flags = ["--cgroupns", main["cgroup"]]
+    for option in main["security_opt"]:
+        flags += ["--security-opt", option]
+    return tuple(flags)
+
+
+# main of a task that keeps services (x-keep-services), as the product starts it.
+KEPT_FREEZER = _kept_freezer_flags()
 BACKENDS = [Container, RemoteContainer]
 SYSTEM_DIRS = [
     "/usr/local/sbin",
@@ -245,7 +265,9 @@ async def service_rollout(
 @pytest.mark.parametrize("failure", ["watchdog", "transport", "timeout_error"])
 async def test_timeout_retains_only_declared_services(tmp_path, backend, keep, failure):
     """Guards DT2-CONF-4 at 212f67e4 through real dispatch, freeze and release."""
-    with started_box(image=PYTHON_IMAGE) as box:
+    # Compose gives main the freezer only when the task keeps services.
+    run_flags = KEPT_FREEZER if keep else ()
+    with started_box(image=PYTHON_IMAGE, run_flags=run_flags) as box:
         result, observed = await service_rollout(
             backend(box.name), tmp_path, keep=keep, failure=failure
         )

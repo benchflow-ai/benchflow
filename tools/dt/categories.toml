@@ -38,6 +38,10 @@ registry_auth = "sandbox"
 disk_full = "other"
 # DX-a round 2: a task file that does not load was "other" before.
 task_config = "other"
+# A script: agent on a backend without the operator-script runner
+# (ScriptBackendError, src/benchflow/agents/scripts.py), refused before any
+# sandbox. Rust has no operator-script runner.
+script_backend = "refusal"
 other = "other"
 
 [python.verifier_error_category]
@@ -48,9 +52,18 @@ verifier_infra = "infra"
 verifier_timeout = "verifier_timeout"
 # V4 / #1178: a rejected raw reward is unscored, in Rust R302's family.
 reward_out_of_range = "verifier_error"
+# Hardening refused the tools test.sh would find on PATH: unscored.
+verifier_tools_refused = "verifier_error"
 # DX-a: an empty reward on a full disk was a verifier_failure before.
 disk_full = "verifier_error"
 infra_failure = "infra"
+# The verifier's network refused a failing test.sh; the bounded launch could
+# not start test.sh without NET_ADMIN, NET_RAW and SYS_PTRACE.
+verifier_network_refused = "verifier_error"
+verifier_launch_refused = "verifier_error"
+# The verifier's network could not be held (its rules not added or not
+# proven), so test.sh did not run, never open instead: unscored.
+verifier_network_unheld = "verifier_error"
 
 # A Python refusal by the runtime capability check
 # (UnsupportedTaskFeatureError, src/benchflow/task/runtime_capabilities.py)

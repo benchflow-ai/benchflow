@@ -426,7 +426,14 @@ def read_rollout(
         rollout_path = str(root.relative_to(job_root))
     except ValueError:
         rollout_path = root.name
-    error = result.get("error")
+    # The reward and ending as every reader scores the trial:
+    # one the judge withholds on read is unscored here, never a 0.0.
+    # The scanner's retry check (_would_retry) reads the raw record, so an
+    # idle timeout a later attempt replaces is still grouped as retried.
+    from benchflow.integration_health import scored_as_read
+
+    judged = scored_as_read(result, root)
+    error = judged.get("error")
     finished = result.get("finished_at")
     return StreamedRollout(
         job=job_root.name,
@@ -437,8 +444,8 @@ def read_rollout(
         model=result.get("model"),
         group_id=_group_id(key),
         group=key,
-        reward=extract_reward(result),
-        outcome=classify_score_outcome(result),
+        reward=extract_reward(judged),
+        outcome=classify_score_outcome(judged),
         error=None if error is None else str(error),
         finished_at=None if finished is None else str(finished),
         token_capture=summary,

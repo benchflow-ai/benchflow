@@ -274,11 +274,14 @@ def runnable_task_issues(task_dir: Path, *, image_supplied: bool = False) -> lis
     or tests/, oracle/ or solution/: it never arrives, #411); for task.md
     also no verifier entrypoint, a verifier.md that does not parse, and no
     image source at all (``image_supplied``: the run's own environment
-    manifest names one). Everything else ``bench check`` reports (the CTRF
-    path, rubrics, oracle/ vs solution/ drift, placeholders, links elsewhere
-    in the task) is an authoring issue: ``bench check`` lists it and the run goes ahead. A
-    legacy task.toml package otherwise only has to parse, as discovery has
-    always required of it.
+    manifest names one). Everything else ``bench check`` reports (rubrics,
+    oracle/ vs solution/ drift, placeholders, links elsewhere in the task) is
+    an authoring issue: ``bench check`` lists it and the run goes ahead. A
+    test.sh whose CTRF report never reaches /logs/verifier/ctrf.json is a
+    warning at check and at the run; the task.md plan refuses it
+    only where a criterion is graded from the report. A legacy task.toml
+    package otherwise only has to parse, as discovery has always required of
+    it.
     """
     task_md = task_dir / TASK_DOCUMENT_FILE
     task_toml = task_dir / "task.toml"
@@ -454,11 +457,6 @@ def check_task(
             "test.sh or a verifier.md selected strategy)"
         )
 
-    # Check CTRF output path consistency
-    test_sh = paths.test_path
-    if test_sh.exists():
-        issues.extend(_check_ctrf_path(test_sh))
-
     # Detect placeholder oracle scripts that have not been replaced (#360).
     for solve_sh in (
         paths.oracle_dir / "solve.sh",
@@ -547,7 +545,10 @@ def check_task_warnings(task_dir: Path) -> list[str]:
       /var/tmp, /logs, /testbed), which the pytest plugin guard refuses,
       leaving every trial unscored;
     - ``$BENCHFLOW_PYTEST`` named only in the build context or the solution
-      (:func:`_image_only_runner_warning`).
+      (:func:`_image_only_runner_warning`);
+    - a test.sh whose CTRF report never reaches /logs/verifier/ctrf.json
+      (:func:`_check_ctrf_path`): a warning where the task grades itself, and
+      the run warns in the same words.
     """
     from benchflow.task.imports import (
         classify_unknown_key,
@@ -608,6 +609,8 @@ def check_task_warnings(task_dir: Path) -> list[str]:
     image_only = _image_only_runner_warning(task_dir, paths)
     if image_only is not None:
         warnings.append(image_only)
+    if paths.test_path.is_file():
+        warnings.extend(_check_ctrf_path(paths.test_path))
     return warnings
 
 

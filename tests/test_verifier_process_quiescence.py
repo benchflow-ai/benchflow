@@ -343,7 +343,7 @@ async def test_a_survivor_fails_the_check(tmp_path):
     """A process that never dies makes the kill raise, not pass silently."""
     proc = _FakeProc(tmp_path)
     proc.add(_LIVE, stubborn=True, cmdline="stubborn --x")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"Sandbox-user writers remain: 100"):
         await _kill_sandbox_user_procs(proc, "agent")
 
 
@@ -352,7 +352,7 @@ async def test_missing_process_table_is_not_quiescence(tmp_path):
     """GH #1078: no readable /proc is an unknown state, not an empty one."""
     proc = _FakeProc(tmp_path, process_table=False)
     proc.add(_LIVE, stubborn=True)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"Process table is unavailable"):
         await _kill_sandbox_user_procs(proc, "agent")
 
 
@@ -709,8 +709,27 @@ class _Canned:
     ],
 )
 @pytest.mark.asyncio
-async def test_missing_kill_evidence_fails_hardening(tmp_path, monkeypatch, result):
+async def test_missing_kill_evidence_fails_hardening(
+    tmp_path, monkeypatch, request, result
+):
     from benchflow._utils import kill_record
+
+    printed = "quiescence check printed {} 'BF killed' lines, not 1 whole receipt"
+    no_status = r"quiescence check exited with rc=125\n(.*\n)?.*exec output receipt not printed \(exec status None\)"
+    refusal = {
+        "no-marker": re.escape(printed.format(0)),
+        "no-stdout": re.escape(printed.format(0)),
+        "two-markers": re.escape(printed.format(2)),
+        "bad-count": re.escape(printed.format(1)),
+        "cut-short": re.escape(printed.format(1)),
+        "no-end-word": re.escape(printed.format(1)),
+        "extra-marker": re.escape(printed.format(2)),
+        # No integer status: no receipt comes back (_Canned), so the read fails.
+        "no-status": no_status,
+        "none-status": no_status,
+        "str-status": no_status,
+        "no-result": no_status,
+    }[request.node.callspec.id]
 
     recorded = []
     monkeypatch.setattr(
@@ -718,7 +737,7 @@ async def test_missing_kill_evidence_fails_hardening(tmp_path, monkeypatch, resu
         "record_kill_before_grading",
         lambda user, killed: recorded.append((user, killed)),
     )
-    with pytest.raises(RuntimeError, match="Verifier hardening failed"):
+    with pytest.raises(RuntimeError, match=refusal):
         await _kill_sandbox_user_procs(_Canned(result), "agent")
     assert recorded == []
 

@@ -132,6 +132,13 @@ class ComposeTopology:
     main_network_mode: str | None = None
     other_services: tuple[str, ...] = ()
     unresolved: str = ""
+    #: For ``network_mode: service:<x>`` (followed through further
+    #: ``service:`` links): the service whose own namespace main joins.
+    main_netns_owner: str = ""
+    #: Where that chain ends: "" (a namespace of the project's own), "host"
+    #: (the host's network), or "outside" (another container's, a variable,
+    #: an unknown service, a loop).
+    main_chain_end: str = ""
 
     @property
     def main_shares_outside_network(self) -> bool:
@@ -147,6 +154,10 @@ class ComposeTopology:
         mode = self.main_network_mode
         if mode is None:
             return False
+        if mode.startswith("service:") and "$" not in mode:
+            # Another service of the project: its namespace is the trial's own
+            # unless the chain ends in the host's or leaves the project.
+            return self.main_chain_end != ""
         return (
             mode == "host" or mode.startswith(("container:", "service:")) or "$" in mode
         )
@@ -155,7 +166,37 @@ class ComposeTopology:
         """The record's reason when ``main`` shares an outside network."""
         if self.unresolved:
             return MAIN_NETWORK_UNRESOLVED.format(reason=self.unresolved)
+        if self.main_chain_end == "host":
+            return MAIN_SHARES_HOST_NETWORK.format(
+                mode=f"{self.main_network_mode}, whose network is the host's"
+            )
         return MAIN_SHARES_HOST_NETWORK.format(mode=self.main_network_mode)
+
+
+def _service_chain(
+    services: dict[str, Any], mode: str, networks: Any
+) -> tuple[str, str]:
+    """Follow ``service:`` links from *mode*: (the service whose own namespace
+    it ends in, where the chain ends: "" the project's own, "host", or
+    "outside")."""
+    owner, seen = "", set()
+    while isinstance(mode, str) and mode.strip().startswith("service:"):
+        name = mode.strip().split(":", 1)[1].strip()
+        service = services.get(name)
+        if name in seen or "$" in name or not isinstance(service, dict):
+            return name, "outside"
+        if "extends" in service:
+            return name, "outside"
+        seen.add(name)
+        owner, mode = name, service.get("network_mode")
+        if mode is None:
+            return owner, "outside" if _main_host_network(service, networks) else ""
+    mode = str(mode).strip()
+    if mode == "host":
+        return owner, "host"
+    if mode.startswith("container:") or "$" in mode:
+        return owner, "outside"
+    return owner, ""
 
 
 def _compose_external(value: Any) -> bool | None:
@@ -248,6 +289,46 @@ def _compose_loader() -> Any:
     return ComposeLoader
 
 
+def _offline(service: Any) -> bool:
+    """A compose service with no network: ``network_mode: none``, with no
+    ``networks`` and no ``extends`` that could give it one."""
+    return (
+        isinstance(service, dict)
+        and str(service.get("network_mode", "")).strip() == "none"
+        and "extends" not in service
+        and not service.get("networks")
+    )
+
+
+def resolved_topology(project: Any) -> ComposeTopology:
+    """:class:`ComposeTopology` of the project as Compose resolved it for the
+    run (``docker compose ... config --format json``): extends, include,
+    interpolation and profiles are what Compose made of them, so nothing is
+    left unresolved."""
+    services = project.get("services") if isinstance(project, dict) else None
+    services = services if isinstance(services, dict) else {}
+    networks = project.get("networks") if isinstance(project, dict) else None
+    others = tuple(
+        sorted(
+            str(n) for n, svc in services.items() if n != "main" and not _offline(svc)
+        )
+    )
+    main = services.get("main")
+    if not isinstance(main, dict):
+        return ComposeTopology(other_services=others)
+    mode = main.get("network_mode")
+    owner, end = "", ""
+    if isinstance(mode, str) and mode.strip().startswith("service:"):
+        owner, end = _service_chain(services, mode, networks)
+    return ComposeTopology(
+        main_network_mode=None if mode is None else str(mode).strip(),
+        other_services=others,
+        unresolved="" if mode is not None else _main_host_network(main, networks),
+        main_netns_owner=owner,
+        main_chain_end=end,
+    )
+
+
 def task_compose_topology(environment_dir: Path | None) -> ComposeTopology:
     """Read the task's ``docker-compose.yaml`` (the file the Docker and
     Daytona compose backends stack on BenchFlow's own) in *environment_dir*.
@@ -300,10 +381,15 @@ def task_compose_topology(environment_dir: Path | None) -> ComposeTopology:
         )
     else:
         unresolved = _main_host_network(main, loaded.get("networks"))
+    owner, end = "", ""
+    if isinstance(mode, str) and mode.strip().startswith("service:"):
+        owner, end = _service_chain(services, mode, loaded.get("networks"))
     return ComposeTopology(
         main_network_mode=None if mode is None else str(mode).strip(),
         other_services=others,
         unresolved=unresolved,
+        main_netns_owner=owner,
+        main_chain_end=end,
     )
 
 

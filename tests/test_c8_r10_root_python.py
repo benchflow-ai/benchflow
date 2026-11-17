@@ -66,6 +66,12 @@ def _rendered(node: ast.JoinedStr) -> str:
 # Every Python launch outside the entry point, with why it is not root's
 # stdlib helper on the protected interpreter. A new one fails the scan.
 NOT_ROOT_HELPERS = {
+    # The verifier's egress proxy's health, asked from inside its own
+    # container: the pinned helper image's python3, not main's (EN-609).
+    (
+        "sandbox/_egress_container.py",
+        "wait_healthy",
+    ): "the egress proxy container's own python3 (pinned helper image), never main",
     # The kit's own interpreter, smoke-tested while the kit is built (before
     # the agent's turn).
     ("_runtime_tree.py", "kit_prepare_command"): "the kit's build",

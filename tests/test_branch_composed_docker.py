@@ -41,6 +41,10 @@ async def test_composed_children_and_parent_roundtrip(tmp_path, child_fails):
     )
     # The containers below are made by hand under this exact project name.
     sandbox._compose_project = project
+    # The rollout folders' bind sources as Compose gets them
+    # (DockerSandboxEnvVars): a ReachablePath is not os.PathLike, and its
+    # str() is a diagnostic, never a path.
+    sources = sandbox._env_vars.to_env_dict(include_os_env=False)
     snapshots = []
     original_snapshot = sandbox.snapshot
 
@@ -85,13 +89,22 @@ async def test_composed_children_and_parent_roundtrip(tmp_path, child_fails):
                 f"com.docker.compose.project={project}",
                 "--label",
                 "com.docker.compose.service=main",
+                # Compose's labels on its own service containers: its ps (and with
+                # it the bind proof, at start and after a restore) lists only those.
+                "--label",
+                "com.docker.compose.oneoff=False",
+                "--label",
+                "com.docker.compose.config-hash=dt2-hand-made",
                 "--mount",
-                f"type=bind,src={paths.verifier_dir},dst=/proof-output",
+                f"type=bind,src={sources['HOST_VERIFIER_LOGS_PATH']},dst=/proof-output",
                 "python:3.12-slim",
                 "sleep",
                 "infinity",
             ]
         )
+        # As start() does before any setup or agent code: pin the first-start
+        # bind proof that snapshot and restore check.
+        await sandbox._pin_or_verify_bind_targets()
         await checked("apt-get update -qq && apt-get install -y -qq sqlite3 curl")
         await checked(
             "mkdir -p /mail /calendar && echo parent > /state && "

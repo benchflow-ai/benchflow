@@ -779,26 +779,23 @@ class TestResolveAgentEnvAzureFoundry:
             == "https://example-resource.services.ai.azure.com/anthropic"
         )
 
-    def test_azure_openai_rejects_anthropic_agent_protocol(self, monkeypatch):
-        """Guards PR #422: unsupported agent/provider protocol pairs fail fast."""
+    def test_azure_openai_serves_the_anthropic_agent_through_the_gateway(
+        self, monkeypatch
+    ):
+        """Guards PR #422 and EN-501: Claude Code calls the gateway, which
+        calls Azure OpenAI's chat completions, so the pair is not refused."""
         monkeypatch.setenv("AZURE_API_KEY", "az-test")
         monkeypatch.setenv(
             "AZURE_API_ENDPOINT", "https://example-resource.openai.azure.com/"
         )
 
-        with pytest.raises(
-            ValueError,
-            match=(
-                r"claude-agent-acp.*requires provider protocol "
-                r"'anthropic-messages'.*azure-foundry-openai.*only supports "
-                r"openai-completions, openai-responses"
-            ),
-        ):
-            resolve_agent_env(
-                "claude-agent-acp",
-                "azure-foundry-openai/gpt-5.5",
-                {},
-            )
+        env = resolve_agent_env(
+            "claude-agent-acp",
+            "azure-foundry-openai/gpt-5.5",
+            {},
+        )
+
+        assert env["BENCHFLOW_PROVIDER_NAME"] == "azure-foundry-openai"
 
     def test_azure_anthropic_rejects_openai_agent_protocol(self, monkeypatch):
         """Guards PR #422: fallback must not send OpenAI traffic to Anthropic."""

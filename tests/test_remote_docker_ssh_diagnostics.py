@@ -117,7 +117,10 @@ async def test_ssh_certificate_rotation_hides_dummy_names(
         ),
     )
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[ssh\]: cannot connect to the Docker daemon",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "true"])
         outputs = [str(caught.value)]
     else:
@@ -150,7 +153,10 @@ async def test_exec_error_boundaries_discard_unknown_helper_contents(
         ),
     )
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[ssh\]: cannot connect to the Docker daemon",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "true"])
         _assert_fixed(str(caught.value))
     else:

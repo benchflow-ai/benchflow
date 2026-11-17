@@ -1732,7 +1732,7 @@ def _default_create(rollout: Any) -> CreateEnvironment:
     cfg = rollout._config
 
     def create(task: Any, context_path: Path, paths: RolloutPaths) -> Any:
-        return rollout._planes.create_environment(
+        sandbox = rollout._planes.create_environment(
             cfg.environment,
             task,
             context_path,
@@ -1741,6 +1741,7 @@ def _default_create(rollout: Any) -> CreateEnvironment:
             preserve_agent_network=False,
             environment_manifest=None,
         )
+        return sandbox
 
     return create
 
@@ -2411,7 +2412,14 @@ class VerifierSandboxRun:
         if self._agent_gone_at is not None and self._charge is not None:
             self._charge.finish()
         try:
-            await self.env.start(force_build=False)
+            # Its main's ENTRYPOINT and its services start under the verifier's
+            # network, not before it (N5), whatever made the sandbox:
+            # nothing of BenchFlow's there needs the network before test.sh.
+            from benchflow.sandbox.service_cover import start_sandbox
+
+            await start_sandbox(
+                self.env, self.vtask, agent=None, separate_verifier=True
+            )
             # V2's protected verifier runtime, from the fresh image before any
             # of the agent's bytes arrive. The workspace is the declared one
             # (the agent's cwd), which the transfer's manifest must match.

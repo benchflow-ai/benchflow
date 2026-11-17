@@ -114,10 +114,10 @@ All paths are relative to the trial folder. Every field is read from the `tree.j
 | Field | Meaning | Null when |
 |---|---|---|
 | `totals.forks`, `totals.children` | how many | |
-| `totals.cost` | `result.json` `branches.cost`, else summed over forks. A nested fork's parent sandbox is not counted twice. | runs before cost accounting |
-| `totals.usage` | token classes summed over children: `{input, output, cache_read, cache_creation, total}` | no child has a usage record |
+| `totals.cost` | `result.json` `branches.cost`, else summed over forks. A nested fork's parent sandbox is not counted twice. `children_without_usage`: children whose count is unknown, left out of `tokens`, which is then a floor. `cost_incomplete`: `usd` is a floor. | runs before cost accounting |
+| `totals.usage` | token classes summed over children: `{input, output, cache_read, cache_creation, total}` | no child has a usage record; also when a child's count is unknown or a child left a class unknown (a sum with an unknown part is unknown, never 0) |
 | `totals.usd_estimate` | summed `child.usd_estimate` | any child's estimate is null |
-| `totals.per_scored_child` | `{scored, tokens, usd, usd_estimate, sandbox_seconds}`: totals divided by the scored children (the cost of one sample) | each value: `scored` is 0, or the total is null |
+| `totals.per_scored_child` | `{scored, tokens, usd, usd_estimate, sandbox_seconds}`: totals divided by the scored children (the cost of one sample) | each value: `scored` is 0, or the total is null; `tokens` also when the token total leaves a child out |
 | `pricing` | `{model, source, usd_per_token}` from LiteLLM's bundled price table. List prices; subscription, batch or negotiated prices differ. | no model, unknown model, or no price table |
 
 ### Fork
@@ -138,7 +138,7 @@ All paths are relative to the trial folder. Every field is read from the `tree.j
 | `snapshot` | `layers_requested`, `layers_captured`, `agent_session` (`fresh`/`resumed`), `retention` (`deleted`/`deferred`/`kept`/`delete_failed`), `provider`, `reused` | |
 | `snapshot.reused` | true when the fork used an existing image (a kept or automatic checkpoint) instead of taking a snapshot; `timing_sec.checkpoint` is then near 0 | |
 | `timing_sec` | seconds: `checkpoint`, `child_restore[]` (per child), `children`, `parent_restore` | older trees |
-| `cost` | tokens, `usd` + `usd_known`, `wall_seconds`, `parent_sandbox_seconds`, `children_sandbox_seconds`, `sandbox_seconds` | older trees |
+| `cost` | tokens, `usd` + `usd_known`, `wall_seconds`, `parent_sandbox_seconds`, `children_sandbox_seconds`, `sandbox_seconds`; `children_without_usage` and `cost_incomplete` as for totals, present only when there are any | older trees |
 | `usage`, `usd_estimate` | summed over the fork's children | as for totals |
 | `children` | the child entries below | |
 
@@ -153,9 +153,9 @@ All paths are relative to the trial folder. Every field is read from the `tree.j
 | `advantage` | `reward − fork.value` | either is null |
 | `error` | `{type, code}` | no error |
 | `attempts`, `retried_after` | runs of the child (2 when a failure before the agent did anything was retried), and that first error | older trees; `retried_after` when not retried |
-| `cost` | `{tokens, usd, sandbox_seconds}` | `usd`: the provider reported no price (subscription runs never do) |
-| `usage` | `n_input_tokens` (not counting cache), `n_output_tokens`, `n_cache_read_tokens`, `n_cache_creation_tokens`, `total_tokens` | no usage record |
-| `usd_estimate` | USD at list price from `usage` and `pricing`; 0 when the child used no tokens (oracle). Never mixed into `cost.usd`. | no price for the model, or no usage |
+| `cost` | `{tokens, usd, sandbox_seconds}`; `cost_incomplete: true` when `usd` was priced from some of the child's calls only | `tokens`: the child's count is unknown (its agent died before reporting usage); `usd`: the provider reported no price (subscription runs never do) |
+| `usage` | `n_input_tokens` (not counting cache), `n_output_tokens`, `n_cache_read_tokens`, `n_cache_creation_tokens`, `total_tokens` | no usage record, or the child's count is unknown; one count is null when the child's usage did not report it (a cache count), never 0 |
+| `usd_estimate` | USD at list price from `usage` and `pricing`; 0 when the child used no tokens (oracle). Never mixed into `cost.usd`. | no price for the model, no usage, or a count in `usage` is null |
 | `timing_sec` | phase seconds; isolated children add `sandbox_from_snapshot`, `install_agent`, `finalize` | |
 | `snapshot_start` | isolated children: `{agent: reused/installed/none, verifier_baseline: inherited/recaptured, setup_commands: skipped}`. Show `recaptured` as a warning: tampering before the fork is not undone at verification. | |
 | `archive` | `{path, observation, result}`. `observation` exists for every published child; `result` only for isolated children. | each file that doesn't exist |

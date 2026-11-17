@@ -1169,7 +1169,10 @@ def test_a_non_empty_collect_keeps_its_refusal(tmp_path, sandbox) -> None:
     seen = _what_benchflow_sees(task, sandbox)
     reason = UNHONOURED_FOREIGN_KEYS["verifier.collect"]
     assert ("verifier.collect", reason) in seen["issues"], seen["issues"]
-    assert any("verifier.collect" in w and "refused" in w for w in seen["warnings"])
+    assert (
+        f"task.toml key verifier.collect[0].command: {reason}; the run is refused "
+        "while it is set"
+    ) in seen["warnings"], seen["warnings"]
 
 
 # --- round 4: review of 21fc931e ------------------------------------------------
@@ -1280,6 +1283,8 @@ def test_a_job_tasks_config_with_no_agent_runs_the_oracle(
     assert "No agent named" not in printed  # the default-agent warning
 
     # Naming an agent runs it, and says nothing about the oracle.
+    # The dry run resolves the agent's env as each trial does (EN-632).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-not-a-key")
     named = _bench("run", "--config", config, "-a", "claude", "--dry-run")
     assert named.exit_code == 0, named.output
     assert _plan(named)["agent"] == "claude-agent-acp"

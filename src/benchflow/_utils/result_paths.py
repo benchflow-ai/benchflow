@@ -19,6 +19,23 @@ _JOB_RECORDS = ("evaluation.json", "summary.json")
 # replaced (evaluation._check_resume_mismatch): kept for the record, never read
 # as the job's trials. A reader pointed at the folder itself still reads them.
 SET_ASIDE_DIR = ".set-aside"
+# result.json's mark on a trial that was stopped (Ctrl-C, SIGTERM, a budget)
+# before it finished: the file keeps what the trial spent, but the
+# trial is no finished attempt. Readers treat it as interrupted, as a folder
+# with no result.json, and a resume runs the task again.
+INTERRUPTED_MARK = "interrupted"
+
+
+def is_interrupted_result(result: Any) -> bool:
+    """Whether a result.json payload is a stopped trial's spend record."""
+    return isinstance(result, dict) and result.get(INTERRUPTED_MARK) is True
+
+
+def _reads_interrupted(path: Path) -> bool:
+    try:
+        return is_interrupted_result(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return False
 
 
 def is_set_aside(path: Path, root: Path) -> bool:
@@ -79,8 +96,27 @@ def iter_task_result_paths(root: Path) -> list[Path]:
             result = None
         if isinstance(result, dict) and result.get("purpose") == "reviewer":
             continue
+        if is_interrupted_result(result):
+            continue  # a stopped trial: interrupted, not a finished attempt
         selected.append(path)
     return selected
+
+
+def interrupted_trial_results(root: Path) -> dict[str, dict[str, Any]]:
+    """The spend records of the trials stopped before they finished
+    (:data:`INTERRUPTED_MARK`), by trial folder name: summary.json's usage
+    counts what they spent."""
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.rglob("result.json")):
+        if is_set_aside(path, root):
+            continue
+        try:
+            result = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if is_interrupted_result(result):
+            found[path.parent.name] = result
+    return found
 
 
 def load_task_results(

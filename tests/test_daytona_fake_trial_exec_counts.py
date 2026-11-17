@@ -701,7 +701,9 @@ async def test_one_fake_trial_with_merged_execs(
     # ownership freeze (_blocked_before_freeze, CONFIRM-lockdown-3 and -5)
     # runs twice in this trial: two execs more. K1's root-only daemon-log
     # exec of its own: one more.
-    assert summary["exec_calls"] == 46, groups
+    # EN-715: the test.sh preflight's PATH read and probe, and the uploaded
+    # tests made root's (chown -R 0:0): three more.
+    assert summary["exec_calls"] == 49, groups
     assert {g: groups.get(g, 0) for g in U12_GROUPS} == {
         "start": 1,
         "snapshot": 1,

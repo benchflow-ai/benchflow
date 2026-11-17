@@ -101,6 +101,12 @@ _IMAGE_BUILD_CLASS = "imagebuilderror: "
 # never retried; `bench check` names it (DF-p4-upgrader-8). Read from the
 # recorded error's class, which opens it (describe_exception).
 TASK_CONFIG = "task_config"
+# A ``script:`` agent on a built-in backend without the operator-script runner
+# (benchflow.agents.scripts.ScriptBackendError): the run's setting, refused
+# before any sandbox. Unscored, never retried: another attempt is refused the
+# same way. Read from the recorded error's class, which opens it.
+SCRIPT_BACKEND = "script_backend"
+_SCRIPT_BACKEND_CLASS = "scriptbackenderror: "
 _TASK_CONFIG_CLASSES = (
     "taskconfigkeyerror: ",
     "taskdocumentparseerror: ",
@@ -162,6 +168,36 @@ VERIFIER_DEP_INSTALL = "verifier_dep_install"
 # The verifier wrote a reward outside the task's range (#1178): unscored, the
 # raw number kept in result.json's reward_out_of_range_info.
 VERIFIER_REWARD_OUT_OF_RANGE = "reward_out_of_range"
+# test.sh failed after the verifier's network policy refused it packets
+# (benchflow.sandbox.verifier_network): unscored, out of the mean,
+# never retried (another attempt meets the same policy). Read head-anchored:
+# BenchFlow's own words, never test.sh's.
+VERIFIER_NETWORK_REFUSED = "verifier_network_refused"
+_VERIFIER_NETWORK_REFUSED_HEAD = "verifier network refused: "
+# test.sh did not start held (no launch record, or NET_ADMIN/NET_RAW at its
+# launch): unscored, BenchFlow's refusal, not the solution's verdict.
+VERIFIER_LAUNCH_REFUSED = "verifier_launch_refused"
+_VERIFIER_LAUNCH_REFUSED_HEAD = "verifier launch refused: "
+# The verifier's network could not be held (its rules not added or not
+# proven), so test.sh did not run, never open instead: unscored, BenchFlow's
+# refusal, never retried.
+VERIFIER_NETWORK_UNHELD = "verifier_network_unheld"
+_VERIFIER_NETWORK_UNHELD_HEAD = "verifier network not held: "
+
+
+def is_verifier_network_refusal(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* is the ending "verifier network refused"."""
+    return isinstance(verifier_error, str) and verifier_error.startswith(
+        _VERIFIER_NETWORK_REFUSED_HEAD
+    )
+
+
+# The verifier's PATH leaves out a folder of the image's (one a user other
+# than root could write, or a relative entry) that the task's required_tools
+# contract does not cover, so test.sh did not run: unscored, BenchFlow's
+# refusal, never retried (task/verifier_errors.VerifierToolsRefusedError).
+VERIFIER_TOOLS_REFUSED = "verifier_tools_refused"
+_VERIFIER_TOOLS_REFUSED_HEAD = "verifier tools refused: "
 
 # Catalogs for fixed-schema exports; reuse the classifier constants rather
 # than admitting arbitrary saved text as a category.
@@ -191,6 +227,7 @@ ERROR_CATEGORIES = frozenset(
         IMAGE_BUILD,
         REGISTRY_AUTH,
         TASK_CONFIG,
+        SCRIPT_BACKEND,
         DISK_FULL,
         OTHER_ERROR,
     }
@@ -202,6 +239,10 @@ VERIFIER_ERROR_CATEGORIES = frozenset(
         VERIFIER_TIMEOUT,
         VERIFIER_DEP_INSTALL,
         VERIFIER_REWARD_OUT_OF_RANGE,
+        VERIFIER_NETWORK_REFUSED,
+        VERIFIER_LAUNCH_REFUSED,
+        VERIFIER_NETWORK_UNHELD,
+        VERIFIER_TOOLS_REFUSED,
         VERIFIER_OTHER,
         DISK_FULL,
         INFRA_ERROR,  # automatic scoring infrastructure errors
@@ -343,6 +384,8 @@ def _classify_error(error: str) -> str | None:
         return DISK_FULL
     if head.startswith(_TASK_CONFIG_CLASSES):
         return TASK_CONFIG
+    if head.startswith(_SCRIPT_BACKEND_CLASS):
+        return SCRIPT_BACKEND
     built = lower.lstrip().removeprefix("sandbox startup failed: ")
     if built.removeprefix(_REGISTRY_AUTH_CLASS).startswith(REGISTRY_AUTH_HEADER):
         return REGISTRY_AUTH
@@ -395,6 +438,14 @@ def _classify_error(error: str) -> str | None:
     if (
         "sandbox startup" in lower
         or "sandbox creation" in lower
+        # The agent's egress firewall could not go in, so the agent was
+        # never started: the sandbox's setup, not the agent's turn.
+        # Read at the error's head (after its class), where BenchFlow puts
+        # it, as the helper's own failure is: text that quotes it (an
+        # agent's, a task's) does not claim it.
+        or lower.lstrip()
+        .removeprefix("runtimeerror: ")
+        .startswith("failed to enforce sandbox-user egress firewall")
         or _looks_like_docker_registry_metadata_error(lower)
     ):
         return SANDBOX_SETUP
@@ -415,6 +466,13 @@ def _classify_error(error: str) -> str | None:
 # running seconds later.
 _UNRECOVERABLE_STARTUP_RES = (
     re.compile(r"path does not exist: "),
+    # test.sh needs a command the verifier's PATH does not have, read before
+    # the agent's turn from the task and its image (task/test_sh_preflight).
+    re.compile(r"sandbox startup refused: test\.sh needs `"),
+    # A branch child with no preflight verdict to carry (task/test_sh_preflight).
+    re.compile(
+        r"sandbox startup refused: no test\.sh preflight verdict for this branch child"
+    ),
     # The image cannot keep the agent from Daytona's root daemon.
     re.compile(
         r"agent user could not be kept away from daytona.s root toolbox daemon: (?:the image has no iptables and no package manager|the image has ipv6 but no ip6tables)"
@@ -422,6 +480,36 @@ _UNRECOVERABLE_STARTUP_RES = (
     # The image hands the agent user the firewall that refuses the cloud
     # metadata endpoints (lockdown.CloudMetadataPowerError).
     re.compile(r"the agent user '[^']*' can change the firewall through "),
+    # its start refusals, decided by the task's files and the run's
+    # settings, which another attempt meets again: a
+    # network policy with a way around it on a compose service, a compose
+    # power without the opt-out, main sharing the host's network through
+    # another service, and an override that would leave main holding
+    # NET_ADMIN. A helper that failed to build or a netns probe that could not
+    # be read stays retryable.
+    re.compile(
+        r"sandbox startup refused: the task's network policy \([^)]*\) holds every "
+        r"service"
+    ),
+    re.compile(
+        r"sandbox startup refused: the task's compose (?:file gives main|service "
+        r"'[^']*' holds) "
+    ),
+    re.compile(
+        r"sandbox startup refused: main joins the network namespace of service "
+    ),
+    re.compile(
+        r"sandbox startup refused: the task's network policy \([^)]*\) needs "
+        r"benchflow's helper container to add main's rules from outside it; "
+        r"(?:benchflow_metadata_helper=0|benchflow_metadata_main_net_admin=1) "
+    ),
+    # The compose preflight's host-access refusals (task.compose_env): the
+    # task's files ask for this machine, and only an operator's opt-in (on a
+    # cloud VM, two) changes that.
+    re.compile(r"a task's compose files may reach only files in the task's folder"),
+    re.compile(
+        r"is set, but this machine is a cloud vm \(its metadata server answers\)"
+    ),
     # The image lets another user change a library root's steps load
     # (lockdown.LoaderCustodyError).
     re.compile(
@@ -436,6 +524,20 @@ _UNRECOVERABLE_STARTUP_RES = (
     ),
     re.compile(
         r"sandbox startup refused: the restricted agent launch could not be verified: "
+    ),
+    # A sandbox its caller started before the run named its agent, whose
+    # main's image ENTRYPOINT ran outside the task's network policy:
+    # the same sandbox refuses again.
+    re.compile(
+        r"sandbox startup refused: this sandbox was started before the run named "
+        r"its agent"
+    ),
+    # R1: main was not quiet when a model agent was about to start
+    # under the task's network policy (task processes still ran there), or
+    # its processes could not be read; the task's image does the same again.
+    re.compile(
+        r"sandbox startup refused: main must be quiet when a model agent starts "
+        r"under the task's network policy"
     ),
     re.compile(r'failed to calculate checksum of ref \S+ "[^"]+": not found'),
     # The Daytona API rejected the key at create (sandbox/daytona_start).
@@ -577,8 +679,64 @@ def is_guard_refusal(verifier_error: str | None) -> bool:
     return message is not None and _GUARD_REFUSAL_RE.match(message) is not None
 
 
+#: How a verifier that wrote no usable reward is recorded.
+NO_USABLE_REWARD = "verifier wrote no usable reward: "
+
+
+# A verifier recovery's re-run on the preserved workspace opens with the
+# preserved-solver prefix; a reward file it could not use is the same evidence
+# the agent can reach as a first run's, so it counts the same (as on 0.10).
+_NO_USABLE_REWARD_RE = re.compile(
+    r"^(?:\[solver-preserved\] )?" + re.escape(NO_USABLE_REWARD)
+)
+
+
+def is_no_usable_reward(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* says the verifier wrote no usable reward, a
+    verifier recovery's re-run included."""
+    return isinstance(verifier_error, str) and bool(
+        _NO_USABLE_REWARD_RE.match(verifier_error)
+    )
+
+
+# The check before the test command (task/verifier_core.py): the
+# verifier's user cannot write the file its output goes to, so test.sh never
+# ran. BenchFlow's own failure (on Docker it makes that file on the host, as
+# the host's user, before the command), never the task's: verifier setup,
+# infrastructure, unscored. Matched at the start only, after the rollout's
+# own wrapper: no text the agent chose comes first.
+VERIFIER_OUTPUT_UNWRITABLE = "the verifier's user cannot write its output file "
+_OUTPUT_UNWRITABLE_RE = re.compile(
+    r"^(?:\[solver-preserved\] )?verifier crashed: (?:[A-Za-z_][\w.]*: )?"
+    r"Verifier setup failed: " + re.escape(VERIFIER_OUTPUT_UNWRITABLE)
+)
+
+
+def is_output_unwritable(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* is 's: test.sh never ran because the
+    verifier's user could not write its output file."""
+    return isinstance(verifier_error, str) and bool(
+        _OUTPUT_UNWRITABLE_RE.match(verifier_error)
+    )
+
+
+def counts_as_failure(verifier_error: str | None) -> bool:
+    """A verifier error that stays a failure in every score: a plugin guard
+    refusal, or a verifier that wrote no usable reward. Both are
+    decided by what the agent could reach, so leaving them out of a
+    denominator would let an agent turn a failure into an exclusion.
+
+    The one answer for a reward-less verifier: summary.json's counts, the
+    job's metrics, the CLI line and ``bench explain`` all take it, so none
+    can disagree. Any other verifier error (its unwritable output among
+    them) is unscored, out of ``score_excl_errors``."""
+    return is_guard_refusal(verifier_error) or is_no_usable_reward(verifier_error)
+
+
 def count_guard_refusals(results: Iterable[Mapping[str, Any]]) -> int:
-    """Verifier-errored trials whose verifier error is a plugin guard refusal.
+    """Verifier-errored trials whose verifier error counts as a failure
+    (:func:`counts_as_failure`): plugin guard refusals and, since that change,
+    verifiers that wrote no usable reward.
 
     Only those the score outcome puts in ``verifier_errored``, as
     ``BenchmarkMetrics.score_excl_errors`` counts them: a trial whose agent
@@ -587,7 +745,7 @@ def count_guard_refusals(results: Iterable[Mapping[str, Any]]) -> int:
     return sum(
         1
         for r in results
-        if is_guard_refusal(r.get("verifier_error"))
+        if counts_as_failure(r.get("verifier_error"))
         and classify_score_outcome(r) == "verifier_errored"
     )
 
@@ -596,6 +754,32 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     """Classify a verifier error string, or None if no error."""
     if not verifier_error:
         return None
+    # A recovery-eligible task keeps its solver's work under the same ending,
+    # tagged (rollout._verifier_recovery.PRESERVED_SOLVER): the category is
+    # the ending's either way.
+    ending = verifier_error.removeprefix("[solver-preserved] ")
+    if ending.startswith(_VERIFIER_NETWORK_REFUSED_HEAD):
+        return VERIFIER_NETWORK_REFUSED
+    if ending.startswith(_VERIFIER_LAUNCH_REFUSED_HEAD):
+        # BenchFlow refused to run test.sh unheld: deterministic, not retried.
+        return VERIFIER_LAUNCH_REFUSED
+    if ending.startswith(_VERIFIER_NETWORK_UNHELD_HEAD):
+        # The verifier's network could not be held, so test.sh did not run.
+        return VERIFIER_NETWORK_UNHELD
+    if ending.startswith(_VERIFIER_TOOLS_REFUSED_HEAD):
+        # Hardening refused test.sh's tools: decided by the image and the
+        # task, so deterministic and never retried, and never a crash.
+        return VERIFIER_TOOLS_REFUSED
+    # The two are read at the start and their heads differ ("verifier tools
+    # refused: " against "verifier crashed: ... Verifier setup failed: "), so no
+    # error is both and their order here never decides one.
+    if is_output_unwritable(verifier_error):
+        # BenchFlow's file, not the task's verifier.
+        return VERIFIER_INFRA
+    if is_no_usable_reward(verifier_error):
+        # What test.sh left in the sandbox decided it: never infrastructure,
+        # never retried.
+        return VERIFIER_FAILED
     if plugin_guard_error_message(verifier_error) is not None:
         # The guard decided, deterministically, from what the sandbox holds:
         # never infrastructure, whatever words a refused path contains.
@@ -922,6 +1106,12 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         if verifier_category:
             verifier_categories[verifier_category] += 1
     refused = count_guard_refusals(rows)
+    unusable = sum(
+        1
+        for r in rows
+        if is_no_usable_reward(r.get("verifier_error"))
+        and classify_score_outcome(r) == "verifier_errored"
+    )
     ratio = pass_rate(passed=counts["passed"], total=len(rows))
     scored_ratio = pass_rate_excl_errors(
         passed=counts["passed"], failed=counts["failed"], refused=refused
@@ -936,7 +1126,15 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         "unscored": counts["unscored"],
         # Unscored trials the plugin guard refused: failures in the
         # error-excluding score and the mean reward.
-        "guard_refusals": refused,
+        "guard_refusals": refused - unusable,
+        # Trials that ended "verifier network refused": unscored, 0 in
+        # mean_reward; summary.json counts them.
+        "verifier_network_refusals": sum(
+            1 for row in rows if is_verifier_network_refusal(row.get("verifier_error"))
+        ),
+        # Unscored trials whose verifier wrote no usable reward: failures
+        # there too.
+        "unusable_rewards": unusable,
         "pass": counts["passed"],
         "fail": counts["failed"],
         "error": counts["errored"],

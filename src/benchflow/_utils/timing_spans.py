@@ -127,6 +127,7 @@ NESTED_SPANS = frozenset({HARDEN_BEFORE_VERIFY})
 #: Stable names: a later one-script version of the steps fills the same keys.
 HARDEN_STEPS = (
     "kill_sandbox_user_procs",
+    "cloud_metadata_verifier",
     "clear_verifier_output",
     "prepare_app_dir",
     "reclaim_disk",
@@ -134,6 +135,7 @@ HARDEN_STEPS = (
     "freeze_workspace",
     "cleanup_conftests",
     "build_verifier_env",
+    "verifier_network",
 )
 
 # Spans keep millisecond precision; the older phases keep their 0.1 s.

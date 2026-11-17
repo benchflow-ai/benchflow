@@ -33,10 +33,10 @@ def test_bedrock_model_honors_max_thinking_effort_env():
         },
     )
 
-    # `max` is honored as "the highest supported effort": LiteLLM 1.88.0rc1
-    # rejects `max`/`xhigh` for opus-4-8, so BenchFlow clamps to the accepted
-    # ceiling `high` rather than erroring at request time (#737).
-    assert route.litellm_params["reasoning_effort"] == "high"
+    # `max` is sent as asked (EN-501): LiteLLM 1.88.0rc1 rejected `max`/`xhigh`
+    # for opus-4-8 and BenchFlow lowered them to `high` (#737); the pinned
+    # LiteLLM takes them.
+    assert route.litellm_params["reasoning_effort"] == "max"
 
 
 def test_vertex_route_passes_project_and_location_to_litellm():

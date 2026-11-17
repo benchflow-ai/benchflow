@@ -62,9 +62,9 @@ logger = logging.getLogger(__name__)
 def _round_tokens(rollout: Rollout) -> int | None:
     """Cumulative native-ACP tokens spent so far, or ``None`` if untrusted.
 
-    ``_native_usage_metrics`` is initialized to a zeroed ``usage_unavailable()``
-    payload (``usage_source="unavailable"``, ``total_tokens=0``), so a bare read
-    can't tell "spent 0 tokens" apart from "no usage captured". Gating on the
+    ``_native_usage_metrics`` is initialized to a ``usage_unavailable()``
+    payload (``usage_source="unavailable"``, null counts since that change), so a
+    bare read can't tell a count from "no usage captured". Gating on the
     trusted-source check keeps uninstrumented paths reporting ``None`` rather
     than a spurious ``0`` — preserving the cost-curve's best-effort contract.
     """

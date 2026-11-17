@@ -48,7 +48,7 @@ SCHEMA_VERSIONS: dict[str, int] = {
 SCHEMA_VERSION = SCHEMA_VERSIONS["trial"]
 #: Bumped when optional fields are added within a schema_version; the
 #: changelog is in docs/reference/json-export.md.
-SCHEMA_MINOR: dict[str, int] = {"trial": 3, "job": 0, "comparison": 0, "run-summary": 0}
+SCHEMA_MINOR: dict[str, int] = {"trial": 4, "job": 1, "comparison": 0, "run-summary": 0}
 SCHEMA_ID_BASE = "https://benchflow.ai/schemas"
 
 
@@ -88,6 +88,20 @@ class UsageExport(_Model):
         "(claude-code-session-log), method (claude-code-cost: Claude Code's "
         "totals; usage-at-list-price: its logged usage at list prices), path, "
         "sessions, responses, models (USD per model), context_1m",
+    )
+    usage_incomplete: bool | None = Field(
+        None,
+        description="true when the tokens are those of some of the trial's calls "
+        "only: a turn cut off before its usage report that no log counted, or a "
+        "stream cut before the provider's usage; null otherwise (1.4)",
+    )
+    usage_incomplete_reason: str | None = Field(
+        None, description="why usage_incomplete is true (1.4)"
+    )
+    cost_incomplete: bool | None = Field(
+        None,
+        description="true when cost_usd was priced from an incomplete count, so "
+        "it is what was counted, never the whole; null otherwise (1.4)",
     )
 
 
@@ -466,7 +480,25 @@ class JobExport(_Model):
         description="agent runs; controls left out, unless every trial is one"
     )
     denominators_with_controls: DenominatorsExport
-    cost_usd: float | None
+    cost_usd: float | None = Field(
+        description="USD over the trials (one kept attempt per task) that "
+        "reported one; null when none did. spend_all_attempts is every attempt's"
+    )
+    trials_cost_incomplete: int | None = Field(
+        None,
+        description="trials whose cost_usd was priced from some of their calls "
+        "only (usage_incomplete), so cost_usd is a floor when this is not 0. "
+        "summary.json's trials_cost_incomplete also counts the attempts stopped "
+        "before they finished; spend_all_attempts.attempts_cost_incomplete counts "
+        "every attempt. Null in a document below minor 1 (2.1)",
+    )
+    spend_all_attempts: dict[str, Any] | None = Field(
+        None,
+        description="what every attempt behind the trials spent, retried and "
+        "stopped attempts included, as summary.json's spend_all_attempts counts "
+        "it; null for a branch job or when the attempt records can't be read, "
+        "and in a document below minor 1 (2.1)",
+    )
     solve_rates: SolveRatesExport | None = Field(
         None,
         description="agent runs (controls left out, unless every trial is one); "
@@ -722,6 +754,7 @@ CostStatus = Literal["priced", "subscription", "unpriced", "unavailable"]
 
 
 def _cost_status(cost_usd: float | None, usage_source: str | None) -> CostStatus:
+    """``usage_source`` is the earlier name (``usage_source_legacy``)."""
     if cost_usd is not None:
         return "priced"
     if usage_source == "agent_native_acp":
@@ -798,12 +831,17 @@ def trial_export(
             total_tokens=r.total_tokens,
             cost_usd=r.cost_usd,
             usage_source=r.usage_source,
-            cost_status=_cost_status(r.cost_usd, r.usage_source),
+            cost_status=_cost_status(r.cost_usd, r.usage_source_legacy),
             price_source=r.price_source,
             cost_estimate=_safe(estimate)
             if isinstance(
                 estimate := (r.usage_details or {}).get("cost_estimate"), dict
             )
+            else None,
+            usage_incomplete=r.usage_incomplete,
+            usage_incomplete_reason=r.usage_incomplete_reason,
+            cost_incomplete=True
+            if r.usage_incomplete and r.cost_usd is not None
             else None,
         ),
         started_at=record["started_at"],
@@ -912,6 +950,12 @@ def job_export(
             job.denominators(include_controls=True)
         ),
         cost_usd=job.cost_usd,
+        trials_cost_incomplete=sum(
+            1
+            for t in job.trials
+            if t.cost_usd is not None and t.result.usage_incomplete is True
+        ),
+        spend_all_attempts=_safe(job.spend_all_attempts),
         solve_rates=SolveRatesExport(
             **job.solve_rates(include_controls=only_controls).to_dict()
         ),

@@ -117,5 +117,7 @@ def test_extract_usage_accepts_bedrock_converse_usage_shape():
         fallback_model="bedrock/us.anthropic.claude-opus-4-8",
     )
     assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 14
+    # EN-374: Bedrock's inputTokens is the uncached input, kept as reported.
+    assert usage["n_input_tokens"] == 10
+    assert usage["n_cache_read_tokens"] == 4
     assert usage["n_output_tokens"] == 2

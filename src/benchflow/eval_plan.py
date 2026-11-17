@@ -295,6 +295,7 @@ class EvalPlan:
             sandbox_setup_timeout=(
                 120 if req.sandbox_setup_timeout is None else req.sandbox_setup_timeout
             ),
+            sandbox_setup_timeout_given=req.sandbox_setup_timeout is not None,
             context_root=str(req.context_root) if req.context_root else None,
             base_image_override=req.base_image_override,
             separate_verifier=req.separate_verifier,
@@ -386,7 +387,7 @@ def _refuse_unknown_bare_agent(name: str) -> None:
 _AGENT_NAME_NEXT = "pass -a with a name `bench agents` lists"
 _EXTRA_NEXT = "run that install command, then `bench doctor` checks this machine"
 
-FAIL_ON_CHOICES = ("timeout", "error", "verifier-error")
+FAIL_ON_CHOICES = ("timeout", "error", "verifier-error", "effort-mismatch")
 
 
 def split_fail_on(values: list[str] | None) -> list[str]:
@@ -627,9 +628,19 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
     eval_prompts = cast("list[str | None] | None", request.prompt)
     sandbox_user = normalize_sandbox_user(request.sandbox_user)
     from benchflow.agents.registry import is_operator_script
-    from benchflow.agents.scripts import validate_script_user
+    from benchflow.agents.scripts import (
+        ScriptBackendError,
+        refuse_script_backend,
+        validate_script_user,
+    )
 
     if is_operator_script(eval_agent):
+        try:
+            # Refused here, not once the sandbox is up: the runner check used to
+            # fail only after a Daytona sandbox had started.
+            refuse_script_backend(eval_agent, eval_environment)
+        except ScriptBackendError as exc:
+            raise EvalPlanError(str(exc), hint=exc.hint) from None
         try:
             validate_script_user(sandbox_user)
         except ValueError as exc:
@@ -726,6 +737,25 @@ def build_eval_plan(request: EvalCreateRequest) -> EvalPlan:
         raise EvalPlanError(
             f"Invalid --reasoning-effort {request.reasoning_effort!r}: {exc}"
         ) from None
+    if request.config_file is None:
+        # Before any sandbox: every way of asking counts, two that
+        # differ are refused, and so is a level the model cannot take.
+        from benchflow.effort_request import EffortRequestError, settle_effort
+
+        try:
+            # Refusals name the agent as the run named it.
+            eval_reasoning_effort = settle_effort(
+                eval_agent,
+                request.model,
+                eval_reasoning_effort,
+                parsed_env,
+                named_as=request.agent,
+            ).effort
+        except EffortRequestError as exc:
+            raise EvalPlanError(
+                f"Refused before launch: {exc}",
+                hint=exc.hint or "ask for a level the model takes, in one way",
+            ) from None
     from benchflow.native_harness.harnesses import check_harness, normalize_harness
 
     try:

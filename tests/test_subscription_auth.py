@@ -191,7 +191,9 @@ class TestResolveAgentEnvSubscription:
             monkeypatch.delenv(k, raising=False)
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
-        (codex_dir / "auth.json").write_text('{"OPENAI_API_KEY": "from-login"}')
+        (codex_dir / "auth.json").write_text(
+            '{"tokens": {"access_token": "at", "refresh_token": "rt"}}'
+        )
         _patch_expanduser(monkeypatch, tmp_path)
 
         result = self._resolve(
@@ -200,6 +202,69 @@ class TestResolveAgentEnvSubscription:
             agent_env={},
         )
         assert result["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
+
+    def test_a_codex_auth_json_holding_an_api_key_is_an_api_key(
+        self, monkeypatch, tmp_path
+    ):
+        """EN-374 (audit CRED-1): ``codex login --with-api-key`` writes the key
+        to ~/.codex/auth.json. The file's existing made it a ChatGPT login:
+        the run went around the proxy, unmetered and unpriced, with the raw
+        key copied into the agent's home. The key is the run's API key now,
+        through the proxy; an inline CODEX_AUTH_JSON holding one is no login
+        either."""
+        from benchflow.agents.env import (
+            check_subscription_auth,
+            uses_native_subscription_auth,
+        )
+
+        for k in (
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_JSON",
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        codex_dir = tmp_path / ".codex"
+        codex_dir.mkdir()
+        (codex_dir / "auth.json").write_text('{"OPENAI_API_KEY": "sk-test-from-login"}')
+        _patch_expanduser(monkeypatch, tmp_path)
+
+        assert check_subscription_auth("codex-acp", "OPENAI_API_KEY") is False
+        assert uses_native_subscription_auth("codex-acp", "gpt-4o", {}) is False
+        result = self._resolve(agent="codex-acp", model="gpt-4o", agent_env={})
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+        assert result["OPENAI_API_KEY"] == "sk-test-from-login"
+        inline = {"CODEX_AUTH_JSON": '{"OPENAI_API_KEY": "sk-test-inline"}'}
+        assert uses_native_subscription_auth("codex-acp", "gpt-4o", inline) is False
+        result = self._resolve(agent="codex-acp", model="gpt-4o", agent_env=inline)
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+        assert "CODEX_AUTH_JSON" not in result
+        assert result["OPENAI_API_KEY"] == "sk-test-inline"
+        # A key the caller set outranks the file.
+        result = self._resolve(
+            agent="codex-acp",
+            model="gpt-4o",
+            agent_env={"OPENAI_API_KEY": "sk-test-explicit"},
+        )
+        assert result["OPENAI_API_KEY"] == "sk-test-explicit"
+
+    def test_login_file_kind_reads_the_contents(self):
+        from benchflow.agents.env import login_file_kind
+
+        assert login_file_kind('{"OPENAI_API_KEY": "sk-x"}') == "api-key"
+        assert (
+            login_file_kind('{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-x"}')
+            == "api-key"
+        )
+        # A ChatGPT login, also from older Codex builds that kept an exchanged key.
+        assert login_file_kind('{"auth_mode": "chatgpt", "tokens": {}}') == "login"
+        assert (
+            login_file_kind('{"OPENAI_API_KEY": "sk-x", "tokens": {"id_token": "t"}}')
+            == "login"
+        )
+        assert login_file_kind('{"OPENAI_API_KEY": null, "tokens": {}}') == "login"
+        assert login_file_kind("not json") == "login"
 
     def test_codex_auth_json_auth(self, monkeypatch, tmp_path):
         """Guards PR #587: inline Codex auth.json can auth native Codex runs."""
@@ -566,3 +631,78 @@ class TestUploadSubscriptionAuth:
         assert "[ ! -L /home/agent/.codex ]" in install[0]
         assert "umask 077" in install[0] and "set -C" in install[0]
         assert all("chown -R" not in call[0] for call in env.exec_calls)
+
+
+class TestAnthropicAuthTokenByContents:
+    """EN-374, audit CRED-4 (the lead's ruling): ANTHROPIC_AUTH_TOKEN's
+    contents decide its route, not its presence."""
+
+    MODEL = "claude-haiku-4-5-20251001"
+
+    def _resolve(self, monkeypatch, tmp_path, env):
+        from benchflow.agents.env import resolve_agent_env
+
+        for k in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "BENCHFLOW_PROVIDER_API_KEY",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        _patch_expanduser(monkeypatch, tmp_path)
+        return resolve_agent_env("claude-agent-acp", self.MODEL, dict(env))
+
+    def test_an_api_key_goes_through_the_proxy(self, monkeypatch, tmp_path):
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        env = {"ANTHROPIC_AUTH_TOKEN": "sk-ant-api03-test"}
+        assert (
+            uses_native_subscription_auth("claude-agent-acp", self.MODEL, env) is False
+        )
+        result = self._resolve(monkeypatch, tmp_path, env)
+        assert result["ANTHROPIC_API_KEY"] == "sk-ant-api03-test"
+        assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
+
+    def test_an_oauth_token_is_a_login(self, monkeypatch, tmp_path):
+        from benchflow.agents.env import uses_native_subscription_auth
+
+        env = {"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-test"}
+        assert (
+            uses_native_subscription_auth("claude-agent-acp", self.MODEL, env) is True
+        )
+        result = self._resolve(monkeypatch, tmp_path, env)
+        assert result["ANTHROPIC_AUTH_TOKEN"] == "sk-ant-oat01-test"
+        assert not result.get("ANTHROPIC_API_KEY")
+
+    def test_anything_else_is_refused_naming_the_variable(self, monkeypatch, tmp_path):
+        from benchflow.errors import MissingCredentialError
+
+        with pytest.raises(MissingCredentialError) as caught:
+            self._resolve(monkeypatch, tmp_path, {"ANTHROPIC_AUTH_TOKEN": "tok-123"})
+        assert "ANTHROPIC_AUTH_TOKEN" in str(caught.value)
+        assert "tok-123" not in str(caught.value)
+
+    def test_a_gateway_s_bearer_with_its_endpoint_is_left_alone(
+        self, monkeypatch, tmp_path
+    ):
+        env = {
+            "ANTHROPIC_AUTH_TOKEN": "gw-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example/anthropic",
+        }
+        result = self._resolve(monkeypatch, tmp_path, env)
+        assert result["ANTHROPIC_AUTH_TOKEN"] == "gw-token"
+
+    def test_an_explicit_login_outranks_an_inherited_unknown_token(
+        self, monkeypatch, tmp_path
+    ):
+        from benchflow.agents.env import resolve_agent_env
+
+        self._resolve(monkeypatch, tmp_path, {"CLAUDE_CODE_OAUTH_TOKEN": "x"})
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "inherited-unknown")
+        result = resolve_agent_env(
+            "claude-agent-acp",
+            self.MODEL,
+            {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-explicit"},
+        )
+        assert result["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-explicit"

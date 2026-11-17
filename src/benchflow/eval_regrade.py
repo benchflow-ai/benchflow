@@ -27,6 +27,7 @@ listing changed verdicts and every not-regradable trial with its reason.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -544,6 +545,52 @@ else:
 """
 
 
+def _under_recorded_reward_rule(
+    run: Callable[..., Awaitable[tuple[dict | None, str | None]]],
+) -> Callable[..., Awaitable[tuple[dict | None, str | None]]]:
+    """Run a frozen trial's verify under the rule its recorded integrity
+    mode gives a reward outside the range (config.json's ``integrity``; none
+    recorded is ``off``): strict scores it 0, audit and off keep it."""
+
+    @functools.wraps(run)
+    async def under_rule(
+        trial: Path, task_dir: Path, attempt: Path, *, sandbox: str | None = None
+    ) -> tuple[dict | None, str | None]:
+        from benchflow.rewards.validation import out_of_range_reward_rule
+
+        integrity = _read_json(trial / "config.json").get("integrity") or "off"
+        with out_of_range_reward_rule(integrity):
+            return await run(trial, task_dir, attempt, sandbox=sandbox)
+
+    return under_rule
+
+
+def _regrade_reward_note(rewards: dict | None, task_dir: Path) -> dict | None:
+    """The note on a regraded reward outside the task's range, kept as
+    test.sh wrote it (the trial's integrity audit or off), or None."""
+    from benchflow.diagnostics import RewardOutOfRangeDiagnostic
+    from benchflow.rewards.validation import (
+        RewardOutOfRange,
+        declared_reward_range,
+        is_out_of_range_reward,
+    )
+    from benchflow.task.task import Task
+
+    value = rewards.get("reward") if isinstance(rewards, dict) else None
+    if not isinstance(value, int | float):
+        return None
+    reward_range = declared_reward_range(Task(task_dir))
+    if not is_out_of_range_reward(value, reward_range=reward_range):
+        return None
+    note = RewardOutOfRangeDiagnostic.from_error(
+        RewardOutOfRange("reward", value, reward_range)
+    )
+    note.recorded_as_written = True
+    logger.warning(note.note())
+    return note.to_dict()
+
+
+@_under_recorded_reward_rule
 async def run_verifier_on_frozen_trial(
     trial: Path,
     task_dir: Path,
@@ -566,6 +613,10 @@ async def run_verifier_on_frozen_trial(
     from benchflow.rollout._setup import (
         _publish_trajectory_for_verifier,
         _verify_rollout,
+    )
+    from benchflow.task.config import (
+        run_sandbox_setup_timeout,
+        sandbox_user_setup_timeout_sec,
     )
 
     # Also here, for callers that skip the regrade gate: before any sandbox.
@@ -595,6 +646,7 @@ async def run_verifier_on_frozen_trial(
             sandbox_user=sandbox_user,
             sandbox_locked_paths=config.get("sandbox_locked_paths"),
             sandbox_setup_timeout=config.get("sandbox_setup_timeout") or 120,
+            sandbox_setup_timeout_given=config.get("sandbox_setup_timeout_given"),
             context_root=config.get("context_root"),
             base_image_override=config.get("base_image_override"),
             config_override=override,
@@ -665,7 +717,9 @@ async def run_verifier_on_frozen_trial(
                 env,
                 sandbox_user,
                 workspace=workspace,
-                timeout_sec=child._config.sandbox_setup_timeout,
+                timeout_sec=sandbox_user_setup_timeout_sec(
+                    run_sandbox_setup_timeout(child._config)
+                ),
                 guard_daemon=False,
             )
         trajectory_path = trial / "trajectory" / "acp_trajectory.jsonl"
@@ -767,6 +821,9 @@ async def _regrade_one(
     block["task_changed"] = block["original_task_digest"] != block["task_digest"]
     try:
         rewards, error = await runner(trial, task_dir, attempt, sandbox=sandbox)
+        note = None if error else _regrade_reward_note(rewards, task_dir)
+        if note is not None:
+            block["reward_out_of_range_info"] = note
     except asyncio.CancelledError:
         block.update(status="interrupted")
         _write_block(trial, attempt, block)

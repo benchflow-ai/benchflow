@@ -69,7 +69,7 @@ from benchflow.sandbox._compose_teardown import (
     COMPOSE_KILL_COMMAND,
     compose_down_command,
 )
-from benchflow.sandbox._download import RemoteFileAbsentError
+from benchflow.sandbox._download import DIAL_STDIO_HELD, RemoteFileAbsentError
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox._transport import STAGE_ROOT, fit, reader_cat
 from benchflow.sandbox.daytona_pty import (
@@ -233,6 +233,11 @@ def _with_long_exec_heartbeat(
             'exit "$bf_rc"',
         ]
     )
+
+
+# DIAL_STDIO_HELD: `docker system dial-stdio` with the request on
+# stdin, held open until the daemon answers; it lives in _download, shared
+# with DockerSandbox.
 
 
 class _DaytonaDinD(_DaytonaStrategy):
@@ -1305,6 +1310,8 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         Archive HEAD returns 404 for both a missing path and a lost container;
         only a later successful ancestor lookup can establish file absence.
+        The request goes through :data:`DIAL_STDIO_HELD`, which keeps the
+        connection open until the daemon answers.
         """
         endpoint = (
             f"/containers/{urllib.parse.quote(container, safe='')}/archive?"
@@ -1312,7 +1319,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
         response = await exec_raw(
             self._vm_exec,
-            "docker system dial-stdio",
+            DIAL_STDIO_HELD,
             stdin_payload=(
                 f"HEAD {endpoint} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"
             ).encode("ascii"),

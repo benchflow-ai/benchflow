@@ -10,6 +10,7 @@ these run on a Docker VM).
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import threading
@@ -72,12 +73,25 @@ def _tasks(root: Path, prefix: str, count: int) -> Path:
     return root
 
 
+_AUXILIARY = re.compile(r"-bf-(?:metadata|egress)-[0-9a-f]+$")
+
+
 class LiveCount:
-    """The most running containers of this job's tasks seen at once."""
+    """The most running sandboxes of this job's tasks seen at once.
+
+    BenchFlow's helper and proxy containers beside each sandbox (EN-609:
+    ``<project>-bf-metadata-*``, ``<project>-bf-egress-*``) are not sandboxes,
+    but each sample checks them: never more of them than sandboxes, and each
+    beside a live sandbox of its own trial, so a helper that outlives its trial
+    fails the test. :meth:`left` counts every container."""
 
     def __init__(self, prefix: str) -> None:
         self.prefix = prefix
         self.peak = 0
+        #: Samples where helpers outnumbered sandboxes: (helpers, sandboxes).
+        self.excess: list[tuple[list[str], list[str]]] = []
+        #: Helpers seen with no live sandbox of their trial.
+        self.orphans: list[str] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -88,12 +102,36 @@ class LiveCount:
             text=True,
             timeout=30,
         ).stdout
-        return sum(1 for name in out.split() if name.startswith(self.prefix))
+        names = [name for name in out.split() if name.startswith(self.prefix)]
+        helpers = [name for name in names if _AUXILIARY.search(name)]
+        sandboxes = [name for name in names if not _AUXILIARY.search(name)]
+        if len(helpers) > len(sandboxes):
+            self.excess.append((helpers, sandboxes))
+        for helper in helpers:
+            project = _AUXILIARY.sub("", helper)
+            if not any(name.startswith(f"{project}-") for name in sandboxes):
+                self.orphans.append(helper)
+        return len(sandboxes)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             self.peak = max(self.peak, self._count())
             self._stop.wait(0.2)
+
+    def helpers_left(self) -> list[str]:
+        """BenchFlow helper and proxy containers of any trial left on the
+        daemon, running or not."""
+        out = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+        return [
+            name
+            for name in out.split()
+            if name.startswith(self.prefix) and _AUXILIARY.search(name)
+        ]
 
     def __enter__(self) -> LiveCount:
         self._thread.start()
@@ -149,6 +187,10 @@ async def test_live_sandboxes_stay_within_concurrency_plus_one(tmp_path, monkeyp
     result, live = await _run(tmp_path, monkeypatch, tasks=5, concurrency=2)
     assert live.peak <= 3, live.peak
     assert live.left() == []
+    assert live.excess == [], live.excess[:3]
+    assert live.orphans == [], sorted(set(live.orphans))
+    # After the pool shut down, no helper or proxy container is left.
+    assert live.helpers_left() == []
     assert result.total == 5 and result.errored == 0 and result.passed == 0
     # The pool was used: some trial took a prepared sandbox.
     assert any("warm_pool_wait" in t for t in _timings(tmp_path))
@@ -159,5 +201,9 @@ async def test_concurrency_one_keeps_one_sandbox(tmp_path, monkeypatch):
     result, live = await _run(tmp_path, monkeypatch, tasks=3, concurrency=1)
     assert live.peak == 1, live.peak
     assert live.left() == []
+    assert live.excess == [], live.excess[:3]
+    assert live.orphans == [], sorted(set(live.orphans))
+    # After the pool shut down, no helper or proxy container is left.
+    assert live.helpers_left() == []
     assert result.total == 3 and result.errored == 0 and result.passed == 0
     assert not any("warm_pool_wait" in t for t in _timings(tmp_path))

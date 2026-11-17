@@ -1634,15 +1634,143 @@ PytestPluginManager.import_plugin = _import_plugin
 
 
 class _Report:
+    # What the solution may have chosen in this run: a first
+    # conftest that failed to import, a skipped collector, an internal error
+    # raised through a conftest or the workspace.
+    config = None
+    early = None
+    conftest_failed = False
+    skipped = False
+    crashed = False
+
     @staticmethod
     def pytest_configure(config):
+        _Report.config = config
         _mark("registered")
+
+    @staticmethod
+    def pytest_addoption(parser, pluginmanager):
+        # pytest registers this plugin before it reads the ini file, so a
+        # usage error raised before the first conftests load (minversion,
+        # required_plugins) still finds the ini through this config.
+        _Report.early = pluginmanager.get_plugin("pytestconfig")
+
+    @staticmethod
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_load_initial_conftests(early_config, parser, args):
+        _Report.early = early_config
+        outcome = yield
+        if outcome.excinfo is not None:
+            _Report.conftest_failed = True
+
+    @staticmethod
+    def pytest_internalerror(excrepr, excinfo):
+        exc = getattr(excinfo, "value", None)
+        seen = set()
+        while exc is not None and id(exc) not in seen:
+            seen.add(id(exc))
+            tb = exc.__traceback__
+            if isinstance(exc, ImportError):
+                _Report.crashed = True
+            while tb is not None:
+                name = tb.tb_frame.f_code.co_filename
+                if os.path.basename(name) == "conftest.py" or (
+                    name.startswith("/") and (_in_workspace(name) or _in_tests(name))
+                ):
+                    _Report.crashed = True
+                tb = tb.tb_next
+            exc = exc.__cause__ or exc.__context__
+
+    @staticmethod
+    def pytest_collectreport(report):
+        if report.skipped:
+            _Report.skipped = True
+
+
+def _under_either(path, folder):
+    """Whether *path*, as written or resolved, is in *folder* (a name of its
+    own: ``_under`` above is the trust checks' helper)."""
+    folder = folder.rstrip("/")
+    if not folder or not path:
+        return False
+    return any(
+        spelling == folder or spelling.startswith(folder + "/")
+        for spelling in (os.path.abspath(path), os.path.realpath(path))
+    )
+
+
+def _in_workspace(path):
+    return _under_either(path, WORKSPACE)
+
+
+def _in_tests(path):
+    return _under_either(path, TESTS)
+
+
+def _agents_ini():
+    """Whether pytest read an ini file in the workspace that is not an image
+    file the runner knows with the image's bytes (IMAGE_FILES)."""
+    config = _Report.config or _Report.early
+    ini = getattr(config, "inipath", None) or getattr(config, "inifile", None)
+    if ini is None or not _in_workspace(str(ini)):
+        return False
+    path = os.path.abspath(str(ini))
+    if os.path.realpath(path) != path:
+        # A link in the workspace (to a file the agent wrote elsewhere, say)
+        # is the agent's, as the guard judges it.
+        return True
+    want = IMAGE_FILES.get(path[len(WORKSPACE.rstrip("/")) + 1 :])
+    try:
+        with open(path, "rb") as handle:
+            return want != hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return True
+
+
+def _solution_had_a_hand(status):
+    """Whether the solution may have brought pytest to *status*, as the
+    guard's _solution_had_a_hand judges it: then no ``exited`` marker."""
+    if _Report.conftest_failed or _agents_ini():
+        return True
+    if status == 3:
+        return _Report.crashed
+    if status == 5 and _Report.skipped:
+        return True
+    if not WORKSPACE.rstrip("/"):
+        return False
+    inside = _in_workspace
+
+    config = _Report.config
+    if config is not None:
+        params = getattr(config, "invocation_params", None)
+        where = str(getattr(params, "dir", None) or _CALLER_DIR)
+        for arg in getattr(config, "args", None) or ():
+            if inside(os.path.join(where, str(arg).split("::", 1)[0])):
+                return True
+    return any(
+        isinstance(getattr(module, "__file__", None), str)
+        and inside(module.__file__)
+        for module in list(sys.modules.values())
+    )
 
 
 args = ["-p", "no:cacheprovider", "--confcutdir=" + TESTS]
 for _name in sorted(PLUGINS):
     args += ["-p", _name]
-sys.exit(pytest.main([*args, *ARGS], plugins=[_Report()]))
+# A run that judged nothing (an internal error, a usage error, no tests
+# collected) leaves an ``exited`` marker, as the guard's does, unless
+# a test started this pytest as its subject.
+_nested = "PYTEST_CURRENT_TEST" in os.environ
+# An exception that escapes pytest.main (a sessionfinish hook that raised
+# after the tests ran) exits 1 with its traceback: no marker.
+_status = pytest.main([*args, *ARGS], plugins=[_Report()])
+if (
+    not _nested
+    and int(_status) in (3, 4, 5)
+    and not _solution_had_a_hand(int(_status))
+):
+    _mark("exited", str(int(_status)))
+sys.exit(_status)
 '''
 
 

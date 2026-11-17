@@ -172,6 +172,7 @@ jobs:
         run: >-
           uv run python -m pytest tests/test_grading_integrity_docker.py
           tests/test_grader_access_docker.py tests/test_network_bypass_docker.py
+          tests/test_dry_run_capabilities.py
           -m deterministic -v -rs --durations=0
         env:
           BENCHFLOW_DETERMINISTIC_SANDBOX: docker

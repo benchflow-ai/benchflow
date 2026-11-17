@@ -16,9 +16,11 @@ from benchflow._utils.scoring import (
     classify_error,
     classify_score_outcome,
     classify_verifier_error,
+    counts_as_failure,
     extract_reward,
     finite_reward,
     is_guard_refusal,
+    is_no_usable_reward,
     mean_reward_caveat,
     mean_reward_every_trial,
     mean_scored_reward,
@@ -161,11 +163,11 @@ class BenchmarkMetrics:
         return pass_rate_excl_errors(
             passed=self.passed,
             failed=self.failed,
-            # Guard refusals stay failures here.
+            # Guard refusals and unusable rewards stay failures here.
             refused=sum(
                 1
                 for t in self.tasks
-                if t.score_verifier_errored and is_guard_refusal(t.verifier_error)
+                if t.score_verifier_errored and counts_as_failure(t.verifier_error)
             ),
         )
 
@@ -228,42 +230,61 @@ class BenchmarkMetrics:
 
     @property
     def telemetry_tasks(self) -> list[TaskMetrics]:
-        """Completed tasks with provider telemetry."""
-        return [
-            t
-            for t in self.tasks
-            if t.completed and is_trusted_usage_source(t.usage_source)
-        ]
+        """Every task whose tokens a trusted source counted, errored and
+        unscored ones included, as summary.json counts them."""
+        return [t for t in self.tasks if is_trusted_usage_source(t.usage_source)]
 
     @property
     def telemetry_completed_tasks(self) -> list[TaskMetrics]:
-        """Completed tasks included in telemetry coverage denominator."""
-        return [t for t in self.tasks if t.completed]
+        """Every task: the telemetry coverage denominator, as summary.json's."""
+        return list(self.tasks)
+
+    def _token_total(self, field: str) -> int | None:
+        # A task that did not count a field adds nothing to it, and a field no
+        # task counted is unknown, not 0 (summary.json's rule).
+        values = [
+            value
+            for t in self.telemetry_tasks
+            if isinstance(value := getattr(t, field), int)
+            and not isinstance(value, bool)
+        ]
+        return sum(values) if values else None
 
     @property
-    def total_input_tokens(self) -> int:
-        """Input tokens over completed trials with trusted usage."""
-        return sum(t.input_tokens or 0 for t in self.telemetry_tasks)
+    def total_input_tokens(self) -> int | None:
+        """Uncached input tokens over tasks with trusted usage."""
+        return self._token_total("input_tokens")
 
     @property
-    def total_output_tokens(self) -> int:
-        """Output tokens over completed trials with trusted usage."""
-        return sum(t.output_tokens or 0 for t in self.telemetry_tasks)
+    def total_output_tokens(self) -> int | None:
+        """Output tokens over tasks with trusted usage."""
+        return self._token_total("output_tokens")
 
     @property
-    def total_cache_read_tokens(self) -> int:
-        """Prompt-cache read tokens over completed trials with trusted usage."""
-        return sum(t.cache_read_tokens or 0 for t in self.telemetry_tasks)
+    def total_cache_read_tokens(self) -> int | None:
+        """Prompt-cache read tokens over tasks with trusted usage."""
+        return self._token_total("cache_read_tokens")
 
     @property
-    def total_cache_creation_tokens(self) -> int:
-        """Prompt-cache write tokens over completed trials with trusted usage."""
-        return sum(t.cache_creation_tokens or 0 for t in self.telemetry_tasks)
+    def total_cache_creation_tokens(self) -> int | None:
+        """Prompt-cache write tokens over tasks with trusted usage."""
+        return self._token_total("cache_creation_tokens")
 
     @property
-    def total_tokens(self) -> int:
-        """All tokens over completed trials with trusted usage."""
-        return sum(t.total_tokens or 0 for t in self.telemetry_tasks)
+    def trials_without_cache_write_count(self) -> int:
+        """Tasks with trusted usage whose cache-write count is unknown: the
+        cache-write total leaves them out (summary.json's rule)."""
+        return sum(
+            1
+            for t in self.telemetry_tasks
+            if not isinstance(t.cache_creation_tokens, int)
+            or isinstance(t.cache_creation_tokens, bool)
+        )
+
+    @property
+    def total_tokens(self) -> int | None:
+        """All tokens over tasks with trusted usage."""
+        return self._token_total("total_tokens")
 
     @property
     def total_cost_usd(self) -> float | None:
@@ -283,11 +304,13 @@ class BenchmarkMetrics:
 
     @property
     def telemetry_coverage(self) -> float:
-        """Fraction of completed trials with trusted token usage."""
-        completed = self.telemetry_completed_tasks
-        if not completed:
+        """Fraction of every trial with trusted token usage whose total tokens
+        are known: a trusted source with null counters counted nothing."""
+        tasks = self.telemetry_completed_tasks
+        if not tasks:
             return 0.0
-        return len(self.telemetry_tasks) / len(completed)
+        counted = [t for t in self.telemetry_tasks if t.total_tokens is not None]
+        return len(counted) / len(tasks)
 
     @property
     def memory_scores(self) -> dict[str, float]:
@@ -350,6 +373,17 @@ class BenchmarkMetrics:
             "score": f"{self.score:.1%}",
             "score_ratio": self.score,
             "score_excl_errors": f"{self.score_excl_errors:.1%}",
+            # Unscored trials the error-excluding score keeps as failures.
+            "guard_refusals": sum(
+                1
+                for t in self.tasks
+                if t.score_verifier_errored and is_guard_refusal(t.verifier_error)
+            ),
+            "unusable_rewards": sum(
+                1
+                for t in self.tasks
+                if t.score_verifier_errored and is_no_usable_reward(t.verifier_error)
+            ),
             "score_excl_errors_ratio": self.score_excl_errors,
             # Every trial counted (n = total, an unscored trial as 0) and
             # BenchFlow 0.7's mean over scored trials only, with its n.
@@ -367,6 +401,7 @@ class BenchmarkMetrics:
             "total_output_tokens": self.total_output_tokens,
             "total_cache_read_tokens": self.total_cache_read_tokens,
             "total_cache_creation_tokens": self.total_cache_creation_tokens,
+            "trials_without_cache_write_count": self.trials_without_cache_write_count,
             "total_tokens": self.total_tokens,
             "total_cost_usd": self.total_cost_usd,
             "avg_cost_per_trial_usd": self.avg_cost_per_trial_usd,
@@ -408,29 +443,9 @@ def _with_integration_failure(
     did nothing because its integration broke, is read as the run would
     record it today: reward withheld, error ``agent integration failure``.
     """
-    from benchflow.integration_health import diagnose_trial_dir
+    from benchflow.integration_health import scored_as_read
 
-    if (
-        "integration_failure_info" in result
-        or result.get("n_tool_calls")
-        or extract_reward(result) is None
-        or str(result.get("agent") or "").lower() in ("oracle", "nop", "")
-    ):
-        return result
-    finding = diagnose_trial_dir(trial_dir, result)
-    if finding is None:
-        return result
-    return {
-        **result,
-        "rewards": None,
-        "error": finding.error_text(),
-        "error_category": "agent_integration",
-        "integration_failure_info": {
-            **finding.to_dict(),
-            "reward_withheld": result.get("rewards"),
-            "detected": "on read",
-        },
-    }
+    return scored_as_read(result, trial_dir)
 
 
 def collect_metrics(

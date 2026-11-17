@@ -325,9 +325,9 @@ async def test_an_oversized_line_is_skipped_whole(monkeypatch):
 @pytest.mark.asyncio
 async def test_unstarted_process_refuses_io():
     lp = ModalProcess(object())
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"^Process not started$"):
         await lp.readline()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"^Process not started$"):
         await lp.writeline("x")
     assert not lp.is_running
 

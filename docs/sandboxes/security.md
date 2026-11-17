@@ -13,9 +13,9 @@ An agent may try to pass a task by changing how it is graded instead of solving 
 - **The agent runs as a normal user, not root.** It can write its workspace, and nothing that grades it.
 - **The agent cannot gain privileges.** Every ACP or native agent launch starts with `no_new_privs`, so setuid programs such as `sudo` give it nothing. Session-factory agents start their own processes; see the [threat model](./threat-model.md).
 - **Before grading, every agent process is stopped,** except servers on ports the task keeps (`x-keep-services`). Files that would run code inside the grader are removed: a planted `conftest.py` (unless the task keeps its own), `sitecustomize.py` and code-running `.pth` files.
-- **The verifier runs as root with a fixed `PATH` and `PYTHONPATH`.** Folders the agent can write are not on the verifier's `PATH`. `PYTHONPATH` may keep image entries inside the workspace, which pytest imports from anyway; the agent's home is excluded.
+- **The verifier runs as root with a fixed `PATH` and `PYTHONPATH`, held.** test.sh starts without `NET_ADMIN`, `NET_RAW` and `SYS_PTRACE` (util-linux `setpriv` where it can make the drop, else the kit Python; with neither the trial ends `verifier launch refused`), and on Docker its network is `verifier.network_mode`, else the sandbox's policy, for every process. Folders the agent can write are not on the verifier's `PATH`. `PYTHONPATH` may keep image entries inside the workspace, which pytest imports from anyway; the agent's home is excluded.
 - **pytest loads only plugins BenchFlow can vouch for:** the image's own, installed as root, and the releases the task pins in `[verifier] pytest_plugin_releases`, which BenchFlow installs into its protected verifier runtime before the agent's turn. A plugin the agent planted, or one test.sh installs after the agent stopped, is refused, and the trial counts as a failure.
-- **Network access follows the task's policy.** On an open network, BenchFlow refuses the cloud metadata endpoints to the agent's user (TCP, every port but 53) in `main`, where it can install the rules. The agent, a root agent included, starts only once the block is `on`. When `cloud-metadata.json` says `not_installed` or `unproven`, the trial stops before the agent as an infrastructure error. A root agent on Daytona, AgentCore or Apple container gets the provider's own metadata policy instead (`provider-managed`, with a warning; `require_cloud_metadata_block = true` stops it). A Modal sandbox has no route to the endpoints at all: each trial proves it and records `not_reachable`. A task or run that opts out gets no block.
+- **Network access follows the task's policy.** On an open network, BenchFlow refuses the cloud metadata endpoints (TCP, every port but 53) in `main`: on Docker to every process, root included, from its helper container before `main` is released, and to every other compose service right after it starts; elsewhere to the agent's user, where it can install the rules. The agent, a root agent included, starts only once the block is `on`. When `cloud-metadata.json` says `not_installed` or `unproven`, the trial stops before the agent as an infrastructure error. A root agent on Daytona, AgentCore or Apple container gets the provider's own metadata policy instead (`provider-managed`, with a warning; `require_cloud_metadata_block = true` stops it). A Modal sandbox has no route to the endpoints at all: each trial proves it and records `not_reachable`. A task that opts out gets no block; on Docker a run's `--allow-cloud-metadata` no longer opens `main`.
 
 For the strongest guarantee, grade in a separate sandbox: only the workspace and the files you declare cross into it. See [Separate verifier](../tasks/separate-verifier.md).
 
@@ -52,10 +52,12 @@ Red is the agent's user, filtered by the task's network policy. Blue is root, ru
 
 | `network_mode` | Agent run | Oracle run | Agent install | Verifier |
 |---|---|---|---|---|
-| `public` (default) | Internet, except cloud metadata | Internet | Internet | Internet |
-| `no-network` | Only BenchFlow's model gateway | No network | Internet | Unfiltered with an LLM agent; no network in oracle and nop runs (the container network stays off) |
-| `denylist` | Internet, minus listed URLs and hosts | Same as agent | Internet | Unfiltered |
-| `allowlist` | Only listed hosts, IPs and ranges | Same as agent | Internet | Unfiltered |
+| `public` (default) | Internet, except cloud metadata | Internet, except cloud metadata | Internet | Internet, except cloud metadata (Docker) |
+| `no-network` | Only BenchFlow's model gateway | No network | Internet | No network, for every process (Docker); elsewhere unfiltered with an LLM agent |
+| `denylist` | Internet, minus listed URLs and hosts | Same as agent | Internet | Same as agent, for every process (Docker); elsewhere unfiltered |
+| `allowlist` | Only listed hosts, IPs and ranges | Same as agent | Internet | Same as agent, for every process (Docker); elsewhere unfiltered |
+
+On Docker, a failed test.sh whose network refused it something ends "verifier network refused", unscored; set `verifier.network_mode` (an allowlist runs there) when a task's tests need hosts.
 
 The model gateway, through which the agent reaches its model, is always reachable. Under `no-network`, `denylist` and `allowlist`, BenchFlow also turns off provider-hosted web search, and refuses models that search on their own. See [Network policies](../tasks/network-policies.md) for the syntax.
 
@@ -89,7 +91,7 @@ Under `denylist` and `allowlist`, every agent web request goes through the proxy
 1. **Run untrusted agents as the default non-root user.**
 2. **Add `--integrity audit`** to learn whether an agent tried to tamper with grading ([Reward integrity](../integrity.md)).
 3. **Add `--verifier-sandbox separate`** to grade where the agent never ran. It works on Docker, remote Docker and Daytona.
-4. **On a cloud VM, block the metadata endpoints on the host** for services other than `main` (a `DOCKER-USER` rule, or the cloud's metadata settings).
+4. **On a cloud VM, block the metadata endpoints on the host** as well (a `DOCKER-USER` rule, or the cloud's metadata settings): it closes the seconds a compose service's own start-up code runs before BenchFlow covers it.
 5. **Set restricted-web model admissions in your shell,** never through `--env`: `BENCHFLOW_RESTRICTED_WEB_MODELS=azure/my-deployment` ([details](./threat-model.md#models-under-web-restrictions)).
 
 ## Opt-outs
@@ -165,6 +167,8 @@ Or set `PIP_INDEX_URL`, `PIP_FIND_LINKS` or `PIP_NO_INDEX` in `[verifier] env`. 
 | `sandbox startup refused: the agent would start with the cloud metadata endpoints open to it`, and `cloud-metadata.json` says `not_installed` or `unproven` | The block could not be installed or proven: no iptables, `main` on the host network, no ip6tables, or root in `main` holds `NET_ADMIN` | Install `iptables` in the image, or, for a task about the metadata service, opt out with `allow_cloud_metadata` |
 | A run under a network policy refuses its model | The model can search on its own, or BenchFlow cannot identify it | Pick a listed provider's model, or admit it with `BENCHFLOW_RESTRICTED_WEB_MODELS` |
 | `--integrity strict` or `--verifier-sandbox separate` refuses a task | The task cannot run in a separate verifier | See [Reward integrity: The two modes](../integrity.md#the-two-modes) |
+| `verifier tools refused: …`, unscored (`verifier_tools_refused`) | The verifier's PATH leaves out a folder of the image's PATH (one another user could write when it was checked, a relative entry, or an absent one another user could make), and the task's `[verifier] required_tools` does not cover what test.sh needs there. test.sh did not run; the trial is never retried | Make the folder root's alone in the image (`RUN chmod -R go-w <folder>`), or list the programs test.sh runs from PATH in `[verifier] required_tools`; `bench explain verifier_tools_refused` |
+| `sandbox startup refused: test.sh needs `…``, before the agent ran (`test_sh_command_missing`) | test.sh's interpreter, or a command it runs unconditionally with errexit on before anything could install it, is not on the PATH the verifier runs test.sh with (a plain, non-login shell, as the verifier user). A tool on PATH only through `~/.profile` or `~/.bashrc` is not on it | Put it on the image's PATH (`ENV PATH`) or call it by its full path in test.sh; `bench explain test_sh_command_missing` |
 | The verifier warns about pip configuration | The image ships a `pip.conf` | Pass pip options in test.sh ([above](#changed-in-08-the-verifier-ignores-pip-configuration)) |
 
 ## What you must trust

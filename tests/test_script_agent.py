@@ -1138,3 +1138,62 @@ def test_image_ld_show_auxv_is_never_given_back():
         }
     )
     assert _inert_bootstrap.restored_env(sandbox) == {"TAR_OPTIONS": "--no-same-owner"}
+
+
+def test_script_refuses_a_backend_without_its_runner_before_any_sandbox(
+    inputs, monkeypatch
+):
+    """On Daytona the operator-script runner check failed only after the sandbox had started
+    (three sandboxes spent in one run); the plan now refuses it first."""
+    task, _, spec = inputs
+    monkeypatch.setenv("DAYTONA_API_KEY", "test-key-not-used")
+    with pytest.raises(
+        EvalPlanError, match=r"script: runs only on docker, remote-docker"
+    ) as refused:
+        build_eval_plan(
+            EvalCreateRequest(tasks_dir=task.parent, agent=spec, environment="daytona")
+        )
+    # the fix is the next step the CLI prints, not buried in the message
+    assert refused.value.hint and "--sandbox docker" in refused.value.hint
+
+
+@pytest.mark.parametrize("environment", ["daytona", "modal"])
+def test_script_refusal_is_the_same_on_each_backend_without_its_runner(
+    inputs, monkeypatch, environment
+):
+    """Daytona (native or Docker in Docker: the plan keys on the backend) and
+    Modal: the same words, before any sandbox; the dry run and the run build
+    this plan alike."""
+    task, _, spec = inputs
+    monkeypatch.setenv("DAYTONA_API_KEY", "test-key-not-used")
+    with pytest.raises(EvalPlanError) as refused:
+        build_eval_plan(
+            EvalCreateRequest(
+                tasks_dir=task.parent, agent=spec, environment=environment
+            )
+        )
+    assert str(refused.value) == (
+        "script: runs only on docker, remote-docker: its runner needs a trusted "
+        f"root transport the {environment} backend does not have"
+    )
+
+
+def test_a_script_still_plans_on_docker(inputs):
+    task, _, spec = inputs
+    plan = build_eval_plan(
+        EvalCreateRequest(tasks_dir=task.parent, agent=spec, environment="docker")
+    )
+    assert plan.eval_environment == "docker"
+
+
+@pytest.mark.parametrize("environment", ["daytona", "modal"])
+@pytest.mark.parametrize("agent", ["oracle", "nop"])
+def test_oracle_and_nop_are_not_refused_as_scripts(
+    inputs, monkeypatch, environment, agent
+):
+    task, _, _ = inputs
+    monkeypatch.setenv("DAYTONA_API_KEY", "test-key-not-used")
+    plan = build_eval_plan(
+        EvalCreateRequest(tasks_dir=task.parent, agent=agent, environment=environment)
+    )
+    assert plan.eval_environment == environment

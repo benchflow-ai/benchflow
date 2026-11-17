@@ -54,6 +54,8 @@ bench run tasks/my-task -a claude -m claude-haiku-4-5-20251001 -e high --env MCP
 
 `bench run --help-all` lists every flag.
 
+The effort can also ride the model, `-m 'gpt-6-astra[ultra]'`, or the agent's own settings (`model_reasoning_effort` in Codex's `CODEX_CONFIG`, Claude Code's `CLAUDE_CODE_EFFORT_LEVEL`); each is the request. Two that differ are refused before launch, and so is a level the model cannot take: for Codex, the pinned Codex 0.159.3 catalog decides (`gpt-6-astra` and `gpt-6.1-sol` take `low` to `ultra`; `gpt-5.5` stops at `xhigh`). Each trial's `result.json` has an `effort` block: `requested` (and `requested_from`), `applied` (the session's own word, or null), `sent` (the agent's calls by the effort each carried, from the model proxy's log or Codex's session log, with `sent_source`) and `matches`: every call that carried an effort must carry the one asked for (with none asked for, the one the session applied), so any that differs is false, true only when those calls all agree, and null with `reason: "unmeasured"` when no call was seen carrying one. A mismatch warns, counts in `summary.json` (`effort_mismatches`) and fails `bench run --fail-on effort-mismatch`.
+
 For MiMo, Codex, Pi and OpenCode, pass provider endpoints, model aliases and keys with `--env`. BenchFlow writes their credential files from the run's settings.
 
 ### Codex in the sandbox

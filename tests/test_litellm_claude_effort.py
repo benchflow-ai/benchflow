@@ -298,8 +298,9 @@ def test_preflight_fails_closed_when_effort_is_not_registered(tmp_path):
     env = {**os.environ, "PYTHONPATH": str(tmp_path)}
     env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
-    # An id newer than LiteLLM 1.103's backup map, which knows Fable 5.1.
-    result = _run_preflight(env, "bedrock/us.anthropic.claude-fable-5-2")
+    # An id newer than LiteLLM 1.103's backup map and outside BenchFlow's own
+    # table of current Claude models (``CLAUDE_EFFORT_LEVELS``): a made-up one.
+    result = _run_preflight(env, "bedrock/us.anthropic.claude-fable-5-9")
 
     assert result.returncode != 0
     assert "effort capability missing" in result.stdout

@@ -43,6 +43,7 @@ from uuid import uuid4
 from benchflow._utils import kill_record as kill_record_module
 from benchflow._utils import timing_spans
 from benchflow._utils.reachable_write import ReachablePath, destination
+from benchflow._utils.scoring import NO_USABLE_REWARD
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import report_trial_warning
 from benchflow._utils.trusted_path import (
@@ -62,6 +63,8 @@ from benchflow.rewards.validation import (
     REWARD_OUT_OF_RANGE,
     RewardOutOfRange,
     declared_reward_range,
+    is_out_of_range_reward,
+    keeps_out_of_range_reward,
     reward_lenient_from_env,
     validate_reward_map,
 )
@@ -90,16 +93,26 @@ from benchflow.sandbox.protocol import (
     ExecTimeoutError,
     SandboxStartupError,
 )
+from benchflow.sandbox.verifier_network import (
+    VERIFIER_LAUNCH_REFUSED_ERROR,
+    VERIFIER_NETWORK_REFUSED,
+    VERIFIER_NETWORK_UNHELD,
+)
 from benchflow.task.verifier_errors import (
+    VERIFIER_TOOLS_REFUSED_ERROR,
     PluginGuardLoadError,
     PluginGuardMarkersUnreadableError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
     VerifierExecutionError,
     VerifierInfrastructureError,
+    VerifierLaunchRefusedError,
+    VerifierNetworkRefusedError,
+    VerifierNetworkUnheldError,
     VerifierOutputParseError,
     VerifierSetupError,
     VerifierStartUnconfirmedError,
+    VerifierToolsRefusedError,
     verifier_failure_reason,
     verifier_infrastructure_failure,
 )
@@ -738,6 +751,10 @@ async def _start_env_and_upload(
     task_path: Path,
     timing: dict,
     *,
+    task: Any,
+    agent: str | None,
+    verifier_only: bool = False,
+    agent_uid: dict[str, Any] | None = None,
     skip_start: bool = False,
     on_started: Callable[[], Awaitable[None] | None] | None = None,
     uploads: dict[str, str] | None = None,
@@ -746,6 +763,12 @@ async def _start_env_and_upload(
     image_holds_agent_bytes: bool = False,
 ) -> None:
     """Start environment and upload task files.
+
+    The start is :func:`benchflow.sandbox.service_cover.start_sandbox`'s,
+    under the start holds: *task* is the task the sandbox runs,
+    *agent* what runs in main (``oracle``, ``nop``, a ``script:`` agent, or
+    None for a model agent), *verifier_only* a rollout that only grades,
+    *agent_uid* a model agent's uid rules before main's release (M1).
 
     ``image_holds_agent_bytes``: the image was built with agent-derived bytes
     in it (a learner store's skills baked in), so the sandbox is admitted as
@@ -788,21 +811,28 @@ async def _start_env_and_upload(
             if isinstance(sandbox_config, SandboxConfig)
             else None
         )
+        from benchflow.sandbox.service_cover import start_sandbox
+
         try:
-            if deadline is None:
-                await env.start(force_build=False)
-            else:
-                # A YAML job config's build phase: the whole start is
-                # bounded by one deadline, including image preparation and
-                # sandbox startup.
-                try:
-                    await asyncio.wait_for(env.start(force_build=False), deadline)
-                except TimeoutError as exc:
-                    raise EnvironmentStartTimeoutError(
-                        f"the environment did not start within {deadline:g}s, the "
-                        "environment build budget (environment.build_timeout_sec "
-                        "times the job's build timeout multiplier)"
-                    ) from exc
+            # A YAML job config's build phase bounds the whole start by one
+            # deadline, including image preparation and sandbox startup.
+            try:
+                await start_sandbox(
+                    env,
+                    task,
+                    agent=agent,
+                    verifier_only=verifier_only,
+                    timeout_sec=deadline,
+                    agent_uid=agent_uid,
+                )
+            except TimeoutError as exc:
+                if deadline is None:
+                    raise
+                raise EnvironmentStartTimeoutError(
+                    f"the environment did not start within {deadline:g}s, the "
+                    "environment build budget (environment.build_timeout_sec "
+                    "times the job's build timeout multiplier)"
+                ) from exc
         except SandboxStartupError:
             raise
         except RuntimeError as exc:
@@ -948,6 +978,34 @@ async def _run_oracle(
     # The account solve.sh runs as below, the image's default user when
     # neither names one (keep_services.run_identity, DT2-R9-2).
     await keep_services.prepare_identities(env, task, sandbox_user, inherit=True)
+    offline_held = False
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+    from benchflow.sandbox.service_cover import sandbox_network_mode
+
+    agent_offline_online_sandbox = (
+        sandbox_network_mode(agent_network_sandbox_config(task.config)) == "no-network"
+        and getattr(getattr(task.config, "sandbox", None), "allow_internet", True)
+        is not False
+        and getattr(env, "rules_by_helper", False) is True
+    )
+    if (
+        getattr(getattr(env, "task_env_config", None), "_offline_by_rules", False)
+        is True
+        or agent_offline_online_sandbox
+    ):
+        # An offline task whose main keeps a network for its verifier, or an
+        # [agent] no-network over an online sandbox (S1: a root
+        # oracle was not held): the oracle's turn is offline by every-process
+        # rules.
+        from benchflow.sandbox.verifier_network import arm_offline_agent_phase
+
+        held = await arm_offline_agent_phase(env)
+        offline_held = True
+        if rollout_dir is not None:
+            with contextlib.suppress(OSError):
+                (rollout_dir / "agent-network.json").write_text(
+                    json.dumps(held, sort_keys=True) + "\n"
+                )
     workdir = _configured_task_workdir(task)
     if sandbox_user and sandbox_user == declared_user:
         # The oracle dir is uploaded root-owned; let the declared user run it.
@@ -973,6 +1031,13 @@ async def _run_oracle(
             ),
         )
     armed = None
+    # An earlier step's rules not yet handed to a verifier (a multi-step task
+    # without one between): out before this turn's go in.
+    pending = getattr(env, "_benchflow_oracle_egress", None)
+    if isinstance(pending, tuple) and len(pending) == 2:
+        with contextlib.suppress(AttributeError):
+            env._benchflow_oracle_egress = None
+        await disarm_oracle_egress(env, *pending)
     if policy is not None:
         with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
             armed = await arm_oracle_egress(env, policy, run_as=sandbox_user)
@@ -992,6 +1057,14 @@ async def _run_oracle(
         oracle_cmd = f"DEBIAN_FRONTEND=noninteractive {oracle_cmd}"
     # The same su that prepare_identities measured the account with.
     cmd = oracle_user_command(oracle_cmd, sandbox_user)
+    # A root oracle under a policy: its processes are stopped when solve.sh
+    # ends, every process of main's container started from this tick on.
+    stop_from = (
+        await _oracle_start_tick(env)
+        if (armed is not None or offline_held)
+        and (not sandbox_user or sandbox_user == "root")
+        else None
+    )
     admit(env, "main", IngressKind.ORACLE_LAUNCH)
     try:
         if keep_services.kept_by_identity(task) is not None:
@@ -1028,8 +1101,17 @@ async def _run_oracle(
         raise OracleTimeoutError(oracle_command_label, timeout) from None
     finally:
         if armed is not None:
-            with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
-                await disarm_oracle_egress(env, armed, rollout_dir)
+            if getattr(armed, "match", None) == "every process":
+                # The rules stay until the verifier's network replaces them,
+                # under the handover's hold (lockdown._arm_verifier_network):
+                # main is never unheld between the turn and test.sh.
+                with contextlib.suppress(AttributeError):
+                    env._benchflow_oracle_egress = (armed, rollout_dir)
+            else:
+                with timing_spans.span(timing_spans.ORACLE_NETWORK_POLICY):
+                    await disarm_oracle_egress(env, armed, rollout_dir)
+        if stop_from is not None:
+            await _stop_oracle_processes(env, task, stop_from, rollout_dir)
     if result.return_code != 0:
         logger.warning(f"Oracle solve.sh exited with rc={result.return_code}")
     preview = await exec_raw(
@@ -1542,6 +1624,137 @@ def _write_host_file(path: ReachablePath, text: str) -> None:
     path.write(payload)
 
 
+async def _oracle_start_tick(env: Any) -> int | None:
+    """The kernel's clock tick (1/100 s since boot, as /proc's start times
+    count) right before solve.sh starts; None where the sandbox has no
+    /proc/uptime to read (the stop is then recorded as not made)."""
+    result = await exec_raw(
+        env.exec,
+        'read -r bf_up bf_rest < /proc/uptime; echo "BF oracle-start $bf_up"',
+        user="root",
+        timeout_sec=30,
+    )
+    found = re.search(
+        r"BF oracle-start (\d+)\.(\d\d)", getattr(result, "stdout", "") or ""
+    )
+    if not found:
+        logger.warning(
+            "The oracle's start could not be read from /proc/uptime: the "
+            "processes solve.sh leaves will not be stopped when it ends"
+        )
+        return None
+    return int(found[1]) * 100 + int(found[2])
+
+
+# Root's script (builtins only, no program of the image): freeze, then kill,
+# every process of main's container that started at or after __T0__ (clock
+# ticks since boot); never this exec's own tree (the highest ancestor of $$
+# that started after __T0__, and everything under it: the receipt's
+# subshells and encoder), zombies, or another container's processes (another
+# cgroup: a sidecar sharing main's pid namespace, a host's); then report what
+# was killed and what is left.
+_STOP_ORACLE_PROCS = r"""t0=__T0__; rp=') '
+read -r bf_cg < /proc/$$/cgroup
+top=$$; p=$$; n=0
+while [ "$n" -lt 64 ]; do
+  line=; read -r line < /proc/$p/stat 2>/dev/null || break
+  set -- ${line##*"$rp"}
+  [ "${20:-0}" -ge "$t0" ] 2>/dev/null && top=$p
+  p=$2
+  case $p in ''|0) break;; esac
+  n=$((n + 1))
+done
+bf_ours() {
+  q=$1; m=0
+  while [ "$m" -lt 64 ]; do
+    [ "$q" = "$top" ] && return 0
+    line=; read -r line < /proc/$q/stat 2>/dev/null || return 1
+    set -- ${line##*"$rp"}; q=$2
+    case $q in ''|0) return 1;; esac
+    m=$((m + 1))
+  done
+  return 1
+}
+bf_cands() {
+  c=
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    bf_ours "$p" && continue
+    cg=; read -r cg < "$d/cgroup" 2>/dev/null || continue
+    [ "$cg" = "$bf_cg" ] || continue
+    line=; read -r line < "$d/stat" 2>/dev/null || continue
+    set -- ${line##*"$rp"}
+    [ "$1" = Z ] && continue
+    [ "${20:-0}" -ge "$t0" ] 2>/dev/null && c="$c $p"
+  done
+}
+frozen=" "; i=0
+while [ "$i" -lt 64 ]; do
+  bf_cands; new=
+  for p in $c; do case $frozen in *" $p "*) ;; *) new="$new $p";; esac; done
+  [ -z "$new" ] && break
+  kill -s STOP $new 2>/dev/null
+  frozen="$frozen${new# } "; i=$((i + 1))
+done
+bf_cands; killed=0; for p in $c; do killed=$((killed + 1)); done
+i=0
+while [ -n "$c" ] && [ "$i" -lt 100 ]; do
+  kill -s KILL $c 2>/dev/null; i=$((i + 1)); bf_cands
+done
+printf 'BF oracle-stop killed=%s left=%s\n' "$killed" "${c# }"
+"""
+
+
+async def _stop_oracle_processes(
+    env: Any, task: Any, tick: int, rollout_dir: Path | None
+) -> None:
+    """Stop every process a root oracle's solve.sh left in main (setsid'd and
+    double-forked daemons included): main's container's processes started
+    from *tick* on, never a sidecar's. A task that keeps the services
+    solve.sh starts (``x-keep-services``) keeps them. The record goes to
+    ``oracle-processes.json``; a process left alive fails the trial."""
+    from benchflow.task import keep_services
+
+    if keep_services.kept_by_identity(task) is not None:
+        record: dict[str, Any] = {
+            "stopped": False,
+            "why": "the task keeps the services solve.sh starts (x-keep-services)",
+        }
+        left: list[str] = []
+    else:
+        # The receipt exec itself (lockdown's _read_exec), never lockdown: the
+        # rollout kernel imports no concrete plane.
+        from benchflow.sandbox._exec_receipt import receipt_exec
+
+        result = await receipt_exec(
+            env,
+            _STOP_ORACLE_PROCS.replace("__T0__", str(int(tick))),
+            user="root",
+            timeout_sec=120,
+        )
+        found = re.search(
+            r"BF oracle-stop killed=(\d+) left=([0-9 ]*)",
+            getattr(result, "stdout", "") or "",
+        )
+        if not found:
+            raise RuntimeError(
+                "the processes solve.sh left in main could not be stopped (no "
+                "answer from the stop)"
+            )
+        left = found[2].split()
+        record = {"stopped": True, "killed": int(found[1]), "left": left}
+    if rollout_dir is not None:
+        with contextlib.suppress(OSError):
+            (Path(rollout_dir) / "oracle-processes.json").write_text(
+                json.dumps(record, sort_keys=True) + "\n"
+            )
+    if left:
+        raise RuntimeError(
+            "processes solve.sh left in main survived the stop after its turn "
+            f"(pids {' '.join(left)})"
+        )
+
+
 async def _publish_trajectory_for_verifier(
     env,
     trajectory: list[dict],
@@ -1769,7 +1982,9 @@ async def _verifier_started(env: Any, verifier: Any) -> bool | None:
             ),
             timeout=15,
         )
-        return probe.return_code == 0 and probe.stdout.strip() == "started"
+        # Docker's exec gives None for a command that printed nothing, as
+        # the probe of a missing receipt does.
+        return probe.return_code == 0 and (probe.stdout or "").strip() == "started"
     except Exception as exc:
         # A failed probe says nothing about the verifier. Keep waiting and
         # probe again rather than cancelling a verifier that may be running.
@@ -2253,6 +2468,7 @@ async def _verify_hardened(
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         try:
             rewards = _ensure_canonical_rewards(verifier_result.rewards, task=task)
+            verifier_diagnostic = _reward_recorded_as_written(rewards, task)
         except RewardOutOfRange:
             raise
         except ValueError as e:
@@ -2292,7 +2508,34 @@ async def _verify_hardened(
         # the task does not allow. Never clamped, never retried.
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         verifier_diagnostic = RewardOutOfRangeDiagnostic.from_error(e)
-        rewards = _verifier_zero(f"{REWARD_OUT_OF_RANGE} {e}")
+        if keeps_out_of_range_reward():
+            # Integrity audit or off: nothing is rewritten to 0. This number
+            # is not the reward (a metric the reward would be made from),
+            # so it cannot be recorded as the score: unscored, named.
+            verifier_error = f"{REWARD_OUT_OF_RANGE} {e}"
+            rewards = None
+            logger.error(verifier_error)
+        else:
+            rewards = _verifier_zero(f"{REWARD_OUT_OF_RANGE} {e}")
+    except VerifierNetworkRefusedError as e:
+        # The verifier's network refused test.sh something and it failed: an
+        # ending of its own, unscored.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_NETWORK_REFUSED}{e}"
+        rewards = None
+        logger.error(verifier_error)
+    except VerifierLaunchRefusedError as e:
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_LAUNCH_REFUSED_ERROR}{e}"
+        rewards = None
+        logger.error(verifier_error)
+    except VerifierNetworkUnheldError as e:
+        # The verifier's network could not be held: test.sh did not run open
+        # instead. An ending of its own, unscored.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_NETWORK_UNHELD}{e}"
+        rewards = None
+        logger.error(verifier_error)
     except (PluginGuardLoadError, PluginGuardMarkersUnreadableError) as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         rewards = _verifier_zero(
@@ -2302,6 +2545,14 @@ async def _verify_hardened(
             "See verifier/test-stdout.txt and verifier/_benchflow_guard_*"
             + (e.guard_copy_diagnostic if isinstance(e, PluginGuardLoadError) else "")
         )
+    except VerifierToolsRefusedError as e:
+        # Hardening refused the tools test.sh would find on PATH: the image
+        # and the task decided it, so test.sh did not run. Unscored and never
+        # retried, not a verifier crash.
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        verifier_error = f"{VERIFIER_TOOLS_REFUSED_ERROR}{e}"
+        rewards = None
+        logger.error(verifier_error)
     except VerifierSetupError as e:
         timing["verifier"] = (datetime.now() - t0).total_seconds()
         if getattr(
@@ -2317,10 +2568,19 @@ async def _verify_hardened(
         verifier_error = f"verifier crashed: {verifier_failure_reason(e)}"
         rewards = None
         logger.error(verifier_error)
+    except (RewardFileEmptyError, RewardFileNotFoundError) as e:
+        timing["verifier"] = (datetime.now() - t0).total_seconds()
+        if verifier_infrastructure_failure(e):
+            verifier_error = f"verifier crashed: {verifier_failure_reason(e)}"
+        else:
+            # No reward is no verdict: an errored, unscored trial, never a 0
+            # nobody counts as an error. It stays a failure in the
+            # error-excluding score (scoring.counts_as_failure).
+            verifier_error = f"{NO_USABLE_REWARD}{e}"
+        rewards = None
+        logger.error(verifier_error)
     except (
         VerifierPathEvidenceError,
-        RewardFileEmptyError,
-        RewardFileNotFoundError,
         VerifierOutputParseError,
         VerifierStartUnconfirmedError,
     ) as e:
@@ -2355,7 +2615,10 @@ async def _verify_hardened(
             logger.error(verifier_error)
     report = path_reports[-1] if path_reports else None
     if report is not None and (
-        report.dropped or report.kept_other or report.omitted_tools
+        report.dropped
+        or report.kept_other
+        or report.omitted_tools
+        or report.absent_root_only
     ):
         refused = await _refused_programs_run(env, report)
         missed = _verifier_missed_a_program(verifier, rollout_paths)
@@ -2394,6 +2657,27 @@ async def _verify_hardened(
                 f"PATH: {report.dropped_text()}"
             )
     return rewards, verifier_error, verifier_diagnostic
+
+
+def _reward_recorded_as_written(
+    rewards: dict, task: Any
+) -> RewardOutOfRangeDiagnostic | None:
+    """The note on a reward outside the task's range kept as test.sh wrote
+    it (integrity audit or off), or None when the reward is in range."""
+    reward_range = declared_reward_range(task)
+    value = rewards.get("reward")
+    if not isinstance(value, int | float) or not is_out_of_range_reward(
+        value, reward_range=reward_range
+    ):
+        return None
+    note = RewardOutOfRangeDiagnostic.from_error(
+        RewardOutOfRange("reward", value, reward_range)
+    )
+    note.recorded_as_written = True
+    warning = note.note()
+    logger.warning(warning)
+    report_trial_warning(warning)
+    return note
 
 
 def _verifier_zero(reason: str) -> dict[str, float]:
@@ -2537,6 +2821,34 @@ def _write_trusted_path_record(
         )
     except OSError:
         logger.warning("could not write verifier/trusted-path.json", exc_info=True)
+    if report.absent_root_only:
+        _record_absent_root_only(rollout_paths, report.absent_root_only)
+
+
+def _record_absent_root_only(rollout_paths: Any, absent: tuple[str, ...]) -> None:
+    """Add the absent PATH entries the verifier kept to the trial's
+    locked-system-path.json, beside what the lock before the agent did: each
+    was absent at grading time, and only root could ever have made it."""
+    from benchflow._utils.path_lock_record import LOCKED_SYSTEM_PATH_RECORD
+
+    folder = getattr(rollout_paths, "rollout_dir", None)
+    if folder is None:
+        return
+    path = Path(folder) / LOCKED_SYSTEM_PATH_RECORD
+    try:
+        record = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError):
+        record = {}
+    record["absent_root_only"] = list(absent)
+    record["absent_root_only_note"] = (
+        "kept on the verifier's PATH though absent when it was checked: every "
+        "part of each that exists is root's alone, with no link another user "
+        "controls, so only root could ever make it"
+    )
+    try:
+        path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        logger.warning("could not write locked-system-path.json", exc_info=True)
 
 
 async def _verifier_wedged_without_output(env: Any) -> bool:
@@ -2582,6 +2894,8 @@ async def _kill_orphan_verifier(env: Any) -> None:
 
 
 def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict:
+    # A reward outside the range stays as written under integrity audit and
+    # off (keeps_out_of_range_reward); strict still refuses it.
     # Honour the same BENCHFLOW_REWARD_LENIENT toggle and task-declared
     # ``[verifier] reward_range`` (BF-8) as the reward.json parse path so the
     # final canonicalization gate stays consistent with how the verifier
@@ -2591,6 +2905,7 @@ def _ensure_canonical_rewards(rewards: dict | None, *, task: Any = None) -> dict
         source="verifier",
         lenient=reward_lenient_from_env(),
         reward_range=declared_reward_range(task),
+        keep_out_of_range_reward=keeps_out_of_range_reward(),
     )
 
 

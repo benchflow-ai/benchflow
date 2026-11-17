@@ -114,6 +114,7 @@ def compose_file_paths(
     prebuilt: bool = False,
     mounts: Path | None = None,
     no_network: bool = True,
+    rules_by_helper: bool = False,
 ) -> list[Path]:
     """The ``-f`` files of a Docker sandbox's ``docker compose`` calls, in
     order: BenchFlow's base and build (or prebuilt) files, the task's own
@@ -139,9 +140,13 @@ def compose_file_paths(
         paths.append(mounts)
     if no_network and not config.allow_internet:
         paths.append(COMPOSE_NO_NETWORK_PATH)
-    if compose_needs_net_admin(config):
+    # *rules_by_helper*: BenchFlow's helper adds every rule of main's
+    # namespace from outside it, so main never holds NET_ADMIN or NET_RAW,
+    # whatever the policy: no process in it can remove a rule or go
+    # around them with a packet socket.
+    if compose_needs_net_admin(config) and not rules_by_helper:
         paths.append(COMPOSE_NET_ADMIN_PATH)
-    if compose_drops_net_raw(config):
+    if compose_drops_net_raw(config) or rules_by_helper:
         paths.append(COMPOSE_NO_NET_RAW_PATH)
     if compose_stops_main_restart(config):
         paths.append(COMPOSE_NO_RESTART_PATH)

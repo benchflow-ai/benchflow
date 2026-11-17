@@ -37,10 +37,13 @@ def _refresh_job_artifacts(job_dir: Path) -> None:
     """Rebuild derived exports while retaining job configuration and provenance."""
     import json
 
+    from benchflow.integration_health import scored_as_read
     from benchflow.jobs import load_job
+    from benchflow.rollout._results import rewrite_job_exports_as_read
     from benchflow.trajectories.export import write_job_verifiers_jsonl
     from benchflow.trajectories.export_adp import write_job_adp_jsonl
 
+    rewrite_job_exports_as_read(job_dir)
     write_job_results_jsonl(job_dir)
     write_job_verifiers_jsonl(job_dir)
     write_job_adp_jsonl(job_dir)
@@ -49,10 +52,13 @@ def _refresh_job_artifacts(job_dir: Path) -> None:
         return
     summary = json.loads(summary_path.read_text())
     # Resume's completed-task filter deliberately omits agent errors. Derived
-    # metrics instead use the canonical final attempts, including those errors.
+    # metrics instead use the canonical final attempts, including those errors,
+    # each as every reader scores it: the judge bf.load_job and the run's own
+    # summary.json use.
     job = load_job(job_dir)
     rows = [
-        json.loads((trial.path / "result.json").read_text()) for trial in job.trials
+        scored_as_read(json.loads((trial.path / "result.json").read_text()), trial.path)
+        for trial in job.trials
     ]
     summary.update(score_summary_fields(rows))
     if "planned" in summary:

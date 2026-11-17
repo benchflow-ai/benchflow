@@ -958,8 +958,8 @@
 │                                                                 e.g. 0.8                         │
 │ --fail-on                                 TEXT                  Exit 1 when any trial ended this │
 │                                                                 way: timeout, error,             │
-│                                                                 verifier-error (comma-separated  │
-│                                                                 or repeated)                     │
+│                                                                 verifier-error, effort-mismatch  │
+│                                                                 (comma-separated or repeated)    │
 │ --summary-out                             PATH                  Write the run's                  │
 │                                                                 benchflow.run-summary JSON (job  │
 │                                                                 dir, counts, gate) here          │
@@ -968,10 +968,12 @@
 │                                                                 (explicit opt-in).               │
 │ --sandbox-user                            TEXT                  Sandbox user (null for root)     │
 │                                                                 [default: agent]                 │
-│ --sandbox-setup-timeout                   INTEGER               Timeout (seconds) for sandbox    │
-│                                                                 user setup inside the            │
-│                                                                 environment (default: 120; keeps │
-│                                                                 the file's value with --config). │
+│ --sandbox-setup-timeout                   INTEGER               Seconds for the setup steps      │
+│                                                                 before the agent (default: 120); │
+│                                                                 the sandbox user setup gets 600  │
+│                                                                 unless the run names a value     │
+│                                                                 (keeps the file's value with     │
+│                                                                 --config).                       │
 │ --context-root                            PATH                  Repo/build-context root used to  │
 │                                                                 stage Dockerfile COPY sources    │
 │                                                                 for monorepo-authored local      │
@@ -1401,8 +1403,8 @@
 │                                                                 e.g. 0.8                         │
 │ --fail-on                                 TEXT                  Exit 1 when any trial ended this │
 │                                                                 way: timeout, error,             │
-│                                                                 verifier-error (comma-separated  │
-│                                                                 or repeated)                     │
+│                                                                 verifier-error, effort-mismatch  │
+│                                                                 (comma-separated or repeated)    │
 │ --summary-out                             PATH                  Write the run's                  │
 │                                                                 benchflow.run-summary JSON (job  │
 │                                                                 dir, counts, gate) here          │
@@ -1411,10 +1413,12 @@
 │                                                                 (explicit opt-in).               │
 │ --sandbox-user                            TEXT                  Sandbox user (null for root)     │
 │                                                                 [default: agent]                 │
-│ --sandbox-setup-timeout                   INTEGER               Timeout (seconds) for sandbox    │
-│                                                                 user setup inside the            │
-│                                                                 environment (default: 120; keeps │
-│                                                                 the file's value with --config). │
+│ --sandbox-setup-timeout                   INTEGER               Seconds for the setup steps      │
+│                                                                 before the agent (default: 120); │
+│                                                                 the sandbox user setup gets 600  │
+│                                                                 unless the run names a value     │
+│                                                                 (keeps the file's value with     │
+│                                                                 --config).                       │
 │ --context-root                            PATH                  Repo/build-context root used to  │
 │                                                                 stage Dockerfile COPY sources    │
 │                                                                 for monorepo-authored local      │
@@ -2666,7 +2670,9 @@
 │                                                                over 1 GiB)                       │
 │                                                                [default: workspace]              │
 │ --workspace-dir                      PATH                      Workspace folder to attach        │
-│                                                                instead of auto-detection         │
+│                                                                instead of auto-detection. The    │
+│                                                                folder is uploaded as it is, with │
+│                                                                nothing masked                    │
 │ --direct                                                       Upload with local Azure           │
 │                                                                credentials                       │
 │ --container-url                      TEXT                      Azure container URL for --direct  │

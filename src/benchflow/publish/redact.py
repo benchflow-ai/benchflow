@@ -9,12 +9,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
 from benchflow.trajectories.types import (
+    _BACKSLASH_UNIT,
     REDACTION_CATEGORY_API_KEY,
     REDACTION_CATEGORY_BEARER_TOKEN,
     REDACTION_CATEGORY_CREDENTIAL_FIELD,
     REDACTION_CATEGORY_PASSWORD,
     REDACTION_CATEGORY_PRIVATE_KEY,
     REDACTION_CATEGORY_URL_CREDENTIAL,
+    _replacement,
     redact_trajectory_text_with_categories,
 )
 
@@ -86,7 +88,10 @@ VALUE_PATTERNS = (
         re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), REDACTED, REDACTION_CATEGORY_API_KEY
     ),
     RedactionPattern(
-        re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
+        # A backslash in the token is part of it, as _SECVAL reads it.
+        re.compile(
+            rf"Bearer\s+(?:[A-Za-z0-9._~+/=-]|{_BACKSLASH_UNIT}){{16,}}", re.IGNORECASE
+        ),
         f"Bearer {REDACTED}",
         REDACTION_CATEGORY_BEARER_TOKEN,
     ),
@@ -231,7 +236,7 @@ def _redact_text(
         categories.update(text_categories)
     redacted_text = redacted_text.replace(_CANONICAL_REDACTED, REDACTED)
     for pattern, replacement, category in VALUE_PATTERNS:
-        redacted_text, count = pattern.subn(replacement, redacted_text)
+        redacted_text, count = pattern.subn(_replacement(replacement), redacted_text)
         replacements += count
         if count and categories is not None:
             categories[category] += count

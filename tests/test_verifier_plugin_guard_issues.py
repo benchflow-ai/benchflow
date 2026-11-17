@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import sysconfig
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -649,6 +650,12 @@ def test_owners_still_count_where_write_bits_do_not(tmp_path, monkeypatch):
     plugin.write_text("# the image's\n")
     key = tmp_path / "key"
     key.write_text("x")
+    # The plugin predates the arm (the key's change time). Two writes in one
+    # clock tick share a change time on coarse-ctime kernels (Debian 12's
+    # 6.1: 1,971 of 2,000), and equal is not before (EN-595).
+    while os.stat(key).st_ctime <= os.stat(plugin).st_ctime:
+        time.sleep(0.001)
+        key.chmod(0o600)
     monkeypatch.setattr(guard, "_BENCHFLOW_ARMED", True)
     monkeypatch.setattr(guard, "_BENCHFLOW_KEY_FILE", str(key))
     blocked = (str(tmp_path / "app"),)
@@ -1040,3 +1047,78 @@ def test_image_bytes_count_in_a_world_writable_workspace(tmp_path, monkeypatch):
     ).startswith(
         f"{workspace}/pkg/fixtures.py is under {workspace}, which the agent could write"
     )
+
+
+# EN-708: plugins of the pytest that runs, whether or not discovery found them.
+
+
+async def test_image_plugin_discovery_never_named_is_loaded_where_installed(
+    tmp_path, monkeypatch
+):
+    """Guards EN-708: astropy-14309's oracle scored 0.
+
+    Discovery reads the Python on the hardening PATH. SWE-bench's test.sh
+    switches to a conda env that was never on it, so pytest-doctestplus (the
+    image's) loaded nowhere and astropy's ini addopts ``--doctest-rst`` stopped
+    pytest with a usage error that test.sh scored 0. A trusted plugin the
+    running pytest has now loads though discovery never named it.
+    """
+
+    def image(layout):
+        # The image's, so there before hardening arms the guard.
+        install_plugin(
+            layout.tmp / "image-site-packages",
+            IMAGE_PLUGIN,
+            name="image_plugin",
+            module="image_plugin_module",
+        )
+
+    def image_python(env, layout):
+        return [*uvx(env, layout), layout.tmp / "image-site-packages"]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        USES_IMAGE_PLUGIN,
+        image_python,
+        before=image,
+        workspace_name="app",
+        discovered=[],
+    )
+
+    assert error is None, error
+    assert rewards == {"reward": 1.0}, stdout_of(layout)
+
+
+async def test_planted_plugin_discovery_never_named_is_still_not_loaded(
+    tmp_path, monkeypatch
+):
+    """EN-708's control: loading what the running pytest has never loads what
+    the guard does not trust. A plugin the agent planted where test.sh's
+    Python sees it stays unloaded, and the solution decides the score."""
+    proof = tmp_path / "hostile-imported"
+
+    def plant(layout):
+        install_plugin(
+            layout.workspace / "agent-plugins",
+            hostile_ctrf(proof),
+            name="planted_plugin",
+            module="planted_plugin_module",
+        )
+
+    def reach_it(env, layout):
+        return [layout.workspace / "agent-plugins"]
+
+    layout, _, rewards, error = await score(
+        tmp_path,
+        monkeypatch,
+        FAILING,
+        reach_it,
+        before=plant,
+        workspace_name="app",
+        discovered=[],
+    )
+
+    assert error is None, error
+    assert rewards == {"reward": 0.0}, stdout_of(layout)
+    assert not proof.exists()

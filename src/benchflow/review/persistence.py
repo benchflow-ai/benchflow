@@ -175,6 +175,10 @@ def commit_scoring_result(
     files are not a multi-file transaction and can be rebuilt after a crash.
     This operation is shared by initial scoring and resume.
     """
+    from benchflow._utils.result_metadata import (
+        atif_metrics_extra,
+        atif_prompt_tokens,
+    )
     from benchflow.diagnostics import RolloutDiagnostics
     from benchflow.rollout._results import _write_rewards_jsonl, _write_trainer_artifact
     from benchflow.rollout._verifier_recovery import verification_source
@@ -227,11 +231,17 @@ def commit_scoring_result(
         rewards=export_rewards,
         model=source.get("model"),
         verifier_error=result["verifier_error"],
-        total_prompt_tokens=agent_result.get("n_input_tokens"),
+        # The same completion and verdict results.jsonl writes.
+        error=source.get("error"),
+        partial_trajectory=bool(source.get("partial_trajectory", False)),
+        scoring=scoring,
+        total_prompt_tokens=atif_prompt_tokens(agent_result),
         total_completion_tokens=agent_result.get("n_output_tokens"),
         total_cached_tokens=agent_result.get("n_cache_read_tokens"),
         total_cost_usd=agent_result.get("cost_usd"),
+        metrics_extra=atif_metrics_extra(agent_result),
         strict=True,
+        effort=source.get("effort"),
     )
     write_rollout_results_jsonl(
         rollout_dir,

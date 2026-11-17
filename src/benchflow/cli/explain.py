@@ -76,6 +76,18 @@ _BODIES: dict[str, str] = {
         "Lifecycle records preserve the actual status, byte counts and elapsed "
         "upstream seconds without copying prompt content."
     ),
+    "verifier_tools_refused": (
+        "The verifier runs test.sh as root with a PATH of the image's folders "
+        "only root can write. Before the agent's turn BenchFlow locks the "
+        "image's PATH folders to root (the official rust image leaves "
+        "/usr/local/cargo/bin open to every user); a folder still open at "
+        "grading time, a relative entry, or one in the workspace, a home or a "
+        "temp folder is left out. A task whose test.sh needs programs there "
+        "declares them in [verifier] required_tools, and none did, or a "
+        "declared one is only in a folder left out. test.sh did not run, so "
+        "the trial is unscored, never a 0, and never retried. The error names "
+        "each folder and why it was left out."
+    ),
     # Unscored: the agent finished, the verifier could not score it.
     "verifier_failure": (
         "The agent finished, but the verifier (the task's test.sh, or its "
@@ -99,15 +111,19 @@ _BODIES: dict[str, str] = {
         "fails whenever the network does."
     ),
     "reward_out_of_range": (
-        "The verifier ran and wrote a reward, but the number is outside the "
-        "range the task declares (0 to 1 unless task.toml's [verifier] "
-        "reward_range says otherwise), so it is not counted: the trial is "
-        "unscored. It counts as a failure in primary metrics (mean reward "
-        "and pass@k), remaining in their denominator; only scored-only "
-        "metrics exclude it. "
-        "reward_out_of_range_info in result.json keeps the raw value. Every "
-        "run of the task fails the same way until the verifier or the "
-        "declared range is fixed."
+        "The verifier ran and wrote a number outside the range the task "
+        "declares (0 to 1 unless task.toml's [verifier] reward_range says "
+        "otherwise). Under integrity audit and off, a reward field outside it "
+        "is recorded as test.sh wrote it, with a note in "
+        "reward_out_of_range_info and in summary.json's rewards_outside_range, "
+        "and gets no category; this one is set when the number is one the "
+        "reward would be made from (no reward field), and that trial is "
+        "unscored. Under integrity strict the trial scores 0, a failure in the "
+        "primary metrics (mean reward and pass@k) and in the scored-only ones "
+        "alike, and stays in every denominator, with a 'Verifier scored 0:' "
+        "warning. reward_out_of_range_info in result.json keeps the raw "
+        "value. Every run of the task ends the same way until the verifier or "
+        "the declared range is fixed."
     ),
     "registry_auth": (
         "Docker could not pull the task's base image because the registry "
@@ -187,6 +203,24 @@ _BODIES: dict[str, str] = {
         "write that the agent left there, or changed, after it started. The "
         "trial counts as a failure. The trial's verifier/ folder names the "
         "plugin and why."
+    ),
+    "verifier_output_unwritable": (
+        "test.sh never ran: its verifier runs as a user other than root that "
+        "cannot write the file its output goes to. On Docker BenchFlow makes "
+        "that file on the host, as the host's user, before the test command, "
+        "and the verifier's user is the image's own USER when the task names "
+        "none. That is BenchFlow's failure, not the task's or the agent's: "
+        "the trial is unscored and stays out of the error-excluding score. "
+        "Until BenchFlow leaves the file to the test command, run "
+        'the verifier as root ([verifier] user = "root" in task.toml).'
+    ),
+    "verifier_no_usable_reward": (
+        "The final verify left no reward BenchFlow could use: no reward file, "
+        "an empty one, one it could not read, or one without a number. That "
+        "is the verifier's error, not a wrong answer, and it is never retried. "
+        "The trial still counts as a failure in every score, as a plugin guard "
+        "refusal does, because the reward files are evidence the agent can "
+        "reach. The trial's verifier/ folder has test.sh's output."
     ),
     "no_verdict": (
         "The trial has neither a reward nor an error: a reviewer's "
@@ -270,6 +304,12 @@ _BODIES: dict[str, str] = {
         "connection to Claude was lost' means its own process or its API "
         "stream ended, not BenchFlow's connection to the sandbox."
     ),
+    "script_backend": (
+        "An operator script (--agent script:...) needs the trusted root runner "
+        "that only the docker and remote-docker backends have, so the trial is "
+        "refused before any sandbox or provider call. It is not retried: "
+        "another attempt would be refused the same way."
+    ),
     "unsupported_task_feature": (
         "The task asks for something the chosen sandbox backend cannot "
         "provide, so the trial is refused before it starts. The message names "
@@ -300,6 +340,54 @@ _BODIES: dict[str, str] = {
     "pipe_closed:exit": (
         "The agent process exited during its turn; the message has its exit "
         "code. Its log has its last words."
+    ),
+    "verifier_network_refused": (
+        "test.sh's network (verifier.network_mode, else the sandbox's policy) "
+        "refused it: a packet at BenchFlow's rules, or a request at its egress "
+        "proxy. Its tests did not pass (a non-zero exit, or a reward below 1), "
+        "so the trial is unscored rather than a silent 0 that would read as "
+        "the agent's failure. It counts 0 in the every-trial mean. "
+        "verifier/verifier-network.json names the network, the counts and the "
+        "first requests refused. A pass despite refusals keeps its reward."
+    ),
+    "verifier_network_unheld": (
+        "The task gives the verifier a restricted network (verifier.network_mode, "
+        "draft 2's verifier network, else the sandbox's policy), and BenchFlow "
+        "could not hold test.sh to it: the rules could not be added, from its "
+        "helper or at all, or were not proven. test.sh runs the agent's code, "
+        "so it does not run with the network open instead: the trial is "
+        "unscored and never retried. The error names what failed."
+    ),
+    "test_sh_preflight_unavailable": (
+        "A branch child restores its source trial's sandbox after that trial's "
+        "agent ran, so BenchFlow never judges test.sh's commands there: it "
+        "carries the verdict the source decided before its turn. A checkpoint "
+        "made before the check recorded none, and BenchFlow could not decide "
+        "one on a fresh sandbox of the task's image either (a provider that "
+        "starts the child from the snapshot itself, or a check that could not "
+        "run), so the child was not run: unscored, never retried, and never "
+        "the task's fault. A new checkpoint carries a verdict."
+    ),
+    "test_sh_command_missing": (
+        "BenchFlow runs test.sh in the task's image as a plain, non-login "
+        "shell, with the verifier's hardened PATH, as the verifier user. Just "
+        "before the agent's turn it reads test.sh's interpreter and the "
+        "commands it runs unconditionally with errexit on, before anything "
+        "that could install a tool or change PATH, and resolves each there. "
+        "One that does not resolve means test.sh can never write a reward, so "
+        "the trial is refused before the agent runs: unscored, never retried, "
+        "no agent tokens spent. A tool the image puts on PATH only through "
+        "a login profile (~/.profile, ~/.bashrc) is not on that PATH. Other "
+        "commands test.sh names that do not resolve are warnings in "
+        "result.json and change no score."
+    ),
+    "verifier_launch_refused": (
+        "test.sh runs the agent's code as root, so BenchFlow starts it without "
+        "NET_ADMIN, NET_RAW and SYS_PTRACE: through util-linux setpriv, else "
+        "its kit Python. Neither "
+        "of them could (or the shell it started still held one of the three), "
+        "so test.sh did not run and the trial has no score. "
+        "verifier/test-stdout.txt says what the launch found."
     ),
     "other": (
         "An error none of the other pages covers. If it repeats on other "

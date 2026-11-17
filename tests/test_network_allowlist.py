@@ -120,13 +120,19 @@ class TestCapabilityGate:
             == ALLOWLIST_UNSUPPORTED_PROVIDERS
         )
 
-    def test_verifier_allowlist_is_refused(self):
-        """The verifier runs as root outside the uid firewall; its own rule is not an allowlist."""
+    def test_verifier_allowlist_is_refused_where_hardening_does_not_hold_it(self):
+        """EN-609: on Docker hardening holds the verifier, root included, to its
+        allowlist (every-process rules and the marked egress proxy); on a
+        sandbox where it does not, the verifier would run outside the uid
+        firewall, so the task is refused there, naming the sandbox."""
         config = TaskConfig.model_validate(
             {"verifier": {"network_mode": "allowlist", "allowed_hosts": ["x.com"]}}
         )
-        issues = validate_task_runtime_support(config, sandbox="docker")
+        assert validate_task_runtime_support(config, sandbox="docker") == []
+        assert validate_task_runtime_support(config, sandbox="remote-docker") == []
+        issues = validate_task_runtime_support(config, sandbox="daytona")
         assert [i.path for i in issues] == ["verifier.network_mode"]
+        assert "not enforced on daytona" in issues[0].reason
 
     @pytest.mark.parametrize("sandbox_mode", ["no-network", "denylist"])
     def test_agent_allowlist_cannot_combine_with_other_sandbox_policies(

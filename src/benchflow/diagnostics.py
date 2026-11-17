@@ -25,6 +25,7 @@ exceptions without pulling Daytona/Modal SDKs.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, ClassVar, Literal
 
@@ -257,7 +258,8 @@ class AgentPromptTimeoutDiagnostic(Diagnostic):
     """BenchFlow hit the prompt wall-clock budget and wrote timeout evidence."""
 
     reason: Literal["wall_clock_timeout"] = DIAGNOSTIC_REASON_WALL_CLOCK_TIMEOUT
-    timeout_sec: float = 0.0
+    # None when the budget is unknown (a fallback record).
+    timeout_sec: float | None = 0.0
     n_tool_calls: int = 0
     pending_tool_call_ids: list[str] = field(default_factory=list)
     terminal_event_recorded: bool = False
@@ -460,6 +462,9 @@ class RewardOutOfRangeDiagnostic(Diagnostic):
     reward_range: tuple[float, float] = (0.0, 1.0)
     declared: bool = False
     file: str | None = None
+    # Integrity audit or off: the reward is the number as test.sh wrote it
+    # and this is its note; strict scores 0 (False).
+    recorded_as_written: bool = False
 
     field: ClassVar[str] = "reward_out_of_range_info"
     category: ClassVar[str | None] = "reward_out_of_range"
@@ -481,7 +486,18 @@ class RewardOutOfRangeDiagnostic(Diagnostic):
             file=getattr(error, "file", None),
         )
 
+    def note(self) -> str:
+        """The trial's note on a reward recorded as written."""
+        lo, hi = self.reward_range
+        where = f"the task's reward_range [{lo}, {hi}]" if self.declared else "0-1"
+        return (
+            f"reward outside {where}: {self.key} = {self.value!r}, "
+            "recorded as test.sh wrote it"
+        )
+
     def format_issue(self, task_name: str) -> str:
+        if self.recorded_as_written:
+            return f"{task_name}: {self.note()}"
         lo, hi = self.reward_range
         return (
             f"{task_name}: reward out of range ({self.key}={self.value!r}, "
@@ -614,6 +630,30 @@ class AgentModelNotOfferedError(RuntimeError):
             f"agent integration failure [agent_model]: {agent} does not offer "
             f"model {model!r} for this login; it offers: {', '.join(offered)}"
         )
+
+
+class AgentEffortNotOfferedError(AgentModelNotOfferedError):
+    """The agent's session offers the model, but not at the requested effort.
+
+    codex-acp lists one ``model[effort]`` id per effort a model takes, and its
+    ``session/set_model`` refuses any other effort. 0.9.2 picked the model's
+    ``medium`` variant instead, so a run asked for ``ultra`` ran at
+    ``medium``. Raised before the prompt: an unscored
+    ``agent_model`` integration failure, not retried; ``offered`` holds the
+    efforts.
+    """
+
+    def __init__(self, agent: str, model: str, effort: str, offered: list[str]) -> None:
+        RuntimeError.__init__(
+            self,
+            f"agent integration failure [agent_model]: {agent} does not offer "
+            f"reasoning effort {effort!r} for model {model!r}; it offers: "
+            f"{', '.join(offered) or 'no effort'}",
+        )
+        self.agent = agent
+        self.model = model
+        self.effort = effort
+        self.offered = tuple(offered)
 
 
 @dataclass
@@ -952,6 +992,23 @@ class TransientSandboxTransportError(ConnectionError):
 
 
 # Summary / check_results helpers driven by the registry
+
+
+def rewards_outside_range_summary(
+    results: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """summary.json's note on the trials whose reward is outside the range,
+    recorded as test.sh wrote it (integrity audit or off); {} when none."""
+    rows = []
+    for name, result in sorted(results.items()):
+        info = result.get(RewardOutOfRangeDiagnostic.field)
+        if not isinstance(info, Mapping) or info.get("recorded_as_written") is not True:
+            continue
+        note = RewardOutOfRangeDiagnostic.format_issue_from_dict(str(name), dict(info))
+        rows.append({"task": str(name), "reward": info.get("value"), "note": note})
+    if not rows:
+        return {}
+    return {"rewards_outside_range": {"count": len(rows), "trials": rows}}
 
 
 def summary_warning(diagnostic_cls: type[Diagnostic], count: int, total: int) -> str:

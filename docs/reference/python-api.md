@@ -144,7 +144,7 @@ Read a finished rollout back later, for example from a notebook:
 result = bf.RolloutResult.load("jobs/my-run/2026-01-01__12-00-00/my-task__1a2b3c4d")
 ```
 
-`result.to_record()` gives one flat, JSON-safe dict of the headline fields. It is the row the CSV and JSONL exports write.
+`result.to_record()` gives one flat, JSON-safe dict of the headline fields. The CSV and JSONL exports (`to_csv`, `to_jsonl` on `Results` and `EvaluationResult`) write that row plus three columns: `execution` and `assessment`, as `bf.load_trial` reads the trial, and `integration_failure_info`, the judge's finding for a withheld trial (JSON in the CSV).
 
 ## Many rollouts
 

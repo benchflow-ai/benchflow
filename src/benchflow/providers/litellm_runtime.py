@@ -55,6 +55,7 @@ from benchflow.agents.registry import (
     GEMINI_NATIVE_BASE_URL_ENV,
     OPENCODE_GOOGLE_BASE_URL_ENV,
     is_scripted_agent,
+    opencode_google_provider,
     routes_gemini_natively,
 )
 from benchflow.providers.litellm_bedrock_preflight import (
@@ -254,6 +255,13 @@ class LiteLLMProcess:
     _live_capture_lag_bytes: int | None = 0
     _live_capture_stall_ticks: int = 0
     _live_capture_stall_warned: bool = False
+    # The callback lines the live capture read that a whole import reads
+    # (calls and refusals), for a stop that can no longer read the log.
+    _live_lines: list[str] | None = None
+    # Why the log stop() imported may miss calls, when it may (an in-sandbox
+    # proxy whose sandbox was lost: _salvage_live_capture); None when it was
+    # read whole.
+    usage_log_shortfall: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -293,6 +301,7 @@ class LiteLLMProcess:
         )
         self._live_callback_offset = 0
         self._live_callback_remainder = b""
+        self._live_lines = []
         self._request_events = {}
         # Clear ``seen`` BEFORE the total so a racing render-thread read can
         # only observe None (fresh capture) — never a transient "0 tokens".
@@ -463,6 +472,10 @@ class LiteLLMProcess:
                     session_id=self.session_id,
                     agent_name=self.agent_name,
                 )
+                if parsed.exchanges or parsed.metadata.get("refused_requests"):
+                    lines_read = self._live_lines
+                    if lines_read is not None:
+                        lines_read.append(raw_line.decode("utf-8", errors="replace"))
                 if parsed.exchanges:
                     trajectory.exchanges.extend(parsed.exchanges)
                     # Live token counter for the eval dashboard: accumulate the
@@ -576,6 +589,39 @@ class LiteLLMProcess:
         writer = getattr(self, "_live_writer", None)
         if writer is not None:
             writer.reconcile(self.trajectory)
+
+    def _salvage_live_capture(
+        self, error: BaseException, *, sandbox_lost: bool = True
+    ) -> bool:
+        """The log could not be read at the stop: import the lines the live
+        capture read while the turn ran, as a whole read imports them (the
+        provider's bills, the reported models and the refusals with them),
+        and say the count may miss calls, and why. False when
+        nothing was captured live."""
+        lines = self._live_lines
+        if lines is None:
+            return False
+        self.trajectory = trajectory_from_litellm_callback_log(
+            "\n".join(lines),
+            session_id=self.session_id,
+            agent_name=self.agent_name,
+        )
+        calls = len(self.trajectory.exchanges)
+        what = (
+            "the sandbox was lost before the log could be read at the end"
+            if sandbox_lost
+            else "the log could not be read at the end, though the sandbox answers"
+        )
+        self.usage_log_shortfall = (
+            f"{what} ({describe_exception(error)}): the {calls} call(s) read from "
+            "it while the turn ran are counted, any after the last read are not"
+        )
+        logger.warning(
+            "The model proxy's usage log may miss calls: %s",
+            self.usage_log_shortfall,
+        )
+        _warn_refused_requests(self.trajectory)
+        return True
 
 
 def _live_usage_gateway_conformance(process: LiteLLMProcess) -> LiveUsageGateway:
@@ -770,7 +816,12 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 ),
                 timeout_sec=10,
             )
-        await self._load_callback_log()
+        try:
+            await self._load_callback_log()
+        except Exception as exc:
+            lost = not await self._sandbox_answers()
+            if not self._salvage_live_capture(exc, sandbox_lost=lost):
+                raise
         self._reconcile_live_capture()
         with contextlib.suppress(Exception):
             await exec_raw(
@@ -778,6 +829,14 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 f"{guard} && rm -rf {shlex.quote(self.runtime_dir)}",
                 timeout_sec=10,
             )
+
+    async def _sandbox_answers(self) -> bool:
+        """Whether the sandbox still runs a command: a lost one does not."""
+        try:
+            result = await exec_raw(self.sandbox.exec, "true", timeout_sec=10)
+        except Exception:
+            return False
+        return result.return_code == 0
 
     async def _remote_log_size(self) -> int:
         with contextlib.suppress(Exception):
@@ -860,8 +919,13 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
                 f"cat {shlex.quote(self.log_path)} 2>/dev/null || true",
                 timeout_sec=15,
             )
-            if result.return_code == 0:
-                text = result.stdout or ""
+            if result.return_code != 0:
+                # `|| true`: only the exec itself failed (a lost sandbox). An
+                # empty import would read as a trial that made no call.
+                raise RuntimeError(
+                    f"the callback log could not be read (exit {result.return_code})"
+                )
+            text = result.stdout or ""
         self._capture_request_events(text)
         self.trajectory = trajectory_from_litellm_callback_log(
             text,
@@ -2674,6 +2738,12 @@ async def _start_sandbox_litellm(
                 stderr_path=paths["stderr"],
             )
             port = int(state["port"])
+            # BenchFlow's own, on the host's record: R1. The pid
+            # the launcher reported for the process it started.
+            if str(state.get("pid", "")).isdigit():
+                from benchflow.sandbox.lockdown import note_own_process
+
+                await note_own_process(sandbox, pid=int(state["pid"]))
             await _poll_sandbox_health(
                 sandbox,
                 python=python,
@@ -2990,7 +3060,7 @@ def _wire_litellm_agent_env(
         )
         return updated
     if agent == "opencode":
-        if route.upstream_model.lower().startswith("gemini/"):
+        if opencode_google_provider(route.upstream_model):
             # OpenCode's own Gemini client through LiteLLM's byte-preserving
             # Gemini pass-through, as for Gemini CLI below: the chat-completions
             # alias would drop Gemini's thought signatures and thinking config.

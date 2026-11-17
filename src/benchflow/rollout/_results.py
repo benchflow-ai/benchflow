@@ -40,6 +40,7 @@ from benchflow._utils.config_redaction import (
 )
 from benchflow._utils.result_metadata import (
     final_metrics_from_agent_result,
+    incomplete_usage_fields,
     trajectory_summary_from_events,
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
@@ -125,6 +126,8 @@ def _write_config(
     context_root: str | Path | None,
     sandbox_locked_paths: list[str] | None = None,
     sandbox_setup_timeout: int = 120,
+    sandbox_setup_timeout_given: bool | None = None,
+    sandbox_user_setup_timeout: int | None = None,
     skip_agent_install: bool = False,
     timeout: int,
     started_at: datetime,
@@ -194,6 +197,18 @@ def _write_config(
         "sandbox_user": sandbox_user,
         "sandbox_locked_paths": sandbox_locked_paths,
         "sandbox_setup_timeout": sandbox_setup_timeout,
+        # Whether the run named it, and what handing the workspace to the
+        # sandbox user had; both absent before.
+        **(
+            {"sandbox_setup_timeout_given": sandbox_setup_timeout_given}
+            if sandbox_setup_timeout_given is not None
+            else {}
+        ),
+        **(
+            {"sandbox_user_setup_timeout": sandbox_user_setup_timeout}
+            if sandbox_user_setup_timeout is not None
+            else {}
+        ),
         "skip_install": skip_agent_install,
         "agent_install_timeout": None
         if skip_agent_install
@@ -346,6 +361,15 @@ def _build_rollout_result(
     cost_usd: float | None = None,
     usage_source: str = "unavailable",
     price_source: str | None = None,
+    usage_source_legacy: str | None = None,
+    cost_source: str | None = None,
+    price_table_date: str | None = None,
+    n_cache_write_5m_tokens: int | None = None,
+    n_cache_write_1h_tokens: int | None = None,
+    cost_usd_provider: float | None = None,
+    n_calls_cost_estimated: int | None = None,
+    usage_incomplete: bool | None = None,
+    usage_incomplete_reason: str | None = None,
     usage_details: dict[str, Any] | None = None,
     usage_tracking: dict[str, Any] | None = None,
     evolved_skills: dict[str, str] | None = None,
@@ -364,6 +388,8 @@ def _build_rollout_result(
     verifier_isolation: tuple[str, str] | None = None,
     cloud_metadata: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    effort: dict[str, Any] | None = None,
+    test_sh_preflight: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -422,6 +448,11 @@ def _build_rollout_result(
         cost_usd=cost_usd,
         usage_source=normalize_usage_source(usage_source),
         price_source=price_source,
+        usage_source_legacy=usage_source_legacy,
+        cost_source=cost_source,
+        price_table_date=price_table_date,
+        n_cache_write_5m_tokens=n_cache_write_5m_tokens,
+        n_cache_write_1h_tokens=n_cache_write_1h_tokens,
         usage_details=usage_details,
         error=error,
         error_category=error_category,
@@ -431,6 +462,8 @@ def _build_rollout_result(
         partial_trajectory=partial_trajectory,
         trajectory_source=trajectory_source,
         evolved_skills=evolved_skills,
+        usage_incomplete=usage_incomplete,
+        usage_incomplete_reason=usage_incomplete_reason,
         source_provenance=source_provenance,
         started_at=started_at,
         finished_at=finished_at,
@@ -438,6 +471,24 @@ def _build_rollout_result(
     )
     timing["total"] = (finished_at - started_at).total_seconds()
     timing = timing_spans.rounded(timing)
+    from benchflow.agents.registry import is_scripted_agent
+
+    no_usage_reason = "no_model_call" if is_scripted_agent(agent) else None
+    if no_usage_reason is not None:
+        # No model was called: every count and the cost are null, never 0.
+        for field in (
+            "n_input_tokens",
+            "n_output_tokens",
+            "n_cache_read_tokens",
+            "n_cache_creation_tokens",
+            "n_cache_write_5m_tokens",
+            "n_cache_write_1h_tokens",
+            "total_tokens",
+            "cost_usd",
+            "cost_source",
+            "price_table_date",
+        ):
+            setattr(result, field, None)
     agent_result = {
         "n_tool_calls": result.n_tool_calls,
         "n_skill_invocations": result.n_skill_invocations,
@@ -446,11 +497,44 @@ def _build_rollout_result(
         "n_output_tokens": result.n_output_tokens,
         "n_cache_read_tokens": result.n_cache_read_tokens,
         "n_cache_creation_tokens": result.n_cache_creation_tokens,
+        # its token split: n_input_tokens is uncached; the cache writes
+        # (n_cache_creation_tokens, kept as an alias) with their 5-minute and
+        # 1-hour shares where the provider reports them; output with reasoning.
+        "n_cache_write_tokens": result.n_cache_write_tokens,
+        "n_cache_write_5m_tokens": result.n_cache_write_5m_tokens,
+        "n_cache_write_1h_tokens": result.n_cache_write_1h_tokens,
         "total_tokens": result.total_tokens,
         "cost_usd": result.cost_usd,
         "usage_source": result.usage_source,
+        "cost_source": result.cost_source,
+        "price_table_date": result.price_table_date,
         "price_source": result.price_source,
+        # The earlier name, for readers that tell a metered run from a
+        # login's (trajectories/results.py, job_export.py's cost_status).
+        "usage_source_legacy": result.usage_source_legacy,
+        # Why a trial has no usage when it never could: "no_model_call" for a
+        # control or an operator script (oracle, nop, script:...), whose
+        # null tokens and cost are no missing measurement.
+        "no_usage_reason": no_usage_reason,
     }
+    if cost_usd_provider is not None:
+        # Some calls carried their provider's bill and some did not: the
+        # billed part and how many calls were estimated.
+        agent_result["cost_usd_provider"] = cost_usd_provider
+        agent_result["n_calls_cost_estimated"] = n_calls_cost_estimated
+    # A count that misses calls says so, and so does its cost.
+    agent_result.update(
+        incomplete_usage_fields(
+            {
+                "usage_incomplete": usage_incomplete,
+                "usage_incomplete_reason": usage_incomplete_reason,
+                "cost_usd": agent_result["cost_usd"],
+                # An unpriced warm-up, or unreported writes on a route
+                # that prices them, makes the cost a floor.
+                "usage_details": result.usage_details,
+            }
+        )
+    )
     if result.usage_details is not None:
         agent_result["usage_details"] = result.usage_details
     final_metrics = final_metrics_from_agent_result(agent_result)
@@ -517,6 +601,9 @@ def _build_rollout_result(
         "verifier_isolation_source": (
             verifier_isolation[1] if verifier_isolation else None
         ),
+        # What test.sh needs, resolved before the agent's turn as the
+        # verifier runs it (task/test_sh_preflight.py); None when unchecked.
+        "test_sh_preflight": test_sh_preflight,
     }
     if scoring is not None:
         result_data["scoring"] = scoring.to_dict()
@@ -526,6 +613,14 @@ def _build_rollout_result(
         # The cloud metadata block's state, and the run's opt-out when it
         # made one; cloud-metadata.json has the whole record.
         result_data["cloud_metadata"] = cloud_metadata
+    if effort is not None:
+        # The effort asked for beside the one that ran; a mismatch
+        # is a trial warning too.
+        from benchflow.effort_record import effort_warning
+
+        result_data["effort"] = effort
+        if (note := effort_warning(effort)) is not None:
+            warnings = [*(warnings or []), note]
     if warnings:
         # What the trial ran without or around, by name, never a value
         # (benchflow._utils.trial_warnings); absent when there is none.
@@ -547,14 +642,19 @@ def _build_rollout_result(
         rollout_name=rollout_name,
         agent_name=agent_name or agent,
         prompts=prompts,
+        effort=effort,
         trajectory=trajectory,
         rewards=rewards,
         model=model,
+        error=error,
         verifier_error=verifier_error,
-        total_prompt_tokens=n_input_tokens,
-        total_completion_tokens=n_output_tokens,
-        total_cached_tokens=n_cache_read_tokens,
-        total_cost_usd=cost_usd,
+        partial_trajectory=partial_trajectory,
+        scoring=scoring,
+        total_prompt_tokens=final_metrics["total_prompt_tokens"],
+        total_completion_tokens=final_metrics["total_completion_tokens"],
+        total_cached_tokens=final_metrics["total_cached_tokens"],
+        total_cost_usd=final_metrics["total_cost_usd"],
+        metrics_extra=final_metrics["extra"],
     )
     _write_results_jsonl(
         rollout_dir,
@@ -598,6 +698,122 @@ def _write_results_jsonl(
         logger.warning("results.jsonl write failed: %s", e)
 
 
+def rewrite_exports_as_read(trial_dir: Path) -> bool:
+    """Rewrite one trial's export records as every reader scores the trial: ``results.jsonl``, ``trainer/verifiers.jsonl`` and the
+    other trainer formats, and ``rewards.jsonl``.
+
+    The rollout writes them when the trial ends, from the reward the verifier
+    gave. A trial the judge (:func:`benchflow.integration_health.scored_as_read`)
+    withholds on read, a final idle timeout whose agent did nothing, say, is
+    an unscored integration failure to every reader, so its records are
+    rewritten unscored, as for a trial the run withheld itself: the same
+    writers, the judged error and category, no reward. result.json is left as
+    the run wrote it. Returns whether the trial's records were rewritten.
+    """
+    from collections.abc import Mapping
+
+    from benchflow._utils.result_metadata import (
+        atif_metrics_extra,
+        atif_prompt_tokens,
+    )
+    from benchflow.integration_health import scored_as_read
+    from benchflow.review.outcome import scoring_from_result
+
+    try:
+        result = json.loads((trial_dir / "result.json").read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(result, dict) or isinstance(
+        result.get("integration_failure_info"), Mapping
+    ):
+        return False  # unreadable, or withheld by the run, which wrote them so
+    judged = scored_as_read(result, trial_dir)
+    if not isinstance(judged.get("integration_failure_info"), Mapping):
+        return False
+    try:
+        trajectory = [
+            json.loads(line)
+            for line in (trial_dir / "trajectory" / "acp_trajectory.jsonl")
+            .read_text()
+            .splitlines()
+            if line.strip()
+        ]
+    except (OSError, ValueError):
+        trajectory = []
+    try:
+        prompts = json.loads((trial_dir / "prompts.json").read_text())
+    except (OSError, ValueError):
+        prompts = []
+    agent_result = result.get("agent_result") or {}
+    try:
+        scoring = scoring_from_result(result)
+    except ValueError:
+        scoring = None
+    (trial_dir / "rewards.jsonl").unlink(missing_ok=True)
+    if (trial_dir / "trainer").is_dir():
+        _write_trainer_artifact(
+            trial_dir,
+            task_name=result.get("task_name") or "",
+            rollout_name=result.get("rollout_name") or trial_dir.name,
+            agent_name=result.get("agent_name") or result.get("agent") or "",
+            prompts=prompts,
+            trajectory=trajectory,
+            rewards=None,
+            model=result.get("model"),
+            verifier_error=result.get("verifier_error"),
+            error=judged.get("error"),
+            partial_trajectory=bool(result.get("partial_trajectory", False)),
+            scoring=scoring,
+            total_prompt_tokens=atif_prompt_tokens(agent_result),
+            total_completion_tokens=agent_result.get("n_output_tokens"),
+            total_cached_tokens=agent_result.get("n_cache_read_tokens"),
+            total_cost_usd=agent_result.get("cost_usd"),
+            metrics_extra=atif_metrics_extra(agent_result),
+        )
+    if (trial_dir / "results.jsonl").is_file():
+        _write_results_jsonl(
+            trial_dir,
+            task_name=result.get("task_name") or "",
+            rollout_name=result.get("rollout_name") or trial_dir.name,
+            agent=result.get("agent") or "",
+            agent_name=result.get("agent_name") or "",
+            model=result.get("model"),
+            n_tool_calls=result.get("n_tool_calls") or 0,
+            prompts=prompts,
+            trajectory=trajectory,
+            partial_trajectory=bool(result.get("partial_trajectory", False)),
+            rewards=None,
+            error=judged.get("error"),
+            verifier_error=result.get("verifier_error"),
+            error_category=judged.get("error_category"),
+            verifier_error_category=result.get("verifier_error_category"),
+            diagnostics=RolloutDiagnostics.from_result_fields(judged),
+            export_error=result.get("export_error"),
+            timing=result.get("timing") or {},
+            agent_result=agent_result,
+            scoring=scoring,
+            purpose=result.get("purpose", "task"),
+            parent_rollout=result.get("parent_rollout"),
+            branches=result.get("branches"),
+        )
+    return True
+
+
+def rewrite_job_exports_as_read(job_dir: Path) -> int:
+    """:func:`rewrite_exports_as_read` for every trial of the job, before its
+    job-level ``results.jsonl``, ``verifiers.jsonl`` and ``adp.jsonl`` are
+    built from them. Returns how many trials' records were rewritten."""
+    from benchflow._utils.result_paths import iter_task_result_paths
+
+    rewritten = 0
+    for path in iter_task_result_paths(job_dir):
+        try:
+            rewritten += rewrite_exports_as_read(path.parent)
+        except Exception:  # an export never fails the job or the rescore
+            logger.warning("Rewriting %s's exports failed", path.parent, exc_info=True)
+    return rewritten
+
+
 def _write_trainer_artifact(
     rollout_dir: Path,
     *,
@@ -605,14 +821,19 @@ def _write_trainer_artifact(
     rollout_name: str,
     agent_name: str,
     prompts: list[str],
+    effort: dict[str, Any] | None = None,
     trajectory: list[dict],
     rewards: dict | None,
     model: str | None,
     verifier_error: str | None,
+    error: str | None = None,
+    partial_trajectory: bool = False,
+    scoring: ScoringResult | None = None,
     total_prompt_tokens: int | None = None,
     total_completion_tokens: int | None = None,
     total_cached_tokens: int | None = None,
     total_cost_usd: float | None = None,
+    metrics_extra: dict[str, Any] | None = None,
     strict: bool = False,
 ) -> None:
     """Emit the trainer-format artifacts for this scored rollout.
@@ -636,16 +857,22 @@ def _write_trainer_artifact(
         trajectory_id = rollout_name
     else:
         trajectory_id = f"{task_name}__{rollout_name}"
+    # The same completion and verdict results.jsonl writes: an errored,
+    # truncated or unscored trial is not completed, and a failed scoring has
+    # no reward (audit RECORDS-4).
+    unscored = scoring is not None and scoring.status == "error"
     try:
         write_rollout_verifiers_jsonl(
             rollout_dir,
             task_id=task_name,
             prompts=prompts,
             trajectory=trajectory,
-            rewards=rewards,
+            rewards=None if unscored else rewards,
             model=model,
             environment=task_name,
-            error=verifier_error,
+            is_completed=not (error or verifier_error or partial_trajectory),
+            is_truncated=bool(partial_trajectory),
+            error=verifier_error or (scoring.error if unscored and scoring else None),
         )
     except Exception as e:  # pragma: no cover - defensive
         if strict:
@@ -659,10 +886,12 @@ def _write_trainer_artifact(
             prompts=prompts,
             trajectory=trajectory,
             model=model,
+            effort=effort,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
             total_cached_tokens=total_cached_tokens,
             total_cost_usd=total_cost_usd,
+            metrics_extra=metrics_extra,
         )
     except Exception as e:  # pragma: no cover - defensive
         if strict:
@@ -677,7 +906,7 @@ def _write_trainer_artifact(
             trajectory=trajectory,
             model=model,
             environment=task_name,
-            reward=(rewards or {}).get("reward"),
+            reward=None if unscored else (rewards or {}).get("reward"),
         )
     except Exception as e:  # pragma: no cover - defensive
         if strict:

@@ -14,7 +14,15 @@ the verifier through marker files named ``<prefix>.<token>.<kind>``: a
 ``loading`` marker written when pytest's plugin loader imports it and removed
 once pytest has registered the guard or the guard itself stopped pytest (one
 left behind means pytest imported the guard but never ran it), and a
-``registered`` marker once pytest has registered it. A marker turns a run the
+``registered`` marker once pytest has registered it. Two more say that a
+pytest never judged the solution: a ``starting`` marker written
+when pytest registers the guard and removed once pytest has read its whole
+command line (one left behind means pytest stopped while reading it, its ini
+file or its first conftests: a usage error, exit 4, such as an option of a
+plugin that is not loaded), and an ``exited`` marker holding pytest's exit
+status when its run ended with an internal error (3), a usage error (4) or
+no tests collected (5). A pytest that a test runs as its subject leaves
+neither. A marker turns a run the
 solution may have failed into an unscored one, so the solution must not be
 able to write one: markers go to a directory only the verifier's user can
 write, not the world-writable ``/logs/verifier``, and each carries an
@@ -123,6 +131,7 @@ sys.path[:] = [
     _STDLIB + "/lib-dynload",
 ]
 try:
+    import atexit
     import contextlib
     import hashlib
     import hmac
@@ -279,6 +288,28 @@ _OPTIONAL_FAILURE = None
 _PROOF_DEADLINE = None
 # Keeps this process's markers apart from other pytest runs of one verifier.
 _TOKEN = str(os.getpid()) + "-" + os.urandom(4).hex()
+# Exit statuses of a pytest run that judged nothing: an internal error, a
+# usage error, no tests collected.
+_UNJUDGED_EXITS = (3, 4, 5)
+# sys.last_value when this process last wrote ``starting``, in a list so the
+# hooks change it without a global statement (_starting_crashed).
+_LAST_AT_START = []
+# What this pytest did that the solution may have chosen
+# (_solution_had_a_hand): the conftest files it registered, and whether a
+# collector was skipped (a test module that skips itself, importorskip).
+_SEEN_CONFTESTS = []  # type: list[str]
+_SEEN_SKIPPED = [False]
+# Whether an internal error's traceback passed through a conftest or a file
+# the agent left (pytest_internalerror), and whether this process's
+# ``starting`` stands (it is held back while the first conftests load).
+_SEEN_CRASH = [False]
+_STARTING_LEFT = [False]
+# Whether a registered conftest defines pytest <= 7's pytest_cmdline_preparse,
+# which runs after the first conftests load: then ``starting`` is not written
+# again (the guard does not implement that deprecated hook).
+_SEEN_PREPARSE = [False]
+# The agent's trees as abspath and realpath spellings, once computed.
+_AGENT_TREES = []
 
 
 def _marker(kind):
@@ -332,6 +363,244 @@ def _imported_by_pytest():
     return False
 
 
+def _nested():
+    """Whether this pytest is the subject of a test another pytest runs.
+
+    Its exit status is that test's to judge, so it leaves no ``starting`` or
+    ``exited`` marker. pytest sets PYTEST_CURRENT_TEST while a test runs, in
+    its own process (a test calling pytest.main, where this module is
+    already imported) and so in every process the test starts.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
+def _starting():
+    """Leave ``starting`` for pytest_cmdline_main to remove.
+
+    pytest returns before that hook only with a usage error (exit 4): an
+    option no loaded plugin defines, a missing required plugin, a conftest
+    that failed to import. The guard's hooks never run again after the first
+    conftests load, so the marker left behind is the only record. While those
+    conftests load it is held back (pytest_load_initial_conftests), so a
+    pytest killed there, where solution code may run, leaves none. A
+    ``starting`` this process
+    already left is an earlier pytest.main in it that stopped so; it becomes
+    an ``exited`` one first.
+    """
+    _SEEN_CONFTESTS[:] = []
+    _SEEN_SKIPPED[0] = False
+    _SEEN_CRASH[0] = False
+    _SEEN_PREPARSE[0] = False
+    if not _BENCHFLOW_MARKERS:
+        return
+    if os.path.exists(_marker("starting")):
+        _mark("exited", "4")
+    _unmark("starting")
+    _mark("starting")
+    _STARTING_LEFT[0] = True
+    if not _LAST_AT_START:
+        atexit.register(_starting_crashed)
+    _LAST_AT_START[:] = [getattr(sys, "last_value", None)]
+
+
+def _starting_crashed():
+    """At exit: a pytest that died of an uncaught exception before it read its
+    whole command line (a plugin that failed to import, exit 1) is no usage
+    error, and keeps the outcome test.sh gives it, as before that change.
+
+    Python sets sys.last_value for such an exception before it runs the
+    exit handlers; a value already there when ``starting`` was written is an
+    earlier test's in this process (pytest keeps a failing test's).
+    """
+    last = getattr(sys, "last_value", None)
+    if last is not None and not (_LAST_AT_START and last is _LAST_AT_START[0]):
+        _unmark("starting")
+
+
+def _the_agents(path):
+    """Whether *path* is a file the agent left, or one it removed.
+
+    In the agent's trees, and neither the image's own bytes (_image_bytes)
+    nor written since the record (by test.sh, after the agent stopped). A
+    missing path there counts, and so does anything that cannot be told,
+    such as every such file when there is no record.
+    """
+    try:
+        if not path:
+            return False
+        path = os.path.abspath(str(path))
+        spellings = tuple(dict.fromkeys((path, os.path.realpath(path))))
+        if not any(under(s, tree) for s in spellings for tree in _agent_trees()):
+            return False
+        if any(
+            _image_bytes(s) and (not os.path.isdir(s) or _image_tree(s))
+            for s in spellings
+        ):
+            return False
+        record = _record()
+        return not (
+            record is not None
+            and os.path.lexists(path)
+            and _new_since_record(path, record)
+        )
+    except Exception:
+        return True
+
+
+def _agent_trees():
+    """The agent's trees, as abspath and realpath spellings, once computed."""
+    if not _AGENT_TREES:
+        _AGENT_TREES.append(
+            tuple(
+                candidate
+                for tree in _BENCHFLOW_BLOCKED
+                for candidate in (os.path.abspath(tree), os.path.realpath(tree))
+            )
+        )
+    return _AGENT_TREES[0]
+
+
+def _in_solution_trees(path):
+    """Whether the absolute *path* lies in the tests folder, or in the
+    agent's trees and is not new since the record, as either spelling,
+    whatever its bytes: code there (a helper module a conftest lists in
+    ``pytest_plugins``, the image's own plugin in the workspace) may build,
+    import or run the solution.
+
+    A file test.sh wrote in the agent's trees after the agent stopped (pytest
+    in a venv it made in the workdir) is the verifier's. The
+    record names inodes and birth times, not times the agent could set.
+    Without a record every file there counts as the solution's.
+    """
+    try:
+        spellings = tuple(dict.fromkeys((path, os.path.realpath(path))))
+        if _BENCHFLOW_TESTS_DIR:
+            tests = _BENCHFLOW_TESTS_DIR
+            if any(
+                under(s, root)
+                for s in spellings
+                for root in (os.path.abspath(tests), os.path.realpath(tests))
+            ):
+                return True
+        if not any(under(s, tree) for s in spellings for tree in _agent_trees()):
+            return False
+        record = _record()
+        return not (
+            record is not None
+            and os.path.lexists(path)
+            and _new_since_record(path, record)
+        )
+    except Exception:
+        return True
+
+
+def _raise(error):
+    raise error
+
+
+def _image_tree(path):
+    """Whether the workspace directory *path* still holds every file of its
+    pre-agent copy, each with the image's bytes (a test folder the agent
+    emptied is not the image's). A walk past 20,000 files proves nothing."""
+    workspace = _BENCHFLOW_WORKSPACE.rstrip("/")
+    copy = os.path.realpath(_BENCHFLOW_SNAPSHOT.rstrip("/") + path[len(workspace) :])
+    count = 0
+    # A folder of the copy that cannot be read proves nothing (onerror).
+    for root, _, files in os.walk(copy, onerror=_raise):
+        for name in files:
+            count += 1
+            if count > 20000:
+                return False
+            relative = os.path.relpath(os.path.join(root, name), copy)
+            if not _image_bytes(os.path.join(path, relative)):
+                return False
+    return True
+
+
+def _raised_where_the_solution_runs(exc):
+    """Whether *exc*, or an exception it came from, may be the solution's.
+
+    It is when it is an ImportError (a module the solution should provide,
+    or one the agent removed), or when its traceback passes through a
+    conftest or any code in the tests folder or the agent's trees: a hook
+    there may build, import or run the solution (a pytest_sessionstart
+    running its build with check=True). Frames are judged by where their
+    code is, not by its name or bytes; a frame with no absolute
+    file name (``<frozen ...>``) is nobody's.
+    """
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, ImportError):
+            return True
+        tb = getattr(exc, "__traceback__", None)
+        while tb is not None:
+            name = tb.tb_frame.f_code.co_filename
+            if os.path.basename(name) == "conftest.py" or name in _SEEN_CONFTESTS:
+                return True
+            if name.startswith("/") and _in_solution_trees(name):
+                return True
+            tb = tb.tb_next
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _solution_had_a_hand(config, status, startup=False):
+    """Whether the solution may have brought this pytest to *status*.
+
+    Then the run stays the plain fail test.sh scores (a
+    normal failing solution must still score 0 as a real fail). Code under
+    test that targets pytest itself (pytest.exit, hooks it registers) is
+    left out, as it can rewrite the reward too. Per status:
+
+    - any: the ini file or a conftest pytest read is a file the agent left;
+    - an internal error (3): its traceback passed through a conftest or a
+      file the agent left (_raised_where_the_solution_runs);
+    - a usage error in the session (4) or no tests (5): a path pytest was
+      given is the agent's (gone, emptied), or the tests imported code from
+      a file the agent left (tests built from it, ids it chose);
+    - no tests (5): a collector was skipped (a test module that skips
+      itself when the solution is missing: importorskip).
+
+    A startup usage error is only judged on the first item: the command
+    line and its plugins are test.sh's.
+    """
+    ini = getattr(config, "inipath", None) or getattr(config, "inifile", None)
+    if ini is not None and _the_agents(str(ini)):
+        return True
+    if any(_the_agents(path) for path in _SEEN_CONFTESTS):
+        return True
+    if startup:
+        return False
+    if status == 3:
+        return _SEEN_CRASH[0]
+    if status == 5 and _SEEN_SKIPPED[0]:
+        return True
+    params = getattr(config, "invocation_params", None)
+    where = str(getattr(params, "dir", None) or os.getcwd())
+    for arg in getattr(config, "args", None) or ():
+        path = str(arg).split("::", 1)[0]
+        if path and _the_agents(os.path.join(where, path)):
+            return True
+    for module in list(sys.modules.values()):
+        origin = getattr(module, "__file__", None)
+        if isinstance(origin, str) and _the_agents(origin):
+            return True
+    return False
+
+
+def _note_conftest(plugin, manager):
+    """Remember a conftest pytest registered (under its path)."""
+    try:
+        name = manager.get_name(plugin) or ""
+        if isinstance(plugin, type(sys)) and "/" in name:
+            _SEEN_CONFTESTS.append(str(getattr(plugin, "__file__", None) or name))
+            if hasattr(plugin, "pytest_cmdline_preparse"):
+                _SEEN_PREPARSE[0] = True
+    except Exception:
+        pass
+
+
 def _unmark(kind):
     if _BENCHFLOW_MARKERS:
         with suppress(OSError):
@@ -351,6 +620,10 @@ def _stopping(exc):
     written before the ``loading`` and ``checking`` markers go, so a process
     killed in between still leaves one of them.
     """
+    if exc is _OPTIONAL_FAILURE:
+        # Not a usage error either: pytest stops with the plugin's own
+        # ImportError, scored as test.sh reports it (_starting_crashed).
+        _unmark("starting")
     if isinstance(exc, Rejected):
         _mark("refused", str(exc))
     elif exc is not _OPTIONAL_FAILURE:
@@ -1676,6 +1949,34 @@ def _present(name):
         return True
 
 
+def _optional_names():
+    """Discovery's optional plugins, then every other pytest11 registration
+    of this pytest that the guard trusts.
+
+    Discovery reads the Python on the hardening PATH. A Python test.sh
+    switches to (SWE-bench's conda testbed) was never on it, so its plugins
+    loaded nowhere: pytest ran without them, and an ini addopts one owns
+    (astropy's --doctest-rst, pytest-doctestplus's) stopped it with a usage
+    error that test.sh scored 0. A registration the guard trusts (the
+    image's, by discover's rule) now loads as an optional plugin; one it does
+    not trust stays unloaded, as before. A plugin test.sh itself installs is
+    decided before test.sh runs, never here.
+    """
+    names = list(_BENCHFLOW_OPTIONAL)
+    try:
+        from _pytest.config import builtin_plugins
+
+        blocked = tuple(
+            candidate
+            for path in _BENCHFLOW_BLOCKED
+            for candidate in (os.path.abspath(path), os.path.realpath(path))
+        )
+        trusted_names = discover(blocked, (), builtin_plugins)["plugins"]
+    except Exception:
+        return names
+    return names + [name for name in trusted_names if name not in names]
+
+
 def _load_optional(pluginmanager, disabled=()):
     """Load each optional plugin this pytest has installed, refusing untrusted ones (#1175).
 
@@ -1689,7 +1990,7 @@ def _load_optional(pluginmanager, disabled=()):
     import_plugin = pluginmanager.import_plugin
     code = getattr(import_plugin, "__code__", None)
     by_entry_point = code is not None and "consider_entry_points" in code.co_varnames
-    for name in _BENCHFLOW_OPTIONAL:
+    for name in _optional_names():
         if name in _BENCHFLOW_RUNTIME_PLUGINS:
             continue  # registered from the protected runtime (_load_runtime)
         if name in disabled or pluginmanager.is_blocked(name):
@@ -1747,11 +2048,14 @@ def pytest_plugin_registered(plugin, manager):
             # already there, so the run is never left with ``registered``
             # alone while plugins are still being inspected.
             _mark("registered")
+            if not _nested():
+                _starting()
             _unmark("loading")
             _load_runtime(manager)
             _load_optional(manager, _DISABLED)
         else:
             _check_registered(plugin, manager)
+            _note_conftest(plugin, manager)
         dependencies = getattr(plugin, "pytest_plugins", ())
         if isinstance(dependencies, str):
             dependencies = dependencies.split(",") if dependencies else ()
@@ -1761,6 +2065,109 @@ def pytest_plugin_registered(plugin, manager):
     except Exception as exc:
         _stopping(exc)
         raise
+
+
+def pytest_cmdline_main(config):
+    """Clear ``starting``, then record a run that judged nothing.
+
+    pytest calls this once it has read its whole command line, its ini file
+    and its first conftests, and returns the run's exit status from it (or
+    raises the UsageError that pytest then reports as exit 4). A hook
+    wrapper sees that status whichever plugin decides it, and leaves an
+    ``exited`` marker for the statuses in _UNJUDGED_EXITS. It never changes
+    the result.
+    """
+    nested = _nested()
+    _unmark("starting")
+    _STARTING_LEFT[0] = False
+    outcome = yield
+    if nested:
+        return
+    try:
+        excinfo = outcome.excinfo
+        said = ""
+        if excinfo is None:
+            status = int(outcome.get_result())
+        else:
+            # Only a UsageError is pytest's exit 4 here. Anything else
+            # escaped pytest (a sessionfinish or terminal-summary hook that
+            # raised after the tests ran): Python exits 1, scored as before.
+            usage = getattr(sys.modules.get("_pytest.config"), "UsageError", None)
+            if usage is None or not isinstance(excinfo[1], usage):
+                return
+            if _raised_where_the_solution_runs(excinfo[1]):
+                return
+            status = 4
+            said = str(excinfo[1]).strip()
+        if status in _UNJUDGED_EXITS and not _solution_had_a_hand(config, status):
+            _mark("exited", str(status) + ("\n" + said if said else ""))
+    except Exception:
+        pass
+
+
+def pytest_load_initial_conftests(early_config, parser, args):
+    """Hold ``starting`` back while the first conftests load.
+
+    A conftest may import or run the solution, which can hang, crash or be
+    killed there (test.sh's timeout, a segfault, the OOM killer), so no
+    ``starting`` stands meanwhile. It stands again afterwards, unless a
+    conftest failed to import (pytest's exit 4, but a conftest may import the
+    solution, so whatever the cause) or pytest has read an ini file or
+    conftest the agent left (_solution_had_a_hand). pytest checks
+    ``required_plugins`` before this hook and unknown options after it, so
+    both still leave ``starting``.
+    """
+    held = _STARTING_LEFT[0]
+    if held:
+        _unmark("starting")
+    outcome = yield
+    try:
+        if (
+            held
+            and outcome.excinfo is None
+            and not _SEEN_PREPARSE[0]
+            and not _solution_had_a_hand(early_config, 4, startup=True)
+        ):
+            _mark("starting")
+        else:
+            _STARTING_LEFT[0] = False
+    except Exception:
+        pass
+
+
+def pytest_internalerror(excrepr, excinfo):
+    """Remember an internal error the solution may have raised (exit 3)."""
+    try:
+        if _raised_where_the_solution_runs(getattr(excinfo, "value", None)):
+            _SEEN_CRASH[0] = True
+    except Exception:
+        pass
+
+
+def pytest_collectreport(report):
+    """Remember a skipped collector (_solution_had_a_hand)."""
+    try:
+        if getattr(report, "skipped", False):
+            _SEEN_SKIPPED[0] = True
+    except Exception:
+        pass
+
+
+# What pytest.hookimpl(hookwrapper=True, tryfirst=True) sets, without
+# importing pytest (see the imports above); every key, as pluggy 1.x reads
+# each one and pluggy 0.13 takes them as they are.
+_CMDLINE_MAIN_IMPL = {
+    "wrapper": False,
+    "hookwrapper": True,
+    "optionalhook": False,
+    "tryfirst": True,
+    "trylast": False,
+    "specname": None,
+}
+setattr(pytest_cmdline_main, "pytest_impl", _CMDLINE_MAIN_IMPL)  # noqa: B010
+setattr(  # noqa: B010
+    pytest_load_initial_conftests, "pytest_impl", dict(_CMDLINE_MAIN_IMPL)
+)
 
 
 if __name__ == "__main__":

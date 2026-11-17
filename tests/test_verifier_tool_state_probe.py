@@ -9,6 +9,7 @@ in test_verifier_uv_state.py.
 """
 
 import os
+import subprocess
 import sys
 import uuid
 from types import SimpleNamespace
@@ -92,7 +93,48 @@ MOVED_ALWAYS = {
 
 
 def _moved(tmp_path):
-    return {key: str(tmp_path / "fresh" / entry) for key, entry in MOVED_ALWAYS.items()}
+    return {
+        **{key: str(tmp_path / "fresh" / entry) for key, entry in MOVED_ALWAYS.items()},
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "fresh" / tool_state.GIT_CONFIG),
+    }
+
+
+def test_verifier_git_config_is_empty_private_and_writable(tmp_path):
+    """Guards EN-708 on rel-0.9.x (the 0.10 line's EN-298 G70): test.sh's
+    `git config --global` writes persist in the verifier's fresh state. With
+    GIT_CONFIG_GLOBAL=/dev/null root's git replaced /dev/null with a regular
+    file, every later `>/dev/null` wrote into it, and git then failed with
+    "bad config line 1 in file /dev/null" (SWT-bench's safe.directory)."""
+    home = tmp_path / "agent-home"
+    home.mkdir()
+    planted = home / ".gitconfig"
+    planted.write_text("[alias]\n\tpong = !echo agent\n")
+    fresh = str(tmp_path / "fresh")
+    overrides = tool_state.overrides({"HOME": str(home)}, (str(home),), fresh)
+    tool_state.create(fresh, overrides.get("HOME"))
+    env = {**os.environ, "HOME": str(home), **overrides, "GIT_CONFIG_NOSYSTEM": "1"}
+    read = subprocess.run(
+        ["git", "config", "--global", "--get", "alias.pong"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert read.returncode == 1 and read.stdout == ""
+    subprocess.run(
+        ["git", "config", "--global", "--add", "safe.directory", "/app/api"],
+        env=env,
+        capture_output=True,
+        check=True,
+    )
+    read = subprocess.run(
+        ["git", "config", "--global", "--get", "safe.directory"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert read.stdout.strip() == "/app/api"
+    assert planted.read_text() == "[alias]\n\tpong = !echo agent\n"
 
 
 def test_image_cache_in_a_runtime_directory_moves_with_the_uv_config(

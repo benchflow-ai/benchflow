@@ -406,7 +406,10 @@ async def test_a_tag_that_cannot_be_removed_is_logged(tmp_path, monkeypatch, cap
     with caplog.at_level("WARNING"):
         await rig.sandbox.stop(delete=False)
     assert any(
-        "layer tag" in r.getMessage() and "refused" in r.getMessage()
+        r.getMessage().startswith("Removing the trial's layer tag ")
+        and r.getMessage().endswith(
+            "failed: Error response from daemon: dial unix: refused"
+        )
         for r in caplog.records
     )
 

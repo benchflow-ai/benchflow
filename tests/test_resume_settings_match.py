@@ -831,6 +831,11 @@ def test_dataclass_fields_are_all_sorted_into_compared_or_not() -> None:
         "checkpoint_keep",
         "freeze_workspace",
         "integrity",
+        # Whether the run named its sandbox_setup_timeout; the value is
+        # compared (EN-726).
+        "sandbox_setup_timeout_given",
+        # Where the effort was asked (EN-383); the effort itself is compared.
+        "reasoning_effort_source",
         "agent_defaulted",
         "fresh_install",
     }

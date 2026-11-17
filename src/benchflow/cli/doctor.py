@@ -13,7 +13,7 @@ so tests can monkeypatch ``run_doctor`` and ``subprocess_runner``.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -316,6 +316,32 @@ def start_docker_preflight(sandbox: str | None) -> DockerPreflight | None:
     return DockerPreflight(probes)
 
 
+def refuse_unroutable(
+    agent: str, model: str | None, agent_env: Mapping[str, str] | None
+) -> None:
+    """Exit 1 when no provider route serves ``agent`` with ``model`` (or the
+    model its environment names): the check a run makes before its job, made
+    by its dry run too."""
+    from benchflow.agents.env import unroutable_agent_model
+    from benchflow.evaluation import effective_model
+
+    try:
+        route_model = effective_model(agent, model)
+    except ValueError:
+        # No --model and no default: the run reports that, with its fix.
+        route_model = None
+    reason = unroutable_agent_model(agent, route_model)
+    if reason is not None:
+        print_error(
+            f"{reason}\nNo job was created.",
+            next_step=(
+                "pass a --model whose provider serves this agent's protocol, "
+                "or an --agent that speaks one the provider supports"
+            ),
+        )
+        raise typer.Exit(1)
+
+
 def eval_preflight(
     *,
     sandbox: str,
@@ -340,9 +366,9 @@ def eval_preflight(
 
     - An agent name that closely misspells a registered one exits 1 with a
       suggestion (the check ``bf.run`` and ``Evaluation.run`` make).
-    - An agent/model pair no provider route serves (``--agent claude`` with
-      an OpenAI-only provider's model) exits 1 naming the protocols the
-      provider serves (the same check).
+    - An agent/model pair no provider route serves (``--agent codex`` with
+      a provider that serves no Responses API) exits 1 naming the protocols
+      the provider serves (the same check; ``refuse_unroutable``).
 
     Set ``BENCHFLOW_SKIP_PREFLIGHT=1`` to skip the Docker and Claude checks
     (the test suite does); the agent name and route are checked regardless.
@@ -359,24 +385,7 @@ def eval_preflight(
             # The message ends with its own next step (`bench agent list`).
             print_error(f"No job was created. {exc}")
             raise typer.Exit(1) from None
-        from benchflow.agents.env import unroutable_agent_model
-        from benchflow.evaluation import effective_model
-
-        try:
-            route_model = effective_model(agent, model)
-        except ValueError:
-            # No --model and no default: reported below, with its fix.
-            route_model = None
-        reason = unroutable_agent_model(agent, route_model)
-        if reason is not None:
-            print_error(
-                f"{reason}\nNo job was created.",
-                next_step=(
-                    "pass a --model whose provider serves this agent's protocol, "
-                    "or an --agent that speaks one the provider supports"
-                ),
-            )
-            raise typer.Exit(1)
+        refuse_unroutable(agent, model, agent_env)
     if os.environ.get(PREFLIGHT_OPT_OUT_ENV, "").strip().lower() in _OPT_OUT_VALUES:
         return
     if agent:

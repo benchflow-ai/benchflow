@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from benchflow.task import keep_services
+from benchflow.task.ctrf_report import verifier_script_ctrf_issue
 from benchflow.taskmd._vendor import judgeprompt as jp
 from benchflow.taskmd._vendor import taskmd as ref
 
@@ -1087,6 +1088,11 @@ def _verifier(
         _separate_verifier(plan, verifier, out, sandbox_network)
     else:
         _shared_verifier_network(plan, verifier, network, sandbox_network)
+        if network == "none" and "network" in verifier:
+            # One reader for the verifier's network: the run's own
+            # (verifier_network.verifier_network_mode) reads it here, and
+            # BenchFlow's helper holds it as for any task's.
+            out["network_mode"] = "no-network"
     if out:
         fm["verifier"] = out
 
@@ -1777,6 +1783,19 @@ def _judging(
             "verifier/test.sh",
             f"{len(tests)} criteria are decided by tests, and the package has no verifier/test.sh to report them",
         )
+    if has_test and tests:
+        # The CTRF rule bench check and the run share: a report that
+        # never reaches verifier/ctrf.json fails every test-judged criterion,
+        # so it is refused here. A package that grades itself is warned of it
+        # instead, by check and the run.
+        issue = verifier_script_ctrf_issue(
+            task_dir / "verifier" / "test.sh", required=True
+        )
+        if issue is not None:
+            plan.refuse(
+                "verifier/test.sh",
+                f"{len(tests)} criteria are decided by tests, and {issue}",
+            )
     if tests:
         plan.honor(
             "test-judged criteria",

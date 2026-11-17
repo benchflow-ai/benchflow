@@ -212,7 +212,14 @@ class FakeDocker:
         self.calls.append(list(args))
         self.stdin.append(stdin)
         out, code = "", 0
-        if args[:2] == ["image", "inspect"]:
+        if args[:1] == ["inspect"] and "{{.HostConfig.NetworkMode}}" in args:
+            # A main on a network of its own (EN-609: never the host's).
+            out = "bf_default\n"
+        elif args[:1] == ["run"] and "stat" in args:
+            # The netns probes: a namespace of its own, not the host's.
+            host = args[args.index("--network") + 1] == "host"
+            out = "4026531992\n" if host else "4026532900\n"
+        elif args[:2] == ["image", "inspect"]:
             out, code = (helper_mod.HELPER_RECIPE + "\n", 0) if self.image else ("", 1)
         elif args[:1] == ["build"]:
             code = 1 if self.build_fails else 0
@@ -242,7 +249,8 @@ class FakeDocker:
         return SimpleNamespace(stdout=out, stderr="", return_code=code)
 
     def runs(self) -> list[list[str]]:
-        return [c for c in self.calls if c[:1] == ["run"]]
+        """The helper's own runs (its netns probes, ``stat``, aside)."""
+        return [c for c in self.calls if c[:1] == ["run"] and "stat" not in c]
 
     def of(self, verb: str) -> list[list[str]]:
         return [c for c in self.calls if c[:1] == [verb]]
@@ -501,7 +509,11 @@ async def test_a_run_with_no_container_id_back_runs_nothing_by_name():
 
     assert await helper.installed(MAIN, "echo rules") is None
     assert "did not start" in helper.unavailable
-    assert docker.of("exec") == [] and docker.of("inspect") == []
+    # Nothing by name: no exec, no inspect but main's own network mode (by id).
+    assert docker.of("exec") == []
+    assert [
+        c for c in docker.of("inspect") if "{{.HostConfig.NetworkMode}}" not in c
+    ] == []
     await helper.aclose()
     (rm,) = docker.of("rm")
     (run,) = docker.runs()
@@ -611,8 +623,16 @@ def _helper_aware_docker():
                 proc.communicate = built
             elif words[1:2] == ["build"]:
                 out = f"{IMAGE_ID}\n"
+            elif words[1:2] == ["run"] and "stat" in words:
+                # The netns probes (EN-609): main's namespace is its own.
+                host = words[words.index("--network") + 1] == "host"
+                out = "4026531992\n" if host else "4026532900\n"
             elif words[1:2] == ["run"]:
                 out = f"{HELPER_CONTAINER}\n"
+            elif words[1:3] == ["inspect", "--format"] and (
+                "{{.HostConfig.NetworkMode}}" in words
+            ):
+                out = "bf_default\n"
             elif words[1:3] == ["inspect", "--format"]:
                 out = f"true {IMAGE_ID}\n"
             elif words[1:3] == ["exec", HELPER_CONTAINER]:
@@ -648,7 +668,8 @@ async def test_an_armed_start_puts_the_helper_in_mains_namespace(
     await direct._started(sandbox)
     await _settle()
 
-    runs = [c for c in docker.commands() if c[1:2] == ["run"]]
+    # The helper's runs (its netns probes, ``stat``, aside: EN-609).
+    runs = [c for c in docker.commands() if c[1:2] == ["run"] and "stat" not in c]
     if not armed:
         assert runs == [] and sandbox._metadata_helper is None
         return

@@ -20,6 +20,7 @@ from typing import Any, Literal, cast
 from benchflow._utils.json_safe import dumps_finite, scrub_non_finite
 from benchflow._utils.result_paths import iter_task_result_paths
 from benchflow._utils.scoring import extract_reward
+from benchflow.integration_health import scored_as_read
 from benchflow.trajectories.sft_subagents import (
     SubagentConversionCounts,
     reject_results_row_subagent_steps,
@@ -1408,6 +1409,9 @@ def convert_benchflow_rollouts_to_prime_sft_rows(
         if result is None:
             stats.skipped_no_result += 1
             continue
+        # As every reader scores it: a trial the judge
+        # withholds on read is skipped as errored, never a 0.0 row.
+        result = scored_as_read(result, rollout_dir)
         if is_control_run(rollout_dir):
             stats.skipped_control += 1
             continue

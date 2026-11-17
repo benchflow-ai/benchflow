@@ -26,9 +26,9 @@ from benchflow.native_harness.runtime import check_model_route
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.runtime import ensure_litellm_runtime
 
-A = "dummy-account-a"
-B = "dummy-account-b"
-B2 = "dummy-account-b2"
+A = "sk-ant-oat01-dummy-account-a"
+B = "sk-ant-oat01-dummy-account-b"
+B2 = "sk-ant-oat01-dummy-account-b2"
 LOGINS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",

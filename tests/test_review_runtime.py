@@ -386,7 +386,7 @@ class TestRunReviews:
 
     @pytest.mark.asyncio
     async def test_host_validation_gates_weighted_scoring(self, tmp_path, monkeypatch):
-        """Guards FrontierPhysics PR #109 when wrapper reward and artifact diverge."""
+        """Guards a task repository's rubric change when wrapper reward and artifact diverge."""
 
         task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
         rollout = make_rollout(
@@ -756,7 +756,7 @@ class TestRunReviews:
     async def test_weighted_job_summary_labels_binary_counts(
         self, tmp_path, monkeypatch
     ):
-        """Guards FrontierPhysics PR #109 against omitting scored criteria silently."""
+        """Guards a task repository's rubric change against omitting scored criteria silently."""
 
         task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
         make_rollout(tmp_path / "jobs", "a", task_path=task)

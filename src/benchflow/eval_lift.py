@@ -252,11 +252,15 @@ def render_lift_markdown(report: Mapping[str, Any]) -> str:
 
 
 def _load_rollouts(job_dir: Path) -> list[LiftRollout]:
+    from benchflow.integration_health import scored_as_read
+
     rollouts = []
     for rollout_dir in _iter_rollouts(job_dir):
         result = _read_json(rollout_dir / "result.json")
         if result is None:
             continue
+        # As every reader scores it.
+        result = scored_as_read(result, rollout_dir)
         reward = _reward(result)
         rollouts.append(
             LiftRollout(

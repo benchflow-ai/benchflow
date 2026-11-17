@@ -50,6 +50,43 @@ async def test_acp_client_records_prompt_response_usage():
 
 
 @pytest.mark.asyncio
+async def test_a_turn_that_ended_on_a_failure_keeps_its_usage():
+    """EN-374 (lead, 2026-11-13 07:02Z): a session/prompt answer carrying an
+    AIR sessionFailure raised before its usage was recorded, so the failed
+    turn's tokens were dropped. They are recorded first now."""
+    from benchflow.acp.client import ACPClient
+    from benchflow.acp.session import ACPSession
+
+    session = ACPSession("session-1")
+    client = ACPClient.__new__(ACPClient)
+    client._session = session
+
+    async def fake_send_request(method, params):
+        return {
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 7, "outputTokens": 3, "totalTokens": 10},
+            "_meta": {
+                "jetbrains": {
+                    "air": {
+                        "sessionFailure": {
+                            "severity": "error",
+                            "title": "upstream connection lost",
+                        }
+                    }
+                }
+            },
+        }
+
+    client._send_request = fake_send_request
+
+    with pytest.raises(Exception, match="upstream connection lost"):
+        await client.prompt("solve")
+    totals = session.latest_usage_totals()
+    assert totals is not None
+    assert (totals["input_tokens"], totals["output_tokens"]) == (7, 3)
+
+
+@pytest.mark.asyncio
 async def test_disconnect_preserves_native_usage_in_final_metrics():
     """Guards issue #933 against usage loss demonstrated by PR #1051."""
     from benchflow.acp.session import ACPSession
@@ -111,6 +148,9 @@ def test_rollout_native_acp_usage_uses_cumulative_deltas():
         "n_output_tokens": 9,
         "n_cache_read_tokens": 3,
         "n_cache_creation_tokens": 1,
+        # EN-374: an ACP report has no cache-write lifetimes: unknown.
+        "n_cache_write_5m_tokens": None,
+        "n_cache_write_1h_tokens": None,
         "total_tokens": 27,
         "cost_usd": None,
         "usage_source": "agent_native_acp",
@@ -220,7 +260,9 @@ def test_native_acp_usage_result_json_and_metadata(tmp_path):
 
     data = json.loads((tmp_path / "result.json").read_text())
 
-    assert data["agent_result"]["usage_source"] == "agent_native_acp"
+    # EN-374 names it end_of_turn; the old name stays as usage_source_legacy.
+    assert data["agent_result"]["usage_source"] == "end_of_turn"
+    assert data["agent_result"]["usage_source_legacy"] == "agent_native_acp"
     assert data["agent_result"]["usage_details"] == {"thought_tokens": 2}
     assert data["usage_tracking"]["endpoint_kind"] == "agent_native"
 

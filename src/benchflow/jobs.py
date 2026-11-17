@@ -28,7 +28,7 @@ import json
 import logging
 import math
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -97,6 +97,38 @@ def _read_json(path: Path | ReachablePath) -> Any:
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
+
+
+def trial_control(
+    task_name: str, raw: Mapping[str, Any], config: Mapping[str, Any]
+) -> Control | None:
+    """``oracle`` or ``empty`` for a control run, None for an agent run.
+
+    ``raw`` is the trial's result.json and ``config`` its config.json.
+    :attr:`Trial.control` and :func:`benchflow.integration_health.scored_as_read`
+    both use this rule, so no reader judges a trial another reads as a
+    control.
+    """
+    variant = str(config.get("task_variant") or raw.get("task_variant") or "")
+    if variant.startswith("oracle"):
+        return "oracle"
+    if variant.startswith("empty"):
+        return "empty"
+    # Control copies by name: a task copy suffixed __o is an oracle
+    # control, one suffixed __e an empty-solution control.
+    if task_name.endswith("__e"):
+        return "empty"
+    if task_name.endswith("__o"):
+        return "oracle"
+    # The agent and model as RolloutResult.from_dict reads them.
+    block = raw.get("agent_result")
+    merged = {**(block if isinstance(block, Mapping) else {}), **raw}
+    agent = str(merged.get("agent") or "").strip().lower()
+    if agent == "oracle":
+        return "oracle"
+    if agent in _EMPTY_AGENTS and not merged.get("model"):
+        return "empty"
+    return None
 
 
 def _read_text(path: Path | ReachablePath) -> str | None:
@@ -297,29 +329,13 @@ class Trial:
         an execution failure (``integration_failed``) and unscored: its
         verifier reward is withheld, never counted as 0.
         """
-        from benchflow.integration_health import (
-            diagnose_trial_dir,
-            stored_integration_failure,
-        )
+        from benchflow.integration_health import judged_integration_failure
 
-        stored = stored_integration_failure(self.raw)
-        if stored is not None:
-            return stored
-        if (
-            self.source != "result.json"
-            or self.control is not None
-            or self.result.n_tool_calls
-            or self.result.reward is None
-        ):
-            return None
-        finding = diagnose_trial_dir(self.path, self.raw)
-        if finding is None:
-            return None
-        return {
-            **finding.to_dict(),
-            "reward_withheld": self.result.rewards,
-            "detected": "on read",
-        }
+        return judged_integration_failure(
+            self.path,
+            self.raw,
+            control=self.source != "result.json" or self.control is not None,
+        )
 
     @property
     def passed(self) -> bool:
@@ -347,25 +363,7 @@ class Trial:
     @property
     def control(self) -> Control | None:
         """``oracle`` or ``empty`` for a control run, None for an agent run."""
-        variant = str(
-            self.config.get("task_variant") or self.raw.get("task_variant") or ""
-        )
-        if variant.startswith("oracle"):
-            return "oracle"
-        if variant.startswith("empty"):
-            return "empty"
-        # Control copies by name: a task copy suffixed __o is an oracle
-        # control, one suffixed __e an empty-solution control.
-        if self.task_name.endswith("__e"):
-            return "empty"
-        if self.task_name.endswith("__o"):
-            return "oracle"
-        agent = (self.result.agent or "").strip().lower()
-        if agent == "oracle":
-            return "oracle"
-        if agent in _EMPTY_AGENTS and not self.result.model:
-            return "empty"
-        return None
+        return trial_control(self.task_name, self.raw, self.config)
 
     @property
     def execution(self) -> Execution:
@@ -918,7 +916,13 @@ class Job:
                 f"- Control runs left out: {len(controls)} ({kinds}); they check "
                 "the task, not an agent"
             )
-        lines.append("- " + _cost_line([a for t in self.trials for a in t.attempts]))
+        rollouts = [a for t in self.trials for a in t.attempts]
+        line = "- " + _cost_line(rollouts)
+        # The stopped and retried-away attempts the line above leaves out.
+        from benchflow._utils.result_metadata import spend_note
+
+        spend = spend_note(self.spend_all_attempts, len(rollouts))
+        lines.append(line + (f"; {spend}" if spend else ""))
         return "\n".join(lines) + "\n"
 
     @property
@@ -1089,6 +1093,60 @@ class Job:
         costs = [t.cost_usd for t in self.trials if t.cost_usd is not None]
         return math.fsum(costs) if costs else None
 
+    @property
+    def spend_all_attempts(self) -> dict[str, Any] | None:
+        """What every attempt behind the job's trials spent, retried and
+        stopped attempts included, as summary.json's ``spend_all_attempts``
+        counts it: from each Evaluation job folder's records, plus
+        the attempts of trials outside one. A job folder read from inside (a
+        trial folder) counts only the attempts of its trials' tasks. None for
+        a branch job, or when no folder's records can be read
+        (``parts_unknown`` counts those)."""
+        from benchflow._utils.evaluation_results import (
+            attempt_spend_summary,
+            merge_spends,
+        )
+        from benchflow.evaluation import EVALUATION_RECORD, _recorded_attempts
+
+        if self.kind == "branch" or not self.trials:
+            return None
+        folders = {
+            t.path.parent
+            for t in self.trials
+            if t.source == "result.json"
+            and (t.path.parent / EVALUATION_RECORD).is_file()
+        }
+        loose = [t for t in self.trials if t.path.parent not in folders]
+        blocks: list[dict[str, Any] | None] = []
+        for folder in sorted(folders):
+            try:
+                attempts, _ = _recorded_attempts(folder)
+            except ValueError:
+                blocks.append(None)  # summary.json's spend_all_attempts is null
+                continue
+            if not self._reads_whole(folder):
+                tasks = {t.task_name for t in self.trials if t.path.parent == folder}
+                attempts = [
+                    a
+                    for a in attempts
+                    if (a.get("_budget_task_name") or a.get("task_name")) in tasks
+                ]
+            blocks.append(attempt_spend_summary(attempts)["spend_all_attempts"])
+        if loose:
+            blocks.append(
+                attempt_spend_summary([a.result for t in loose for a in t.attempts])[
+                    "spend_all_attempts"
+                ]
+            )
+        return merge_spends(blocks)
+
+    def _reads_whole(self, folder: Path) -> bool:
+        """Whether this job was read from ``folder`` or a folder above it, so
+        every task of that job folder is the job's, not only its trials'."""
+        root = Path(self.path).resolve()
+        folder = folder.resolve()
+        return folder == root or root in folder.parents
+
     def to_json_dict(
         self, *, include_trajectories: bool = False, include_verifier: bool = True
     ) -> dict[str, Any]:
@@ -1176,8 +1234,8 @@ def _unscored_reason(trial: Trial) -> str:
 
 
 def _cost_line(rollouts: list[Trial]) -> str:
-    """What ``rollouts`` cost: known USD, how much of it is estimated, and
-    how many reported none."""
+    """What ``rollouts`` cost: known USD, how much of it is estimated, how
+    much counted only some calls, and how many reported none."""
     priced = [t for t in rollouts if t.cost_usd is not None]
     estimated = [t for t in priced if t.result.price_source == "agent_session_log"]
     unknown = len(rollouts) - len(priced)
@@ -1189,8 +1247,32 @@ def _cost_line(rollouts: list[Trial]) -> str:
     line = f"Cost: ${usd:.4f} over {len(priced)} rollout(s)"
     if estimated:
         line += f" ({len(estimated)} estimated from the agent's session log)"
+    from benchflow._utils.result_metadata import floor_causes
+
+    # Each floor by its own cause: a count that missed calls, an unpriced
+    # warm-up, or cache writes no answer reported on a route that
+    # prices them.
+    causes = [floor_causes(t.result) for t in priced]
+    calls = sum("calls" in c for c in causes)
+    warm = sum("warmup" in c for c in causes)
+    writes = sum("cache_writes" in c for c in causes)
+    floors = []
+    if calls:
+        floors.append(f"{calls} rollout(s) counted only some of their calls")
+    if warm:
+        floors.append(
+            f"{warm} rollout(s) count generating calls only (Codex's "
+            "warm-up is unpriced)"
+        )
+    if writes:
+        floors.append(
+            f"{writes} rollout(s) left out cache writes their answers did not "
+            "report (the route prices them)"
+        )
     if unknown:
-        line += f"; {unknown} rollout(s) reported no USD, so the total is a floor"
+        floors.append(f"{unknown} rollout(s) reported no USD")
+    if floors:
+        line += "; " + " and ".join(floors) + ", so the total is a floor"
     return line
 
 
@@ -1297,7 +1379,10 @@ def load_job(
     """
     import os
 
-    from benchflow._utils.result_paths import iter_task_result_paths
+    from benchflow._utils.result_paths import (
+        is_interrupted_result,
+        iter_task_result_paths,
+    )
 
     roots = [Path(path)] if isinstance(path, (str, Path)) else [Path(p) for p in path]
     if not roots:
@@ -1312,6 +1397,16 @@ def load_job(
         if root.is_file():  # a results.jsonl file, read below
             continue
         if (root / "result.json").is_file():
+            try:
+                record = json.loads((root / "result.json").read_text())
+            except (OSError, ValueError):
+                record = None
+            if is_interrupted_result(record):
+                # A stopped trial's result.json is its spend record, not a
+                # result: read the folder as 0.9.2 did, which finds none (a
+                # lone stopped trial ends in the usual FileNotFoundError).
+                paths.extend(iter_task_result_paths(root))
+                continue
             paths.append(root / "result.json")
         else:
             paths.extend(iter_task_result_paths(root))
@@ -1372,15 +1467,19 @@ def _attempt_task_name(folder: Path) -> str:
 
 
 def _interrupted(root: Path) -> list[Path]:
-    """Attempt folders under ``root`` with a config.json but no result.json.
+    """Attempt folders under ``root`` with a config.json but no result.json
+    (or only a stopped trial's spend record).
 
     Folders inside a trial (branch children, reviewer runs, evidence) and
     folders awaiting review (solver.json) are not attempts of their own, and
     neither are trials a rerun with other settings set aside.
     """
-    from benchflow._utils.result_paths import is_set_aside
+    from benchflow._utils.result_paths import _reads_interrupted, is_set_aside
 
-    trial_dirs = {p.parent for p in root.rglob("result.json")}
+    # A stopped trial's spend record leaves it interrupted.
+    trial_dirs = {
+        p.parent for p in root.rglob("result.json") if not _reads_interrupted(p)
+    }
     trial_dirs.update(p.parent for p in root.rglob("solver.json"))
     found = []
     for config in sorted(root.rglob("config.json")):

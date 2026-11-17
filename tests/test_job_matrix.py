@@ -818,7 +818,9 @@ async def test_environment_start_obeys_scaled_build_phase_budget(project) -> Non
     then = time.monotonic()
     # By behaviour first: at db8fd328a the 100 ms start ran to its end.
     try:
-        await _start_env_and_upload(env, task, {}, upload_task_files=False)
+        await _start_env_and_upload(
+            env, task, {}, task=None, agent=None, upload_task_files=False
+        )
     except Exception as exc:
         stopped = exc
     else:
@@ -837,7 +839,9 @@ async def test_environment_start_obeys_scaled_build_phase_budget(project) -> Non
 
     # No build multiplier in the overlay: no bound of its own (as before).
     free = SimpleNamespace(start=start, task_env_config=TaskConfig().sandbox)
-    await _start_env_and_upload(free, task, {}, upload_task_files=False)
+    await _start_env_and_upload(
+        free, task, {}, task=None, agent=None, upload_task_files=False
+    )
 
 
 def test_a_job_configs_start_is_bounded_by_its_build_budget(project) -> None:

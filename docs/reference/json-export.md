@@ -170,7 +170,7 @@ assert summary["kind"] == "benchflow.run-summary"
 
 ## Versioning
 
-Adding an optional field keeps `schema_version` and raises `schema_minor`. Trials are at 1.3 today.
+Adding an optional field keeps `schema_version` and raises `schema_minor`. Trials are at 1.4 today, jobs at 2.1.
 
 Removing or renaming a field, or changing its type or meaning, raises `schema_version`. It also renames the schema file; the old files stay.
 
@@ -216,6 +216,8 @@ Reading an old summary does not rewrite it. Re-scoring a job (`bench eval score`
 
 | Version | Document | Change |
 |---|---|---|
+| 2.1 | `benchflow.job` | `spend_all_attempts`: what every attempt behind the trials spent, retried and stopped attempts included, as summary.json's block counts it. `cost_usd` is the trials' (one kept attempt per task). `trials_cost_incomplete`: trials whose `cost_usd` is a floor. |
+| 1.4 | `benchflow.trial` | `usage.usage_incomplete` and `usage.usage_incomplete_reason` (the tokens are those of some of the trial's calls only), `usage.cost_incomplete` (`cost_usd` was priced from them, so it is a floor). |
 | 2.0 | `benchflow.job`, `benchflow.comparison` | Every trial counts. An unscored trial is a fail in `solve_rate`, `pass_at_k` and `pass_hat_k`, and counts 0 in `denominators.mean_reward`. `solve_rates.trials` is their n. The 1.x figures moved to `*_scored_only` fields over `scored` trials of `tasks_scored_only` tasks. `schema_minor` restarts at 0. See [pass@k](./pass-at-k.md). |
 | 2.0 | `benchflow.job` | 0.8.3: `denominators` and `solve_rates` count the control runs when every trial is one (an oracle or nop job), as the text output does; before, they were 0. |
 | 2.0 | `benchflow.run-summary` | 0.8.3: `stopped` and `interrupted`; a stopped run writes the file too. |

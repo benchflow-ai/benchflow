@@ -117,7 +117,7 @@ from private oracle files or hidden verifier fixtures.
 | Both present | `reward.json` wins; a numeric `reward` in it must equal `reward.txt`, or the trial scores 0 with a warning |
 | Metrics only | Without a numeric `reward`, every top-level key must be a number. `outputs.aggregate_policy` computes the reward, or `reward.txt` supplies it. |
 | Extra keys | Beside a numeric `reward`, keys that are not numbers are kept and not scored |
-| Range | `[0, 1]`, or `verifier.reward_range`. A value outside is never clamped: the trial scores 0 with a warning and keeps `reward_out_of_range_info`. |
+| Range | `[0, 1]`, or `verifier.reward_range`. A value outside is never clamped or rewritten: under integrity `audit` and `off` it is recorded as written, noted in `reward_out_of_range_info` and summary.json's `rewards_outside_range`; under integrity `strict` the trial scores 0 with a warning. |
 | Exit code | A reward written with a nonzero exit is scored. No reward gives score 0 with a warning. |
 | Invalid files | Empty, malformed, non-finite, unsafe or conflicting reward files give score 0 with a named warning |
 | Details | `reward-details.json` is kept when present |

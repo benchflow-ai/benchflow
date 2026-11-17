@@ -177,7 +177,7 @@ _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT = {
 
 
 def _zero_native_acp_usage_metrics() -> dict[str, Any]:
-    return {**usage_unavailable(), "usage_details": {"thought_tokens": 0}}
+    return {**usage_unavailable(), "usage_details": {"thought_tokens": None}}
 
 
 def _as_nonnegative_int(value: object) -> int:

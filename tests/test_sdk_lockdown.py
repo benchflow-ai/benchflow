@@ -924,7 +924,10 @@ class TestDinDDaemonGuard:
         from benchflow.sandbox.lockdown import SandboxDaemonGuardError
 
         strat = self._strategy("BF dind-daemon-guard status=1\n")
-        with pytest.raises(SandboxDaemonGuardError, match="sandbox startup refused"):
+        with pytest.raises(
+            SandboxDaemonGuardError,
+            match=r"the compose containers could not be kept away from Daytona's root toolbox daemon on the DinD VM",
+        ):
             await strat._guard_daemon_from_containers()
 
     def test_daytona_says_where_its_daemon_is_guarded(self):

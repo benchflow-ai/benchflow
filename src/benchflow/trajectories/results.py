@@ -36,7 +36,7 @@ from benchflow.trajectories.export_prime_sft import (
     validate_prime_sft_row,
 )
 from benchflow.trajectories.types import redact_trajectory_obj
-from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP
+from benchflow.usage_tracking import USAGE_SOURCE_AGENT_NATIVE_ACP, legacy_usage_source
 
 if TYPE_CHECKING:
     from benchflow.review.outcome import ScoringResult
@@ -668,7 +668,11 @@ def build_rollout_results_record(
     )
     terminal_health_error = bool(error or verifier_error or partial_trajectory)
     native_subscription_without_llm = bool(
-        (agent_result or {}).get("usage_source") == USAGE_SOURCE_AGENT_NATIVE_ACP
+        legacy_usage_source(
+            (agent_result or {}).get("usage_source"),
+            (agent_result or {}).get("usage_source_legacy"),
+        )
+        == USAGE_SOURCE_AGENT_NATIVE_ACP
         and not (rollout_path / "trajectory" / "llm_trajectory.jsonl").exists()
         and effective_export_error is None
         and not terminal_health_error

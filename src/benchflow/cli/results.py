@@ -304,16 +304,20 @@ def register_eval_results(eval_app: typer.Typer) -> None:
             if priced:
                 # "~": an estimate from the agent's own session log.
                 estimate = trial.result.price_source == "agent_session_log"
+                # "+": its count missed some calls, so the cost is a floor.
                 cells.append(
                     ""
                     if trial.cost_usd is None
                     else f"{'~' if estimate else ''}${trial.cost_usd:.4f}"
+                    + ("+" if trial.result.usage_incomplete else "")
                 )
             if broken:
                 failure = trial.integration_failure
                 cells.append(escape(str(failure.get("cause"))) if failure else "")
             table.add_row(*cells)
         console.print(table)
+        for note in _cost_notes(job, priced=priced):
+            console.print(escape(note), highlight=False, soft_wrap=True)
         if out is not None:
             _emit(job.to_json(include_verifier=verifier), out)
 
@@ -474,6 +478,7 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         refused. Exit codes as for bench eval run; 2 when the folder is not a job.
         """
         from benchflow.agents.errors import UsageLimitError
+        from benchflow.agents.scripts import ScriptBackendError
         from benchflow.cli._errors import expected_error_parts
         from benchflow.cli._shared import (
             RUN_FAILED_NEXT,
@@ -514,6 +519,33 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         except (RuntimeError, ValueError) as exc:
             message, hint = expected_error_parts(exc)
             print_error(message, next_step=hint or RUN_FAILED_NEXT)
-            raise typer.Exit(1) from None
+            # 2 for a script: agent on a backend without its runner: nothing ran.
+            code = exc.exit_code if isinstance(exc, ScriptBackendError) else 1
+            raise typer.Exit(code) from None
         _report_eval_result(result, Path(job_dir))
         _exit_if_evaluation_had_errors(result)
+
+
+def _cost_notes(job: Any, *, priced: bool) -> list[str]:
+    """What the table's "+" means, for the trials that carry it, and what
+    every attempt spent when the job ran attempts no row shows (stopped or
+    retried away)."""
+    from benchflow._utils.result_metadata import floor_note, spend_note
+
+    notes: list[str] = []
+    partial = [t for t in job.trials if t.result.usage_incomplete]
+    if partial:
+        reasons = sorted(
+            {t.result.usage_incomplete_reason or "no reason recorded" for t in partial}
+        )
+        costed = sum(1 for t in partial if t.cost_usd is not None)
+        notes.append(
+            f"{'+ ' if priced else ''}{len(partial)} trial(s) counted only some of "
+            f"their calls, so {floor_note(len(partial), costed)}: " + "; ".join(reasons)
+        )
+    spend = spend_note(job.spend_all_attempts, len(job.trials))
+    if spend:
+        notes.append(
+            f"{'Cost: each task' if priced else 'Each task'}'s kept attempt; {spend}"
+        )
+    return notes

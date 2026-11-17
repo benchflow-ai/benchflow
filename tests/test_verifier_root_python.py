@@ -249,7 +249,10 @@ async def test_rejected_candidates_refuse_grading_naming_the_image(monkeypatch):
     monkeypatch.setattr(lockdown, "_build_verifier_env", build)
     task = _make_task()
     task.config.environment.docker_image = "python:3.12-slim"
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"no python3 in the image python:3\.12-slim passed the trusted-route check",
+    ) as caught:
         await lockdown.harden_before_verify(
             _make_env(execute), task, sandbox_user="agent", workspace="/app"
         )

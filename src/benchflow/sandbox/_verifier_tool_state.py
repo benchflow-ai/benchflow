@@ -79,12 +79,14 @@ OUTPUT_KEYS = (
     *(key for key, _ in MOVED),
     "UV_CONFIG_FILE",
     "PIP_CONFIG_FILE",
+    "GIT_CONFIG_GLOBAL",
     "HOME",
     *(key for key, _ in XDG_HOMES),
 )
 # Empty configuration files written into the new directory.
 UV_CONFIG = "uv.toml"
 PIP_CONFIG = "pip.conf"
+GIT_CONFIG = "gitconfig"
 # Where uv looks for system configuration: $XDG_CONFIG_DIRS (default below), then this.
 SYSTEM_CONFIG_DIRS = "/etc/xdg"
 SYSTEM_UV_CONFIG = "/etc/uv/uv.toml"
@@ -280,6 +282,9 @@ def overrides(env, blocked, directory, lexical=False):
     # across pip interpreters and cwd/XDG spellings, without trusting a finite
     # inventory of Pythons that test.sh can expand after hardening.
     result["PIP_CONFIG_FILE"] = os.devnull
+    # Git's --global writes must persist for later verifier commands (for
+    # example safe.directory). Never import the agent's or image's config.
+    result["GIT_CONFIG_GLOBAL"] = os.path.join(directory, GIT_CONFIG)
     result.update(home_overrides(env, blocked, directory, lexical))
     return result
 
@@ -309,7 +314,7 @@ def create(directory, home=None):
     *home* (the verifier's new HOME) with its empty rc files."""
     os.mkdir(directory, 0o755)
     os.chmod(directory, 0o755)
-    for name in (UV_CONFIG, PIP_CONFIG):
+    for name in (UV_CONFIG, PIP_CONFIG, GIT_CONFIG):
         path = os.path.join(directory, name)
         with open(path, "x"):
             pass

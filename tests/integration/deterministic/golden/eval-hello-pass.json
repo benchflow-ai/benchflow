@@ -42,7 +42,34 @@
       "name": "@agentclientprotocol/claude-agent-acp",
       "version": "unknown"
     },
+    "extra": {
+      "effort": {
+        "applied": null,
+        "calls_with_budget": 2,
+        "calls_with_effort": 0,
+        "calls_without_effort": 0,
+        "matches": null,
+        "reason": "nothing_to_compare",
+        "requested": null,
+        "requested_from": null,
+        "sent": {
+          "budget_tokens=63999": 2
+        },
+        "sent_source": "proxy"
+      }
+    },
     "final_metrics": {
+      "extra": {
+        "cost_source": "list_price_estimate",
+        "n_cache_read_tokens": 0,
+        "n_cache_write_1h_tokens": null,
+        "n_cache_write_5m_tokens": null,
+        "n_cache_write_tokens": 0,
+        "n_input_tokens": 2000,
+        "n_output_tokens": 100,
+        "price_table_date": null,
+        "usage_source": "proxy"
+      },
       "total_cached_tokens": 0,
       "total_completion_tokens": 100,
       "total_cost_usd": 0.0025,
@@ -133,21 +160,39 @@
   },
   "result": {
     "agent_result": {
+      "cost_source": "list_price_estimate",
       "cost_usd": 0.0025,
       "n_cache_creation_tokens": 0,
       "n_cache_read_tokens": 0,
+      "n_cache_write_1h_tokens": null,
+      "n_cache_write_5m_tokens": null,
+      "n_cache_write_tokens": 0,
       "n_input_tokens": 2000,
       "n_output_tokens": 100,
       "n_prompts": 1,
       "n_skill_invocations": 0,
       "n_tool_calls": 1,
+      "no_usage_reason": null,
       "price_source": "litellm",
+      "price_table_date": null,
       "total_tokens": 2100,
-      "usage_source": "provider_response"
+      "usage_source": "proxy",
+      "usage_source_legacy": "provider_response"
     },
     "agent_timeout": null,
     "error_category": null,
     "final_metrics": {
+      "extra": {
+        "cost_source": "list_price_estimate",
+        "n_cache_read_tokens": 0,
+        "n_cache_write_1h_tokens": null,
+        "n_cache_write_5m_tokens": null,
+        "n_cache_write_tokens": 0,
+        "n_input_tokens": 2000,
+        "n_output_tokens": 100,
+        "price_table_date": null,
+        "usage_source": "proxy"
+      },
       "total_cached_tokens": 0,
       "total_completion_tokens": 100,
       "total_cost_usd": 0.0025,
@@ -196,7 +241,8 @@
     "usage_tracking": {
       "requested": "auto",
       "status": "enabled",
-      "usage_source": "provider_response"
+      "usage_source": "proxy",
+      "usage_source_legacy": "provider_response"
     },
     "verifier_error_category": null
   }

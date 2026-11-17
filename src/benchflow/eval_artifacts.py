@@ -211,6 +211,8 @@ def _llm_trajectory_status(rollout_dir: Path) -> tuple[bool, bool, int]:
 def build_health_summary(
     job_dir: Path, *, canonical_selection: Path | None = None
 ) -> dict[str, Any]:
+    from benchflow.integration_health import scored_as_read
+
     rows = []
     counts = {
         "total_rows": 0,
@@ -230,6 +232,8 @@ def build_health_summary(
         result = _read_json(rollout_dir / "result.json")
         if result is None:
             continue
+        # As every reader scores it.
+        result = scored_as_read(result, rollout_dir)
         counts["total_rows"] += 1
         reward = _reward(result)
         scored = reward is not None

@@ -63,8 +63,10 @@ def test_result_json_contains_unavailable_usage_defaults(tmp_path):
     result = _build_result(tmp_path)
     data = _result_json(tmp_path)
 
-    assert result.usage_source == "unavailable"
-    assert data["agent_result"]["usage_source"] == "unavailable"
+    # EN-374: nothing counted is null, the old name kept as the legacy one.
+    assert result.usage_source is None
+    assert data["agent_result"]["usage_source"] is None
+    assert data["agent_result"]["usage_source_legacy"] == "unavailable"
     assert data["agent_result"]["n_input_tokens"] is None
     assert data["agent_result"]["n_output_tokens"] is None
     assert data["final_metrics"]["total_prompt_tokens"] is None
@@ -92,12 +94,27 @@ def test_result_json_contains_provider_usage_when_supplied(tmp_path):
     assert data["agent_result"]["n_cache_creation_tokens"] == 3
     assert data["agent_result"]["total_tokens"] == 130
     assert data["agent_result"]["cost_usd"] == 0.0012
-    assert data["agent_result"]["usage_source"] == "provider_response"
+    # EN-374: the result vocabulary, and ATIF's own meaning for its fields
+    # (every prompt token: 100 uncached + 7 read + 3 written), the split in
+    # extra.
+    assert data["agent_result"]["usage_source"] == "proxy"
+    assert data["agent_result"]["usage_source_legacy"] == "provider_response"
     assert data["final_metrics"] == {
-        "total_prompt_tokens": 100,
+        "total_prompt_tokens": 110,
         "total_completion_tokens": 20,
         "total_cached_tokens": 7,
         "total_cost_usd": 0.0012,
+        "extra": {
+            "n_input_tokens": 100,
+            "n_cache_read_tokens": 7,
+            "n_cache_write_tokens": 3,
+            "n_cache_write_5m_tokens": None,
+            "n_cache_write_1h_tokens": None,
+            "n_output_tokens": 20,
+            "usage_source": "proxy",
+            "cost_source": None,
+            "price_table_date": None,
+        },
     }
 
 
@@ -130,7 +147,8 @@ def test_extract_usage_none_runtime():
     usage = extract_usage(None)
 
     assert usage["usage_source"] == "unavailable"
-    assert usage["total_tokens"] == 0
+    # EN-374: unknown is null, never 0.
+    assert usage["total_tokens"] is None
 
 
 @pytest.mark.parametrize(
@@ -168,10 +186,13 @@ def test_extract_usage_with_anthropic_exchanges():
     )
 
     assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 18
+    # EN-374: uncached input (10 + 3); the cache sits beside it.
+    assert usage["n_input_tokens"] == 13
     assert usage["n_output_tokens"] == 7
     assert usage["n_cache_read_tokens"] == 4
-    assert usage["n_cache_creation_tokens"] == 1
+    # The second answer names no cache writes: the total of writes is
+    # unknown, not the first answer's 1.
+    assert usage["n_cache_creation_tokens"] is None
     assert usage["total_tokens"] == 25
 
 
@@ -205,10 +226,11 @@ def test_extract_usage_with_openai_and_gemini_shapes():
         fallback_model="gemini-3.5-flash",
     )
 
-    assert openai["n_input_tokens"] == 20
+    # EN-374: uncached input; the cached prompt tokens come out of it.
+    assert openai["n_input_tokens"] == 15
     assert openai["n_cache_read_tokens"] == 5
     assert openai["total_tokens"] == 28
-    assert gemini["n_input_tokens"] == 12
+    assert gemini["n_input_tokens"] == 9
     assert gemini["n_cache_read_tokens"] == 3
     assert gemini["total_tokens"] == 16
 

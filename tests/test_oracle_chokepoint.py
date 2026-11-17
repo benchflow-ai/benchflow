@@ -826,7 +826,9 @@ class TestVerifierNonzeroExitRewardAcceptance:
         async def exec_writes_reward_zero(
             *_args: object, **_kwargs: object
         ) -> MagicMock:
-            if sandbox.exec.await_count == 1:
+            # Setup execs (symlink, chmod, the test.sh preflight) pass their
+            # command positionally; only the test run passes command=.
+            if "command" not in _kwargs:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_text_path.write_text("0.0")
             return MagicMock(return_code=1, stdout="tests failed")
@@ -868,7 +870,9 @@ class TestVerifierNonzeroExitRewardAcceptance:
         async def exec_writes_reward_json(
             *_args: object, **_kwargs: object
         ) -> MagicMock:
-            if sandbox.exec.await_count == 1:
+            # Setup execs (symlink, chmod, the test.sh preflight) pass their
+            # command positionally; only the test run passes command=.
+            if "command" not in _kwargs:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_json_path.write_text(json.dumps({"reward": 0.0}))
             return MagicMock(return_code=1, stdout="tests failed")

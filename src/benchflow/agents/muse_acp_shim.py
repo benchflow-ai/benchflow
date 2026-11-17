@@ -445,9 +445,11 @@ class Usage:
             return None
         t = self.totals
         # Muse reports OpenAI-style counts: input includes the cached prefix and
-        # output includes reasoning.
+        # output includes reasoning. BenchFlow reads ACP's inputTokens as the
+        # uncached input, beside cachedReadTokens (Claude Code's meaning), so
+        # the cached prefix comes out of it; totalTokens stays input + output.
         return {
-            "inputTokens": t["input_tokens"],
+            "inputTokens": max(t["input_tokens"] - t["cached_tokens"], 0),
             "cachedReadTokens": t["cached_tokens"],
             "outputTokens": t["output_tokens"],
             "thoughtTokens": t["reasoning_tokens"],

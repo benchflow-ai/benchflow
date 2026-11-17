@@ -571,14 +571,16 @@ class TestTestScriptStillDefault:
         task.paths.tests_dir = task.task_dir / "tests"
         task.paths.test_path = task.task_dir / "tests" / "test.sh"
 
+        async def exec_test_run_fails(*_args: object, **kwargs: object) -> MagicMock:
+            # Setup execs (symlink, chmod, the test.sh preflight) pass their
+            # command positionally; only the test run passes command=.
+            if "command" not in kwargs:
+                return MagicMock(return_code=0, stdout="")
+            return MagicMock(return_code=7, stdout="boom")
+
         sandbox = MagicMock()
         sandbox.upload_dir = AsyncMock()
-        sandbox.exec = AsyncMock(
-            side_effect=[
-                MagicMock(return_code=0, stdout=""),
-                MagicMock(return_code=7, stdout="boom"),
-            ]
-        )
+        sandbox.exec = AsyncMock(side_effect=exec_test_run_fails)
         sandbox.is_mounted = True
 
         rollout_paths = RolloutPaths(tmp_path / "rollout")
@@ -599,13 +601,8 @@ class TestTestScriptStillDefault:
 
         sandbox = MagicMock()
         sandbox.upload_dir = AsyncMock()
-        sandbox.exec = AsyncMock(
-            side_effect=[
-                MagicMock(return_code=0, stdout=""),
-                MagicMock(return_code=0, stdout=""),
-                MagicMock(return_code=0, stdout=""),
-            ]
-        )
+        # Every exec succeeds; setup now runs more of them (the test.sh preflight).
+        sandbox.exec = AsyncMock(return_value=MagicMock(return_code=0, stdout=""))
         sandbox.download_dir = AsyncMock()
         sandbox.is_mounted = False
 
@@ -729,8 +726,6 @@ class TestTestScriptStillDefault:
             ({"reward": float("nan")}, "missing numeric 'reward'"),
             ({"reward": float("inf")}, "missing numeric 'reward'"),
             ({"reward": True}, "missing numeric 'reward'"),
-            # Out of range: refused by name with its raw value (#1178).
-            ({"reward": 1.2}, r"verifier/reward\.json: reward = 1\.2 is outside"),
             ({"reward": 0.5, "extra": float("nan")}, "invalid reward value"),
         ],
     )
@@ -760,3 +755,42 @@ class TestTestScriptStillDefault:
 
         with pytest.raises(VerifierOutputParseError, match=match):
             await Verifier(task, rollout_paths, sandbox).verify()
+
+    async def _verify_written(self, tmp_path: Path, payload: dict):
+        task = _make_task(tmp_path, 'version = "1.0"\n[verifier]\n')
+        task.paths.tests_dir = task.task_dir / "tests"
+        task.paths.test_path = task.task_dir / "tests" / "test.sh"
+        sandbox = MagicMock()
+        sandbox.upload_dir = AsyncMock()
+        sandbox.is_mounted = True
+        rollout_paths = RolloutPaths(tmp_path / "rollout")
+        rollout_paths.mkdir()
+
+        async def exec_reward(*_args: object, **_kwargs: object) -> MagicMock:
+            if sandbox.exec.await_count == 1:
+                return MagicMock(return_code=0, stdout="")
+            rollout_paths.reward_json_path.write_text(json.dumps(payload))
+            return MagicMock(return_code=0, stdout="")
+
+        sandbox.exec = AsyncMock(side_effect=exec_reward)
+        return await Verifier(task, rollout_paths, sandbox).verify()
+
+    # Integrity strict keeps the old contract: refused by name with its raw
+    # value (#1178). Audit and off record it as written (next test).
+    @pytest.mark.usefixtures("strict_reward_rule")
+    @pytest.mark.asyncio
+    async def test_reward_json_out_of_range_is_refused_under_strict(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(
+            VerifierOutputParseError,
+            match=r"verifier/reward\.json: reward = 1\.2 is outside",
+        ):
+            await self._verify_written(tmp_path, {"reward": 1.2})
+
+    @pytest.mark.asyncio
+    async def test_reward_json_out_of_range_is_recorded_as_written(
+        self, tmp_path: Path
+    ) -> None:
+        result = await self._verify_written(tmp_path, {"reward": 1.2})
+        assert result.rewards == {"reward": 1.2}

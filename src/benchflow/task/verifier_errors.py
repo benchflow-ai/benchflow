@@ -28,6 +28,23 @@ class VerifierResult(BaseModel):
     rewards: dict[str, Any] | None = None
 
 
+class VerifierNetworkRefusedError(Exception):
+    """test.sh failed after the verifier's network refused it something: an ending of its own, unscored, so a policy never reads as the
+    solution's 0."""
+
+
+class VerifierLaunchRefusedError(Exception):
+    """test.sh did not start held: its launch found NET_ADMIN or
+    NET_RAW, or no record shows it started through the launch at all."""
+
+
+class VerifierNetworkUnheldError(RuntimeError):
+    """The verifier's network could not be held for test.sh: its
+    rules could not be added, from BenchFlow's helper or at all, or were not
+    proven. test.sh does not run open instead: an ending of its own,
+    unscored."""
+
+
 class RewardFileEmptyError(Exception):
     """A reward file the verifier left empty.
 
@@ -43,6 +60,18 @@ class RewardFileEmptyError(Exception):
 
 class RewardFileNotFoundError(Exception):
     pass
+
+
+class PytestUnjudgedError(RewardFileNotFoundError):
+    """A pytest test.sh ran judged nothing, so its reward is not usable.
+
+    The plugin guard saw that pytest stopped with a usage error or an
+    internal error, or collected no tests (its ``starting`` and ``exited``
+    markers). Whatever test.sh then wrote scores the verifier, not
+    the solution, so the trial ends as one without a usable reward
+    (``scoring.NO_USABLE_REWARD``): unscored, never retried, and a failure in
+    every score.
+    """
 
 
 class VerifierOutputParseError(Exception):
@@ -183,6 +212,21 @@ class PluginGuardMarkersUnreadableError(Exception):
 
 class VerifierStartUnconfirmedError(Exception):
     """The test command's verifier-writable start receipt was not found."""
+
+
+#: How the trial records :class:`VerifierToolsRefusedError`
+#: (``scoring.VERIFIER_TOOLS_REFUSED``, read head-anchored).
+VERIFIER_TOOLS_REFUSED_ERROR = "verifier tools refused: "
+
+
+class VerifierToolsRefusedError(RuntimeError):
+    """The verifier's PATH leaves out a folder of the image's PATH (one a user
+    other than root could write, or a relative entry), and the task's
+    ``[verifier] required_tools`` contract does not cover what test.sh would
+    have found there, so BenchFlow did not run test.sh. A refusal decided by
+    the image and the task, never a crash of the verifier's: unscored, never
+    retried (another attempt meets the same image). A RuntimeError, as
+    hardening's refusals were before."""
 
 
 class RubricNotFoundError(VerifierInfrastructureError):

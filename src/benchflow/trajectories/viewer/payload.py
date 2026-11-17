@@ -696,7 +696,13 @@ def _normalize_metadata(
 
 def _load_rollout_metadata(rollout_dir: Path) -> RolloutMetadata:
     """Load and normalize both metadata sidecars exactly once per projection."""
+    from benchflow.integration_health import scored_as_read
+
+    # The trial as every reader scores it: one the judge withholds
+    # on read is unscored here too, as bf.load_job reads it.
     result_data = _load_result_json(rollout_dir)
+    if result_data:
+        result_data = scored_as_read(result_data, rollout_dir)
     preferred_timing = _load_json(rollout_dir / "timing.json")
     if not isinstance(preferred_timing, dict):
         embedded_timing = result_data.get("timing")

@@ -57,6 +57,8 @@ async def test_recovery_uses_verified_remote_absence(
     missing = "reward.txt" if present.endswith("json") else "reward.json"
 
     async def spawn(*argv, stdout=None, **kwargs):
+        if argv[:2] == ("sh", "-c"):  # EN-718: dial-stdio under EN-482's held stdin
+            argv = argv[4:]
         assert argv[0] == "docker"
         if companion == "missing-cli":
             raise FileNotFoundError("fixture docker CLI unavailable")

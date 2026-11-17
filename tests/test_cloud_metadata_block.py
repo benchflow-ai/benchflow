@@ -1932,7 +1932,9 @@ HOST_MAIN = "services:\n  main:\n    network_mode: host\n"
 OUTSIDE_NETWORKS = [
     "host",
     '"container:other"',
-    '"service:db"',
+    # A service the file does not define (a service of the project's own is
+    # the trial's namespace: EN-609, the lead's 04:5xZ ruling).
+    '"service:gone"',
     '"${MAIN_NET:-host}"',
 ]
 
@@ -2031,7 +2033,10 @@ async def test_the_rollout_reads_mains_network_from_the_tasks_compose(
     with (
         patch.object(trial._planes, "block_cloud_metadata", block),
         # The agent does not start with the endpoints open.
-        pytest.raises(CloudMetadataPowerError, match="sandbox startup refused"),
+        pytest.raises(
+            CloudMetadataPowerError,
+            match=r"the block is not_installed: main shares the host's network or another container's \(network_mode: host in the task's docker-compose",
+        ),
     ):
         await trial._apply_cloud_metadata_block(tmp_path)
     block.assert_not_awaited()
@@ -2471,7 +2476,10 @@ async def test_resolved_host_network_never_runs_the_metadata_script(
     with (
         patch.object(trial._planes, "block_cloud_metadata", block),
         # The agent does not start with the endpoints open.
-        pytest.raises(CloudMetadataPowerError, match="sandbox startup refused"),
+        pytest.raises(
+            CloudMetadataPowerError,
+            match=r"the block is not_installed: main may share the host's network \(main joins the external network '(default|outer)' \(name: host\)\)",
+        ),
     ):
         await trial._apply_cloud_metadata_block(tmp_path)
     block.assert_not_awaited()

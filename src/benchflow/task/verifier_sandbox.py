@@ -232,6 +232,25 @@ class VerifierImage:
 def _verifier_sandbox_config(config: TaskConfig) -> SandboxConfig:
     declared = config.verifier.sandbox
     base = (declared or config.sandbox).model_copy(deep=True)
+    if declared is None and config.verifier.network_mode is not None:
+        # The verifier's own network (``[verifier] network_mode``), read as
+        # the in-sandbox verifier's is (verifier_network, one reader:):
+        # a no-network verifier sandbox starts with no network at all, not
+        # the agent's sandbox's.
+        from benchflow.sandbox.verifier_network import (
+            _verifier_policy_config,
+            verifier_network_mode,
+        )
+        from benchflow.task.config import NetworkMode
+
+        mode = verifier_network_mode(config)
+        folded = _verifier_policy_config(config, mode)
+        base.network_mode = folded.network_mode
+        base.allowed_hosts = list(folded.allowed_hosts or [])
+        base.blocked_urls = []
+        base.blocked_hosts = []
+        if folded.network_mode == NetworkMode.NO_NETWORK:
+            base.allow_internet = False
     # Agent-side provisioning never runs in the verifier sandbox.
     base.setup_commands = []
     base.healthcheck = None

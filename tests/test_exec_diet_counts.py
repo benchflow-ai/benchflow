@@ -193,8 +193,9 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
         "snapshot": 1,
         "seed": 1,
         "oracle": 2,
-        # The merged root reads, and PYTHONPATH on the task route (C8).
-        "environment_reads": 2,
+        # The merged root reads, and PYTHONPATH on the task route (C8); and,
+        # with EN-715, the test.sh preflight's read of the image's PATH.
+        "environment_reads": 3,
         "verifier_start": 2,
         "upload_root_mkdir": 0,
         # The staged publish (V6): the stage with the defensive
@@ -231,7 +232,17 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
     # search-path inputs, read in their own receipt exec after the
     # preparation (_hook_cleanup.INPUTS_CMD). A checkout without the pinned
     # binaries keeps the clean-up inside the preparation: 45.
-    want = 46 if locate.available(platform.machine()) else 45
+    # 49 (48) with EN-609: hardening reads main's routes and root makes its
+    # own test connect to 169.254.169.254 once the metadata rule covers root
+    # (the rule itself goes in from BenchFlow's helper, not through exec);
+    # root reads test.sh's launch record beside its start receipt, the
+    # runtime proof that it ran without NET_ADMIN, NET_RAW or SYS_PTRACE.
+    # 52 (51) with EN-715: just before the oracle's turn, the test.sh
+    # preflight reads the image's PATH and probes test.sh's commands as the
+    # verifier user (two execs; an image with PATH extras beyond the system
+    # folders adds the judge's), and the uploaded tests are made root's
+    # (chown -R 0:0, RUSAGE): one more.
+    want = 52 if locate.available(platform.machine()) else 51
     assert len(execs) == want, [(e.caller, e.command[:60]) for e in execs]
     # The preparation still runs, once, as root.
     prep = [e for e in execs if "BENCHFLOW-PREP" in e.command]

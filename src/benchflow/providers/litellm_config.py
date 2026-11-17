@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from benchflow._utils.config import EFFORT_LEVELS
 from benchflow.agents.providers import (
     REGISTRY_BASE_PROVIDERS,
     ZAI_CODING_REGISTRY_BASE_ENV,
@@ -17,6 +18,7 @@ from benchflow.agents.providers import (
     resolve_base_url,
     strip_provider_prefix,
 )
+from benchflow.providers.pricing_snapshot import model_prices
 
 AZURE_API_VERSION_ENV = "AZURE_API_VERSION"
 AZURE_DEFAULT_API_VERSION = "preview"
@@ -25,9 +27,7 @@ PROVIDER_REASONING_EFFORT_ENV = "BENCHFLOW_REASONING_EFFORT"
 LITELLM_MODEL_ALIAS_ENV = "BENCHFLOW_LITELLM_MODEL_ALIAS"
 LITELLM_MODEL_VIA_ENV = "BENCHFLOW_LITELLM_MODEL_VIA_ENV"
 LITELLM_MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
-_PROVIDER_REASONING_EFFORTS = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-)
+_PROVIDER_REASONING_EFFORTS = frozenset(EFFORT_LEVELS)
 
 #: Completions providers routed through LiteLLM's NATIVE provider integration
 #: (``<provider>/<model>``) instead of the generic ``openai/`` passthrough, so
@@ -87,29 +87,16 @@ _BEDROCK_ADAPTIVE_THINKING_RE = re.compile(
     r"|(?:opus|sonnet|haiku|fable)-(?:[5-9]|[1-9]\d))(?!\d)",
     re.IGNORECASE,
 )
-_BEDROCK_LITELLM_EFFORT_LIMIT_RE = re.compile(
-    r"claude-(?:opus|sonnet|haiku)-4-(?:8|9|1\d)(?!\d)",
-    re.IGNORECASE,
-)
-# Efforts a user may *request*, low→high. LiteLLM 1.88.0rc1's Bedrock Converse
-# transform only accepts up to ``high`` for the Claude 4.x Bedrock IDs covered
-# by ``_BEDROCK_LITELLM_EFFORT_LIMIT_RE`` and raises BadRequestError on
-# ``xhigh``/``max`` (#737), so those requested values are clamped to the
-# accepted ceiling below before they reach the wire. Other adaptive-thinking
-# Bedrock models, such as Fable 5, keep their requested effort. Kept in sync
-# with the standalone proxy patch ``litellm_bedrock_patch`` (which cannot import
-# this module — it is deployed into the sandbox alone).
-_BEDROCK_EFFORT_LADDER = ("minimal", "low", "medium", "high", "xhigh", "max")
+# Efforts a user may *request*, low→high, each sent as asked: LiteLLM
+# 1.88.0rc1's Bedrock Converse transform raised on ``xhigh``/``max`` for the
+# Claude 4.x Bedrock ids (#737) and they were lowered to ``high``, but the
+# pinned LiteLLM 1.103.3 takes every level. Kept in sync with the
+# standalone proxy patch ``litellm_bedrock_patch`` (which cannot import this
+# module — it is deployed into the sandbox alone).
+_BEDROCK_EFFORT_LADDER = EFFORT_LEVELS[
+    EFFORT_LEVELS.index("minimal") : EFFORT_LEVELS.index("max") + 1
+]
 _BEDROCK_THINKING_EFFORTS = set(_BEDROCK_EFFORT_LADDER)
-_BEDROCK_LITELLM_MAX_EFFORT = "high"
-
-
-def _clamp_bedrock_effort(effort: str) -> str:
-    """Clamp a requested effort to the highest LiteLLM-accepted rung (#737)."""
-    ladder = _BEDROCK_EFFORT_LADDER
-    if effort not in ladder:
-        return effort
-    return ladder[min(ladder.index(effort), ladder.index(_BEDROCK_LITELLM_MAX_EFFORT))]
 
 
 @dataclass(frozen=True)
@@ -202,9 +189,12 @@ def _bedrock_thinking_effort(model: str, env: dict[str, str]) -> str | None:
         return None
     effort = (env.get(BEDROCK_THINKING_EFFORT_ENV) or "high").strip().lower()
     if effort not in _BEDROCK_THINKING_EFFORTS:
-        effort = "high"
-    if _BEDROCK_LITELLM_EFFORT_LIMIT_RE.search(model):
-        return _clamp_bedrock_effort(effort)
+        # Refused, never run at high; the run's plan refuses it
+        # before any sandbox (benchflow.effort_request).
+        raise ValueError(
+            f"{BEDROCK_THINKING_EFFORT_ENV} must be one of: "
+            + ", ".join(_BEDROCK_EFFORT_LADDER)
+        )
     return effort
 
 
@@ -443,6 +433,11 @@ def litellm_proxy_config(
 ) -> dict[str, object]:
     """Build the LiteLLM ``config.yaml`` payload for one route."""
     params = dict(route.litellm_params)
+    # BenchFlow's dated rates for current first-party models: the
+    # table LiteLLM loads lacks some, so their routes recorded no cost.
+    prices = model_prices(route.provider_name, route.upstream_model)
+    for key, value in prices.items():
+        params.setdefault(key, value)
     cost = custom_cost_per_token(route.upstream_model)
     if cost is not None:
         params.setdefault("input_cost_per_token", cost[0])
@@ -484,6 +479,12 @@ def litellm_proxy_config(
                 model_list.append(
                     {"model_name": bridge_name, "litellm_params": dict(bridge_params)}
                 )
+    if prices:
+        # LiteLLM's router keeps only its own list of price keys from
+        # litellm_params and drops a tier such as Haiku 5.5's prompts over
+        # 100K tokens (priced 5x); the deployment's model_info keeps them all.
+        for entry in model_list:
+            entry["model_info"] = dict(prices)
     return {
         "model_list": model_list,
         "general_settings": {"master_key": master_key},

@@ -11,7 +11,13 @@ With ``BENCHFLOW_CAPTURE_TOKEN_LOGPROBS`` on, this patch copies those fields
 from every raw provider chunk into the call's logging details under
 ``STREAM_TOKENS_KEY``; BenchFlow's LiteLLM callback records them next to the
 assembled response. It is loaded inside the LiteLLM proxy process via
-``sitecustomize`` and records nothing while capture is off. It always drops
+``sitecustomize`` and records no token fields while capture is off.
+
+Whatever capture says, it notes the ``usage.cost`` a provider's own chunks
+carry (OpenRouter's bill) under ``UPSTREAM_COST_KEY``: the assembled
+response cannot tell it from LiteLLM's own estimate, which
+``stream_chunk_builder`` writes into ``usage.cost`` when the provider sent
+none. It always drops
 SGLang's final ``sglext``-only chunk (no choices, no usage) after reading it:
 there is nothing in it to relay, and LiteLLM's Anthropic Messages stream
 adapter fails on a chunk without choices.
@@ -24,6 +30,10 @@ from typing import Any
 
 CAPTURE_ENV = "BENCHFLOW_CAPTURE_TOKEN_LOGPROBS"
 STREAM_TOKENS_KEY = "benchflow_stream_tokens"
+# The usage.cost a provider's own stream chunks carried (its bill), and how
+# many of its chunks this patch saw.
+UPSTREAM_COST_KEY = "benchflow_upstream_cost"
+UPSTREAM_CHUNKS_KEY = "benchflow_upstream_chunks"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 
@@ -100,6 +110,16 @@ def record_stream_chunk(details: dict[str, Any], chunk: Any) -> None:
             entry.setdefault("logprobs", []).extend(_plain(item) for item in content)
 
 
+def record_upstream_cost(details: dict[str, Any], chunk: Any) -> None:
+    """Note a provider chunk, and the ``usage.cost`` it carries, in ``details``."""
+    details[UPSTREAM_CHUNKS_KEY] = int(details.get(UPSTREAM_CHUNKS_KEY) or 0) + 1
+    cost = _field(_field(chunk, "usage"), "cost")
+    if isinstance(cost, dict):
+        cost = cost.get("total_cost")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        details[UPSTREAM_COST_KEY] = float(cost)
+
+
 def is_sglext_only_chunk(chunk: Any) -> bool:
     """True for SGLang's final ``choices: []`` chunk that carries only ``sglext``."""
     try:
@@ -121,15 +141,16 @@ def _patch_stream_wrapper() -> None:
     original = CustomStreamWrapper.chunk_creator
 
     def chunk_creator(self: Any, chunk: Any) -> Any:
-        if capture_enabled():
-            try:
-                details = getattr(
-                    getattr(self, "logging_obj", None), "model_call_details", None
-                )
-                if isinstance(details, dict):
+        try:
+            details = getattr(
+                getattr(self, "logging_obj", None), "model_call_details", None
+            )
+            if isinstance(details, dict):
+                record_upstream_cost(details, chunk)
+                if capture_enabled():
                     record_stream_chunk(details, chunk)
-            except Exception:
-                pass
+        except Exception:
+            pass
         if is_sglext_only_chunk(chunk):
             # Nothing to relay, and LiteLLM's Anthropic Messages stream adapter
             # indexes ``choices[0]`` of every chunk (IndexError on SGLang).

@@ -273,7 +273,9 @@ def test_write_rollout_verifiers_jsonl_marks_invalid_when_no_rewards(tmp_path):
         error="verifier timed out",
     )
     parsed = json.loads((rollout_dir / ROLLOUT_ARTIFACT_RELPATH).read_text().strip())
-    assert parsed["reward"] == 0.0
+    # Unscored is null and not completed, never 0.0 (EN-374, audit RECORDS-4).
+    assert parsed["reward"] is None
+    assert parsed["is_completed"] is False
     assert parsed["info"]["reward_valid"] is False
 
 
@@ -502,6 +504,51 @@ def test_build_rollout_result_emits_verifiers_shaped_results_jsonl(tmp_path):
     assert row["is_completed"] is True
     assert row["stop_condition"] == "agent_completed"
     assert "diagnostics" not in row["info"]
+
+
+def test_verifiers_jsonl_matches_results_jsonl_for_errored_and_unscored(tmp_path):
+    """EN-374 (audit RECORDS-4): trainer/verifiers.jsonl wrote reward 0.0 and
+    is_completed true for an errored or unscored trial, which a trainer reads
+    as a real failed attempt. It writes what results.jsonl writes."""
+    cases = {
+        "agent-error": {"error": "agent crashed", "rewards": {"reward": 0.0}},
+        "verifier-crash": {"verifier_error": "verifier crashed", "rewards": None},
+        "partial": {"partial_trajectory": True, "rewards": {"reward": 0.0}},
+        "scored": {"rewards": {"reward": 0.0}},
+    }
+    rows = {}
+    for name, case in cases.items():
+        rollout_dir = tmp_path / name
+        rollout_dir.mkdir()
+        _build_rollout_result(
+            rollout_dir,
+            task_name="list-files",
+            rollout_name=name,
+            agent="claude-agent-acp",
+            agent_name="claude-agent-acp",
+            model="claude-haiku-4-5",
+            n_tool_calls=1,
+            prompts=["List files."],
+            error=case.get("error"),
+            verifier_error=case.get("verifier_error"),
+            trajectory=_acp_trajectory(),
+            partial_trajectory=case.get("partial_trajectory", False),
+            trajectory_source="acp",
+            rewards=case["rewards"],
+            started_at=datetime.now(),
+            timing={},
+        )
+        trainer = json.loads((rollout_dir / ROLLOUT_ARTIFACT_RELPATH).read_text())
+        results = json.loads((rollout_dir / "results.jsonl").read_text())
+        rows[name] = trainer
+        assert trainer["reward"] == results["reward"], name
+    assert rows["verifier-crash"]["reward"] is None
+    for name in ("agent-error", "verifier-crash", "partial"):
+        assert rows[name]["is_completed"] is False, name
+    assert rows["partial"]["is_truncated"] is True
+    # A real 0.0 verdict on a clean trial stays a scored, completed 0.0.
+    assert rows["scored"]["reward"] == 0.0
+    assert rows["scored"]["is_completed"] is True
 
 
 def test_results_jsonl_fails_closed_on_agent_error_with_llm_steps(tmp_path):
@@ -1631,11 +1678,16 @@ def test_build_rollout_result_forwards_token_metrics_to_atif(tmp_path):
         n_input_tokens=1234,
         n_output_tokens=567,
         n_cache_read_tokens=89,
+        # A known zero: a prompt total with an unknown part is unknown.
+        n_cache_creation_tokens=0,
         cost_usd=0.0421,
     )
     atif = json.loads((rollout_dir / "trainer/atif.json").read_text())
     metrics = atif["final_metrics"]
-    assert metrics["total_prompt_tokens"] == 1234
+    # EN-374: ATIF's total_prompt_tokens is every prompt token (1234 uncached
+    # + 89 read from the cache); n_input_tokens rides in extra.
+    assert metrics["total_prompt_tokens"] == 1234 + 89
+    assert metrics["extra"]["n_input_tokens"] == 1234
     assert metrics["total_completion_tokens"] == 567
     assert metrics["total_cached_tokens"] == 89
     assert metrics["total_cost_usd"] == 0.0421

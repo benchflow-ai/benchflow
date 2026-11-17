@@ -363,7 +363,13 @@ def compute_training_signals(
     )
     if not signals.enabled:
         return signals
-    pairs = [(Path(d), r) for d, r in rollouts if isinstance(r, dict)]
+    from benchflow.integration_health import scored_as_read
+
+    # Each rollout as every reader scores it: one the judge
+    # withholds on read is excluded as unscored, never a 0.0 in its group.
+    pairs = [
+        (Path(d), scored_as_read(r, d)) for d, r in rollouts if isinstance(r, dict)
+    ]
     labels = job_labels(d for d, _ in pairs)
     replaced = replaced_attempts(pairs)
     grouped: dict[str, tuple[dict[str, Any], list[_Member]]] = {}

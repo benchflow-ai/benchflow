@@ -67,6 +67,8 @@ def test_eval_create_reasoning_effort_lands_in_config(tmp_path: Path):
     with _stub_evaluation_run(captured):
         eval_run(
             tasks_dir=tasks,
+            # The default Claude model (Haiku 4.5) takes no effort, and is refused.
+            model="claude-sonnet-4-6",
             reasoning_effort="MAX",
             jobs_dir=str(tmp_path / "jobs"),
         )
@@ -81,6 +83,8 @@ def test_eval_create_reasoning_effort_overrides_yaml_config(tmp_path: Path):
     yaml_path.write_text(
         "tasks_dir: " + str(tasks) + "\n"
         "agent: claude-agent-acp\n"
+        # The default Claude model (Haiku 4.5) takes no effort, and is refused.
+        "model: claude-sonnet-4-6\n"
         "reasoning_effort: low\n"
     )
     captured: dict = {}

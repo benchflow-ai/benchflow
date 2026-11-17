@@ -360,7 +360,8 @@ def _wall_clock_timeout() -> TimeoutError:
 
 def test_run_time_wall_clock_timeout_that_did_nothing_is_unscored(tmp_path):
     """A model that never answered before the agent's budget ran out: the
-    trial's own records now say what bf.load_job reads (unscored, not a 0)."""
+    trial's own records now say what bf.load_job reads (unscored, not a 0),
+    as on 0.10 (EN-385, the zero-activity rule)."""
     notice = {"type": "notice", "severity": "warning", "title": "Model metadata"}
     r = _rollout(
         tmp_path,
@@ -383,6 +384,50 @@ def test_run_time_wall_clock_timeout_that_did_nothing_is_unscored(tmp_path):
     assert r._rewards == {"reward": 1.0}
 
 
+def test_a_timeout_whose_cancel_did_not_drain_still_records_its_timeout(tmp_path):
+    """The native harness's CLI can outlive the cancel's drain, so the
+    prompt raises a plain TimeoutError with no diagnostic: the timeout is
+    recorded all the same (EN-385), beside the integration failure of an
+    agent that did nothing before it."""
+    r = _rollout(
+        tmp_path,
+        _events({"type": "notice", "severity": "warning", "title": "x"}),
+        {"BENCHFLOW_PROVIDER_NAME": "litellm"},
+    )
+    r._timeout = 15
+    r._timing = {"agent_execution": 15.4}
+    r._record_agent_timeout(
+        TimeoutError("Agent prompt exceeded wall-clock budget 15s"), agent_phase=True
+    )
+    r._maybe_classify_api_error()
+    fields = r._diagnostics.to_result_fields()
+    assert fields["agent_timeout_info"]["timeout_sec"] == 15.0
+    assert fields["integration_failure_info"]["cause"] == "no_activity"
+    assert r._rewards is None
+    assert r._diagnostics.category_for_channel("error") == "agent_integration"
+
+
+def test_a_wall_clock_timeout_whose_model_answered_stays_a_timeout(tmp_path):
+    """The control: the model answered before the budget ran out (output
+    tokens, no tool call yet), so the agent did act: the timeout and its 0
+    stay, and nothing is withheld."""
+    r = _rollout(
+        tmp_path,
+        _events({"type": "notice", "severity": "warning", "title": "x"}),
+        {"BENCHFLOW_PROVIDER_NAME": "litellm"},
+    )
+    r._usage_metrics = {"n_output_tokens": 40, "total_tokens": 1040}
+    r._timing = {"agent_execution": 45.3}
+    r._record_agent_timeout(_wall_clock_timeout(), agent_phase=True)
+    r._maybe_classify_api_error()
+    assert r._rewards == {"reward": 0.0}
+    assert r._error == "Agent prompt exceeded wall-clock budget 45s"
+    fields = r._diagnostics.to_result_fields()
+    assert fields.get("integration_failure_info") is None
+    assert fields["agent_timeout_info"]["reason"] == "wall_clock_timeout"
+    assert r._diagnostics.category_for_channel("error") == "timeout"
+
+
 def test_run_time_wall_clock_timeout_after_real_work_keeps_its_zero(tmp_path):
     r = _rollout(
         tmp_path,
@@ -399,7 +444,8 @@ def test_run_time_wall_clock_timeout_after_real_work_keeps_its_zero(tmp_path):
 
 def test_run_time_idle_timeout_that_did_nothing_stays_retryable(tmp_path):
     """An idle timeout is retried and an integration failure is not, so the
-    run keeps it; bf.load_job still reads a final one as unscored."""
+    run keeps it; its readers judge a final one (EN-385:
+    integration_health.judged_integration_failure)."""
     from benchflow.diagnostics import IdleTimeoutDiagnostic, IdleTimeoutError
 
     r = _rollout(tmp_path, _events(), {"BENCHFLOW_PROVIDER_NAME": "litellm"})

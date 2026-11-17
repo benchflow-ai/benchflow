@@ -92,8 +92,8 @@ class TestLoadRubric:
         assert rubric.contract == LEGACY_REVIEW_RUBRIC_CONTRACT
         assert REVIEW_RUBRIC_CONTRACT == LEGACY_REVIEW_RUBRIC_CONTRACT
 
-    def test_loads_frontierphysics_weighted_rubric_contract(self, tmp_path):
-        """Guards FrontierPhysics PR #109 at head commit 4bdbd2e against
+    def test_loads_a_weighted_rubric_contract(self, tmp_path):
+        """Guards a task repository's rubric change against
         rejecting or silently downgrading its weighted rubric.json format.
         """
 

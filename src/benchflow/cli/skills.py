@@ -112,6 +112,8 @@ def register_skills(app: typer.Typer) -> None:
             bench skills eval ./my-skill/ --agent claude-agent-acp --agent codex-acp --sandbox daytona --concurrency 4
             bench skills eval ./my-skill/ --agent claude-agent-acp --no-baseline --export-gepa
         """
+        from benchflow.agents.scripts import ScriptBackendError
+        from benchflow.cli._errors import expected_error_parts
         from benchflow.skill_eval import SkillEvaluator, export_gepa_traces
 
         exit_if_missing(skill_dir, next_step="pass a skill folder (it holds SKILL.md)")
@@ -174,6 +176,11 @@ def register_skills(app: typer.Typer) -> None:
                     concurrency=concurrency,
                 )
             )
+        except ScriptBackendError as e:
+            # Before any provider call (Evaluation.run), as bench run refuses it.
+            err_text, err_hint = expected_error_parts(e)
+            print_error(err_text, next_step=err_hint)
+            raise typer.Exit(e.exit_code) from None
         except (
             json.JSONDecodeError,
             ValueError,

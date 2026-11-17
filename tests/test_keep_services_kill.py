@@ -764,7 +764,9 @@ async def test_a_dropped_zombie_is_gone_unless_a_thread_lives(
         )
         assert out.released == 1 and not proc.stopped(clean)
     else:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(
+            RuntimeError, match=r"Cannot hold the kept services in a frozen cgroup"
+        ):
             await release_kept_services(
                 _Async(proc), "agent", (clean, held), (), logs_dir=str(logs)
             )
@@ -1179,7 +1181,9 @@ async def test_after_grading_every_agent_process_dies_before_the_folders_reopen(
         calls.append(cmd)
         return SimpleNamespace(stdout="", stderr="writers remain", exit_code=1)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError, match=r"quiescence check exited with rc=1\nstderr: writers remain"
+    ):
         await end_kept_services(
             SimpleNamespace(exec=receipt_aware(fail)),
             "agent",

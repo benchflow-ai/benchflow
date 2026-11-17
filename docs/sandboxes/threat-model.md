@@ -487,12 +487,12 @@ Details (image order, transfer, scoring, cost): [Separate verifier](../tasks/sep
 
 ## Network policy: open (the default)
 
-`network_mode: public` leaves the internet open to the agent, except the cloud metadata services. A cloud VM serves its instance credentials there to any process that asks. BenchFlow refuses TCP from `main` to each of these, on every port but 53, for every user but root, and for root too when the agent runs as root (below). The agent starts only once that block is proven `on`; otherwise the trial stops before the agent, unless the run opts out (below):
+`network_mode: public` leaves the internet open to the agent, except the cloud metadata services. A cloud VM serves its instance credentials there to any process that asks. BenchFlow refuses TCP from `main` to each of these, on every port but 53: on Docker and remote Docker to every user, root included, from its helper container before `main` is released at sandbox start (and again before a restored `main` is released); elsewhere to every user but root, and to root too when the agent runs as root (below). The agent starts only once that block is proven `on`; otherwise the trial stops before the agent, unless the run opts out (below):
 
 - IPv4: 169.254.169.254 (AWS, GCE, Azure, Oracle, DigitalOcean, OpenStack), 169.254.170.2 (AWS ECS), 169.254.170.23 (EKS Pod Identity), 100.100.100.200 (Alibaba Cloud), 168.63.129.16 (Azure WireServer), 169.254.0.23 (Tencent Cloud).
 - IPv6: fd00:ec2::254 and fd00:ec2::23 (AWS), fd20:ce::254 (GCE), fd00:c1::a9fe:a9fe (Oracle Cloud).
 
-The rules are iptables and ip6tables rules in `main`'s network namespace (`iptables`, `iptables-nft` or `iptables-legacy`, whichever works). `main` gets `NET_ADMIN` while the block is armed. For an environment made with `Environment.from_task`, `Runtime.execute` adds it before it starts the sandbox. One the caller started already has none: on Docker the helper below still adds the rules for a non-root agent, a root agent is refused because root keeps `NET_RAW`, and elsewhere the record says `not_installed` and the trial stops.
+The rules are iptables and ip6tables rules in `main`'s network namespace (`iptables`, `iptables-nft` or `iptables-legacy`, whichever works). On Docker and remote Docker the helper below adds every rule of `main`'s namespace from outside, and `main` holds neither `NET_ADMIN` nor `NET_RAW` while it serves; elsewhere `main` gets `NET_ADMIN` while the block is armed. For an environment made with `Environment.from_task`, `Runtime.execute` adds it before it starts the sandbox. One the caller started already has none: on Docker the helper below still adds the rules for a non-root agent, a root agent is refused because root keeps `NET_RAW`, and elsewhere the record says `not_installed` and the trial stops.
 
 On Docker and remote Docker, root's script runs in a helper container of BenchFlow's that joins `main`'s network namespace and brings its own iptables (Alpine 3.24 pinned by digest, with pinned iptables, iptables-legacy and nftables):
 
@@ -542,7 +542,7 @@ A task whose root agent must never run without the block sets `require_cloud_met
 
 A non-root agent on a metadata-protected connection needs an ACP or native agent: session-factory agents can start processes outside BenchFlow's launcher, so a non-root one is refused on every connection, including role switches and reconnects. A session-factory agent that runs as root is not refused for its transport, since the launcher is not what holds root: on Docker the block holds root only in a `main` whose root has neither `NET_ADMIN` nor `NET_RAW`, and on a sandbox provider it is `provider-managed`.
 
-A task about the metadata service itself opts out in its environment table (`[environment]` in task.toml, `sandbox:` in task.md front matter), and a whole run opts out with `--allow-cloud-metadata` (`EvaluationConfig.allow_cloud_metadata`). Then nothing is installed, `main` gets no `NET_ADMIN`, the agent starts, and the record says `off` with `opt_out` naming how. The older `metadata.x-allow-cloud-metadata: true` still opts out the same way.
+A task about the metadata service itself opts out in its environment table (`[environment]` in task.toml, `sandbox:` in task.md front matter), and a whole run opts out with `--allow-cloud-metadata` (`EvaluationConfig.allow_cloud_metadata`) everywhere but `main` on Docker, where only the task opts out. Then nothing is installed, `main` gets no `NET_ADMIN`, the agent starts, and the record says `off` with `opt_out` naming how. The older `metadata.x-allow-cloud-metadata: true` still opts out the same way.
 
 ```toml
 [environment]
@@ -551,11 +551,11 @@ allow_cloud_metadata = true
 
 What the rules do not cover:
 
-- **Other compose services.** Only `main` gets the rules. `why` names the other services.
-- **`main` on the host's network.** With `network_mode: host`, `container:…` or `service:…` (or when BenchFlow cannot tell from the compose file), no rule is added: it would change the host's firewall. The record says `not_installed`, and the trial stops unless the run opts out.
+- **Other compose services' start-up.** On Docker every compose service is covered from a helper joined to its namespace right after it starts, with a proof per service in `service-network.json`; its own start-up code runs in the seconds before, and the record shows any connection seen then.
+- **`main` on the host's network.** No rule ever goes into the host's namespace. Under open the record says `no rules; main is the host's network`; under any other policy the trial is refused before start. A `main` in another compose service's namespace (`service:<x>`) is covered in that namespace; a chain that ends on the host's network is refused.
 - An opted-out run.
 
-There, and on any host that runs tasks it does not trust, block the metadata addresses on the host (a `DOCKER-USER` rule, or the cloud's metadata settings). `no-network`, `denylist` and `allowlist` already confine the agent user. The verifier runs as root and is not limited. The oracle runs under the task's network policy (see [The oracle under a network policy](#the-oracle-under-a-network-policy)).
+There, and on any host that runs tasks it does not trust, block the metadata addresses on the host (a `DOCKER-USER` rule, or the cloud's metadata settings). `no-network`, `denylist` and `allowlist` already confine the agent user. On Docker the verifier, root included, is held to `verifier.network_mode`, else the sandbox's policy; elsewhere it runs as root and is not limited. The oracle runs under the task's network policy (see [The oracle under a network policy](#the-oracle-under-a-network-policy)).
 
 ## Network policy: denylist egress
 
@@ -637,7 +637,7 @@ Declare it on `sandbox` or on `agent`. Both filter only the agent's user here. E
 | All other agent traffic | Firewall | Rejected (IPv4 and IPv6) |
 | Model API | Controller | BenchFlow's model gateway is always reachable |
 | Agent install and setup | Not filtered | The firewall goes up after the agent is installed |
-| Verifier | Not filtered | It runs as root. `verifier.network_mode: allowlist` is refused before the run |
+| Verifier | Every-process rules from BenchFlow's helper (Docker) | test.sh, root included, is held to `verifier.network_mode`, else the sandbox's policy; only the egress proxy's marked sockets leave, and the proxy runs in a container of its own. Elsewhere not filtered, and a verifier allowlist is refused before the run |
 | Separate verifier sandbox | Not filtered | `allowlist` or `denylist` on `verifier.sandbox` is refused before the run |
 
 With a Claude subscription login (`claude-agent-acp` with `CLAUDE_CODE_OAUTH_TOKEN`, no gateway), `api.anthropic.com:443` is reachable for `POST /v1/messages` only. Other native subscription clients are refused when they connect.
@@ -656,11 +656,11 @@ Requirements are the denylist's, plus the kernel's iptables `nat` table and `own
 
 An `allowlist` or `denylist` also covers the oracle. A passing reference solution therefore shows the task is solvable under its policy.
 
-Right before `solve.sh` starts, root starts the proxy and adds firewall rules that match only the oracle's processes. Right after it ends, root removes them, before the verifier and BenchFlow's own installs run. A root oracle runs with one extra supplementary group (gid 61628) that the rules match. An oracle run as a non-root `[agent].user` is matched by that user's uid. Refusals go to `trajectory/egress_denylist.jsonl`.
+Right before `solve.sh` starts, root starts the proxy and adds firewall rules that match only the oracle's processes. Right after it ends, root removes them, before the verifier and BenchFlow's own installs run. On Docker a root oracle is instead held by every-process rules from BenchFlow's helper, with the proxy in a container of its own; when `solve.sh` ends, the processes it started are stopped (`oracle-processes.json`), and its rules stay until the verifier's network replaces them, under a hold that resets every connection but loopback. A root oracle runs with one extra supplementary group (gid 61628) that the rules match. An oracle run as a non-root `[agent].user` is matched by that user's uid. Refusals go to `trajectory/egress_denylist.jsonl`.
 
 ## Images that hand the agent the firewall
 
-Under `denylist`, `allowlist`, a `no-network` task with an LLM agent, and an open network with the metadata block (unless, on Docker, the metadata helper adds its rules from outside `main`), `main` holds `NET_ADMIN` for the rules that confine the agent. An image that gives a binary that capability, or ships a setuid-root firewall helper, could let the agent's user change the rules.
+Under `denylist`, `allowlist`, a `no-network` task with an LLM agent, and an open network with the metadata block (except on Docker and remote Docker, where BenchFlow's helper adds every rule from outside `main`), `main` holds `NET_ADMIN` for the rules that confine the agent. An image that gives a binary that capability, or ships a setuid-root firewall helper, could let the agent's user change the rules.
 
 Before the agent starts, BenchFlow checks as root whether `NET_ADMIN` is in the sandbox and inventories the image's privilege sources. It never runs the files it finds. Where root's bounding set has no `NET_ADMIN` (on Docker, a `main` whose metadata block the helper adds), the check is `clear` at that first read: nothing in the sandbox can hold the capability, and every non-root agent launch drops it anyway. Each such trial writes `firewall-power.json`:
 

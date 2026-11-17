@@ -214,8 +214,13 @@ def test_pointers_out_of_the_workspace_go_only_where_the_agent_ran(tmp_path):
     _git(tmp_path / "baseline" / "app", "status", "--porcelain")
 
 
-def test_the_verifier_env_alone_runs_no_hook_fsmonitor_or_external_diff(tmp_path):
-    """Beside the purge: git under the verifier's env runs none of them; without it, all three run."""
+def test_the_verifier_env_alone_runs_no_hook_or_fsmonitor(tmp_path):
+    """Beside the purge: git under the verifier's env runs no hook and no
+    fsmonitor; without it, all three run. An external diff the repository's
+    config names still runs under the env alone: no command-line value
+    unsets diff.external, and pinning it empty made every git diff in
+    test.sh fail (EN-708), so the freeze's purge removes the agent's
+    (test_verifier_git_diff.py)."""
     workspace = _workspace(tmp_path)
     (workspace / "tracked.txt").write_text("base\n")
     _git(workspace, "add", "tracked.txt")
@@ -269,4 +274,4 @@ def test_the_verifier_env_alone_runs_no_hook_fsmonitor_or_external_diff(tmp_path
         return sorted(p.name for p in tmp_path.glob("ran-*"))
 
     assert grade({}, "first\n") == ["ran-diff", "ran-fsmonitor", "ran-hook"]
-    assert grade(verifier, "second\n") == []
+    assert grade(verifier, "second\n") == ["ran-diff"]

@@ -87,6 +87,12 @@ async def test_covered_or_absent_session_keeps_provider_total(
         "cost_usd": provider_cost,
     }
     rollout._usage_metrics = dict(provider)
+    # Every cost is labelled (EN-374): the gateway's is a list-price estimate.
+    labelled = (
+        provider
+        if provider_cost is None
+        else {**provider, "cost_source": "list_price_estimate"}
+    )
     for _ in range(2):
         await rollout._cleanup_before_teardown()
-        assert rollout._usage_metrics == provider
+        assert rollout._usage_metrics == labelled

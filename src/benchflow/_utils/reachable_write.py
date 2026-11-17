@@ -2097,11 +2097,18 @@ def destination(
         base = Path(os.path.abspath(root))
         capability = pin_destination(base)
     else:
+        # Walk one copy of the weak references, made by a single C call
+        # (valuerefs), never the live table. Python code runs between two
+        # entries of _DESTINATION_ROOTS.items(), and so can the cyclic GC:
+        # closing an abandoned coroutine suspended inside private_folder()
+        # runs its exit, which pops that stage's root from this table in this
+        # same thread (the RLock lets it in), and the walk raised "dictionary
+        # changed size during iteration". list(items()) has the same gap.
         with _DESTINATION_LOCK:
             candidates = [
-                (base, anchor)
-                for base, anchor in _DESTINATION_ROOTS.items()
-                if absolute.is_relative_to(base)
+                (ref.key, anchor)
+                for ref in _DESTINATION_ROOTS.valuerefs()
+                if (anchor := ref()) is not None and absolute.is_relative_to(ref.key)
             ]
         if not candidates:
             raise ReachableWriteError("pin the destination root before agent execution")

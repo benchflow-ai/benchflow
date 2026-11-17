@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.result_metadata import final_metrics_from_agent_result
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
 from benchflow.continue_run.run_folder import (
@@ -45,7 +46,14 @@ from benchflow.continue_run.sandbox_proxy import (
 from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
-from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
+from benchflow.trajectories.types import (
+    LLMExchange,
+    LLMRequest,
+    LLMResponse,
+    _exchange_token_usage,
+    redact_trajectory_text,
+)
+from benchflow.usage_tracking import result_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +116,20 @@ class ContinuedUsageSummary:
     usage_source: str
 
     def as_agent_result_patch(self) -> dict[str, Any]:
+        # Nothing counted is unknown, not 0.
+        counted = self.usage_source != "unavailable"
         return {
-            "n_input_tokens": self.n_input_tokens,
-            "n_output_tokens": self.n_output_tokens,
-            "n_cache_read_tokens": self.n_cache_read_tokens,
-            "n_cache_creation_tokens": self.n_cache_creation_tokens,
-            "total_tokens": self.total_tokens,
-            "usage_source": self.usage_source,
+            "n_input_tokens": self.n_input_tokens if counted else None,
+            "n_output_tokens": self.n_output_tokens if counted else None,
+            "n_cache_read_tokens": self.n_cache_read_tokens if counted else None,
+            "n_cache_creation_tokens": self.n_cache_creation_tokens
+            if counted
+            else None,
+            "n_cache_write_tokens": self.n_cache_creation_tokens if counted else None,
+            "total_tokens": self.total_tokens if counted else None,
+            # vocabulary, with the earlier name beside it.
+            "usage_source": result_usage_source(self.usage_source),
+            "usage_source_legacy": self.usage_source,
             "usage_details": {
                 "source": "stitched_llm_trajectory",
                 "recorded_total_tokens": self.recorded_total_tokens,
@@ -406,14 +421,6 @@ def write_stitched_trajectory(
     return out
 
 
-def _usage_int(usage: dict[str, Any], *keys: str) -> int:
-    for key in keys:
-        value = usage.get(key)
-        if isinstance(value, (int, float)):
-            return int(value)
-    return 0
-
-
 def summarize_llm_trajectory_usage(
     trajectory_path: Path, *, n_recorded: int
 ) -> ContinuedUsageSummary:
@@ -441,16 +448,17 @@ def summarize_llm_trajectory_usage(
         usage = body.get("usage")
         if not isinstance(usage, dict):
             continue
-        prompt = _usage_int(usage, "prompt_tokens", "input_tokens")
-        completion = _usage_int(usage, "completion_tokens", "output_tokens")
-        total = _usage_int(usage, "total_tokens")
-        if total <= 0:
-            total = prompt + completion
-        input_tokens += prompt
-        output_tokens += completion
+        # BenchFlow's token split, as the proxy's record counts it:
+        # uncached input beside the cache reads and writes.
+        counted = _exchange_token_usage(
+            LLMExchange(request=LLMRequest(), response=LLMResponse(body=body))
+        )
+        total = counted.total_tokens
+        input_tokens += counted.input_tokens
+        output_tokens += counted.output_tokens
         total_tokens += total
-        cache_read += _usage_int(usage, "cache_read_input_tokens")
-        cache_creation += _usage_int(usage, "cache_creation_input_tokens")
+        cache_read += counted.cache_read_tokens
+        cache_creation += counted.cache_creation_tokens
         if idx < n_recorded:
             recorded_total += total
         else:
@@ -515,7 +523,8 @@ def update_continued_metadata(
             "endpoint_kind": "sandbox"
             if environment in _SANDBOX_LOCAL_REPLAY_ENVIRONMENTS
             else "host",
-            "usage_source": usage.usage_source,
+            "usage_source": result_usage_source(usage.usage_source),
+            "usage_source_legacy": usage.usage_source,
         }
         config_path.write_text(json.dumps(config, indent=2) + "\n")
 
@@ -526,18 +535,14 @@ def update_continued_metadata(
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
-    result["final_metrics"] = {
-        "total_prompt_tokens": usage.n_input_tokens,
-        "total_completion_tokens": usage.n_output_tokens,
-        "total_cached_tokens": usage.n_cache_read_tokens,
-        "total_cost_usd": agent_result.get("cost_usd")
-        if isinstance(agent_result, dict)
-        else None,
-    }
+    result["final_metrics"] = final_metrics_from_agent_result(
+        agent_result if isinstance(agent_result, dict) else {}
+    )
     usage_tracking = result.setdefault("usage_tracking", {})
     if isinstance(usage_tracking, dict):
         usage_tracking["requested"] = "required"
-        usage_tracking["usage_source"] = usage.usage_source
+        usage_tracking["usage_source"] = result_usage_source(usage.usage_source)
+        usage_tracking["usage_source_legacy"] = usage.usage_source
         usage_tracking["environment"] = environment
         usage_tracking["endpoint_kind"] = (
             "sandbox" if environment in _SANDBOX_LOCAL_REPLAY_ENVIRONMENTS else "host"

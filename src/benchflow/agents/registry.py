@@ -81,6 +81,7 @@ from benchflow._uv_pin import (
     uv_lock_file_command,
     uv_lock_seal_command,
 )
+from benchflow.agents import opencode_catalog as _opencode_catalog
 from benchflow.agents._python_agent_pins import (
     DEEPAGENTS_REQUIREMENTS,
     HARVEY_LAB_COMMIT,
@@ -800,7 +801,150 @@ def _js_deny_list(key: str, tools: tuple[str, ...]) -> str:
 # requires). Registering the alias under ``provider.openai.models`` (with the
 # gateway baseURL) bypasses that catalog check so the agent accepts the id and
 # routes through the proxy.
-def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str:
+def opencode_google_provider(upstream_model: str) -> bool:
+    """Whether OpenCode runs a gateway route whose upstream model is
+    *upstream_model* on its built-in ``google`` provider, through the
+    gateway's Gemini pass-through (``litellm_runtime._wire_litellm_agent_env``
+    then sets :data:`OPENCODE_GOOGLE_BASE_URL_ENV` for the ``-proxy``
+    wrapper), rather than on the gateway alias the wrapper registers."""
+    return upstream_model.lower().startswith("gemini/")
+
+
+#: OpenCode's model catalog, pinned (:mod:`benchflow.agents.opencode_catalog`):
+#: the ``google`` provider of models.dev at one commit, which OpenCode's
+#: install writes to :data:`OPENCODE_MODELS_PATH` in the sandbox and every
+#: OpenCode launch reads through ``OPENCODE_MODELS_PATH``
+#: (:func:`pinned_catalog_env`). Unpinned, OpenCode's ``ModelsDev.populate``
+#: read its cache file, else the catalog it bundles, never waiting on the
+#: network, and unless ``OPENCODE_DISABLE_MODELS_FETCH`` is set a background
+#: refresh rewrote that cache from ``$OPENCODE_MODELS_URL/api.json``
+#: (models.opencode.ai by default) at launch and every 60 minutes: a model's
+#: levels could change between a dry run and a run with no pin change, and
+#: a closed network got the bundled catalog.
+OPENCODE_CATALOG = _opencode_catalog.SOURCE
+OPENCODE_CATALOG_DATE = _opencode_catalog.DATE
+OPENCODE_MODELS_PATH_ENV = _opencode_catalog.MODELS_PATH_ENV
+#: Where OpenCode's install writes the pinned catalog, and every OpenCode
+#: launch's ``OPENCODE_MODELS_PATH``.
+OPENCODE_MODELS_PATH = (
+    f"{_BENCHFLOW_BIN_PREFIX.rsplit('/', 1)[0]}/share/opencode/"
+    f"models-dev-{OPENCODE_CATALOG_DATE}.json"
+)
+#: The Gemini effort table, generated from the pinned catalog: what the
+#: pinned OpenCode does with each level it lists for each model on its google
+#: provider, measured over ACP as a trial runs it (each level set and
+#: prompted once, the provider and the live catalog fetch at a local stub
+#: serving another catalog, no model call) by ``tools/opencode_catalog.py
+#: measure``. A level outside these failed after install.
+_OPENCODE_GEMINI = _opencode_catalog.efforts()
+#: The OpenCode release the table was measured on: the one BenchFlow
+#: installs (CACHEABLE_INSTALLS). A test fails when that pin moves.
+OPENCODE_GEMINI_EFFORTS_VERSION: str = _OPENCODE_GEMINI["opencode"]
+#: The levels OpenCode sends each model: as ``thinkingConfig.thinkingLevel``,
+#: the level asked, or for :data:`OPENCODE_GEMINI_BUDGETS` as a thinking
+#: budget. ``()``: no effort option.
+OPENCODE_GEMINI_EFFORTS: dict[str, tuple[str, ...]] = {
+    model: tuple(row.get("sent") or row.get("budget") or ())
+    for model, row in _OPENCODE_GEMINI["models"].items()
+    if row is not None
+}
+#: Levels OpenCode lists for a model but fails on at its first call, before
+#: any request: its google provider takes only minimal, low, medium and high
+#: as ``thinkingLevel`` ("invalid google provider options").
+OPENCODE_GEMINI_UNSENT: dict[str, tuple[str, ...]] = {
+    model: tuple(row["unsent"])
+    for model, row in _OPENCODE_GEMINI["models"].items()
+    if row and row.get("unsent")
+}
+#: The Gemini models whose levels OpenCode sends as
+#: ``thinkingConfig.thinkingBudget``, not ``thinkingLevel`` (Gemini 2.5).
+OPENCODE_GEMINI_BUDGETS = frozenset(
+    model
+    for model, row in _OPENCODE_GEMINI["models"].items()
+    if row and row.get("budget")
+)
+#: Models the catalog holds but OpenCode drops (models.dev marks them
+#: deprecated: OpenCode deletes those from its provider).
+OPENCODE_GEMINI_DROPPED = frozenset(
+    model for model, row in _OPENCODE_GEMINI["models"].items() if row is None
+)
+
+
+def pinned_catalog_env(agent: str) -> dict[str, str]:
+    """What every launch of *agent* carries whatever the run's env says:
+    OpenCode's ``OPENCODE_MODELS_PATH``, the pinned catalog its install
+    wrote. Empty for every other agent."""
+    if agent.removeprefix(ACPX_KEY_PREFIX).removeprefix("acpx/") == "opencode":
+        return {OPENCODE_MODELS_PATH_ENV: OPENCODE_MODELS_PATH}
+    return {}
+
+
+def opencode_catalog_refusal(upstream_model: str, named: str) -> str | None:
+    """Why OpenCode (*named*, as the run named it) can't run a gateway route
+    whose upstream model is *upstream_model*, from its pinned catalog: a
+    Gemini model the catalog lacks (OpenCode reads no other), or holds but
+    OpenCode drops. The id is compared exactly: OpenCode's lookup is
+    case-sensitive (R600 L1). None when it can, and for every other route (the
+    ``-proxy`` wrapper's gateway alias, which the catalog doesn't hold)."""
+    if not opencode_google_provider(upstream_model):
+        return None
+    model = upstream_model.split("/", 1)[-1]
+    where = (
+        f"BenchFlow's pinned OpenCode catalog {OPENCODE_CATALOG_DATE} "
+        f"(models.dev {OPENCODE_CATALOG['commit'][:12]})"
+    )
+    if model not in _opencode_catalog.provider_models("google"):
+        return f"is not in {where}, the only one {named} reads"
+    if model in OPENCODE_GEMINI_DROPPED:
+        return (
+            f"is deprecated in {where}, and OpenCode {OPENCODE_GEMINI_EFFORTS_VERSION} "
+            f"drops a deprecated model, so {named} can't run it"
+        )
+    return None
+
+
+def opencode_model_variants(
+    upstream_model: str,
+) -> tuple[tuple[str, ...], bool] | None:
+    """The effort levels the pinned OpenCode offers for the model it is
+    handed for a gateway route whose upstream model is *upstream_model*, and
+    whether it sends them as thinking budgets; None for a Gemini model
+    :data:`OPENCODE_GEMINI_EFFORTS` does not name. The ``-proxy`` wrapper
+    decides which model that is (:func:`_opencode_family_proxy_wrapper_install`):
+    the gateway alias, ``{ name: alias }``, has none; a Gemini model on
+    OpenCode's google provider has the table's."""
+    if not opencode_google_provider(upstream_model):
+        return (), False
+    model = upstream_model.split("/", 1)[-1]
+    levels = OPENCODE_GEMINI_EFFORTS.get(model)
+    if levels is None:
+        return None
+    return levels, bool(levels) and model in OPENCODE_GEMINI_BUDGETS
+
+
+def opencode_unsent_levels(upstream_model: str) -> tuple[str, ...]:
+    """The levels the pinned OpenCode lists for the model it is handed for
+    *upstream_model* but fails on at its first call
+    (:data:`OPENCODE_GEMINI_UNSENT`)."""
+    if not opencode_google_provider(upstream_model):
+        return ()
+    return OPENCODE_GEMINI_UNSENT.get(upstream_model.split("/", 1)[-1], ())
+
+
+def registers_model_variants(agent: str, upstream_model: str) -> bool:
+    """Whether the model *agent* is handed for a gateway route whose upstream
+    model is *upstream_model* has variants (OpenCode:
+    :func:`opencode_model_variants`; a Gemini model it doesn't name is taken
+    to have them)."""
+    if agent.removeprefix(ACPX_KEY_PREFIX) == "opencode":
+        variants = opencode_model_variants(upstream_model)
+        return variants is None or bool(variants[0])
+    return True
+
+
+def _opencode_family_proxy_wrapper_install(
+    binary: str, config_path: str, models_path: str | None = None
+) -> str:
     """Install ``/opt/benchflow/bin/<binary>-proxy``: a thin wrapper that, in
     proxy mode, registers the LiteLLM gateway alias under a dedicated
     OpenCode provider, then execs the isolated agent binary. Idempotent
@@ -824,6 +968,12 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
     the wrapper instead points OpenCode's built-in ``google`` provider at the
     gateway's Gemini pass-through and gives it the gateway key, so OpenCode's
     own Gemini client (thought signatures, thinking config) talks to LiteLLM.
+
+    With *models_path*, the wrapper refuses to launch unless
+    ``OPENCODE_MODELS_PATH`` is that path and the file is there: without it,
+    OpenCode would read its cache file (what its background refresh
+    fetched) or the catalog it bundles instead of the pinned one
+    (:mod:`benchflow.agents.opencode_catalog`).
     """
     real = f"{_BENCHFLOW_BIN_PREFIX}/{binary}"
     agent_bin = f"{_BENCHFLOW_JS_AGENT_PREFIX}/bin/{binary}"
@@ -874,6 +1024,20 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
             "}",
         ]
     )
+    catalog_guard = (
+        ""
+        if models_path is None
+        else (
+            f'if [ "${{{OPENCODE_MODELS_PATH_ENV}:-}}" != "{models_path}" ] '
+            f'|| [ ! -r "{models_path}" ]; then\n'
+            f"  echo \"benchflow {binary}-proxy: OpenCode's pinned model catalog "
+            f"is not at {OPENCODE_MODELS_PATH_ENV} (${{{OPENCODE_MODELS_PATH_ENV}:-unset}}; "
+            f"BenchFlow's is {models_path}); refusing to launch: OpenCode would "
+            'read another catalog" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+        )
+    )
     wrapper = (
         "#!/bin/sh\n"
         # Proxy mode only. Fail LOUD: if registration errors (malformed existing
@@ -892,6 +1056,8 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         "    exit 1\n"
         "  fi\n"
         "fi\n"
+        # The pinned model catalog, or no launch (see the docstring).
+        f"{catalog_guard}"
         # Exec the agent. A node-shim bin (shebang) goes through the isolated node
         # launcher; a native binary (e.g. opencode-ai 1.17.x ships its bin as a
         # native ELF, bin/opencode.exe) must run DIRECTLY — running it via `node`
@@ -903,7 +1069,9 @@ def _opencode_family_proxy_wrapper_install(binary: str, config_path: str) -> str
         "fi\n"
     )
     b64 = base64.b64encode(wrapper.encode()).decode()
-    return f"printf '%s' '{b64}' | base64 -d > {target} && chmod +x {target}"
+    # 755, not +x: a bare +x honours the install's umask (700 under 077), and a
+    # non-root agent could not run the wrapper (R600 L3).
+    return f"printf '%s' '{b64}' | base64 -d > {target} && chmod 755 {target}"
 
 
 @dataclass
@@ -1006,6 +1174,11 @@ class AgentConfig:
     acp_model_config_id: str = ""
     # ACP session config option id used for reasoning/thinking effort.
     acp_effort_config_id: str = ""
+    # The effort option exists only for a model with variants (OpenCode builds
+    # it from them: ``if (e.variants.length === 0) return``), so the agent
+    # takes an effort only where the model it is handed has some
+    # (registers_model_variants).
+    acp_effort_needs_variants: bool = False
     # Shell snippet run after credentials/subscription auth are written when
     # BenchFlow's no-web policy is active. Uses BENCHFLOW_AGENT_HOME for the
     # target home so settings land in the same home the agent will run from.
@@ -1493,7 +1666,12 @@ AGENTS: dict[str, AgentConfig] = {
             _js_agent_install("opencode", "opencode-ai@1.18.11")
             + " && "
             + _opencode_family_proxy_wrapper_install(
-                "opencode", ".config/opencode/opencode.json"
+                "opencode", ".config/opencode/opencode.json", OPENCODE_MODELS_PATH
+            )
+            + " && "
+            # The pinned catalog every OpenCode launch reads.
+            + _opencode_catalog.install_cmd(
+                OPENCODE_MODELS_PATH, f"{_BENCHFLOW_NODE_PREFIX}/bin/node"
             )
         ),
         launch_cmd=f"{_BENCHFLOW_BIN_PREFIX}/opencode-proxy acp",
@@ -1510,6 +1688,11 @@ AGENTS: dict[str, AgentConfig] = {
         # in its config (1.18.11, checked 2026-10-14). The model is set first,
         # so the option is there when the effort is set.
         acp_effort_config_id="effort",
+        # Only for a model with variants: the gateway alias the -proxy wrapper
+        # registers has none, so only a gemini/ route, on OpenCode's google
+        # provider, takes an effort (registers_model_variants; -e on
+        # every other route failed after install).
+        acp_effort_needs_variants=True,
         # OpenCode uses models.dev provider IDs — its parseModel() splits
         # modelId on "/" so set_model must send "google/gemini-3.1-pro-preview",
         # not just "gemini-3.1-pro-preview".
@@ -2104,6 +2287,7 @@ def _acpx_wrap(config: AgentConfig) -> AgentConfig:
         supports_acp_set_model=config.supports_acp_set_model,
         acp_model_config_id=config.acp_model_config_id,
         acp_effort_config_id=config.acp_effort_config_id,
+        acp_effort_needs_variants=config.acp_effort_needs_variants,
         disallow_web_tools_setup_cmd=config.disallow_web_tools_setup_cmd,
         disallow_web_tools_owned_paths=config.disallow_web_tools_owned_paths,
         disallow_web_tools_launch_suffix=config.disallow_web_tools_launch_suffix,
@@ -2165,6 +2349,24 @@ def is_scripted_agent(name: str | None) -> bool:
 def is_operator_script(name: str | None) -> bool:
     """An operator's bash file, not the task's root oracle solution."""
     return isinstance(name, str) and name.startswith("script:")
+
+
+def find_registered_agent(spec: str) -> AgentConfig | None:
+    """The config *spec* names among the agents registered now (a name, an
+    alias, ``acpx/<agent>`` or ``<ns>:<id>``, a local manifest's agents
+    included), or None: BenchFlow's scripted agents, an operator script, a
+    name it does not hold. Unlike :func:`resolve_agent` it never loads the
+    remote agents source."""
+    if is_scripted_agent(spec):
+        return None
+    from benchflow.agents import remote_manifests
+
+    remote_manifests.autoload_local_manifest_agents()
+    protocol, name = parse_agent_spec(spec)
+    config = AGENTS.get(name) or _resolve_namespace_shorthand(name)
+    if config is None:
+        return None
+    return _acpx_wrap(config) if protocol == "acpx" else config
 
 
 def resolve_agent(spec: str) -> AgentConfig:

@@ -121,6 +121,7 @@ def rollout_config_from_dict(
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=raw.get("sandbox_setup_timeout", 120),
+        sandbox_setup_timeout_given="sandbox_setup_timeout" in raw,
         job_name=raw.get("job_name"),
         rollout_name=raw.get("rollout_name"),
         jobs_dir=raw.get("jobs_dir", "jobs"),
@@ -284,7 +285,13 @@ def rollout_config_to_dict(
             "codex_apps_policy": config.codex_apps_policy,
             "sandbox_user": config.sandbox_user,
             "sandbox_locked_paths": config.sandbox_locked_paths,
-            "sandbox_setup_timeout": config.sandbox_setup_timeout,
+            # Only a value the run named: a written default would read back
+            # as named, and the sandbox user setup would get 120, not 600.
+            **(
+                {"sandbox_setup_timeout": config.sandbox_setup_timeout}
+                if config.sandbox_setup_timeout_given
+                else {}
+            ),
             "job_name": config.job_name,
             "rollout_name": config.rollout_name,
             "jobs_dir": str(config.jobs_dir),

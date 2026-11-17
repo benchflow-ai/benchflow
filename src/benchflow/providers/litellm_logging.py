@@ -19,8 +19,9 @@ from benchflow.trajectories.types import (
     LLMRequest,
     LLMResponse,
     Trajectory,
+    _exchange_token_usage,
 )
-from benchflow.usage_tracking import usage_unavailable
+from benchflow.usage_tracking import is_token_usage_available, usage_unavailable
 
 _PROVIDER_AUTH_STATUS_CODES = (401, 403)
 _PROVIDER_FAILURE_STATUS_CODES = (400, 401, 402, 403, 404, 408, 422, 429, 500, 503)
@@ -97,12 +98,72 @@ import time
 import traceback
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
 
 _skill_catalog_gate_passed = False
+
+
+# The effort fields of the body LiteLLM sends upstream, which the trial's
+# record reads (on DeepSeek's route the inbound
+# output_config.effort max went up as thinking.budget_tokens 16384). LiteLLM
+# hands each request's body to its pre-call log, and by the success callback
+# the Messages pass-through and Bedrock's InvokeModel have emptied it, so the
+# pre-call hook keeps a copy on the call's logging object.
+_UPSTREAM_FIELDS = ("reasoning_effort", "reasoning", "thinking", "output_config")
+
+
+def _upstream_effort_fields(body: Any) -> dict[str, Any] | None:
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return None
+    if not isinstance(body, dict) or not body:
+        return None
+    fields = {key: body[key] for key in _UPSTREAM_FIELDS if body.get(key) is not None}
+    extra = body.get("additionalModelRequestFields")
+    if isinstance(extra, dict):
+        for key in _UPSTREAM_FIELDS:
+            if extra.get(key) is not None:
+                fields.setdefault(key, extra[key])
+    generation = body.get("generationConfig")
+    if isinstance(generation, dict) and isinstance(generation.get("thinkingConfig"), dict):
+        fields["thinkingConfig"] = generation["thinkingConfig"]
+    return fields
+
+
+def _keep_upstream_body() -> None:
+    try:
+        from litellm.litellm_core_utils.litellm_logging import Logging
+    except Exception:
+        return
+    original = Logging.pre_call
+    if getattr(original, "__benchflow_upstream__", False):
+        return
+
+    def pre_call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            additional = kwargs.get("additional_args")
+            if additional is None and len(args) >= 4:
+                additional = args[3]
+            fields = _upstream_effort_fields(
+                (additional or {}).get("complete_input_dict")
+            )
+            if fields is not None:
+                self.model_call_details["benchflow_upstream_effort"] = fields
+        except Exception:
+            traceback.print_exc()
+        return original(self, *args, **kwargs)
+
+    pre_call.__benchflow_upstream__ = True
+    Logging.pre_call = pre_call
+
+
+_keep_upstream_body()
 
 
 def _required_skill_names() -> tuple[str, ...]:
@@ -222,11 +283,117 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
+def _billed_number(value: Any) -> float | None:
+    # A provider's cost figure: a number, or {"total_cost": number}.
+    if isinstance(value, dict):
+        value = value.get("total_cost")
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return float(value)
+
+
+def _openrouter_call(kwargs: Any) -> bool:
+    # Whether this call went to OpenRouter, by its route: BenchFlow builds an
+    # OpenRouter route as openai/<vendor>/<model> with OpenRouter's api_base,
+    # so LiteLLM's provider for it is "openai". Its api_base host decides when
+    # set; else LiteLLM's openrouter provider, an openrouter/ model or the
+    # route's model group (benchflow-openrouter-...). No other route is billed.
+    if not isinstance(kwargs, dict):
+        return False
+    params = kwargs.get("litellm_params")
+    params = params if isinstance(params, dict) else {}
+    base = params.get("api_base") or kwargs.get("api_base")
+    if isinstance(base, str) and base:
+        # Where the call went decides: an openrouter/ model sent to another
+        # host is billed by that host, not OpenRouter.
+        host = (urlparse(base).hostname or "").lower()
+        return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+    if params.get("custom_llm_provider") == "openrouter":
+        return True
+    model = kwargs.get("model")
+    if isinstance(model, str) and model.startswith("openrouter/"):
+        return True
+    metadata = kwargs.get("metadata") or params.get("metadata")
+    group = metadata.get("model_group") if isinstance(metadata, dict) else None
+    return isinstance(group, str) and group.startswith("benchflow-openrouter-")
+
+
+def _streamed(kwargs: Any) -> bool:
+    return isinstance(kwargs, dict) and (
+        kwargs.get("stream") is True
+        or "complete_streaming_response" in kwargs
+        or "async_complete_streaming_response" in kwargs
+    )
+
+
+def _provider_billed_cost(kwargs: Any, response_obj: Any) -> float | None:
+    # The USD an OpenRouter response says the call was billed (its
+    # usage.cost, streamed or not); None for any other route or when it
+    # says nothing. LiteLLM keeps it in the response's hidden
+    # additional_headers for its own cost.
+    if not _openrouter_call(kwargs):
+        return None
+    if _streamed(kwargs):
+        # A stream's assembled usage.cost is LiteLLM's own estimate when the
+        # provider's chunks carried none (stream_chunk_builder writes it
+        # there), so a stream's bill is the usage.cost OpenRouter's own
+        # chunks carried, which the proxy's stream patch notes
+        # (benchflow_litellm_token_capture_patch): none, no bill.
+        return _billed_number(kwargs.get("benchflow_upstream_cost"))
+    hidden = getattr(response_obj, "_hidden_params", None)
+    headers = hidden.get("additional_headers") if isinstance(hidden, dict) else None
+    if isinstance(headers, dict):
+        billed = _billed_number(headers.get("llm_provider-x-litellm-response-cost"))
+        if billed is not None:
+            return billed
+    usage = getattr(response_obj, "usage", None)
+    if usage is None and isinstance(response_obj, dict):
+        usage = response_obj.get("usage")
+    cost = usage.get("cost") if isinstance(usage, dict) else getattr(usage, "cost", None)
+    billed = _billed_number(cost)
+    if billed is None:
+        # Through LiteLLM's openai provider the parsed usage may drop the
+        # field: the upstream's own answer still has it.
+        raw = kwargs.get("original_response")
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = None
+            raw_usage = data.get("usage") if isinstance(data, dict) else None
+            if isinstance(raw_usage, dict):
+                billed = _billed_number(raw_usage.get("cost"))
+    return billed
+
+
 def _usage_from_response(response: Any) -> Any:
+    # LiteLLM hands the callbacks a Responses API answer whose usage it has
+    # swapped for chat completions' Usage (prompt_tokens, completion_tokens,
+    # their details). The answer's own model cannot dump that object, so its
+    # model_dump keeps total_tokens alone: read the usage object.
+    if not isinstance(response, dict):
+        usage = _jsonable(getattr(response, "usage", None))
+        if isinstance(usage, dict) and usage:
+            return usage
     data = _jsonable(response)
     if isinstance(data, dict):
         return data.get("usage") or data.get("usageMetadata")
     return None
+
+
+def _client_disconnected(kwargs: Any) -> bool:
+    # LiteLLM's proxy writes client_disconnected into the call's metadata
+    # when the client left a stream before its end (the 499 it records),
+    # then logs what it had assembled as a success: that usage is LiteLLM's
+    # own count of the prompt and of the text streamed so far, not the
+    # provider's report, which never arrived.
+    kwargs = kwargs if isinstance(kwargs, dict) else {}
+    litellm_params = kwargs.get("litellm_params")
+    litellm_params = litellm_params if isinstance(litellm_params, dict) else {}
+    return any(
+        isinstance(metadata, dict) and metadata.get("client_disconnected") is True
+        for metadata in (kwargs.get("metadata"), litellm_params.get("metadata"))
+    )
 
 
 def _failure_detail(response_obj: Any, exception: Any) -> Any:
@@ -476,7 +643,11 @@ class BenchFlowLiteLLMLogger(CustomLogger):
             "tools": optional_params.get("tools") or kwargs.get("tools"),
             "stream": optional_params.get("stream") or kwargs.get("stream"),
         }
-        for key in ("reasoning_effort", "thinking", "output_config"):
+        # The effort as each wire carries it: reasoning_effort (chat
+        # completions), reasoning (the Responses API, Codex's: 0.9.2 dropped
+        # it, so every Codex call through the proxy read no effort), thinking
+        # and output_config (Anthropic).
+        for key in ("reasoning_effort", "reasoning", "thinking", "output_config"):
             value = optional_params.get(key)
             if value is None:
                 value = kwargs.get(key)
@@ -484,6 +655,11 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 value = litellm_params.get(key)
             if value is not None:
                 request_body[key] = value
+        # The effort fields of the body sent upstream, which the record reads
+        # ({} when it carried none of them; absent when LiteLLM logged none).
+        upstream = kwargs.get("benchflow_upstream_effort")
+        if isinstance(upstream, dict):
+            request_body["upstream"] = upstream
         for key in ("logprobs", "top_logprobs"):
             value = optional_params.get(key)
             if value is None:
@@ -640,14 +816,24 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                     cost = fallback
             except Exception:
                 cost = None
+        usage = _usage_from_response(response_obj)
+        logged = isinstance(response, dict) and "usage" in response
+        if logged and isinstance(usage, dict):
+            # The logged answer keeps every count of its usage.
+            response["usage"] = usage
         record.update(
             {
                 "event": "success",
                 "response": response,
-                "usage": _usage_from_response(response_obj),
+                "usage": usage,
                 "response_cost": cost,
+                # What the provider itself billed for the call, when its
+                # response says: an OpenRouter response's usage.cost.
+                "provider_cost": _provider_billed_cost(kwargs, response_obj),
             }
         )
+        if _client_disconnected(kwargs):
+            record["stream_interrupted"] = "client_disconnected"
         self._write(record)
         _note_logged(kwargs)
 
@@ -665,6 +851,15 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                 },
             }
         )
+        partial = kwargs.get("combined_usage_object") if isinstance(kwargs, dict) else None
+        if _client_disconnected(kwargs):
+            record["stream_interrupted"] = "client_disconnected"
+        elif partial is not None:
+            # The provider's stream broke after chunks came back: LiteLLM
+            # counted them itself (its partial usage) before this failure,
+            # and the provider's own report never arrived.
+            record["stream_interrupted"] = "provider_stream_error"
+            record["partial_usage"] = _jsonable(partial)
         self._write(record)
         _note_logged(kwargs)
 
@@ -723,6 +918,10 @@ def _exchange_metadata(
             "model_group",
             "call_type",
             "input_shape",
+            # A stream cut before the provider's usage report, and what
+            # LiteLLM counted of a stream the provider broke.
+            "stream_interrupted",
+            "partial_usage",
         )
         if record.get(key) is not None
     }
@@ -733,6 +932,18 @@ def _exchange_metadata(
     token_capture = build_token_capture(record)
     if token_capture is not None:
         metadata[TOKEN_CAPTURE_METADATA_KEY] = token_capture
+    billed = record.get("provider_cost")
+    if isinstance(billed, int | float) and not isinstance(billed, bool):
+        # The call's own bill from its provider (OpenRouter),.
+        metadata["provider_cost_usd"] = float(billed)
+    cost = record.get("response_cost")
+    if (
+        record.get("stream_interrupted")
+        and isinstance(cost, int | float)
+        and not isinstance(cost, bool)
+    ):
+        # LiteLLM's price of its own count for a cut call.
+        metadata["response_cost"] = cost
     return metadata
 
 
@@ -840,6 +1051,37 @@ def _provider_failure_status_from_failure_record(record: dict[str, Any]) -> int 
     return _text_provider_failure_status(text)
 
 
+#: The status LiteLLM's proxy records for a request whose client left
+#: before its answer was complete.
+CLIENT_DISCONNECTED_STATUS = 499
+
+#: ``usage_incomplete_reason`` of a proxied trial with a cut stream
+#: the start, then how many calls, and what was counted of them.
+STREAM_INTERRUPTED = "stream interrupted before final usage"
+
+
+def _note_request_event(
+    requests: dict[Any, dict[str, bool]], record: dict[str, Any]
+) -> None:
+    """One request guard line: a request that reached the provider and
+    then ended in LiteLLM's client-disconnect status (499), ended before
+    its whole response went out, or never ended (the proxy was stopped
+    under it), or whose provider stream broke while it was read was cut
+    before the provider reported its usage."""
+    state = requests.setdefault(record.get("request_id"), {})
+    event = record.get("event")
+    if event == "upstream_start":
+        state["upstream"] = True
+    elif event == "upstream_end" and record.get("stream_error") is True:
+        state["stream_error"] = True
+    elif event == "request_end":
+        state["ended"] = True
+        state["cut"] = (
+            record.get("status") == CLIENT_DISCONNECTED_STATUS
+            or record.get("response_complete") is False
+        )
+
+
 def trajectory_from_litellm_callback_log(
     text: str,
     *,
@@ -850,7 +1092,14 @@ def trajectory_from_litellm_callback_log(
     trajectory = Trajectory(session_id=session_id, agent_name=agent_name)
     total_cost = 0.0
     saw_cost = False
+    # Successful calls; those the provider billed (OpenRouter's usage.cost),
+    # with their sum; and the list-price estimate of the others.
+    answered_calls = billed_calls = unpriced_calls = 0
+    billed_cost = estimated_cost = 0.0
     reported_models: list[str] = []
+    # The request guard's record of each request: whether it
+    # reached the provider, whether it ended, and whether it was cut.
+    requests: dict[Any, dict[str, bool]] = {}
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -867,6 +1116,7 @@ def trajectory_from_litellm_callback_log(
             "upstream_start",
             "upstream_end",
         }:
+            _note_request_event(requests, record)
             continue
         if record.get("event") == "refused":
             # The gateway refused the request before any provider call: not an
@@ -921,12 +1171,67 @@ def trajectory_from_litellm_callback_log(
         if isinstance(cost, int | float):
             total_cost += float(cost)
             saw_cost = True
+        if record.get("event") == "success":
+            answered_calls += 1
+            billed = record.get("provider_cost")
+            if isinstance(billed, int | float) and not isinstance(billed, bool):
+                billed_calls += 1
+                billed_cost += float(billed)
+            elif isinstance(cost, int | float) and not isinstance(cost, bool):
+                estimated_cost += float(cost)
+            else:
+                unpriced_calls += 1
     trajectory.finished_at = datetime.now()
+    cut = sum(
+        1
+        for state in requests.values()
+        if state.get("upstream")
+        and (state.get("cut") or state.get("stream_error") or not state.get("ended"))
+    )
+    if cut:
+        trajectory.metadata["requests_cut"] = cut
     if saw_cost:
         trajectory.metadata["cost_usd"] = round(total_cost, 10)
+    if billed_calls:
+        # What the provider billed: every answered call's figure, or
+        # some calls' beside a list-price estimate of the others.
+        trajectory.metadata["provider_cost_usd"] = round(billed_cost, 10)
+        trajectory.metadata["provider_billed_calls"] = billed_calls
+        trajectory.metadata["answered_calls"] = answered_calls
+        trajectory.metadata["estimated_cost_usd"] = (
+            round(estimated_cost, 10) if not unpriced_calls else None
+        )
     if reported_models:
         trajectory.metadata["reported_models"] = reported_models
     return trajectory
+
+
+def _unreported_cache_writes(
+    trajectory: Trajectory, models: list[str], billed_whole: bool
+) -> dict[str, Any]:
+    """``usage_details.cache_writes`` of a capture whose answers named no
+    cache-write count: the writes are unknown (``tokens`` None), and the
+    cost leaves them out only on a route whose list price has a cache-write
+    rate (``priced_models``) and that no provider bill covers: then
+    ``cost_floor`` is true and the cost is a floor. On any other route a
+    written token costs what an input token costs, so the cost is whole.
+
+    ``named_tokens`` are the writes other answers did name, and
+    ``inside_input`` says whether every answer that named none held its
+    cache in its input count (OpenAI's shape): its unknown writes are then
+    inside ``n_input_tokens``, so the prompt total is still known."""
+    from benchflow._utils.pricing import has_cache_write_price
+
+    priced = [model for model in models if model and has_cache_write_price(model)]
+    named, inside = trajectory.cache_writes_named()
+    return {
+        "tokens": None,
+        "named_tokens": named,
+        "inside_input": inside,
+        "models": models,
+        "priced_models": priced,
+        "cost_floor": bool(priced) and not billed_whole,
+    }
 
 
 def extract_usage_from_trajectory(
@@ -936,24 +1241,166 @@ def extract_usage_from_trajectory(
 ) -> dict[str, Any]:
     """Return aggregate usage metrics from a LiteLLM-imported trajectory.
 
-    Token counts come from the provider response; cost is whatever LiteLLM
+    Token counts come from the provider response, in BenchFlow's split
+    (``n_input_tokens`` uncached); cost is whatever LiteLLM
     computed (``litellm.completion_cost`` / per-deployment ``input_cost_per_token``
     for custom models), summed by the callback importer. BenchFlow performs no
     cost calculation of its own — LiteLLM is the single source of truth.
+    A call whose stream was cut before the provider reported its usage
+    makes the count incomplete (:func:`_mark_interrupted_streams`).
     """
     del fallback_model  # no longer needed; kept for call-site compatibility
+    return _mark_interrupted_streams(_provider_usage(trajectory), trajectory)
+
+
+def _mark_interrupted_streams(
+    usage: dict[str, Any], trajectory: Trajectory | None
+) -> dict[str, Any]:
+    """``usage_incomplete`` with its reason when a call through the proxy
+    was cut before the provider reported its usage: a cancel, a
+    timeout or a stopped proxy cut the stream. LiteLLM still logs such a
+    call as a success when it had begun to stream, with its own count of
+    the prompt and of the text streamed so far: those tokens (and their
+    price) are an estimate, labelled in ``usage_details.interrupted_streams``
+    beside the number of calls cut, and never the provider's count. A
+    count with no tokens at all stays unknown, never marked."""
+    if trajectory is None or not is_token_usage_available(usage):
+        return usage
+    interrupted = [
+        exchange
+        for exchange in trajectory.exchanges
+        if exchange.metadata.get("stream_interrupted")
+    ]
+    estimated = [
+        exchange for exchange in interrupted if exchange.response.status_code < 400
+    ]
+    requests_cut = trajectory.metadata.get("requests_cut")
+    cut = max(
+        len(interrupted),
+        requests_cut if isinstance(requests_cut, int) else 0,
+    )
+    if not cut:
+        return usage
+    tokens = [_exchange_token_usage(exchange) for exchange in estimated]
+    costs = [exchange.metadata.get("response_cost") for exchange in estimated]
+    reason = (
+        f"{STREAM_INTERRUPTED}: {cut} call(s) through the model proxy ended "
+        "before the provider reported their usage"
+    )
+    if estimated:
+        reason += (
+            f"; the tokens of {len(estimated)} are LiteLLM's local estimate, "
+            "not the provider's count"
+        )
+    details = dict(usage.get("usage_details") or {})
+    details["interrupted_streams"] = {
+        "calls_cut": cut,
+        "calls_estimated": len(estimated),
+        # LiteLLM's own count of each estimated call's prompt and streamed
+        # text, included in the trial's figures above.
+        "estimated": {
+            "source": "litellm_local_count",
+            "n_input_tokens": sum(t.input_tokens for t in tokens),
+            "n_output_tokens": sum(t.output_tokens for t in tokens),
+            "n_cache_read_tokens": sum(t.cache_read_tokens for t in tokens),
+            "n_cache_creation_tokens": sum(t.cache_creation_tokens for t in tokens),
+            "cost_usd": round(sum(costs), 10)
+            if costs
+            and all(
+                isinstance(c, int | float) and not isinstance(c, bool) for c in costs
+            )
+            else None,
+        }
+        if estimated
+        else None,
+    }
+    return {
+        **usage,
+        "usage_incomplete": True,
+        "usage_incomplete_reason": reason,
+        "usage_details": details,
+    }
+
+
+def _provider_usage(trajectory: Trajectory | None) -> dict[str, Any]:
+    """:func:`extract_usage_from_trajectory` before any cut stream is marked."""
     if trajectory is None or not trajectory.exchanges:
         return usage_unavailable()
     if not trajectory.has_provider_usage:
         return usage_unavailable()
 
     cost_usd = trajectory.total_cost_usd
-    return {
+    billed = trajectory.metadata.get("provider_cost_usd")
+    billed_calls = trajectory.metadata.get("provider_billed_calls") or 0
+    answered = trajectory.metadata.get("answered_calls") or billed_calls
+    billed_whole = (
+        isinstance(billed, int | float)
+        and not isinstance(billed, bool)
+        and billed_calls >= answered
+    )
+    # BenchFlow's token split: uncached input, cache reads, cache
+    # writes (with their 5-minute and 1-hour shares where reported), output.
+    five, hour = trajectory.cache_write_split()
+    counts: dict[str, Any] = {
         "n_input_tokens": trajectory.total_input_tokens,
         "n_output_tokens": trajectory.total_output_tokens,
         "n_cache_read_tokens": trajectory.total_cache_read_tokens,
         "n_cache_creation_tokens": trajectory.total_cache_creation_tokens,
+        "n_cache_write_5m_tokens": five,
+        "n_cache_write_1h_tokens": hour,
         "total_tokens": trajectory.total_provider_tokens,
+    }
+    missing = trajectory.unreported_counts()
+    if "input" in missing:
+        counts.update(n_input_tokens=None, total_tokens=None)
+    if "output" in missing:
+        counts.update(n_output_tokens=None, total_tokens=None)
+    if trajectory.split_unreported:
+        # A response named its total but no input or output count. The
+        # split is unknown, not 0, and a total of
+        # unknown parts is unknown; the providers' own total stays on record.
+        counts = {
+            **dict.fromkeys(counts),
+            "usage_details": {
+                "provider_total_tokens": trajectory.total_provider_tokens,
+                "split": "unreported",
+            },
+        }
+    elif unreported := trajectory.cache_writes_unreported():
+        counts["usage_details"] = {
+            "cache_writes": _unreported_cache_writes(
+                trajectory, unreported, billed_whole
+            )
+        }
+    if isinstance(billed, int | float) and not isinstance(billed, bool):
+        # The provider's own bill is the cost.
+        if billed_whole:
+            return {
+                **counts,
+                "cost_usd": float(billed),
+                "usage_source": "provider_response",
+                "price_source": "openrouter",
+                "cost_source": "provider",
+                "price_table_date": None,
+            }
+        # Some calls carried no bill: their list-price estimate (LiteLLM's
+        # figure) completes the cost, which is then an estimate, with the
+        # billed part and the estimated calls beside it.
+        estimated = trajectory.metadata.get("estimated_cost_usd")
+        return {
+            **counts,
+            "cost_usd": round(float(billed) + estimated, 10)
+            if isinstance(estimated, int | float)
+            else None,
+            "usage_source": "provider_response",
+            "price_source": "openrouter+litellm",
+            "cost_source": "list_price_estimate",
+            "price_table_date": None,
+            "cost_usd_provider": float(billed),
+            "n_calls_cost_estimated": answered - billed_calls,
+        }
+    return {
+        **counts,
         "cost_usd": cost_usd,
         "usage_source": "provider_response",
         "price_source": "litellm" if cost_usd is not None else None,

@@ -24,6 +24,13 @@ RESULT_STATE_FIELDS = (
     "_diagnostics",
     "_native_usage_metrics",
     "_native_usage_checkpoint",
+    # What the list price prices and the salvage reads: a child's
+    # turns only, the parent's back when the fork restores it.
+    "_native_usage_slices",
+    "_usage_slices",
+    "_usage_report_missing",
+    "_usage_salvaged",
+    "_turn_cut",
     "_error",
     "_export_error",
     "_evolved_skills",
@@ -82,6 +89,11 @@ def scope_child_result_state(rollout: Any) -> None:
     rollout._diagnostics = RolloutDiagnostics()
     rollout._native_usage_metrics = _zero_native_acp_usage_metrics()
     rollout._usage_metrics = _zero_native_acp_usage_metrics()
+    rollout._native_usage_slices = {}
+    rollout._usage_slices = None
+    rollout._usage_report_missing = False
+    rollout._usage_salvaged = False
+    rollout._turn_cut = None
 
 
 def write_child_observation(

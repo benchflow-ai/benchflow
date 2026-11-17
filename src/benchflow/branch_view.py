@@ -79,7 +79,7 @@ def _cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         seconds += cost.get("children_sandbox_seconds") or 0.0
         if fork.get("rollout") not in child_nodes:
             seconds += cost.get("parent_sandbox_seconds") or 0.0
-    return {
+    out = {
         "tokens": sum(cost.get("tokens") or 0 for _, cost in costs),
         "usd": round(math.fsum(u for u in usds if isinstance(u, int | float)), 6)
         if known
@@ -87,6 +87,19 @@ def _cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         "usd_known": known,
         "sandbox_seconds": round(seconds, 3),
     }
+    # A fork priced from some of its children's calls only is a floor, and so
+    # is a token count that leaves children out.
+    if known and any(cost.get("cost_incomplete") is True for _, cost in costs):
+        out["cost_incomplete"] = True
+    without = sum(
+        count
+        for _, cost in costs
+        if isinstance(count := cost.get("children_without_usage"), int)
+        and not isinstance(count, bool)
+    )
+    if without:
+        out["children_without_usage"] = without
+    return out
 
 
 _USAGE_CLASSES = (
@@ -98,10 +111,20 @@ _USAGE_CLASSES = (
 )
 
 
+#: A child whose token count is unknown (tree.json ``usage: null``).
+_UNKNOWN = object()
+
+
 def _usage_classes(usages: list[Any]) -> dict[str, int] | None:
-    """Summed token classes of child ``usage`` records; None when none has one."""
+    """Summed token classes of child ``usage`` records; None when none has
+    one. A sum with an unknown part is unknown: None too when a
+    child's count is unknown (``_UNKNOWN``) or a record left a class None."""
+    if any(u is _UNKNOWN for u in usages):
+        return None
     records = [u for u in usages if isinstance(u, dict)]
-    if not records:
+    if not records or any(
+        key in u and u[key] is None for u in records for _, key in _USAGE_CLASSES
+    ):
         return None
     return {
         name: sum(
@@ -115,7 +138,8 @@ def _usage_classes(usages: list[Any]) -> dict[str, int] | None:
 
 def _estimate(usage: Any, prices: dict[str, Any] | None) -> float | None:
     """USD at list price from token classes. Zero tokens cost 0 (an oracle
-    calls no model); otherwise None without a price or a usage record."""
+    calls no model); otherwise None without a price or a usage record, or
+    when a class is unknown."""
     classes = _usage_classes([usage])
     if classes is None:
         return None
@@ -261,15 +285,21 @@ def build_branch_view(
         return 1
 
     forks = []
+    # Every child's usage for the totals' sums; _UNKNOWN when its count is.
+    all_counted: list[Any] = []
     for fork in raw_forks:
         snapshot = _obj(fork.get("snapshot"))
         value = _num(fork.get("value"))
         owner = fork.get("rollout")
         nested_owner = owner if owner in child_of else None
         children = []
+        counted: list[Any] = []
         for child in fork.get("children") or []:
             if not isinstance(child, dict):
                 continue
+            counted.append(
+                _UNKNOWN if child.get("usage", {}) is None else child.get("usage")
+            )
             intervention = _obj(child.get("intervention"))
             reward = _num(child.get("reward"))
             node = child.get("node_id")
@@ -351,11 +381,12 @@ def build_branch_view(
                 "cost": fork.get("cost")
                 if isinstance(fork.get("cost"), dict)
                 else None,
-                "usage": _usage_classes([c["usage"] for c in children]),
+                "usage": _usage_classes(counted),
                 "usd_estimate": _sum_or_none([c["usd_estimate"] for c in children]),
                 "children": children,
             }
         )
+        all_counted.extend(counted)
     branches_cost = _obj(result.get("branches")).get("cost")
     if not isinstance(branches_cost, dict):
         branches_cost = (
@@ -376,12 +407,15 @@ def build_branch_view(
     all_children = [c for f in forks for c in f["children"]]
     scored = sum(c["reward"] is not None for c in all_children)
     total_estimate = _sum_or_none([c["usd_estimate"] for c in all_children])
-    total_usage = _usage_classes([c["usage"] for c in all_children])
+    total_usage = _usage_classes(all_counted)
+    # A token count that leaves children out is a floor: no share of it
+    # is a child's cost.
     total_tokens = (
         total_usage["total"]
         if total_usage is not None
         else _obj(branches_cost).get("tokens")
         if isinstance(_obj(branches_cost).get("tokens"), int)
+        and not _obj(branches_cost).get("children_without_usage")
         else None
     )
     return {

@@ -5,8 +5,16 @@ fetches example.com (outside the list) and pypi.org (inside it), and its
 test.sh fetches example.com again and scores 1 only when the oracle reached
 example.com. Under REPORT B10's bug the oracle reached it and scored 1; with
 the policy on the oracle's turn it scores 0, while the oracle still reaches
-the listed host and the verifier, after the turn, reaches example.com. The
-task runs two ways: the oracle as root and as the task's [agent].user.
+the listed host. The task runs two ways: the oracle as root and as the task's
+[agent].user.
+
+The verifier's network is its own, ``[verifier] network_mode``, else the
+task's (#234, EN-609: one reader, held for every process by BenchFlow's
+helper). These two variants set it public, so the verifier still reaches
+example.com after the oracle's turn. A third, ``inherited``, leaves it unset:
+its verifier is held to the task's allowlist, and test.sh's own fetch of
+example.com is refused (EN-695: the test assumed the verifier was open after
+the oracle's turn, which #234 closed).
 
 Marked ``deterministic`` (a real ``bench`` and a real sandbox, no model);
 it needs Docker and the internet (the image, pypi.org, example.com).
@@ -38,6 +46,11 @@ VARIANTS = {
     "root": ("", ""),
     "task-user": ("RUN useradd -m builder\n", 'user = "builder"\n'),
 }
+# The verifier's own network, for VARIANTS: public, so the oracle's policy is
+# all these trials measure.
+PUBLIC_VERIFIER = 'network_mode = "public"\n'
+# The oracle as root with no verifier network of its own: the task's.
+INHERITED = "inherited"
 
 # R3-R1-A-2: a task whose compose drops SETGID (the net-admin overlay still
 # adds NET_ADMIN back, so the rules arm) leaves the root oracle unable to join
@@ -58,6 +71,7 @@ def _variant(
     dockerfile_tail: str,
     agent_lines: str,
     compose: str | None = None,
+    verifier_lines: str = "",
 ) -> None:
     task = tasks / f"{FIXTURE.name}-{name}"
     shutil.copytree(FIXTURE, task)
@@ -66,7 +80,8 @@ def _variant(
     if compose is not None:
         (task / "environment" / "docker-compose.yaml").write_text(compose)
     toml = task / "task.toml"
-    toml.write_text(toml.read_text().replace("[agent]\n", "[agent]\n" + agent_lines, 1))
+    text = toml.read_text().replace("[agent]\n", "[agent]\n" + agent_lines, 1)
+    toml.write_text(text.replace("[verifier]\n", "[verifier]\n" + verifier_lines, 1))
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +91,10 @@ def oracle_trials(tmp_path_factory) -> dict[str, Path]:
     root = tmp_path_factory.mktemp("oracle-policy")
     tasks = root / "tasks"
     for name, (dockerfile_tail, agent_lines) in VARIANTS.items():
-        _variant(tasks, name, dockerfile_tail, agent_lines)
+        _variant(
+            tasks, name, dockerfile_tail, agent_lines, verifier_lines=PUBLIC_VERIFIER
+        )
+    _variant(tasks, INHERITED, "", "")
     _variant(tasks, NO_SETGID, NO_SETGID_DOCKERFILE, "", NO_SETGID_COMPOSE)
     jobs = root / "jobs"
     env = {**os.environ, "BENCHFLOW_SKIP_UPDATE_CHECK": "1"}
@@ -105,7 +123,7 @@ def oracle_trials(tmp_path_factory) -> dict[str, Path]:
     )
     trials = {
         name: [p.parent for p in jobs.glob(f"*/{FIXTURE.name}-{name}__*/result.json")]
-        for name in [*VARIANTS, NO_SETGID]
+        for name in [*VARIANTS, INHERITED, NO_SETGID]
     }
     assert all(len(found) == 1 for found in trials.values()), proc.stdout[-4000:]
     return {name: found[0] for name, found in trials.items()}
@@ -116,12 +134,28 @@ def oracle_trial(request, oracle_trials) -> Path:
     return oracle_trials[request.param]
 
 
-def test_an_oracle_that_cannot_join_the_policys_group_is_an_error(oracle_trials):
-    """Before the fix the join exited 1 before solve.sh started, only rc=1
-    was logged, and the verifier scored the untouched workspace 0."""
+# What an image whose compose drops SETGID ends with since #234: the root
+# oracle joins no group (every-process rules from the helper hold it), and
+# hardening cannot switch to the sandbox user to stop its processes.
+NO_SETGID_ERROR = (
+    "RuntimeError: Verifier hardening failed: sandbox-user process quiescence "
+    "check exited with rc=2\nstderr: Cannot send SIGSTOP as the sandbox user: "
+    "neither setpriv nor su ran it as UID 1000 GID 1000 (install setpriv or su "
+    "in the image and let root switch to that UID and GID)"
+)
+
+
+def test_an_oracle_image_without_setgid_is_an_error_never_a_score(oracle_trials):
+    """Was test_an_oracle_that_cannot_join_the_policys_group_is_an_error. Before
+    REPORT B10's fix the join exited 1 before solve.sh started, only rc=1 was
+    logged, and the verifier scored the untouched workspace 0. Since #234 the
+    oracle joins no group, so it cannot fail there; the trial still ends in an
+    error and no score, now at hardening's switch to the sandbox user
+    (EN-695)."""
     result = json.loads((oracle_trials[NO_SETGID] / "result.json").read_text())
-    assert "cannot join group 61628" in (result.get("error") or ""), result
-    assert not (result.get("rewards") or {}).get("reward"), result
+    assert result.get("error") == NO_SETGID_ERROR, result
+    assert "cannot join group" not in (result.get("error") or "")
+    assert not result.get("rewards"), result
 
 
 def _verifier_said(trial: Path) -> dict[str, str]:
@@ -164,7 +198,34 @@ def test_the_oracle_still_reaches_the_listed_host(oracle_trial):
 
 
 def test_the_verifier_reaches_its_hosts_after_the_oracles_turn(oracle_trial):
+    """Its own network, public: the oracle's policy does not follow it."""
     assert _verifier_said(oracle_trial).get("verifier_reached") == "reached"
+
+
+def test_a_verifier_with_no_network_of_its_own_is_held_to_the_tasks(oracle_trials):
+    """#234's one reader: no [verifier] network_mode, so the task's allowlist
+    holds test.sh too, for every process. test.sh's own fetch of example.com
+    is refused at the egress proxy, and a test.sh that fails after a refusal
+    ends "verifier network refused" (unscored), never a silent 0."""
+    trial = oracle_trials[INHERITED]
+    said = _verifier_said(trial)
+    assert said.get("verifier_reached") == "refused", said
+    assert said.get("oracle_reached") == "refused", said
+    result = json.loads((trial / "result.json").read_text())
+    assert result.get("rewards") is None, result
+    assert (result.get("verifier_error") or "").startswith(
+        "verifier network refused: test.sh exited 0 with reward 0.0 after the "
+        "verifier's network (in-container under allowlist: verifier.network_mode, "
+        "else the sandbox's policy) refused it "
+    ), result
+    record = json.loads((trial / "verifier" / "verifier-network.json").read_text())
+    assert record["mode"] == "allowlist", record
+    assert record["state"] == "held", record
+    assert {
+        "method": "CONNECT",
+        "rule": "not-allowlisted",
+        "url": "example.com:443",
+    } in (record["proxy_refusals"]), record
 
 
 def test_arming_leaves_the_images_apt_lists_as_built(oracle_trial):

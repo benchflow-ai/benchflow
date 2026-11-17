@@ -150,14 +150,19 @@ def test_eval_create_reports_runtime_config_errors_without_traceback(
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()
 
-    class FakeEvaluation:
-        def __init__(self, **_kwargs):
-            pass
+    from benchflow.evaluation import Evaluation
 
-        async def run(self):
-            raise RuntimeError("Token usage tracking is required")
+    def no_setup(self, **_kwargs):
+        pass
 
-    monkeypatch.setattr("benchflow.evaluation.Evaluation", FakeEvaluation)
+    async def failing_run(self):
+        raise RuntimeError("Token usage tracking is required")
+
+    # Patch the class, not its name: a module first imported during this run
+    # binds Evaluation by value (eval_sharding does), and a stand-in class
+    # would stay there for every later test on the worker.
+    monkeypatch.setattr(Evaluation, "__init__", no_setup)
+    monkeypatch.setattr(Evaluation, "run", failing_run)
 
     result = CliRunner().invoke(
         app,

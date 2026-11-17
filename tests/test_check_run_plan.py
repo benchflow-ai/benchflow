@@ -111,10 +111,6 @@ def _run_refusal(
     "config, marker",
     [
         ('[[steps]]\nname = "first"\n', "steps:"),
-        (
-            '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["example.invalid"]\n',
-            "verifier.network_mode:",
-        ),
     ],
 )
 def test_runtime_refusal_is_verbatim_without_a_backend_flag(
@@ -127,6 +123,17 @@ def test_runtime_refusal_is_verbatim_without_a_backend_flag(
     result = CliRunner().invoke(app, [*command, str(task)])
     assert result.exit_code == 1, result.output
     assert reason in result.stderr
+
+
+def test_a_verifier_allowlist_is_admitted_on_docker(tmp_path):
+    """EN-609: on Docker hardening holds the verifier, root included, to its
+    allowlist (every-process rules, a marked egress proxy), so the launch no
+    longer refuses it there; other sandboxes still do (runtime_capabilities)."""
+    task = _task(
+        tmp_path / "vallow",
+        '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["example.invalid"]\n',
+    )
+    assert _run_refusal(task, tmp_path) is None
 
 
 def test_judge_launch_refusal_is_verbatim(tmp_path):

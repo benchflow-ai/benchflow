@@ -95,6 +95,9 @@ class RolloutPlanes(Protocol):
         guard_daemon: bool = True,
     ) -> str: ...
 
+    async def lock_system_path(
+        self, env: Any, *, workspace: str, timeout_sec: int = 120
+    ) -> None: ...
     async def snapshot_build_config(self, env: Any, *, workspace: str) -> None: ...
     async def seed_verifier_workspace(
         self, env: Any, *, workspace: str, sandbox_user: str | None

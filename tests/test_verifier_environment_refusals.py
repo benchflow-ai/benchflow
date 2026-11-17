@@ -44,7 +44,7 @@ from tests.test_verifier_trusted_path import _rollout_paths
 BASE = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 DOCKERFILE = r"""
 FROM BASE
-RUN apk add --no-cache acl \
+RUN apk add --no-cache acl setpriv \
  && mkdir -p /opt/probe/bin /opt/tools/bin /opt/vendor /app /testbed /testbed_verify /tests /logs/verifier \
  && chmod 777 /opt/probe/bin \
  && printf '#!/bin/sh\necho image-tool\n' > /opt/tools/bin/tool \

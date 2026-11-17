@@ -156,7 +156,7 @@ Automatic rubric review keeps a separate requirement: a completed reviewer verdi
 | Evidence or failure | Current outcome | What to do |
 |---|---|---|
 | Missing, empty, malformed, unsafe, non-finite or conflicting reward files | Score 0 and a warning naming the file and error | Inspect `verifier/reward.txt`, `verifier/reward.json` and test output |
-| A reward outside the task's range | Score 0 and a warning; `reward_out_of_range_info` keeps the raw number | Fix the reward, or declare the intended `[verifier] reward_range` |
+| A reward outside the task's range | Recorded as written with a note in `reward_out_of_range_info` (integrity `strict`: score 0 and a warning) | Fix the reward, or declare the intended `[verifier] reward_range` |
 | A guard load failure, refusal, crash, incomplete check or unreadable markers | Score 0 with `pytest plugin guard not confirmed` | The guard may have failed, or code test.sh ran may have changed its signals. Inspect the verifier logs and markers; pin the required plugins or bake them into the image |
 | Verifier deadline exceeded while the test command still runs | Score 0 and a timeout warning, even if a passing reward was written first; `verifier_timeout_info` records the budget, the elapsed time and `scored: true` | Inspect the test command; adjust `verifier.timeout_sec` if appropriate |
 | The test command ended, but its exec did not return within the budget (a lost Daytona poll, a hung transport) | Scored from its outputs as if the exec had returned: the command records its tests' exit status beside its start receipt, and BenchFlow takes up to 300 s more to bring the outputs in | Nothing; the warning names the exit status |

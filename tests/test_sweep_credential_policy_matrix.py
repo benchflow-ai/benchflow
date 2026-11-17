@@ -80,14 +80,17 @@ SETTINGS = (
 
 
 def explicit(name: str) -> str:
-    token = f"dummy-explicit-{name.lower()}"
+    token = token_of(name)
     if name.endswith("_BASE_URL"):
         return "https://provider.example.invalid/v1"
     return json.dumps({"dummy": token}) if name.endswith("_JSON") else token
 
 
 def token_of(name: str) -> str:
-    return f"dummy-explicit-{name.lower()}"
+    # ANTHROPIC_AUTH_TOKEN's contents decide its route (EN-374, CRED-4): a
+    # dummy login there is shaped like a Claude OAuth token.
+    shape = "sk-ant-oat01-" if name == "ANTHROPIC_AUTH_TOKEN" else ""
+    return f"{shape}dummy-explicit-{name.lower()}"
 
 
 @dataclass(frozen=True)
@@ -231,7 +234,7 @@ def _tokens(files: dict[str, str], launch: dict[str, str]) -> set[str]:
     found: set[str] = set()
     for text in [*files.values(), *launch.values()]:
         for raw in text.replace('"', " ").replace(",", " ").split():
-            if raw.startswith("dummy-"):
+            if raw.startswith(("dummy-", "sk-ant-oat01-dummy-")):
                 found.add(raw.rstrip("}"))
     return found
 
@@ -314,12 +317,10 @@ def _proxy_cell(agent: str, family: str, host: str) -> Cell:
 
 
 # Agent/provider pairs whose protocols do not match: refused at resolution.
+# Claude Code is refused on none: it calls the gateway, which calls each
+# provider in the provider's own API (EN-501), so its cells run the table.
 PROTOCOL_REFUSED = frozenset(
     {
-        ("claude-agent-acp", "openai"),
-        ("claude-agent-acp", "vertex"),
-        ("claude-agent-acp", "azure"),
-        ("claude-agent-acp", "deepseek"),
         ("codex-acp", "vertex"),
         ("codex-acp", "anthropic-vertex"),
         ("codex-acp", "xiaomi"),

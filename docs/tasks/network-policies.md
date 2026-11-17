@@ -109,8 +109,25 @@ The agent reaches only what is listed.
 - A CIDR entry never admits a name. To reach a Compose sibling by name, list both its name and its range (`sidecar` and `172.16.0.0/12`).
 - `agent.network_mode: allowlist` cannot combine with `sandbox.network_mode` `no-network` or `denylist`.
 - `verifier.network_mode: allowlist` is refused, because the verifier runs as root outside the agent's firewall.
+- A task's own Compose services may sit only on internal networks: networks the compose file marks `internal: true`. A service on the default network, or on one merely named `internal` without `internal: true`, has a route out of the sandbox, and the run is refused before the agent starts, naming the service and its network. `main` may join such a network beside the default one:
+
+  ```yaml
+  services:
+    main:
+      networks: [default, svc]
+    db:
+      image: postgres:16
+      networks: [svc]
+  networks:
+    svc:
+      internal: true
+  ```
 
 See [Allowlist egress](../sandboxes/threat-model.md#network-policy-allowlist-egress).
+
+## Services the task declares
+
+A service the task declares in the `environment.toml` at its root (`[[environment.services]]`, which BenchFlow starts in the main container) can't run beside a model agent under `denylist`, `allowlist` or the agent's own `no-network` (`agent.network_mode`). The policy holds only the agent's user; the service runs as root, outside it, and the agent reaches it on localhost, so such a trial is refused before it starts. Run the service as a Compose service on an internal network that `main` shares instead.
 
 ## Requirements
 

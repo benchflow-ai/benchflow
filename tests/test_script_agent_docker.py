@@ -19,6 +19,7 @@ from benchflow.rollout import Rollout, RolloutConfig
 from benchflow.sandbox._base import SandboxConfig
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.sandbox.remote_docker import RemoteDockerSandbox
+from benchflow.trust.state import IngressKind, admit
 
 IMAGE = "ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
 
@@ -26,6 +27,11 @@ IMAGE = "ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff
 class Container(DockerSandbox):
     def __init__(self, name, persistent=None):
         self.name = name
+        # What DockerSandbox.__init__ and Compose give a started sandbox: its
+        # session and its own project, which started_box labels main with.
+        # The service cover (EN-609) finds main by that label.
+        self.session_id = name
+        self._compose_project = name
         # DockerSandbox adds its task and manifest env to every exec.
         self.persistent = dict(persistent or {})
 
@@ -165,6 +171,10 @@ def started_box(image=IMAGE, setup=UBUNTU_SETUP, env=(), run_flags=()):
             name,
             "--label",
             "target=DT2",
+            "--label",
+            f"com.docker.compose.project={name}",
+            "--label",
+            "com.docker.compose.service=main",
             "--network",
             "none",
             *flags,
@@ -666,14 +676,18 @@ async def test_script_startup_matches_native_bash(
             "ANSWER=42\n"
             "startup_function() { printf function; }\n"
         )
-        await container.script_runner_upload(str(hook), path)
+        # As _run_script uploads (rollout/_setup.py): main admits the launch.
+        launch = admit(container, "main", IngressKind.AGENT_LAUNCH)
+        await container.script_runner_upload(str(hook), path, admission=launch)
         script = (
             'printf "%s:%s:%s" "${ANSWER:-unset}" "${startup_calls:-0}" '
             '"$(type -t startup_function)"\n'
         )
         attempt = tmp_path / "attempt.sh"
         attempt.write_text(script)
-        await container.script_runner_upload(str(attempt), "/app/native.sh")
+        await container.script_runner_upload(
+            str(attempt), "/app/native.sh", admission=launch
+        )
         native = subprocess.run(
             [
                 "docker",
@@ -771,7 +785,11 @@ async def test_script_startup_settings_match_native_bash(
             "if (printf receipt-probe >&3) 2>/dev/null; then exit 92; fi\n"
             "startup_calls=$(( ${startup_calls:-0} + 1 ))\n"
         )
-        await container.script_runner_upload(str(hook), "/app/startup.sh")
+        # As _run_script uploads (rollout/_setup.py): main admits the launch.
+        launch = admit(container, "main", IngressKind.AGENT_LAUNCH)
+        await container.script_runner_upload(
+            str(hook), "/app/startup.sh", admission=launch
+        )
         script = (
             'test "$(id -u)" != 0 || exit 93\n'
             "if (printf receipt-probe >&3) 2>/dev/null; then exit 94; fi\n"
@@ -782,7 +800,9 @@ async def test_script_startup_settings_match_native_bash(
         )
         attempt = tmp_path / "attempt.sh"
         attempt.write_text(script)
-        await container.script_runner_upload(str(attempt), "/app/native.sh")
+        await container.script_runner_upload(
+            str(attempt), "/app/native.sh", admission=launch
+        )
         # Use the same held-input path so native diagnostics match too.
         native = subprocess.run(
             [

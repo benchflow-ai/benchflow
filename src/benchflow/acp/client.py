@@ -588,6 +588,10 @@ class ACPClient:
             "session/prompt", params.model_dump(by_alias=True, exclude_none=True)
         )
         prompt_result = PromptResult.model_validate(result)
+        # The turn's tokens were spent whether or not it ended on a failure:
+        # record them before the failure raises, or a failed turn's
+        # usage is lost.
+        self._session.record_prompt_usage(getattr(prompt_result, "usage", None))
         # A turn the agent ended on a failure (see AIR_SESSION_FAILURE_META)
         # raises as the agent's -32603 did, never passes as a finished turn:
         # verifying it would score the untouched workspace 0.
@@ -598,7 +602,6 @@ class ACPClient:
         # vendored ``StopReason`` enum so consumers keep ``.value`` / member
         # comparisons working.
         self._session.stop_reason = StopReason(prompt_result.stop_reason)
-        self._session.record_prompt_usage(getattr(prompt_result, "usage", None))
         return prompt_result
 
     async def cancel(self) -> None:

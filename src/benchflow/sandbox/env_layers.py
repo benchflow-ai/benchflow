@@ -818,6 +818,13 @@ def _description_keys(du_text: str, kind: str) -> set[str]:
 
 # What `docker image inspect` prints for a reference the daemon does not have.
 _NO_SUCH_IMAGE_RE = re.compile(r"No such (image|object)", re.IGNORECASE)
+# With the containerd image store, `docker image ls` fails when another client
+# deletes an image while the daemon lists it: the deleted image's content is
+# gone when the daemon reads it ("rpc error: code = NotFound desc = content
+# digest sha256:...: not found"). Listing again does not see that image.
+_LIST_RACE_RE = re.compile(r"code = NotFound desc = content digest \S+: not found")
+_LIST_ATTEMPTS = 4
+_LIST_RETRY_SEC = 0.25
 # `docker info`'s DriverStatus entry when the daemon uses the containerd image store.
 _CONTAINERD_STORE = ["driver-type", "io.containerd.snapshotter.v1"]
 
@@ -1363,15 +1370,27 @@ class DockerLayers:
         ]
         return found[0] if len(found) == 1 else None
 
+    async def _list_images(
+        self, *args: str, timeout: float = _DOCKER_TIMEOUT_SEC
+    ) -> _Run:
+        """``docker image ls ARGS``, listed again when an image another client
+        deleted meanwhile failed the listing (:data:`_LIST_RACE_RE`): trials
+        and prunes of other processes remove images on the same daemon."""
+        for attempt in range(_LIST_ATTEMPTS):
+            run = await self._docker("image", "ls", *args, timeout=timeout)
+            if run.code == 0 or not _LIST_RACE_RE.search(run.text):
+                return run
+            if attempt + 1 < _LIST_ATTEMPTS:
+                await asyncio.sleep(_LIST_RETRY_SEC * (attempt + 1))
+        return run
+
     async def _libc_from_layers(self, digest: str) -> str | None:
         """The libc an earlier layer on the same task image recorded, if any.
 
         A label on a local image only; anyone who can write it can run any
         container on the daemon anyway.
         """
-        run = await self._docker(
-            "image",
-            "ls",
+        run = await self._list_images(
             "--quiet",
             "--no-trunc",
             "--filter",
@@ -1904,9 +1923,7 @@ class DockerLayers:
         """
         _check_kind(kind)
         report = PruneReport()
-        run = await self._docker(
-            "image",
-            "ls",
+        run = await self._list_images(
             "--filter",
             f"label={LAYER_LABEL}={kind}",
             "--format",
@@ -2068,12 +2085,18 @@ class DockerLayers:
         """Untag the alias ``ref`` of a trial whose process is gone.
 
         False (the alias stays and holds its layer) while a container uses
-        the image, or when Docker cannot say or refuses.
+        the image, or when Docker cannot say or refuses. True when the alias
+        is gone: untagged here (and in ``report``), or already untagged by
+        another process's prune, which saw it in its own listing (it holds
+        nothing then either).
         """
         ps = await self._docker("ps", "--all", "--quiet", "--filter", f"ancestor={ref}")
         if ps.code != 0 or ps.stdout.strip():
             return False
         run = await self._docker("image", "rm", "--no-prune", ref)
+        if run.code != 0 and _NO_SUCH_IMAGE_RE.search(run.text):
+            logger.info("Leftover layer tag %s was already untagged", ref)
+            return True
         if run.code != 0:
             logger.warning(
                 "Removing leftover layer tag %s failed: %s", ref, run.text[-300:]
@@ -2202,7 +2225,7 @@ class DockerLayers:
         a dead process's alias is reported, not untagged.
         """
         inv = LayerInventory()
-        run = await self._docker("image", "ls", "--format", "{{json .}}", timeout=120.0)
+        run = await self._list_images("--format", "{{json .}}", timeout=120.0)
         if run.code != 0:
             raise LayerError(f"could not list images: {run.text[-300:]}")
         candidates: dict[str, tuple[str, str]] = {}

@@ -88,6 +88,8 @@ async def test_configured_upload_rejects_top_level_symlink(
             env,
             task,
             {},
+            task=None,
+            agent=None,
             uploads={str(link): "/evidence/secret"},
         )
 
@@ -298,7 +300,9 @@ async def test_start_env_does_not_upload_task_environment_skills(
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
-    await _start_env_and_upload(env, task, timing, upload_solution=True)
+    await _start_env_and_upload(
+        env, task, timing, task=None, agent=None, upload_solution=True
+    )
 
     task_skills = task / "environment" / "skills"
     assert env.started is True
@@ -329,7 +333,9 @@ solve
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
-    await _start_env_and_upload(env, task, timing, upload_solution=True)
+    await _start_env_and_upload(
+        env, task, timing, task=None, agent=None, upload_solution=True
+    )
 
     assert (task / "oracle", "/oracle") in env.uploaded_dirs
     assert (task / "oracle", "/solution") not in env.uploaded_dirs
@@ -354,7 +360,7 @@ Solve from the unified document.
     env = FakeUploadEnv()
     timing: dict[str, float] = {}
 
-    await _start_env_and_upload(env, task, timing)
+    await _start_env_and_upload(env, task, timing, task=None, agent=None)
 
     assert env.started is True
     assert env.uploaded_file_contents == [
@@ -919,7 +925,12 @@ async def test_on_started_persists_before_upload(tmp_path: Path) -> None:
     env = RecordingEnv()
 
     await _start_env_and_upload(
-        env, task, {}, on_started=lambda: order.append("on_started")
+        env,
+        task,
+        {},
+        task=None,
+        agent=None,
+        on_started=lambda: order.append("on_started"),
     )
 
     assert order == ["start", "on_started", "upload_file"]
@@ -949,6 +960,8 @@ async def test_sandbox_json_survives_upload_failure(tmp_path: Path) -> None:
             env,
             task,
             {},
+            task=None,
+            agent=None,
             on_started=lambda: persist_sandbox_info(env, rollout_dir),
         )
 
@@ -997,6 +1010,8 @@ async def test_sandbox_json_survives_interrupt_inside_start(tmp_path: Path) -> N
             env,
             task,
             {},
+            task=None,
+            agent=None,
             on_started=lambda: captured.append("on_started"),
         )
 

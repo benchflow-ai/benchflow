@@ -11,7 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from benchflow.usage_tracking import UsageSource
+from benchflow.usage_tracking import (
+    UsageSource,
+    legacy_usage_source,
+    result_usage_source,
+)
 
 if TYPE_CHECKING:
     from benchflow._utils.reachable_write import ReachablePath
@@ -86,8 +90,8 @@ class RolloutResult:
                       trajectory events. Counts only ``tool_call`` events whose
                       structured ``kind`` is ``"skill"``.
         n_prompts:    Number of user prompts sent to the agent.
-        n_input_tokens: Cumulative provider prompt/input tokens, or None when
-                      provider telemetry was unavailable.
+        n_input_tokens: Cumulative uncached input tokens (cache reads and
+                      writes are counted beside it), or None when unknown.
         n_output_tokens: Cumulative provider completion/output tokens, or None
                       when provider telemetry was unavailable.
         n_cache_read_tokens: Provider prompt-cache read tokens, or None when
@@ -96,11 +100,28 @@ class RolloutResult:
                       when provider telemetry was unavailable.
         total_tokens: Sum of input, output, cache-read, and cache-creation tokens,
                       or None when provider telemetry was unavailable.
-        cost_usd:     Provider cost estimate in USD, or None when unavailable.
-        usage_source: Token telemetry source. One of "provider_response",
-                      "agent_native_acp", or "unavailable".
-        price_source: Pricing table version used for cost_usd, or None.
+        cost_usd:     Cost in USD, or None when unknown.
+        usage_source: Where the tokens came from: "stream_log",
+                      "session_log", "end_of_turn", "proxy" or "provider";
+                      None when nothing counted them. The
+                      constructor also takes the earlier names and maps
+                      them.
+        usage_source_legacy: The earlier name ("provider_response",
+                      "agent_native_acp" or "unavailable").
+        cost_source:  "provider" (the provider's billed figure) or
+                      "list_price_estimate" (tokens at list prices), or None
+                      when cost_usd is None.
+        price_table_date: The date of the price table cost_usd used, when
+                      known.
+        price_source: Who priced cost_usd ("litellm", "agent_session_log",
+                      "list_price", "provider"), or None.
         usage_details: Optional source-specific telemetry details.
+        usage_incomplete: True when the tokens are those of some of the
+                      trial's calls only (a turn cut before its usage report
+                      that no log counted, a stream cut before the provider's
+                      usage); a cost priced from them is a floor. None
+                      otherwise.
+        usage_incomplete_reason: Why ``usage_incomplete`` is true.
         error:        Error description string, or None on success.
         error_category: Stable category for ``error``, or None on success.
         verifier_error: Verifier error description, or None if verifier succeeded
@@ -161,8 +182,13 @@ class RolloutResult:
         n_cache_creation_tokens: int | None = None,
         total_tokens: int | None = None,
         cost_usd: float | None = None,
-        usage_source: UsageSource = "unavailable",
+        usage_source: UsageSource | None = "unavailable",
         price_source: str | None = None,
+        usage_source_legacy: str | None = None,
+        cost_source: str | None = None,
+        price_table_date: str | None = None,
+        n_cache_write_5m_tokens: int | None = None,
+        n_cache_write_1h_tokens: int | None = None,
         usage_details: dict[str, Any] | None = None,
         error: str | None = None,
         error_category: str | None = None,
@@ -182,6 +208,8 @@ class RolloutResult:
         rollout_dir: Path | None = None,
         retry: dict[str, Any] | None = None,
         integrity: dict[str, Any] | None = None,
+        usage_incomplete: bool | None = None,
+        usage_incomplete_reason: str | None = None,
     ):
         self.task_name = task_name
         self.rollout_name = rollout_name
@@ -200,8 +228,15 @@ class RolloutResult:
         self.n_cache_read_tokens = n_cache_read_tokens
         self.n_cache_creation_tokens = n_cache_creation_tokens
         self.total_tokens = total_tokens
+        self.n_cache_write_5m_tokens = n_cache_write_5m_tokens
+        self.n_cache_write_1h_tokens = n_cache_write_1h_tokens
         self.cost_usd = cost_usd
-        self.usage_source = usage_source
+        self.usage_source = result_usage_source(usage_source)
+        self.usage_source_legacy = legacy_usage_source(
+            usage_source, usage_source_legacy
+        )
+        self.cost_source = cost_source if cost_usd is not None else None
+        self.price_table_date = price_table_date
         self.price_source = price_source
         self.usage_details = usage_details
         self.error = error
@@ -226,6 +261,14 @@ class RolloutResult:
         # The integrity verdict (benchflow.integrity), reported next to
         # ``rewards``, never merged into them.
         self.integrity = integrity
+        self.usage_incomplete = True if usage_incomplete is True else None
+        self.usage_incomplete_reason = (
+            usage_incomplete_reason if self.usage_incomplete else None
+        )
+        # The integration failure the readers' judge found on read
+        # (benchflow.integration_health): Evaluation sets it when its
+        # summary withholds this trial, whose result.json has no such record.
+        self.integration_failure_info: dict[str, Any] | None = None
 
     @property
     def reward(self) -> float | None:
@@ -248,6 +291,11 @@ class RolloutResult:
             }
         )
         return None if value is None else float(value)
+
+    @property
+    def n_cache_write_tokens(self) -> int | None:
+        """Cache-write tokens (``n_cache_creation_tokens``, its name)."""
+        return self.n_cache_creation_tokens
 
     @property
     def passed(self) -> bool:
@@ -292,6 +340,8 @@ class RolloutResult:
             "total_tokens": self.total_tokens,
             "cost_usd": self.cost_usd,
             "usage_source": self.usage_source,
+            "cost_source": self.cost_source,
+            "price_table_date": self.price_table_date,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "duration_sec": duration,
@@ -381,8 +431,19 @@ class RolloutResult:
         """Read a finished rollout from its directory (or its ``result.json``).
 
         The trajectory is read from ``trajectory/acp_trajectory.jsonl`` when
-        present. Raises ``FileNotFoundError`` naming the missing file.
+        present. Raises ``FileNotFoundError`` naming the missing file. The
+        result is the trial as every reader scores it: one
+        the judge withholds has reward None, ``error_category``
+        ``agent_integration`` and its ``integration_failure_info``.
         """
+        from benchflow.integration_health import result_as_read
+
+        return result_as_read(cls._load_record(path))
+
+    @classmethod
+    def _load_record(cls, path: str | Path) -> RolloutResult:
+        """:meth:`load`'s result as the run wrote it, unjudged: what the
+        run's own retry decision reads."""
         path = Path(path)
         result_file = path if path.name.endswith(".json") else path / "result.json"
         if not result_file.is_file():

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from benchflow._utils.json_safe import scrub_non_finite
+from benchflow._utils.scoring import finite_reward
 from benchflow.adapters.ors import ORSAdapter
 from benchflow.rewards.protocol import VerifyResult
 from benchflow.trajectories._export_common import (
@@ -258,9 +259,14 @@ def write_rollout_verifiers_jsonl(
     Output path is ``rollout_dir/trainer/verifiers.jsonl`` — the
     architecture's trainer seam (issue #385). Returns the written record so
     callers can aggregate across a job.
+
+    An unscored rollout (no verdict, or no finite reward) has ``reward``
+    null and ``is_completed`` false, as ``results.jsonl`` writes it: a 0.0
+    reads as a real failed attempt to a trainer (audit RECORDS-4).
     """
     messages = acp_events_to_messages(trajectory, prompts)
     verify_result = reward_map_to_verify_result(rewards, error=error)
+    scored = finite_reward((rewards or {}).get("reward")) is not None
     record = trajectory_to_verifiers_record(
         task_id=task_id,
         messages=messages,
@@ -268,9 +274,11 @@ def write_rollout_verifiers_jsonl(
         model=model or "",
         environment=environment,
         example_id=example_id,
-        is_completed=is_completed,
+        is_completed=is_completed and scored,
         is_truncated=is_truncated,
     )
+    if not scored:
+        record["reward"] = None
     coverage = acp_projection_coverage(trajectory)
     if coverage is not None:
         record["info"]["acp_projection"] = coverage

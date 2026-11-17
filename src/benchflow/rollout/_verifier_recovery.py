@@ -27,6 +27,7 @@ from benchflow._utils.scoring import (
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
+    is_output_unwritable,
     plugin_guard_error_message,
 )
 from benchflow._utils.task_authoring import task_digest
@@ -49,6 +50,7 @@ from benchflow.review.persistence import (
     scoring_lock,
     write_json_atomic,
 )
+from benchflow.rewards.validation import out_of_range_reward_rule
 from benchflow.rollout._recovery_submission import (
     admitted_submission,
     restore_submission,
@@ -68,6 +70,10 @@ from benchflow.sandbox.egress_denylist import (
 )
 from benchflow.sandbox.recovery_network import prepare_recovery_network
 from benchflow.task import Task
+from benchflow.task.config import (
+    run_sandbox_setup_timeout,
+    sandbox_user_setup_timeout_sec,
+)
 from benchflow.task.verifier_errors import (
     VerifierInfrastructureError,
     verifier_failure_reason,
@@ -370,7 +376,8 @@ def needs_verifier_recovery(error: str | None) -> bool:
     agent's preserved workspace, never a second agent attempt. A recovery
     that timed out again opens with the preserved-solver prefix and is final.
     """
-    if not error:
+    if not error or is_output_unwritable(error):
+        # its check: the same file meets the same verifier user again.
         return False
     if error.startswith(
         (
@@ -409,11 +416,13 @@ async def recover_verifier(
     # the original solver, including when resume reconstructs that runtime.
     if solver_agent is None:
         solver_agent = rollout._config.primary_agent
-    attempt = asyncio.create_task(
-        _recover_verifier(
-            rollout, admission, publish_reply=not is_scripted_agent(solver_agent)
+    # The attempt's task copies the integrity mode's reward rule now.
+    with out_of_range_reward_rule(getattr(rollout._config, "integrity", "off")):
+        attempt = asyncio.create_task(
+            _recover_verifier(
+                rollout, admission, publish_reply=not is_scripted_agent(solver_agent)
+            )
         )
-    )
     try:
         done, _ = await asyncio.wait({attempt}, timeout=budget)
     except asyncio.CancelledError:
@@ -601,7 +610,9 @@ async def _recover_verifier(
                     child._env,
                     cfg.sandbox_user,
                     workspace=str(workspace),
-                    timeout_sec=cfg.sandbox_setup_timeout,
+                    timeout_sec=sandbox_user_setup_timeout_sec(
+                        run_sandbox_setup_timeout(cfg)
+                    ),
                     guard_daemon=False,
                 )
         recovery_sandbox = agent_network_sandbox_config(child._task.config)
@@ -806,6 +817,7 @@ async def resume_verification(root: Path, task_path: Path) -> dict:
         sandbox_user=config.get("sandbox_user", "agent"),
         sandbox_locked_paths=config.get("sandbox_locked_paths"),
         sandbox_setup_timeout=config.get("sandbox_setup_timeout", 120),
+        sandbox_setup_timeout_given=config.get("sandbox_setup_timeout_given"),
         context_root=config.get("context_root"),
         base_image_override=config.get("base_image_override"),
         config_override=(config.get("config_override") or {}).get("patch"),

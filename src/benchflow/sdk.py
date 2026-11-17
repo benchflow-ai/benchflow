@@ -133,9 +133,17 @@ class SDK:
     async def _start_env_and_upload(
         self, env: Any, task_path: Path, timing: dict, *, upload_solution: bool = False
     ) -> None:
-        # The solution only for an oracle run (GAP-ORACLE-READABLE).
+        from benchflow.task import Task
+
+        # The solution only for an oracle run (GAP-ORACLE-READABLE), whose
+        # main is held from release; else as for a model agent.
         await _start_env_and_upload(
-            env, task_path, timing, upload_solution=upload_solution
+            env,
+            task_path,
+            timing,
+            task=Task(task_path),
+            agent="oracle" if upload_solution else None,
+            upload_solution=upload_solution,
         )
 
     async def _run_oracle(

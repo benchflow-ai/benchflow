@@ -62,7 +62,10 @@ async def test_failed_exec_masks_hijack_certificate_details(
     )
     monkeypatch.setattr(DockerSandbox, call, mock)
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[tcp\]: tls: failed to verify certificate: <remote certificate error>",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "true"])
         outputs = [str(caught.value)]
     else:

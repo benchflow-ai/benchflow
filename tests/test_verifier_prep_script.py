@@ -10,7 +10,12 @@ in one exec, which prints a status line per step.
 ``tests/fixtures/verifier_prep_golden.json`` is what the step-by-step code
 did on integ/py-0.8 (85b87bc9, regenerated on V3's merge of 66471e95 for
 its pre-freeze probes and the clean-up's interpreter; and for the
-freeze's git hook and config purge and the verifier env's GIT_CONFIG keys) for success
+freeze's git hook and config purge and the verifier env's GIT_CONFIG keys; and for the
+freeze walk that skips an entry gone mid-walk: one command changed; and for the
+symlink purge's walk, which skips a folder gone before it is entered: one
+command changed; and for the verifier env's five GIT_CONFIG pins, diff.external no longer one (EN-708);
+and for the conftest sweep that keeps a package's and the repository's own files
+(EN-244, #1171, #1177, backported for EN-708)) for success
 and for each step failing or timing out: which steps ran, the kill defense row, as which user and
 with which budget, each step's exact command, the error hardening raised, the
 verifier env's keys, and the ``harden_before_verify`` sub-keys the trial's
@@ -770,7 +775,9 @@ async def test_timeout_is_known_when_no_file_can_be_made(shell, tmp_path):
         _step("slow", f"{plant}; exec sleep 20", timeout=1),
         _step("never", f"echo never >> {shlex.quote(str(log))}"),
     ]
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"^Command timed out after 1 seconds$"
+    ) as caught:
         await lockdown._run_prep_steps(env, steps)
     assert str(caught.value) == "Command timed out after 1 seconds"
     assert not log.exists()
@@ -797,7 +804,9 @@ async def test_script_that_stops_midway_is_an_error(tmp_path):
         _step("one", "true", label="one failed"),
         _step("two", "true", label="two failed"),
     ]
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"reading preparation receipt exited with rc=137"
+    ) as caught:
         await lockdown._run_prep_steps(env, steps)
     assert "reading preparation receipt exited with rc=137" in str(caught.value)
     assert "receipt" in str(caught.value)
@@ -816,7 +825,7 @@ async def test_step_output_cannot_forge_status_lines(tmp_path):
         ),
         _step("two", "true", label="two failed"),
     ]
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(RuntimeError, match=r"^one failed exited with rc=3") as caught:
         await lockdown._run_prep_steps(env, steps)
     assert str(caught.value) == f"one failed exited with rc=3\nstdout: {forged}"
 
@@ -859,7 +868,9 @@ async def test_daytona_dind_heartbeat_lines_stay_out_of_the_error(tmp_path):
             return result
 
     steps = [_step("one", "echo boom >&2; exit 4", label="one failed")]
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"^one failed exited with rc=4\nstderr: boom$"
+    ) as caught:
         await lockdown._run_prep_steps(Heartbeat(tmp_path), steps)
     assert str(caught.value) == "one failed exited with rc=4\nstderr: boom"
 
@@ -975,7 +986,9 @@ async def test_checked_timeout_stops_with_the_backend_message(tmp_path):
         _step("slow", "exec sleep 20", timeout=1, label="slow failed"),
         _step("never", f"echo never >> {shlex.quote(str(log))}"),
     ]
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"^Command timed out after 1 seconds$"
+    ) as caught:
         await lockdown._run_prep_steps(env, steps)
     assert str(caught.value) == "Command timed out after 1 seconds"
     assert not log.exists()

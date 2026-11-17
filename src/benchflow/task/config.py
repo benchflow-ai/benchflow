@@ -59,6 +59,39 @@ def effective_agent_timeout_sec(agent: Any) -> float | None:
     return value or None
 
 
+#: The run's ``--sandbox-setup-timeout`` when it names none (the CLI, a
+#: config file, the SDK): every setup step before the agent gets it. A config
+#: made in Python that does not say whether the run named it reads this value
+#: as not named (``sandbox_setup_timeout_given``).
+RUN_SANDBOX_SETUP_TIMEOUT_SEC = 120
+#: Seconds the sandbox user setup gets when the run names no
+#: ``--sandbox-setup-timeout``. Handing the workspace to the agent's user
+#: walks every file in it: SWE-bench Pro's openlibrary took longer than 120 s
+#: under load, unscored (600 s on the rc line since that change).
+DEFAULT_SANDBOX_USER_SETUP_SEC = 600
+
+
+def sandbox_user_setup_timeout_sec(run_timeout: int | None) -> int:
+    """Seconds the sandbox user setup may take: *run_timeout*, the run's
+    ``--sandbox-setup-timeout`` when the run named one
+    (:func:`run_sandbox_setup_timeout`), else
+    :data:`DEFAULT_SANDBOX_USER_SETUP_SEC`. A named value passes through as
+    given, 120 included, so it can lower the limit as well as raise it.
+    """
+    if run_timeout is None:
+        return DEFAULT_SANDBOX_USER_SETUP_SEC
+    return int(run_timeout)
+
+
+def run_sandbox_setup_timeout(config: Any) -> int | None:
+    """The run's ``sandbox_setup_timeout`` when the run named it (a flag or a
+    config key), else None. *config* is a RolloutConfig, or a stand-in
+    without ``sandbox_setup_timeout_given``, which reads as named."""
+    if getattr(config, "sandbox_setup_timeout_given", True) is False:
+        return None
+    return getattr(config, "sandbox_setup_timeout", None)
+
+
 #: How the record names the task's ``allow_cloud_metadata = true``
 #: (``[environment]`` in task.toml, ``sandbox:`` in task.md front-matter).
 CLOUD_METADATA_TASK_OPT_OUT = "allow_cloud_metadata = true in the task's environment"
@@ -1197,6 +1230,11 @@ class SandboxConfig(TaskConfigModel):
     # metadata helper adds the block's rules from outside main
     # (sandbox._metadata_helper): main then gets no NET_ADMIN for them.
     _cloud_metadata_by_helper: bool = PrivateAttr(default=False)
+    # Set by the sandbox factory for an oracle's run of an offline task whose
+    # verifier needs a network: main keeps its network, and the
+    # agent phase is offline by every-process rules
+    # (verifier_network.arm_offline_agent_phase), not by the container.
+    _offline_by_rules: bool = PrivateAttr(default=False)
     # Set by the sandbox factory when the run enforces no-web at the agent
     # layer: root's uid firewall in main needs main's NET_ADMIN then.
     _agent_uid_firewall: bool = PrivateAttr(default=False)

@@ -91,11 +91,13 @@ async def test_result_json_summarises_branch_children(tmp_path: Path):
         ],
         "children": 2,
         "cost": ANY,
+        # The children reported no output or cache-write count: unknown,
+        # not 0 (EN-624).
         "child_usage": {
             "n_input_tokens": 8,
-            "n_output_tokens": 0,
+            "n_output_tokens": None,
             "n_cache_read_tokens": 78_000,
-            "n_cache_creation_tokens": 0,
+            "n_cache_creation_tokens": None,
             "total_tokens": 78_300,
         },
         "child_timing_sec": {"agent_execution": 120.0, "verifier": 25.0},

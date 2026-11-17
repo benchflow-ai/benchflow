@@ -42,6 +42,7 @@ from benchflow._utils.reachable_write import (
     private_folder,
     private_temporary_directory,
 )
+from benchflow._utils.scoring import VERIFIER_OUTPUT_UNWRITABLE
 from benchflow._utils.text import describe_exception
 from benchflow._verifier_env import pinned_shell_prefix, sandbox_verifier_env
 from benchflow.rewards.validation import (
@@ -50,6 +51,7 @@ from benchflow.rewards.validation import (
     declared_reward_range,
     is_out_of_range_reward,
     is_valid_reward_number,
+    keeps_out_of_range_reward,
     reward_lenient_from_env,
     reward_range_phrase,
     validate_reward_map,
@@ -94,6 +96,7 @@ from benchflow.task.verifier_errors import (
     ORSEpisodeInputError,
     PluginGuardLoadError,
     PluginGuardMarkersUnreadableError,
+    PytestUnjudgedError,
     RewardFileEmptyError,
     RewardFileNotFoundError,
     RewardOutOfRangeError,
@@ -101,6 +104,8 @@ from benchflow.task.verifier_errors import (
     UnsupportedVerifierStrategyError,
     VerifierExecutionError,
     VerifierInfrastructureError,
+    VerifierLaunchRefusedError,
+    VerifierNetworkRefusedError,
     VerifierOutputParseError,
     VerifierResult,
     VerifierSetupError,
@@ -144,6 +149,22 @@ _EXECUTION_RECEIPT_DIR = PurePosixPath("/run/benchflow")
 # #1043 made the publish-path execs non-fatal for the same reason (#948). Each
 # setup command now gets 60 s, and a failed one two more tries.
 _SETUP_FAILED = "Verifier setup failed:"
+# The answers of the check before the test command.
+_STDOUT_WRITABLE = "BF stdout-writable"
+_STDOUT_UNWRITABLE = "BF stdout-unwritable"
+
+
+def stdout_probe_command(test_stdout_path: str) -> str:
+    """Open *test_stdout_path* (already quoted) for appending, writing
+    nothing, and say whether that worked. ``true`` in a subshell: a refused
+    redirection on ``:``, a special built-in, would end the shell itself
+    (exit 2) before it could answer."""
+    return (
+        f"if ( true >> {test_stdout_path} ) 2>/dev/null; "
+        f"then echo {_STDOUT_WRITABLE}; else echo {_STDOUT_UNWRITABLE}; fi"
+    )
+
+
 _SETUP_EXEC_TIMEOUT_SEC = 60
 # The start-receipt folder (see Verifier._prepare_execution_receipt).
 _RECEIPT_DIR_COMMAND = (
@@ -165,9 +186,58 @@ _UNRECORDED_WHY = ("none was taken", "the record did not finish")
 _REWARD_FILE_MAX_BYTES = 16 * 1024 * 1024
 
 
+def _hardened_network(sandbox: Any) -> bool:
+    """Whether hardening armed the verifier's network on *sandbox*."""
+    from benchflow.sandbox.verifier_network import VerifierNetwork
+
+    armed = getattr(sandbox, "_benchflow_verifier_network", None)
+    return isinstance(armed, VerifierNetwork) and armed.launch
+
+
 def _marker_tokens(markers: list[GuardMarker]) -> set[str]:
     """The pytest processes (``<guard>.<pid>-<random>``) that left *markers*."""
     return {marker.name.rpartition(".")[0] for marker in markers}
+
+
+# What an ``exited`` marker's status says (``_pytest_plugin_guard``).
+_UNJUDGED_EXIT_WORDS = {
+    "3": "ended with an internal error (exit 3)",
+    "4": "ended with a usage error (exit 4)",
+    "5": "collected no tests (exit 5)",
+}
+
+
+def _unjudged_pytest(markers: dict[str, list[GuardMarker]]) -> str | None:
+    """Why a pytest of this run judged nothing, from the guard's markers, or None.
+
+    An ``exited`` marker names the status; a ``starting`` one is a pytest
+    that stopped before it had read its whole command line. The
+    guard leaves neither where the solution may have caused the status.
+    """
+    for marker in markers.get("exited", []):
+        status, _, said = marker.detail.partition("\n")
+        words = _UNJUDGED_EXIT_WORDS.get(status.strip())
+        if words is None:
+            continue
+        said = said.strip().splitlines()
+        return (
+            f"pytest {words}"
+            + (f" ({said[-1].strip()[:300]})" if said else "")
+            + f", so it ran no test of the solution; see verifier/test-stdout.txt "
+            f"and verifier/{marker.name}"
+        )
+    starting = markers.get("starting", [])
+    if starting:
+        return (
+            "pytest stopped before it had read its whole command line, with a "
+            "usage error (exit 4): an option of a pytest plugin that is not "
+            "loaded (BenchFlow loads the plugins the image has and those the "
+            "task pins in [verifier] pytest_plugin_releases) or a required "
+            "plugin missing; so it ran no test of the solution; see "
+            "verifier/test-stdout.txt and "
+            f"verifier/{starting[0].name}"
+        )
+    return None
 
 
 # Where the verifier's env file goes while services are kept: a folder only
@@ -340,12 +410,15 @@ class Verifier:
             raise VerifierOutputParseError(
                 f"Failed to parse rewards from text file {self._rollout_paths.reward_text_path}"
             ) from e
-        if is_out_of_range_reward(reward, reward_range=self._reward_range):
+        kept = is_out_of_range_reward(reward, reward_range=self._reward_range)
+        if kept and not keeps_out_of_range_reward():
             raise RewardOutOfRangeError(
                 RewardOutOfRange("reward", reward, self._reward_range),
                 file="verifier/reward.txt",
             )
-        if not is_valid_reward_number(reward, reward_range=self._reward_range):
+        if not kept and not is_valid_reward_number(
+            reward, reward_range=self._reward_range
+        ):
             raise VerifierOutputParseError(
                 f"Reward text file {self._rollout_paths.reward_text_path} "
                 "must contain a finite numeric reward "
@@ -397,15 +470,18 @@ class Verifier:
                 aggregate_policy=aggregate_policy,
                 lenient=reward_lenient_from_env(),
                 reward_range=self._reward_range,
+                keep_out_of_range_reward=keeps_out_of_range_reward(),
             )
         except RewardOutOfRange as e:
             error = RewardOutOfRangeError(e, file="verifier/reward.json")
             if e.key != "reward" and "." not in e.key:
-                # KUMO's "seed": 3 (#1192): a number at the top is a metric.
+                # Beside a reward such a number is a detail; with
+                # none, an aggregate makes the reward from it.
                 error.args = (
-                    f"{error}; a top-level number in reward.json is a metric, "
-                    "held to the reward range: write details that are not "
-                    "scores to reward-details.json",
+                    f"{error}; with no 'reward', a top-level number in "
+                    "reward.json is a metric the reward is made from, held to "
+                    "the reward range: write details that are not scores to "
+                    "reward-details.json",
                 )
             raise error from e
         except ValueError as e:
@@ -588,6 +664,41 @@ class Verifier:
             return None
         return load_verifier_document(verifier_dir)
 
+    async def _make_verifier_code_roots(
+        self, verifier_code_dir: PurePosixPath, service: str
+    ) -> None:
+        """The task's tests, as uploaded, are root's alone before anything
+        reads them: ``docker cp`` writes the host's uid:gid, which an account
+        of the image can share. Every agent-uid process is gone by then
+        (quiesce), so this removes that dependency rather than a live route
+        (RUSAGE on). It closes no open route, so a failed chown leaves
+        the files as uploaded (as before) and is a warning in the trial's
+        record, never the trial's end."""
+        from benchflow._utils.trial_warnings import report_trial_warning
+
+        path = shlex.quote(str(verifier_code_dir))
+        try:
+            result = await exec_raw(
+                self._sandbox.exec,
+                f"chown -R 0:0 {path}",
+                user="root",
+                service=service,
+                timeout_sec=60,
+            )
+            detail = f"rc={_exec_return_code(result)}"
+            failed = _exec_return_code(result) != 0
+        except Exception as e:
+            detail, failed = type(e).__name__, True
+        if failed:
+            self._logger.warning(
+                "Could not make the uploaded tests root's alone (chown -R 0:0): %s",
+                detail,
+            )
+            report_trial_warning(
+                f"the uploaded tests at {verifier_code_dir} stay as uploaded, not "
+                f"root's alone (chown -R 0:0: {detail})"
+            )
+
     async def _link_legacy_verifier_mount(
         self,
         *,
@@ -761,6 +872,66 @@ class Verifier:
                 f"(rc={_exec_return_code(result)})"
             )
         return uid
+
+    async def _require_writable_test_stdout(
+        self, test_stdout_path: str, service: str
+    ) -> None:
+        """Refuse, before the test command, a verifier that cannot write the
+        file its output goes to.
+
+        Where the verifier folder is the host's own (Docker's bind mount of
+        the trial's verifier/), BenchFlow makes test-stdout.txt there before
+        the test command, as the host's user, mode 0644. A verifier that runs
+        as another user, not root (``[verifier] user``, else the image's own
+        USER), cannot open it: the shell's redirect fails (exit 2), test.sh
+        never runs and no reward is written, which would count as a failure
+        in every score. So the verifier's user opens it first, without
+        writing; when that open is refused, the trial ends as a verifier setup
+        failure (infrastructure, unscored) naming the file, its owner and the
+        uid.
+
+        Checked where hardening asked for the verifier's uid (every trial
+        hardened in this sandbox) and did not hear 0, so a root image adds no
+        exec; a sandbox that was never hardened (a stand-in) is left alone.
+        Hardening's read takes a receipt, which a user other than root cannot
+        give, so for the image's own non-root user it has no answer and this
+        check asks. Only the probe's own refusal decides; a probe that cannot
+        run or answers anything else leaves the test command to run as before.
+        """
+        user = self._task.config.verifier.user
+        if user in ("root", 0, "0"):
+            return
+        known = getattr(self._sandbox, "_benchflow_verifier_uid", None)
+        if not isinstance(known, str) or known == "0":
+            return
+        uid: str | None = known if known.isdigit() else None
+        try:
+            probe = await exec_raw(
+                self._sandbox.exec,
+                stdout_probe_command(test_stdout_path),
+                user=user,
+                service=service,
+                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+            )
+        except Exception:
+            return
+        answer = getattr(probe, "stdout", None)
+        if not isinstance(answer, str) or answer.strip() != _STDOUT_UNWRITABLE:
+            return
+        if uid is None:
+            with contextlib.suppress(Exception):
+                uid = await self._verifier_uid(service)
+        owner = "of an owner BenchFlow could not read"
+        with contextlib.suppress(OSError):
+            st = self._rollout_paths.test_stdout_path.stat()
+            owner = f"uid {st.st_uid}'s, mode {st.st_mode & 0o7777:04o}"
+        raise VerifierSetupError(
+            f"{_SETUP_FAILED} {VERIFIER_OUTPUT_UNWRITABLE}{test_stdout_path}: "
+            f"the verifier runs as uid {uid or 'unknown'}, and the file is "
+            f"{owner}, made by BenchFlow on the host before the test command. "
+            'Run the verifier as root ([verifier] user = "root") until '
+            "BenchFlow leaves that file to the test command"
+        )
 
     async def _env_by_root_file(
         self, command: str, env: dict[str, str] | None, service: str
@@ -1012,6 +1183,7 @@ class Verifier:
             raise AddTestsDirError(
                 "Failed to add verifier directory to sandbox."
             ) from e
+        await self._make_verifier_code_roots(verifier_code_dir, service)
 
         await self._link_legacy_verifier_mount(
             verifier_code_dir=verifier_code_dir,
@@ -1065,6 +1237,8 @@ class Verifier:
         test_command = (
             pinned_shell_prefix(env, bash_env=self.bash_env) + test_dir + test_command
         )
+        self._launch_record = self._launch_text = None
+        launched = self._held_launch(service)
         test_stdout_path = shlex.quote(
             str(
                 sandbox_paths.verifier_dir
@@ -1108,9 +1282,15 @@ class Verifier:
                 ),
             )
 
-        command = f"{{ {test_command}; }} > {test_stdout_path} 2>&1"
+        # test.sh runs the agent's code: when launched, it starts held, without
+        # NET_ADMIN, NET_RAW or SYS_PTRACE. Its record goes beside the
+        # start receipt, never in /logs/verifier, which task preflights require
+        # to hold only what test.sh writes.
         if not receipt_prepared:
             receipt = await self._prepare_execution_receipt(service)
+        if launched:
+            test_command = await self._held_command(test_command, service, receipt)
+        command = f"{{ {test_command}; }} > {test_stdout_path} 2>&1"
         if receipt is not None:
             # A probe that found no receipt marks it abandoned; a command that
             # starts after that must not run the tests (_verifier_started).
@@ -1143,6 +1323,8 @@ class Verifier:
         command = with_verifier_umask(command)
         if self._agent_may_run(service):
             command, env = await self._env_by_root_file(command, env, service)
+        if verifier_outputs_are_mounted:
+            await self._require_writable_test_stdout(test_stdout_path, service)
         if self.before_test is not None:
             await self.before_test(str(verifier_code_dir))
         # test.sh is the task's own command (C8's task route): its shell
@@ -1180,9 +1362,205 @@ class Verifier:
                 raise VerifierExecutionError(
                     f"Sandbox test-command exec failed: {describe_exception(e)}"
                 ) from e
-        return await after_test(
-            _exec_return_code(test_result), parse_rewards=parse_rewards
+        return await self._scored_under_network(
+            after_test(_exec_return_code(test_result), parse_rewards=parse_rewards),
+            service,
         )
+
+    def _held_launch(self, service: str) -> bool:
+        """Whether the verifier's command in *service* starts through the
+        bounded launch: main, or the service hardening held, unless
+        hardening said this sandbox keeps its own network (a provider's
+        separate verifier)."""
+        from benchflow.sandbox.verifier_network import VerifierNetwork
+
+        armed = getattr(self._sandbox, "_benchflow_verifier_network", None)
+        if not isinstance(armed, VerifierNetwork) or armed.launch is False:
+            # Hardening did not arm this sandbox's verifier network (a
+            # verifier driven outside a rollout), or it keeps its own.
+            return False
+        return service == "main" or armed.where == f"service {service}"
+
+    async def _held_command(
+        self, command: str, service: str, receipt: str | None
+    ) -> str:
+        """*command* through :func:`verifier_launch`. Its record goes
+        beside the start receipt *receipt*, else, on a hardened sandbox, in a
+        fresh receipt folder of its own (one root exec); never in
+        /logs/verifier, which task preflights require to hold only what
+        test.sh writes. Where no folder can be made the launch's own check in
+        the shell still refuses a held capability (exit 97)."""
+        from benchflow.sandbox.verifier_network import verifier_launch
+
+        record = f"{receipt}.launch" if receipt else None
+        if record is None and _hardened_network(self._sandbox):
+            record = await self._launch_record_folder(service)
+        self._launch_record = record
+        self._launch_text = None
+        if record is None:
+            return verifier_launch(command)
+        # The record's name is new for each attempt: nothing to clear first,
+        # and no program from the image's PATH runs as root for it.
+        return verifier_launch(command, record=record)
+
+    async def _launch_record_folder(self, service: str) -> str | None:
+        """A launch record's path in its own receipt folder (no receipt
+        state), or None when the folder's exec fails."""
+        attempt = uuid4().hex
+        folder, command = _EXECUTION_RECEIPT_DIR, _RECEIPT_DIR_COMMAND
+        try:
+            result = await exec_raw(
+                self._sandbox.exec,
+                command,
+                user="root",
+                service=service,
+                timeout_sec=_RECEIPT_DIR_BUDGET_SEC,
+            )
+            return_code = _exec_return_code(result)
+        except Exception as e:
+            return_code = None
+            self._logger.debug("verifier launch record dir failed: %s", e)
+        if return_code != 0:
+            self._logger.warning(
+                "No folder for test.sh's launch record (exit %s): the launch's "
+                "own check is the only proof of this run",
+                return_code,
+            )
+            return None
+        return str(folder / f"verifier-launch-{attempt}")
+
+    async def _check_launch_record(self, service: str) -> None:
+        """Refuse a hardened run whose command did not start held: no record
+        beside its receipt (a path that skipped the launch) or one showing
+        NET_ADMIN, NET_RAW or SYS_PTRACE."""
+        record = getattr(self, "_launch_record", None)
+        if not isinstance(record, str) or not _hardened_network(self._sandbox):
+            return
+        from benchflow.sandbox.verifier_network import launch_record_problem
+
+        async def read_record() -> str:
+            try:
+                # Builtins only: the record is one line.
+                read = await exec_raw(
+                    self._sandbox.exec,
+                    f"bf_l=; IFS= read -r bf_l 2>/dev/null < {shlex.quote(record)}; "
+                    'printf "%s\\n" "$bf_l"; true',
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                )
+                text = getattr(read, "stdout", "") or ""
+            except Exception:
+                text = ""
+            return text if isinstance(text, str) else ""
+
+        text = await read_record()
+        for _ in range(2):
+            # An empty answer is read again before it refuses: a
+            # record really missing still reads empty and refuses.
+            if text.strip():
+                break
+            await asyncio.sleep(0.5)
+            text = await read_record()
+        problem = launch_record_problem(text)
+        if problem and not text.strip():
+            # A launch that refused before test.sh (no setpriv with
+            # --bounding-set and no kit Python) says why first in its output.
+            with contextlib.suppress(Exception):
+                with destination(self._rollout_paths.test_stdout_path).open("rb") as f:
+                    head = f.read(4096).decode("utf-8", "replace")
+                said = next(
+                    (
+                        ln.partition("refused: ")[2]
+                        for ln in head.splitlines()
+                        if ln.startswith("BF verifier-launch refused: ")
+                    ),
+                    "",
+                )
+                if said:
+                    problem = f"the bounded launch refused: {said}"
+        if problem:
+            raise VerifierLaunchRefusedError(problem)
+        self._launch_text = text.strip().splitlines()[-1]
+
+    async def _scored_under_network(
+        self, scoring: Awaitable[VerifierResult], service: str
+    ) -> VerifierResult:
+        """test.sh's scoring, then its network's verdict (:meth:`_network_verdict`).
+        A test.sh that left no usable reward after refused packets ends
+        "verifier network refused" too: the refusals take precedence over
+        "verifier wrote no usable reward"."""
+        try:
+            result = await scoring
+        except (
+            RewardFileNotFoundError,
+            RewardFileEmptyError,
+            VerifierOutputParseError,
+        ) as exc:
+            await self._network_verdict(
+                VerifierResult(rewards=None), service, cause=exc
+            )
+            raise
+        return await self._network_verdict(result, service)
+
+    async def _network_verdict(
+        self,
+        result: VerifierResult,
+        service: str,
+        *,
+        cause: BaseException | None = None,
+    ) -> VerifierResult:
+        """test.sh's reward under the verifier's network: its refused
+        packets go to ``verifier/verifier-network.json``; a test.sh short of
+        full marks with any refused is the ending "verifier network refused",
+        unscored, never a silent 0."""
+        armed_here = getattr(self._sandbox, "_benchflow_verifier_network", None)
+        if (
+            service != "main"
+            and getattr(armed_here, "where", "") != f"service {service}"
+        ):
+            return result
+        from benchflow.sandbox.verifier_network import (
+            VERIFIER_NETWORK_RECORD,
+            network_refusal_ends,
+            refused_since_arm,
+        )
+
+        armed, refused = await refused_since_arm(self._sandbox)
+        if armed is None:
+            return result
+        with contextlib.suppress(OSError):
+            record = armed.record(refused)
+            launch = getattr(self, "_launch_text", None)
+            if isinstance(launch, str) and launch:
+                record["launch"] = launch
+            self._write_verifier_file(
+                self._rollout_paths.verifier_dir / VERIFIER_NETWORK_RECORD,
+                json.dumps(record, sort_keys=True) + "\n",
+            )
+        reward = (result.rewards or {}).get("reward")
+        exit_code = getattr(self, "test_return_code", None)
+        if cause is not None and refused:
+            raise VerifierNetworkRefusedError(
+                f"test.sh exited {exit_code} and left no usable reward ({cause}) "
+                f"after the verifier's network ({armed.where} under {armed.mode}: "
+                "verifier.network_mode, else the sandbox's policy) refused it "
+                f"{armed.refusal_words(refused)}, so the run is not scored. If its tests need "
+                "those hosts, set verifier.network_mode in the task (see "
+                "verifier/verifier-network.json)"
+            ) from cause
+        if cause is not None:
+            return result
+        if network_refusal_ends(refused, exit_code, reward):
+            raise VerifierNetworkRefusedError(
+                f"test.sh exited {exit_code} with reward {reward!r} after the "
+                f"verifier's network ({armed.where} under {armed.mode}: "
+                "verifier.network_mode, else the sandbox's policy) refused it "
+                f"{armed.refusal_words(refused)}, so the run is not scored. If its tests need "
+                "those hosts, set verifier.network_mode in the task (see "
+                "verifier/verifier-network.json)"
+            )
+        return result
 
     @property
     def test_command_finishable(self) -> bool:
@@ -1205,7 +1583,7 @@ class Verifier:
         finish = self._finish_test
         if finish is None:
             raise VerifierExecutionError("no test command of this run to score")
-        return await finish(return_code)
+        return await self._scored_under_network(finish(return_code), "main")
 
     async def _after_test_command(
         self,
@@ -1249,6 +1627,7 @@ class Verifier:
                     "verifier output files individually: %s",
                     e,
                 )
+        await self._check_launch_record(service)
 
         markers = (
             await self._plugin_guard_markers(guard, service)
@@ -1425,6 +1804,11 @@ class Verifier:
                 + (f" ({lines[0].strip()[:500]})" if lines else "")
                 + f"; listed in verifier/{refused[0].name}"
             )
+        unjudged = _unjudged_pytest(markers)
+        if unjudged is not None:
+            # A broken verifier must not read as the solution's 0:
+            # whatever test.sh wrote, a pytest it ran never judged anything.
+            raise PytestUnjudgedError(unjudged)
 
         if not parse_rewards:
             return VerifierResult(rewards=None)
@@ -1840,6 +2224,7 @@ class Verifier:
             raise AddTestsDirError(
                 "Failed to add verifier directory to sandbox."
             ) from e
+        await self._make_verifier_code_roots(verifier_code_dir, service)
 
         await self._link_legacy_verifier_mount(
             verifier_code_dir=verifier_code_dir,
@@ -1935,15 +2320,23 @@ class Verifier:
                 ).as_posix()
             )
         )
-        command = with_verifier_umask(
+        runner_command = (
             pinned_shell_prefix(env, bash_env=self.bash_env)
             + f"cd {shlex.quote(str(verifier_code_dir))} && "
-            f"python {shlex.quote(str(runner_path.relative_to(verifier_code_dir)))} "
-            f"> {test_stdout_path} 2>&1"
+            f"python {shlex.quote(str(runner_path.relative_to(verifier_code_dir)))}"
         )
+        self._launch_record = self._launch_text = None
+        if self._held_launch(service):
+            # The runner is the task's verifier code, which may import the
+            # agent's: it starts held, as test.sh does.
+            held = await self._held_command(runner_command, service, None)
+            runner_command = f"{{ {held}; }}"
+        command = with_verifier_umask(f"{runner_command} > {test_stdout_path} 2>&1")
         run_env: dict[str, str] | None = env
         if self._agent_may_run(service):
             command, run_env = await self._env_by_root_file(command, env, service)
+        if verifier_outputs_are_mounted:
+            await self._require_writable_test_stdout(test_stdout_path, service)
         if self.before_test is not None:
             await self.before_test(str(verifier_code_dir))
         with as_task_command(self._sandbox):
@@ -1991,6 +2384,22 @@ class Verifier:
                     e,
                 )
 
+        self.test_return_code = return_code
+        await self._check_launch_record(service)
+        return await self._scored_under_network(
+            self._criteria_runner_rewards(
+                return_code, criteria_policy, aggregate_policy
+            ),
+            service,
+        )
+
+    async def _criteria_runner_rewards(
+        self,
+        return_code: int,
+        criteria_policy: Any,
+        aggregate_policy: dict[str, Any] | None,
+    ) -> VerifierResult:
+        """The criteria runner's reward files, as it wrote them."""
         with self._empty_reward_named("criteria runner", return_code):
             if self._rollout_paths.reward_json_path.exists():
                 effective_policy = criteria_policy or aggregate_policy

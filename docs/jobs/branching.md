@@ -89,7 +89,7 @@ The trial keeps its own reward. The retry's reward is reported next to it, in `r
 
 ## Cost
 
-Each child records its tokens by class (input, output, cache read, cache write), its USD when the provider reports one, and its sandbox-seconds. Claude subscription runs report no USD.
+Each child records its tokens by class (input, output, cache read, cache write), its USD when the provider reports one, and its sandbox-seconds. Claude subscription runs report no USD. A count the child's agent never reported is null, never 0: all of them when the agent died before reporting any, or one class (a cache count) its report left out. A fork's, trial's or job's token total that leaves such a child out is a floor (`children_without_usage`, shown as `2,100+ tokens`), and a sum or estimate with an unknown part is unknown.
 
 `bench eval branches` adds an estimate at list price, marked `~` and never mixed with a reported price. Cache reads usually dominate the token count but cost a tenth of input, so compare classes, not totals.
 

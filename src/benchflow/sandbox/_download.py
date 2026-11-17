@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import shlex
 from functools import wraps
 from pathlib import Path
 
@@ -111,3 +112,30 @@ def private_download(*, directory: bool):
         return download
 
     return decorate
+
+
+# `docker system dial-stdio` with the request on stdin, the write side held
+# open until the daemon has answered and closed (Connection: close). Fed
+# straight from a pipe, dial-stdio half-closes the connection at the
+# request's end, and Docker Engine 29.9 reads that as the client going away:
+# a missing path's 404 comes back as 499 ("request cancelled by client"), so
+# a download's absence check failed with "archive metadata failed (HTTP
+# 499)". Engine 29.1 answered 404 either way. A fifo keeps the write side open;
+# `sh -c` so the snippet runs the same under a VM's /bin/sh -c or alone
+# (for Daytona's DinD VM; for DockerSandbox).
+_DIAL_STDIO_HELD = (
+    'd=$(mktemp -d) && mkfifo "$d/in" || exit 1; '
+    '{dial} < "$d/in" & pid=$!; '
+    'exec 3>"$d/in"; cat >&3; '
+    'wait "$pid"; rc=$?; exec 3>&-; rm -rf "$d"; exit "$rc"'
+)
+#: For a shell (Daytona's DinD VM): its own ``docker system dial-stdio``.
+DIAL_STDIO_HELD = "sh -c " + shlex.quote(
+    _DIAL_STDIO_HELD.format(dial="docker system dial-stdio")
+)
+
+
+def dial_stdio_held(dial: list[str]) -> list[str]:
+    """*dial* (``docker <daemon flags> system dial-stdio``) as an argv whose
+    standard input is held open the same way (:data:`DIAL_STDIO_HELD`)."""
+    return ["sh", "-c", _DIAL_STDIO_HELD.format(dial='"$@"'), "sh", *dial]

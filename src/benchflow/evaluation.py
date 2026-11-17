@@ -23,7 +23,7 @@ import shlex
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,7 +54,7 @@ from benchflow._utils.learner_memory import (
     memory_delta_from_skills,
     patch_learner_generation_artifact,
 )
-from benchflow._utils.result_paths import load_task_results
+from benchflow._utils.result_paths import interrupted_trial_results, load_task_results
 from benchflow._utils.reward_events import memory_summary
 from benchflow._utils.scoring import (
     ACP_ERROR,
@@ -80,6 +80,7 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
     count_guard_refusals,
     count_score_outcomes,
+    is_output_unwritable,
     is_unrecoverable_startup_error,
     mean_reward_caveat,
     mean_reward_every_trial,
@@ -109,7 +110,12 @@ from benchflow.budget import (
     with_cancelled_budget,
 )
 from benchflow.checkpoint_retry import retry_summary, run_checkpoint_retry
-from benchflow.diagnostics import DIAGNOSTIC_REGISTRY, summary_warning
+from benchflow.diagnostics import (
+    DIAGNOSTIC_REGISTRY,
+    rewards_outside_range_summary,
+    summary_warning,
+)
+from benchflow.effort_record import effort_mismatches, effort_unmeasured
 from benchflow.environment.manifest import EnvironmentManifest, load_manifest
 from benchflow.errors import UserError
 from benchflow.learner_store import LearnerState, LearnerStore
@@ -902,6 +908,50 @@ def _unexpected_text(exc: BaseException) -> str:
     return f"unexpected exception: {exc}"
 
 
+def _rows_as_read(rows: dict[str, dict], job_dir: Path) -> dict[str, dict]:
+    """``rows`` as every reader scores them: a trial that
+    :func:`benchflow.integration_health.judged_integration_failure` finds
+    broken on read has its reward withheld in summary.json too, judged on
+    its result.json whether it ran now or was resumed."""
+    from benchflow.integration_health import row_as_read
+
+    return {
+        task: row_as_read(row, job_dir / row["rollout_name"])
+        if row.get("rollout_name")
+        else row
+        for task, row in rows.items()
+    }
+
+
+def _typed_as_read(
+    typed: dict[str, RolloutResult], rows: dict[str, dict]
+) -> dict[str, RolloutResult]:
+    """``typed`` with the judge's answer in ``rows``: a trial the
+    judge withholds on read is withheld in ``EvaluationResult.results`` too,
+    so the CLI's outcome lines count what its Score line and summary.json
+    count. A trial the run itself withheld keeps its fields and gets its
+    recorded finding."""
+    from benchflow.integration_health import result_as_read
+
+    as_read = dict(typed)
+    for task, result in typed.items():
+        row = rows.get(task) or {}
+        info = row.get("integration_failure_info")
+        if not isinstance(info, Mapping):
+            continue
+        if result.error_category == AGENT_INTEGRATION and result.rewards is None:
+            # Withheld by the run: the finding its result.json records.
+            as_read[task] = result_as_read(result)
+            continue
+        judged = copy.copy(result)
+        judged.rewards = row.get("rewards")
+        judged.error = row.get("error")
+        judged.error_category = row.get("error_category")
+        judged.integration_failure_info = dict(info)
+        as_read[task] = judged
+    return as_read
+
+
 @dataclass
 class RetryConfig:
     """Configuration for retry behavior.
@@ -1064,6 +1114,9 @@ class RetryConfig:
             # A guard refusal is decided by what the agent left; another
             # attempt would be a re-roll (V2-R1-A-1).
             or plugin_guard_error_message(verifier_error) is not None
+            # its check is decided by the task's verifier user and the
+            # host's file: another attempt meets it again.
+            or is_output_unwritable(verifier_error)
         ):
             return False
         return classify_verifier_error(verifier_error) == VERIFIER_INFRA
@@ -1400,7 +1453,9 @@ def _job_folders(jobs_dir: Path) -> list[Path]:
 # <task>--seed-<n>: a resume may run a wider selection),
 # infrastructure retries (retry: a resume reruns those trials anyway), what is
 # kept or checked afterwards (checkpoint_keep, freeze_workspace, integrity,
-# usage_tracking), provenance (source_provenance, dataset_task_digests), how
+# usage_tracking), whether the run named its sandbox setup limit
+# (sandbox_setup_timeout_given: the limit itself is compared), provenance
+# (source_provenance, dataset_task_digests), how
 # the install is done (fresh_install: the proxy and agent install in the trial
 # instead of from a cached layer) and agent_defaulted. agent_env is compared by the entries evaluation.json
 # records (secret-looking names and values are never stored, so a rotated key
@@ -2368,6 +2423,10 @@ class EvaluationConfig:
     agent: str = DEFAULT_AGENT
     model: str | None = None
     reasoning_effort: str | None = None
+    # Where the effort was asked (--effort, a model's [effort], an
+    # agent setting); kept across dataclasses.replace(), which sees the
+    # suffix already taken off the model.
+    reasoning_effort_source: str | None = None
     # "acp" (default) or "native": run the agent through its own CLI in
     # headless JSON mode instead of its ACP adapter (benchflow.native_harness).
     harness: str = "acp"
@@ -2386,6 +2445,10 @@ class EvaluationConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    # Whether the run named sandbox_setup_timeout (a flag or a config key):
+    # then the sandbox user setup gets it as given, else 600 s. None reads
+    # it from the value: anything but the default 120 was named.
+    sandbox_setup_timeout_given: bool | None = field(default=None, kw_only=True)
     skip_agent_install: bool = False
     # Every trial installs the model proxy and the agent itself, with no
     # cached layer (``--fresh-install``).
@@ -2498,6 +2561,8 @@ class EvaluationConfig:
         return parse_checkpoint_policy(self.checkpoints, keep=self.checkpoint_keep)
 
     def __post_init__(self):
+        if self.sandbox_setup_timeout_given is None:
+            self.sandbox_setup_timeout_given = self.sandbox_setup_timeout != 120
         self.budget = Budget.coerce(self.budget)
         # A YAML or JSON config can give a number or a bool (MAX_THINKING_TOKENS:
         # 32000); the agent gets a string, and resume compares strings.
@@ -2525,6 +2590,19 @@ class EvaluationConfig:
                 )
             self.model = None
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        from benchflow.effort_request import effort_source, settle_effort
+
+        # Every way of asking counts: a model[effort] suffix or a
+        # CODEX_CONFIG effort is the run's effort, and a level the agent's
+        # model cannot take is refused here, before any trial starts.
+        settled = settle_effort(
+            self.agent, self.model, self.reasoning_effort, self.agent_env
+        )
+        # The effort suffix is consumed: the model id goes upstream bare.
+        self.model, self.reasoning_effort = settled.model, settled.effort
+        self.reasoning_effort_source = effort_source(
+            self.reasoning_effort_source, settled.source
+        )
         from benchflow.native_harness.harnesses import (
             check_harness,
             normalize_harness,
@@ -2805,6 +2883,20 @@ def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
             receipt["_budget_task_name"] = folder.name.rsplit("__", 1)[0]
             results.append(receipt)
     return results, without_receipt
+
+
+def _spend_all_attempts(job_dir: Path) -> dict[str, Any]:
+    """summary.json's ``spend_all_attempts`` (``attempt_spend_summary``)
+    from every attempt the job folder records; None when a record of one
+    cannot be read (a resume refuses the job then too)."""
+    from benchflow._utils.evaluation_results import attempt_spend_summary
+
+    try:
+        attempts, _ = _recorded_attempts(job_dir)
+    except ValueError as exc:
+        logger.warning("summary.json has no spend_all_attempts: %s", exc)
+        return {"spend_all_attempts": None}
+    return attempt_spend_summary(attempts)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -3234,7 +3326,13 @@ class Evaluation:
             "codex_apps_policy": cfg.codex_apps_policy,
             "sandbox_user": cfg.sandbox_user,
             "sandbox_locked_paths": cfg.sandbox_locked_paths,
-            "sandbox_setup_timeout": cfg.sandbox_setup_timeout,
+            # Only a value the job named: a written default would read back
+            # as named, and the sandbox user setup would get 120, not 600.
+            **(
+                {"sandbox_setup_timeout": cfg.sandbox_setup_timeout}
+                if cfg.sandbox_setup_timeout_given
+                else {}
+            ),
             "skip_install": cfg.skip_agent_install,
             "fresh_install": cfg.fresh_install,
             "allow_cloud_metadata": cfg.allow_cloud_metadata,
@@ -3445,6 +3543,7 @@ class Evaluation:
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
+        sandbox_setup_timeout_given = "sandbox_setup_timeout" in raw
 
         agent_name = raw.get("agent", DEFAULT_AGENT)
         # Optional environment-plane manifest path. Keeps YAML and CLI in
@@ -3484,6 +3583,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            sandbox_setup_timeout_given=sandbox_setup_timeout_given,
             skip_agent_install=bool(raw.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
             allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
@@ -3740,6 +3840,7 @@ class Evaluation:
         sandbox_user = raw.get("sandbox_user", "agent")
         sandbox_locked_paths = raw.get("sandbox_locked_paths")
         sandbox_setup_timeout = raw.get("sandbox_setup_timeout", 120)
+        sandbox_setup_timeout_given = "sandbox_setup_timeout" in raw
 
         # Map legacy include/exclude task filters. Accept both singular and
         # plural spellings ("include"/"includes", "exclude"/"excludes") so
@@ -3772,6 +3873,7 @@ class Evaluation:
             sandbox_user=sandbox_user,
             sandbox_locked_paths=sandbox_locked_paths,
             sandbox_setup_timeout=sandbox_setup_timeout,
+            sandbox_setup_timeout_given=sandbox_setup_timeout_given,
             skip_agent_install=bool(agent_cfg.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
             allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
@@ -3830,6 +3932,23 @@ class Evaluation:
         return _is_task_dir(
             path, image_supplied=self._config.environment_manifest is not None
         )
+
+    def _warn_lost_report(self, task_dir: Path) -> None:
+        """Warn, once per task, of a test.sh whose CTRF report never reaches
+        /logs/verifier/ctrf.json: the task grades itself, so it runs, and the
+        run keeps no per-test results (``bench check`` warns in the
+        same words). A task.md criterion graded from the report is the task.md
+        plan's refusal."""
+        from benchflow.task.ctrf_report import verifier_script_ctrf_issue
+        from benchflow.task.paths import TaskPaths
+
+        warned = self.__dict__.setdefault("_lost_report_warned", set())
+        if task_dir in warned:
+            return
+        warned.add(task_dir)
+        issue = verifier_script_ctrf_issue(TaskPaths(task_dir).test_path)
+        if issue is not None:
+            logger.warning("Task %r: %s", task_dir.name, issue)
 
     def _get_task_dirs(self) -> list[Path]:
         """Get all valid task directories.
@@ -3909,6 +4028,7 @@ class Evaluation:
         # root is a single-task input too; it runs as its materialized package.
         if source_format is not None:
             natives = materialize(self._tasks_dir)
+            self._warn_lost_report(self._tasks_dir)
             # with seeds, filters match the source folder (like child folders below)
             base = self._tasks_dir.name if seeds else natives[0].name
             if not picked(base):
@@ -3924,6 +4044,7 @@ class Evaluation:
                 )
             if not picked(self._tasks_dir.name):
                 return []
+            self._warn_lost_report(self._tasks_dir)
             return [self._tasks_dir]
 
         # Batch input: collect valid child tasks; warn (don't silently drop) on
@@ -3962,6 +4083,7 @@ class Evaluation:
 
                 try:
                     selected.extend(materialize(d))
+                    self._warn_lost_report(d)
                 except TaskMdError as exc:
                     # A task.md draft 2 package BenchFlow refuses must not
                     # vanish from a batch silently, nor stop the healthy ones.
@@ -3977,6 +4099,7 @@ class Evaluation:
                 if linked:
                     # The same rule as a task named on its own (above).
                     logger.warning("Task %r: %s", d.name, linked[0])
+                self._warn_lost_report(d)
                 selected.append(d)
                 continue
             malformed = _task_parse_error(d)
@@ -4302,6 +4425,7 @@ class Evaluation:
                 "integration_failure_info",
                 "loop",
                 "verifier_isolation",
+                "effort",
             )
         ):
             return
@@ -4332,6 +4456,11 @@ class Evaluation:
         loop = persisted.get("loop")
         if isinstance(loop, dict):
             payload.setdefault("loop", loop)
+        # The effort block: summary.json counts a fresh trial's
+        # effort mismatches and unmeasured efforts by it, as a resumed one's.
+        effort = persisted.get("effort")
+        if isinstance(effort, dict):
+            payload.setdefault("effort", effort)
 
     async def _run_single_task(
         self, task_dir: Path, cfg: EvaluationConfig
@@ -4371,7 +4500,18 @@ class Evaluation:
             # awaits wedged below the phase-level timeouts — see
             # benchflow.rollout._deadline. A trip surfaces here as a normal
             # infra-retryable error result.
-            result = await rollout.run()
+            try:
+                result = await rollout.run()
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                # The trial keeps its own folder and id, with what it spent
+                # one with no folder yet is the job's to record.
+                recorded = rollout.result_after_failure(exc)
+                if recorded is None:
+                    raise
+                logger.error("[ERR] %s: %s", task_dir.name, _unexpected_text(exc))
+                return recorded
             policy = cfg.retry_policy()
             if policy is not None:
                 try:
@@ -4419,6 +4559,7 @@ class Evaluation:
             agent=cfg.agent,
             model=cfg.model,
             reasoning_effort=cfg.reasoning_effort,
+            reasoning_effort_source=cfg.reasoning_effort_source,
             harness=cfg.harness,
             prompts=cfg.prompts,
             agent_env=cfg.agent_env,
@@ -4436,6 +4577,7 @@ class Evaluation:
             sandbox_user=cfg.sandbox_user,
             sandbox_locked_paths=cfg.sandbox_locked_paths,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            sandbox_setup_timeout_given=cfg.sandbox_setup_timeout_given,
             skip_agent_install=cfg.skip_agent_install,
             agent_idle_timeout=cfg.agent_idle_timeout,
             context_root=cfg.context_root,
@@ -4547,6 +4689,11 @@ class Evaluation:
 
     def _log_and_report(self, td: Path, result: RunResult) -> None:
         """Log one rollout's outcome and fire the on_result callback."""
+        from benchflow.integration_health import result_as_read
+
+        # As every reader scores it: what the log line,
+        # on_result and Evaluation.stream() report, never a withheld 0.0.
+        result = result_as_read(result)
         reward = result.rewards.get("reward") if result.rewards else None
         status = {"passed": "PASS", "failed": "FAIL"}.get(result.score_outcome, "ERR")
         err_msg = result.error or result.verifier_error
@@ -5447,6 +5594,9 @@ class Evaluation:
 
             prefetch = prefetch_local_subnet_allocator()
         try:
+            # Before the host checks, the job folder and the Daytona reaper,
+            # preflight or not.
+            self._refuse_script_backend()
             if self._preflight:
                 self._check_before_run()
             # Not a preflight check: the CLI builds Evaluation(preflight=False),
@@ -5615,10 +5765,20 @@ class Evaluation:
         )
 
         cfg = self._config
+        self._refuse_script_backend()
         check_sandbox_name(cfg.environment)
         check_agent_names([cfg.agent])
         check_agent_routes([cfg])
         check_host([cfg])
+
+    def _refuse_script_backend(self) -> None:
+        """A ``script:`` agent on a backend without its runner
+        (``refuse_script_backend``), refused before the host checks (a
+        Daytona key check) and the job-start Daytona reaper, which lists the
+        owner's sandboxes and can delete stale ones."""
+        from benchflow.agents.scripts import refuse_script_backend
+
+        refuse_script_backend(self._config.agent, self._config.environment)
 
     def _acquire_job_lock(self) -> JobLock:
         """Create the job lock, refusing a live holder and taking over a dead one.
@@ -5679,6 +5839,7 @@ class Evaluation:
             self.learner_store = self._load_or_init_learner_store()
 
     async def _run_unlocked(self) -> EvaluationResult:
+        self._refuse_script_backend()
         self._maybe_start_daytona_reap()
         task_dirs = self._get_task_dirs()
         if not task_dirs:
@@ -5840,7 +6001,10 @@ class Evaluation:
             planned_total,
             len(completed),
             len(remaining),
-            _classify_completed_outcomes(completed),
+            # As the run's summary will count them.
+            _classify_completed_outcomes(
+                _rows_as_read(completed, self._jobs_dir / self._job_name)
+            ),
         )
 
         start = time.time()
@@ -5916,6 +6080,10 @@ class Evaluation:
             )
             all_results[name] = payload
 
+        # Every trial as every reader scores it: the one judge
+        # bf.load_job and collect_metrics call, so summary.json agrees.
+        all_results = _rows_as_read(all_results, job_dir)
+        typed_results = _typed_as_read(typed_results, all_results)
         # EvaluationResult is the score/invariant view. summary.json is the
         # audit view consumed by result checkers, so verifier evidence remains
         # visible there even when the score view gives agent errors precedence.
@@ -6034,10 +6202,30 @@ class Evaluation:
             "memory": memory,
             "memory_scores": memory_scores,
             **skill_invocation_summary(all_results),
-            **usage_summary(all_results),
+            # A trial stopped before it finished still spent.
+            **usage_summary({**all_results, **interrupted_trial_results(job_dir)}),
+            # Every attempt's spend, retried and stopped ones included: the
+            # scope the other readers state beside their own.
+            **_spend_all_attempts(job_dir),
             **loop_summary(all_results),
             **solve_rate_summary(all_results),
+            # Rewards outside the range kept as test.sh wrote them, with
+            # each trial's note (integrity audit or off).
+            **rewards_outside_range_summary(all_results),
             **tool_call_summary(all_results),
+            # The trials whose effort is not the one asked for.
+            **(
+                {"effort_mismatches": mismatches}
+                if (mismatches := effort_mismatches(all_results))
+                else {}
+            ),
+            # Beside them, the trials that asked for an effort nothing
+            # measured.
+            **(
+                {"effort_unmeasured": unmeasured}
+                if (unmeasured := effort_unmeasured(all_results))
+                else {}
+            ),
             # Retries from checkpoints, next to (never merged into) the score.
             **(
                 {"checkpoint_retries": retries}
@@ -6123,6 +6311,11 @@ class Evaluation:
                 summary["seeded"] = seed_report(job_dir)
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Seeded-rollout report failed: %s", e)
+        # What test.sh needed before the agent's turn: trials refused, warned,
+        # and the wrong-0 candidates (task/test_sh_preflight.py).
+        from benchflow.task.test_sh_preflight import summary as test_sh_summary
+
+        summary["test_sh_preflight"] = test_sh_summary(all_results.values(), job_dir)
         summary_text = json.dumps(summary, indent=2)
         # Whole or not at all: a full disk leaves no 0-byte summary.json.
         from benchflow._utils.disk_space import write_text_atomic
@@ -6131,6 +6324,16 @@ class Evaluation:
         # Backward-compat: also write to jobs_dir root for tooling that
         # expects summary.json at the top level.
         write_text_atomic(self._jobs_dir / "summary.json", summary_text)
+        # A trial the judge withholds on read is unscored in its own export
+        # records too: before they are aggregated, and before
+        # a stop goes on. Synchronous, and ``except Exception`` never catches
+        # a cancel or Ctrl-C, so it cannot hold a stop up or swallow one.
+        try:
+            from benchflow.rollout._results import rewrite_job_exports_as_read
+
+            rewrite_job_exports_as_read(job_dir)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Rewriting judged trials' exports failed: %s", e)
         if stopped:
             # The partial result, for --summary-out; then the stop goes on.
             self.result = job_result
@@ -6171,6 +6374,16 @@ class Evaluation:
             if count > 0:
                 logger.warning(summary_warning(diag_cls, count, job_result.total))
 
+        outside = rewards_outside_range_summary(all_results)
+        if outside:
+            kept = outside["rewards_outside_range"]["count"]
+            logger.warning(
+                f"{kept} tasks had a reward outside 0-1 (or the task's "
+                "reward_range), recorded as test.sh wrote it: "
+                "summary.json rewards_outside_range and each result.json's "
+                "reward_out_of_range_info have the note"
+            )
+
         # dep-install failures don't have a structured diagnostic
         # yet — keep the standalone warning until they do.
         dep_install_count = verifier_error_category_counts.get(VERIFIER_DEP_INSTALL, 0)
@@ -6181,10 +6394,30 @@ class Evaluation:
                 f"dependency install — check verifier_error_category in result.json "
                 f"and fix the task's index policy"
             )
-        if scoring_fields["verifier_errored"] > 0:
-            pct = scoring_fields["verifier_errored"] / job_result.total * 100
+        # A lost verifier sandbox, or BenchFlow's own verifier setup failing, is
+        # the infrastructure's, not a bug in the task's verifier script: only
+        # the rest count here, as on 0.10.
+        infra_errored = sum(
+            verifier_error_category_counts.get(category, 0)
+            for category in (INFRA_ERROR, VERIFIER_INFRA)
+        )
+        unwritable = sum(
+            1
+            for r in all_results.values()
+            if is_output_unwritable(r.get("verifier_error"))
+        )
+        if unwritable > 0:
             logger.warning(
-                f"{scoring_fields['verifier_errored']} tasks ({pct:.0f}%) had verifier errors — "
+                f"{unwritable} task(s) were not scored: their verifier runs as a "
+                "user other than root that cannot write its output file, which "
+                "BenchFlow made on the host before the test command. "
+                'Run the verifier as root ([verifier] user = "root")'
+            )
+        script_errored = max(0, scoring_fields["verifier_errored"] - infra_errored)
+        if script_errored > 0:
+            pct = script_errored / job_result.total * 100
+            logger.warning(
+                f"{script_errored} tasks ({pct:.0f}%) had verifier errors — "
                 f"check verifier scripts for bugs"
             )
             if pct > 20:

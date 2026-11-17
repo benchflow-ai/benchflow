@@ -436,22 +436,30 @@ def test_usage_source_type_contract_tracks_trusted_sources():
     from typing import get_args
 
     from benchflow.usage_tracking import (
+        RESULT_USAGE_SOURCES,
         TRUSTED_USAGE_SOURCES,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        USAGE_SOURCE_AGENT_REPORTED,
+        USAGE_SOURCE_NONE,
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_UNAVAILABLE,
         UsageSource,
         normalize_usage_source,
     )
 
+    # EN-374 adds the result vocabulary; the pre-EN-374 names stay readable.
     assert set(get_args(UsageSource)) == {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
         USAGE_SOURCE_UNAVAILABLE,
+        USAGE_SOURCE_AGENT_REPORTED,
+        USAGE_SOURCE_NONE,
+        *RESULT_USAGE_SOURCES,
     }
     assert {
         USAGE_SOURCE_PROVIDER_RESPONSE,
         USAGE_SOURCE_AGENT_NATIVE_ACP,
+        *RESULT_USAGE_SOURCES,
     } == TRUSTED_USAGE_SOURCES
     assert normalize_usage_source(USAGE_SOURCE_AGENT_NATIVE_ACP) == (
         USAGE_SOURCE_AGENT_NATIVE_ACP

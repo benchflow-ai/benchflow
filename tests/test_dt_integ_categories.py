@@ -34,6 +34,7 @@ ERROR_FAMILIES = {
     "image_build": "sandbox",
     "registry_auth": "sandbox",
     "task_config": "other",
+    "script_backend": "refusal",
     "disk_full": "other",
     "other": "other",
 }
@@ -44,8 +45,12 @@ VERIFIER_FAMILIES = {
     "verifier_infra": "infra",
     "verifier_timeout": "verifier_timeout",
     "reward_out_of_range": "verifier_error",
+    "verifier_tools_refused": "verifier_error",
     "disk_full": "verifier_error",
     "infra_failure": "infra",
+    "verifier_network_refused": "verifier_error",
+    "verifier_launch_refused": "verifier_error",
+    "verifier_network_unheld": "verifier_error",
 }
 CASES = [
     (channel, category, family)

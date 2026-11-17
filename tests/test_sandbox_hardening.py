@@ -461,13 +461,13 @@ class TestVerifierDirWipe:
         was a silent no-op: on Daytona (python:3.12-slim) an
         agent-planted /app/conftest.py survived hardening.
         """
-        from benchflow.sandbox.lockdown import _build_cleanup_cmd
+        from benchflow.sandbox.lockdown import _build_cleanup_cmd, _conftest_sweep_cmd
 
-        sweep = next(
-            part for part in _build_cleanup_cmd().split("; ") if "conftest.py" in part
-        )
+        sweep = _conftest_sweep_cmd()
+        assert sweep in _build_cleanup_cmd()
         assert "-prune" in sweep, "the sweep must still skip /proc, /sys and /dev"
         assert "-delete" not in sweep
+        # The plain sweep, when the protected Python cannot judge the matches.
         assert "-exec rm -f -- {} +" in sweep
 
     def test_cleanup_cmd_purges_py_from_tmp(self):
@@ -1009,7 +1009,7 @@ class TestVerifierEnv:
             "PIP_CONFIG_FILE",
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_COUNT",
-            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(6)),
+            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(5)),
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
@@ -1037,7 +1037,9 @@ class TestVerifierEnv:
         }
         assert git["core.hooksPath"] == "/dev/null"
         assert git["core.fsmonitor"] == "false"
-        assert git["diff.external"] == ""
+        # EN-708: never pinned (an empty value made git diff run ""); the
+        # freeze's purge removes an external diff the agent named.
+        assert "diff.external" not in git
         assert VERIFIER_ENV["PYTHONDONTWRITEBYTECODE"] == "1"
         assert (
             VERIFIER_ENV["PATH"]

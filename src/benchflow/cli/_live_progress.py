@@ -31,6 +31,7 @@ from rich.text import Text
 
 from benchflow._utils import live_activity
 from benchflow._utils.log_context import current_task, task_prefix
+from benchflow._utils.result_metadata import cost_is_floor
 from benchflow.cli._shared import console
 from benchflow.usage_tracking import is_trusted_usage_source
 
@@ -247,7 +248,12 @@ class LiveEvalProgress:
 
         self._tokens = 0
         self._cost = 0.0
+        # Trials in _cost priced from some of their calls only: a floor.
+        self._cost_partial = 0
+        # Trials with a cost in _cost: none means unknown, never $0.
+        self._priced = 0
         self._completed = 0  # finished this run (for telemetry coverage)
+        self._no_model_call = 0  # of those, the ones that made no model call
         self._covered = 0  # finished with trusted token telemetry
 
         self._live: Live | None = None
@@ -291,14 +297,22 @@ class LiveEvalProgress:
                 self._errored += 1
 
             self._completed += 1
+            if getattr(result, "no_usage_reason", None) == "no_model_call":
+                self._no_model_call += 1
             tokens = getattr(result, "total_tokens", None)
             cost = getattr(result, "cost_usd", None)
             if is_trusted_usage_source(getattr(result, "usage_source", None)):
                 self._covered += 1
                 if tokens:
                     self._tokens += int(tokens)
-                if cost:
+                if isinstance(cost, int | float) and not isinstance(cost, bool):
+                    self._priced += 1
                     self._cost += float(cost)
+                    # A floor by any cause: a count that missed calls, an
+                    # unpriced warm-up, or cache writes a priced route left
+                    # unreported (cost_is_floor); the footer names none.
+                    if cost_is_floor(result):
+                        self._cost_partial += 1
 
     # -- context manager ----------------------------------------------------
 
@@ -335,7 +349,9 @@ class LiveEvalProgress:
             passed, failed, errored = self._passed, self._failed, self._errored
             running = dict(self._running)
             tokens, cost = self._tokens, self._cost
+            cost_partial, priced = self._cost_partial, self._priced
             completed, covered = self._completed, self._covered
+            no_model_call = self._no_model_call
             elapsed = time.monotonic() - self._run_start
             stopped = self._stopped
 
@@ -475,7 +491,14 @@ class LiveEvalProgress:
             "dim",
         )
         footer.append(" · ")
-        footer.append(f"${cost:.2f}" if covered else "$—", style="dim")
+        # "$—" while no finished trial has a cost; a floor while one that
+        # made a model call has none, or was priced from some of its calls
+        # only.
+        floor = cost_partial or priced < completed - no_model_call
+        footer.append(
+            (f"${cost:.2f}" + ("+ (floor)" if floor else "")) if priced else "$—",
+            style="dim",
+        )
         if completed:
             footer.append(f" · telemetry {covered / completed * 100:.0f}%", style="dim")
         parts.append(footer)

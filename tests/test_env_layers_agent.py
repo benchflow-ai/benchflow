@@ -882,6 +882,91 @@ class TestPrune:
         assert alias not in docker.tags
         assert layer_tag(AGENT, keys[0]) not in docker.tags
 
+    async def test_a_dead_processs_trial_tag_another_prune_untagged_first(
+        self, docker, monkeypatch
+    ):
+        """Two prunes at once list the same dead process's tag, and the other
+        untags it first, so this prune's untag finds no such image. The tag
+        is gone all the same: it holds nothing, and the layer goes like any
+        other past the bounds (before, the failed untag kept it in use)."""
+        keys = await self._build(docker, 1)
+        alias = f"bf__layer__killed-trial:{self._dead_owner_tag(monkeypatch)}"
+        docker.tags[alias] = docker.tags[layer_tag(AGENT, keys[0])]
+        run = docker.run
+
+        async def the_other_prune_untags_first(*args, **kwargs):
+            if list(args) == ["image", "rm", "--no-prune", alias]:
+                del docker.tags[alias]
+            return await run(*args, **kwargs)
+
+        monkeypatch.setattr(
+            DockerLayers, "_docker", staticmethod(the_other_prune_untags_first)
+        )
+        report = await DockerLayers().prune(keep=0)
+        assert ["image", "rm", "--no-prune", alias] in docker.calls
+        assert not report.aliases_removed  # the other prune untagged it
+        assert report.removed == keys and not report.in_use
+        assert layer_tag(AGENT, keys[0]) not in docker.tags
+
+    @pytest.mark.parametrize("races", [1, env_layers._LIST_ATTEMPTS - 1])
+    async def test_a_listing_another_clients_removal_broke_is_listed_again(
+        self, docker, monkeypatch, races
+    ):
+        """With the containerd image store, `docker image ls` fails while
+        another client deletes an image (its content is gone when the daemon
+        reads it). The prune and the inventory list again (they raised
+        LayerError, which failed the prune after a trial's layer build)."""
+        keys = await self._build(docker, 1)
+        monkeypatch.setattr(env_layers, "_LIST_RETRY_SEC", 0)
+        run = docker.run
+        left = {"n": 0}
+        race = (
+            "Error response from daemon: rpc error: code = NotFound desc = "
+            f"content digest sha256:{'4f' * 32}: not found"
+        )
+
+        async def racing(*args, **kwargs):
+            if list(args[:2]) == ["image", "ls"] and left["n"] > 0:
+                left["n"] -= 1
+                docker.calls.append(list(args))
+                return env_layers._Run(stdout="", stderr=race, code=1)
+            return await run(*args, **kwargs)
+
+        monkeypatch.setattr(DockerLayers, "_docker", staticmethod(racing))
+        left["n"] = races
+        report = await DockerLayers().prune(keep=0)
+        assert report.removed == keys
+        lists = [c for c in docker.calls if c[:2] == ["image", "ls"]]
+        assert len(lists) >= races + 1
+        left["n"] = races
+        await DockerLayers().inventory()
+        assert left["n"] == 0
+
+    async def test_a_listing_that_keeps_failing_still_fails_the_prune(
+        self, docker, monkeypatch
+    ):
+        """Listing again is for that one race, a bounded number of times: any
+        other failure, or the race every time, still raises."""
+        await self._build(docker, 1)
+        monkeypatch.setattr(env_layers, "_LIST_RETRY_SEC", 0)
+        calls = []
+        answers = {
+            "race": "rpc error: code = NotFound desc = content digest sha256:ab: not found",
+            "other": "Cannot connect to the Docker daemon",
+        }
+        for kind, text in answers.items():
+            calls.clear()
+
+            async def failing(*args, text=text, **kwargs):
+                calls.append(list(args))
+                return env_layers._Run(stdout="", stderr=text, code=1)
+
+            monkeypatch.setattr(DockerLayers, "_docker", staticmethod(failing))
+            with pytest.raises(env_layers.LayerError, match="could not list layers"):
+                await DockerLayers().prune(keep=0)
+            want = env_layers._LIST_ATTEMPTS if kind == "race" else 1
+            assert len(calls) == want, kind
+
     async def test_a_dead_processs_trial_tag_counts_for_no_bytes(
         self, docker, monkeypatch
     ):

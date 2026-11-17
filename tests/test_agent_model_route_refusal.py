@@ -6,6 +6,12 @@ before a job exists (REPORT B11).
 'xiaomi' ... only supports openai-completions") although MiMo's token plan
 serves Anthropic Messages at ``${XIAOMI_BASE_URL%/v1}/anthropic``; and a pair
 no provider serves created a job whose every trial errored.
+
+Claude Code calls the gateway, which calls each route in the route's own
+protocol, so no provider refuses it (EN-501: ``-a claude -m
+openrouter/anthropic/claude-opus-5.5`` was refused, by the run and not its dry
+run). Codex is still refused, by both, where the provider serves no Responses
+API.
 """
 
 from __future__ import annotations
@@ -25,8 +31,9 @@ from benchflow.runtime import check_rollout_config
 
 MIMO = "xiaomi/mimo-v2.6-pro"
 TOKEN_PLAN = "https://token-plan.example.test/v1"
-# deepseek serves OpenAI chat completions only.
+# deepseek serves OpenAI chat completions only: no Responses API for Codex.
 UNROUTABLE = "deepseek/deepseek-v4-pro"
+OPENROUTER_CLAUDE = "openrouter/anthropic/claude-opus-5.5"
 
 
 def _xiaomi_env(base: str = TOKEN_PLAN) -> dict[str, str]:
@@ -111,7 +118,7 @@ def _task(root: Path) -> Path:
     return task
 
 
-@pytest.mark.parametrize("agent", ["claude-agent-acp", "claude"])
+@pytest.mark.parametrize("agent", ["codex-acp", "codex"])
 def test_bench_eval_run_refuses_an_unroutable_pair_before_a_job_exists(
     tmp_path, monkeypatch, agent
 ):
@@ -144,7 +151,7 @@ def test_bench_eval_run_refuses_an_unroutable_pair_before_a_job_exists(
     assert result.exit_code == 1, result.output
     assert started == []
     assert not (tmp_path / "jobs").exists()
-    assert "requires provider protocol 'anthropic-messages'" in result.stderr
+    assert "requires provider protocol 'openai-responses'" in result.stderr
     assert "No job was created" in result.stderr
 
 
@@ -187,7 +194,7 @@ def test_evaluation_run_refuses_an_unroutable_pair_before_a_job_exists(tmp_path)
         tasks_dir=task.parent,
         jobs_dir=tmp_path / "jobs",
         config=EvaluationConfig(
-            agent="claude-agent-acp", model=UNROUTABLE, environment="docker"
+            agent="codex-acp", model=UNROUTABLE, environment="docker"
         ),
     )
 
@@ -202,7 +209,7 @@ def test_a_single_rollout_refuses_an_unroutable_pair(tmp_path):
         check_rollout_config(
             RolloutConfig(
                 task_path=task,
-                agent="claude-agent-acp",
+                agent="codex-acp",
                 model=UNROUTABLE,
                 environment="docker",
             )
@@ -216,6 +223,10 @@ def test_a_single_rollout_refuses_an_unroutable_pair(tmp_path):
         ("claude-agent-acp", "claude-haiku-4-5"),
         ("claude-agent-acp", "zai/glm-5"),
         ("claude-agent-acp", "vllm/Qwen/Qwen3-Coder"),
+        ("claude-agent-acp", UNROUTABLE),
+        ("claude", UNROUTABLE),
+        ("claude-agent-acp", OPENROUTER_CLAUDE),
+        ("claude", OPENROUTER_CLAUDE),
     ],
 )
 def test_routable_pairs_pass(tmp_path, agent, model):
@@ -223,3 +234,83 @@ def test_routable_pairs_pass(tmp_path, agent, model):
     check_rollout_config(
         RolloutConfig(task_path=task, agent=agent, model=model, environment="docker")
     )
+
+
+# ── Claude Code on a provider that serves no Anthropic Messages (EN-501) ────
+
+
+def test_the_gateway_calls_openrouter_chat_completions_for_claude_code():
+    """Claude Code's Messages calls go to the gateway, which calls OpenRouter's
+    chat completions: the route of ``bench run -a claude -m
+    openrouter/anthropic/claude-opus-5.5 -e max``, refused before the run."""
+    env = resolve_agent_env(
+        "claude-agent-acp", OPENROUTER_CLAUDE, {"OPENROUTER_API_KEY": "or-test-key"}
+    )
+    route = resolve_litellm_route(OPENROUTER_CLAUDE, env)
+
+    assert route.upstream_model == "openai/anthropic/claude-opus-5.5"
+    assert route.litellm_params["api_base"] == "https://openrouter.ai/api/v1"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("agent", ["claude", "claude-agent-acp"])
+def test_bench_run_takes_claude_code_on_openrouter(
+    tmp_path, monkeypatch, agent, dry_run
+):
+    started: list[object] = []
+    monkeypatch.setattr(
+        "benchflow.cli.main.run_batch_eval", lambda *a, **k: started.append(a)
+    )
+    task = _task(tmp_path)
+    args = [
+        "run",
+        str(task),
+        "-a",
+        agent,
+        "-m",
+        OPENROUTER_CLAUDE,
+        "-e",
+        "max",
+        "--sandbox",
+        "docker",
+        "--jobs-dir",
+        str(tmp_path / "jobs"),
+        "--agent-env",
+        "OPENROUTER_API_KEY=or-test-key",
+    ]
+
+    result = CliRunner().invoke(app, [*args, *(["--dry-run"] if dry_run else [])])
+
+    assert result.exit_code == 0, result.output
+    assert len(started) == (0 if dry_run else 1)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_bench_run_and_its_dry_run_refuse_the_same_pair(tmp_path, monkeypatch, dry_run):
+    started: list[object] = []
+    monkeypatch.setattr(
+        "benchflow.cli.main.run_batch_eval", lambda *a, **k: started.append(a)
+    )
+    task = _task(tmp_path)
+    args = [
+        "run",
+        str(task),
+        "-a",
+        "codex",
+        "-m",
+        UNROUTABLE,
+        "--sandbox",
+        "docker",
+        "--jobs-dir",
+        str(tmp_path / "jobs"),
+        "--agent-env",
+        "DEEPSEEK_API_KEY=test-key",
+    ]
+
+    result = CliRunner().invoke(app, [*args, *(["--dry-run"] if dry_run else [])])
+
+    assert result.exit_code == 1, result.output
+    assert started == []
+    assert not (tmp_path / "jobs").exists()
+    assert "requires provider protocol 'openai-responses'" in result.stderr
+    assert "No job was created" in result.stderr

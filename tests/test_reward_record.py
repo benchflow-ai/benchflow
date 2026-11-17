@@ -85,14 +85,28 @@ class TestExtraFields:
         assert rewards == {"reward": 1.0, **details}
         assert _ensure_canonical_rewards(rewards) == rewards
 
-    def test_a_number_in_the_details_is_a_metric(self, tmp_path: Path) -> None:
-        # KUMO's real reward.json has "seed": 3 (#1192): a top-level number
-        # is a metric, held to the range, and the warning says where details
-        # go instead.
+    def test_a_number_in_the_details_is_kept_beside_the_score(
+        self, tmp_path: Path
+    ) -> None:
+        # KUMO's real reward.json has "seed": 3 (#1192). Until EN-278 a
+        # top-level number was a metric held to the range and scored 0; with
+        # reward.txt's score and no aggregate, the score is reward.txt's alone
+        # and the seed is a detail.
         (tmp_path / "reward.txt").write_text("1")
         (tmp_path / "reward.json").write_text(json.dumps({"answer": "x", "seed": 3}))
+        rewards = _verifier(tmp_path)._parse_reward_json_with_text_compat()
+        assert rewards == {"reward": 1.0, "answer": "x", "seed": 3}
+        assert _ensure_canonical_rewards(rewards) == rewards
+
+    def test_a_number_beside_an_aggregate_is_still_a_metric(
+        self, tmp_path: Path
+    ) -> None:
+        # Where an aggregate makes the reward from the top-level numbers, they
+        # decide the score: held to the range, and the warning says where
+        # details go instead (#1192).
+        (tmp_path / "reward.json").write_text(json.dumps({"acc": 1.0, "seed": 3}))
         with pytest.raises(VerifierOutputParseError) as caught:
-            _verifier(tmp_path)._parse_reward_json_with_text_compat()
+            _verifier(tmp_path)._parse_reward_json(aggregate_policy={"method": "mean"})
         assert _raw(caught.value) == ("seed", 3, "verifier/reward.json")
         assert "reward-details.json" in str(caught.value)
 
@@ -137,6 +151,7 @@ def _raw(exc: BaseException) -> tuple:
     )
 
 
+@pytest.mark.usefixtures("strict_reward_rule")
 class TestOutOfRange:
     def test_reward_txt_above_one_keeps_its_raw_value(self, tmp_path: Path) -> None:
         # AlgoTune's speedup reward (#1178).
@@ -190,6 +205,7 @@ class TestOutOfRange:
         assert _raw(caught.value) == (None, None, None)
 
 
+@pytest.mark.usefixtures("strict_reward_rule")
 class TestOutOfRangeOutcome:
     @pytest.fixture
     def verify_harness(self, tmp_path):
@@ -510,8 +526,9 @@ class TestScoredTimeoutIsScored:
         from benchflow._utils.evaluation_results import usage_summary
 
         usage = usage_summary({"hello": SCORED_TIMEOUT, "crash": ERRORED})
-        assert usage["total_tokens"] == 2100
-        assert usage["total_cost_usd"] == pytest.approx(0.0025)
+        # The errored trial spent its tokens too: they count (EN-374).
+        assert usage["total_tokens"] == 2100 * 2
+        assert usage["total_cost_usd"] == pytest.approx(0.0025 * 2)
         assert usage["telemetry_coverage"] == 1.0
 
     def test_score_summary_and_solve_rates(self) -> None:
@@ -579,6 +596,8 @@ class TestNoAgentNamed:
                 "--dry-run",
                 *extra,
             ],
+            # The dry run resolves the agent's env as each trial does (EN-632).
+            env={"ANTHROPIC_API_KEY": "fake-not-a-key"},
         )
 
     def test_warns_once_naming_the_default_agent_and_model(self, tmp_path) -> None:

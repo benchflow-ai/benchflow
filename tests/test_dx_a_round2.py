@@ -113,7 +113,10 @@ def test_another_clone_failure_is_gits_last_line_not_a_repr(tmp_path, monkeypatc
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(benchmark_repos.subprocess, "run", run)
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"git could not clone benchflow-ai/skillsbench: fatal: Remote branch nope not found",
+    ) as caught:
         benchmark_repos._clone_repo("benchflow-ai", "skillsbench", "nope", None)
     assert str(caught.value) == (
         "git could not clone benchflow-ai/skillsbench: fatal: Remote branch "

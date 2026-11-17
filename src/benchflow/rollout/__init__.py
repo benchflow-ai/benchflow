@@ -82,7 +82,10 @@ from benchflow._utils.log_context import trial_log_context
 from benchflow._utils.reachable_write import ReachablePath, destination
 from benchflow._utils.scoring import ORIGINAL_ERROR, PROVIDER_STALL
 from benchflow._utils.text import describe_exception
-from benchflow._utils.trial_warnings import recording_trial_warnings
+from benchflow._utils.trial_warnings import (
+    recording_trial_warnings,
+    report_trial_warning,
+)
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.codex_connector_policy import (
     effective_apps_policy,
@@ -120,6 +123,7 @@ from benchflow.contracts import (
 from benchflow.contracts.planes import install_agent_with_policy
 from benchflow.diagnostics import (
     AgentModelNotOfferedError,
+    AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
     IntegrationFailureDiagnostic,
@@ -139,6 +143,7 @@ from benchflow.native_harness.harnesses import HARNESS_NATIVE, native_harness_fo
 from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
+from benchflow.rewards.validation import out_of_range_reward_rule
 from benchflow.rollout import _deadline as _deadline
 from benchflow.rollout._artifacts import (
     collect_rollout_artifacts,
@@ -146,6 +151,13 @@ from benchflow.rollout._artifacts import (
 )
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
+from benchflow.rollout._cost import (
+    INCOMPLETE_SANDBOX_PROXY,
+    apply_list_price,
+    mark_incomplete_usage,
+    salvage_from_session_log,
+    salvage_from_stream_log,
+)
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
 from benchflow.rollout._results import (
     _environment_manifest_metadata as _environment_manifest_metadata,
@@ -172,7 +184,11 @@ from benchflow.rollout._review import (
     read_admitted_result,
 )
 from benchflow.rollout._separate_verifier import run_separate_verifier
-from benchflow.rollout._session_log import price_from_session_log
+from benchflow.rollout._session_log import (
+    copy_codex_session_log,
+    count_codex_tokens,
+    price_from_session_log,
+)
 from benchflow.rollout._setup import VerifierPublicationError
 from benchflow.rollout._setup import (
     _agent_launch_with_web_policy as _agent_launch_with_web_policy,
@@ -302,6 +318,10 @@ from benchflow.skill_policy import (
 )
 from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKILL
 from benchflow.task import keep_services
+from benchflow.task.config import (
+    run_sandbox_setup_timeout,
+    sandbox_user_setup_timeout_sec,
+)
 from benchflow.task.verifier_errors import (
     verifier_failure_reason,
     verifier_infrastructure_failure,
@@ -908,6 +928,328 @@ def _with_harness_cpus(method):
     return run
 
 
+# --- What a trial checks before any sandbox -------------------------
+# Rollout.setup and a dry run (cli/main.py) both run these, in this order, on
+# the RolloutConfig the run builds, so a dry run refuses what a trial refuses
+# before its sandbox, and only that.
+
+
+def validate_rollout_transports(cfg: Any) -> None:
+    """Refuse an agent (the primary or a scene role) the sandbox gives no live
+    transport (``validate_agent_transport``)."""
+    from benchflow.task.plan_validation import validate_agent_transport
+
+    validate_agent_transport(
+        sandbox=cfg.environment, agent=cfg.primary_agent, harness=cfg.harness
+    )
+    if not is_scripted_agent(cfg.primary_agent):
+        for step in compile_scenes_to_steps(cfg.effective_scenes):
+            validate_agent_transport(
+                sandbox=cfg.environment,
+                agent=scene_step_role(step).agent,
+                harness=cfg.harness,
+            )
+
+
+def apply_rollout_config_override(task: Any, cfg: Any) -> None:
+    """C-axis overlay: deep-merge ``cfg.config_override`` into the task's
+    resolved config at the rollout layer (not in the Task constructor), so
+    only this run's tasks are patched and every downstream read sees it.
+    No-op when None."""
+    if cfg.config_override:
+        from benchflow._utils.config_override import apply_config_override
+
+        task.config = apply_config_override(task.config, cfg.config_override)
+
+
+def resolve_rollout_verifier_isolation(task: Any, cfg: Any) -> Any:
+    """Where the verifier runs and why, refusing a separate verifier the
+    sandbox cannot run (Rollout.setup and the dry run). Moves the
+    task's verifier to its separate sandbox when it runs there."""
+    from benchflow.integrity.trial import resolve_verifier_isolation
+    from benchflow.task.verifier_sandbox import effective_verifier_sandbox
+
+    # One setting before resolution, the plan check and config.json.
+    cfg.verifier_sandbox = effective_verifier_sandbox(
+        cfg.verifier_sandbox, cfg.separate_verifier
+    )
+    isolation = resolve_verifier_isolation(
+        task.config, cfg.verifier_sandbox, cfg.integrity
+    )
+    if isolation[1] != "task":
+        # --verifier-sandbox separate, or strict integrity (which implies
+        # it), runs the verifier in the separate verifier sandbox. A job
+        # refuses unsupported tasks at plan time (check_separate_plan);
+        # this is the backstop for SDK callers: refused here, before any
+        # sandbox exists, where that sandbox cannot run this task.
+        from benchflow.integrity.trial import (
+            force_separate_verifier,
+            separate_launch_issues,
+        )
+
+        issues = separate_launch_issues(
+            task.config,
+            sandbox=cfg.environment,
+            task_dir=cfg.task_path,
+            environment_manifest=cfg.environment_manifest,
+        )
+        if issues:
+            setting = (
+                "integrity=strict"
+                if isolation[1] == "integrity-strict"
+                else "separate_verifier=True"
+                if cfg.separate_verifier
+                else "verifier_sandbox=separate"
+            )
+            raise ValueError(
+                f"{setting} runs the verifier in a separate verifier "
+                "sandbox, which this task cannot use here:\n- " + "\n- ".join(issues)
+            )
+        task.config = force_separate_verifier(task.config)
+    return isolation
+
+
+def preflight_rollout_kept_services(
+    task: Any, cfg: Any, *, verifier_only: bool = False
+) -> None:
+    """Refuse, before any sandbox, a native Daytona trial whose kept services
+    the freezer cannot hold (``KeptServiceFreezerUnavailable``). Runs after
+    the verifier's isolation is resolved: a separate verifier keeps nothing,
+    so is never refused. A verifier-only rollout launches no agent."""
+    if verifier_only:
+        return
+    from benchflow.task.keep_services import preflight_daytona
+
+    preflight_daytona(
+        task,
+        cfg.task_path,
+        sandbox=cfg.environment,
+        agent=cfg.primary_agent,
+        sandbox_user=cfg.sandbox_user,
+        base_image=cfg.base_image_override,
+    )
+
+
+def preflight_rollout_network_policy(
+    task: Any, cfg: Any, *, verifier_only: bool = False
+) -> None:
+    """Refuse, before any sandbox, a trial whose agent-phase network policy
+    its backend cannot hold (``runtime_capabilities.NETWORK_POLICY_REFUSALS``:
+    restricted policies on Daytona). The dry run and setup call it
+    alike. A verifier-only rollout launches no agent."""
+    if verifier_only:
+        return
+    from benchflow.task.runtime_capabilities import (
+        UnsupportedTaskFeatureError,
+        network_policy_issue,
+    )
+
+    agent_launches = not (
+        is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
+    )
+    issue = network_policy_issue(
+        task.config,
+        sandbox=str(cfg.environment),
+        agent_launches=agent_launches,
+        task_dir=Path(cfg.task_path),
+    )
+    if issue is not None:
+        raise UnsupportedTaskFeatureError([issue])
+    # A service the task declares for BenchFlow to start in main, beside a
+    # model agent under a restricted policy: refused before the turn.
+    from benchflow.task.runtime_capabilities import environment_services_issue
+
+    issue = environment_services_issue(
+        task.config,
+        sandbox=str(cfg.environment),
+        agent_launches=agent_launches,
+        task_dir=Path(cfg.task_path),
+        manifest=getattr(cfg, "environment_manifest", None),
+    )
+    if issue is not None:
+        raise UnsupportedTaskFeatureError([issue])
+
+
+class RolloutGateInputs:
+    """What the sandbox-free plan gate reads besides the task: whether an
+    agent launches, the web policy, an offline operator script, the agent's
+    egress denylist and its resolved environment."""
+
+    def __init__(
+        self,
+        *,
+        has_agent_launch: bool,
+        disallow_web_tools: bool,
+        script_agent_offline: bool,
+        egress_denylist: Any,
+        agent_env: dict[str, str],
+    ) -> None:
+        self.has_agent_launch = has_agent_launch
+        self.disallow_web_tools = disallow_web_tools
+        self.script_agent_offline = script_agent_offline
+        self.egress_denylist = egress_denylist
+        self.agent_env = agent_env
+
+
+def rollout_gate_inputs(task: Any, cfg: Any, planes: Any) -> RolloutGateInputs:
+    """The gate's inputs for a trial of ``cfg`` on ``task`` (overridden), with
+    the agent environment ``planes`` resolves (``--agent-env`` and a matrix
+    entry's included), refusing an offline agent with no sandbox user."""
+    from benchflow.task.plan_validation import agent_egress_policy
+
+    has_agent_launch = not (
+        is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
+    )
+    disallow_web_tools = has_agent_launch and (
+        _task_disallows_internet(task) or cfg.self_gen_no_internet
+    )
+    # An operator script under an offline agent phase in an online sandbox
+    # gets the same sandbox and uid firewall as a model agent, minus the
+    # model route (it has none).
+    script_agent_offline = is_operator_script(
+        cfg.primary_agent
+    ) and _task_agent_offline(task)
+    egress_denylist = agent_egress_policy(
+        task,
+        agent=cfg.primary_agent,
+        sandbox_user=cfg.sandbox_user,
+        disallow_web_tools=disallow_web_tools,
+    )
+    if has_agent_launch and not cfg.sandbox_user and _task_agent_offline(task):
+        # Only the agent user's uid firewall holds an agent offline in an
+        # online sandbox; an agent running as root would keep the network.
+        raise ValueError(
+            "[agent] network_mode='no-network' requires a sandbox_user "
+            "(--sandbox-user agent): only the agent user can be kept offline "
+            "in an online sandbox"
+        )
+    # A route that sets an effort of its own is sent the run's.
+    from benchflow.effort_request import with_route_effort
+
+    agent_env = _apply_web_policy(
+        with_route_effort(
+            cfg.primary_agent,
+            cfg.primary_model,
+            cfg.primary_reasoning_effort,
+            planes.resolve_agent_env(
+                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+            ),
+        ),
+        disallow=disallow_web_tools,
+    )
+    return RolloutGateInputs(
+        has_agent_launch=has_agent_launch,
+        disallow_web_tools=disallow_web_tools,
+        script_agent_offline=script_agent_offline,
+        egress_denylist=egress_denylist,
+        agent_env=agent_env,
+    )
+
+
+def check_rollout_role_credentials(cfg: Any, planes: Any) -> None:
+    """Each scene role's key, before any sandbox: resolved as the role's
+    scene resolves it (``cfg.agent_env`` under the role's ``env``) and checked
+    as ``runtime.check_credentials`` checks a job's, so only a missing key
+    (``MissingCredentialError``) is raised here; anything else the scene's
+    own resolution still raises. A role with no key for its own agent used
+    to fail at its scene, after the sandbox and the scenes before it."""
+    from benchflow.errors import MissingCredentialError
+
+    seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
+    for scene in cfg.scenes:
+        for role in scene.roles:
+            if not role.agent or role.agent == "task-runtime":
+                continue
+            if is_scripted_agent(role.agent):
+                continue
+            env = {**(cfg.agent_env or {}), **(role.env or {})}
+            key = (role.agent, role.model, tuple(sorted(env.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                planes.resolve_agent_env(role.agent, role.model, env)
+            except MissingCredentialError:
+                raise
+            except Exception:
+                continue
+
+
+def run_rollout_plan_gate(
+    task: Any,
+    cfg: Any,
+    inputs: RolloutGateInputs,
+    *,
+    planes: Any,
+    sandbox_instance: Any = None,
+    custom_backend: bool = False,
+    verifier_only: bool = False,
+) -> Any:
+    """The same sandbox-free plan gate as `bench tasks check`, using the
+    resolved auth route (native logins do not use proxy extras); returns the
+    proxy install record config.json keeps. Then each scene role's key
+    (:func:`check_rollout_role_credentials`), as ``planes`` resolves it."""
+    from benchflow.task.plan_validation import validate_task_plan
+
+    record = validate_task_plan(
+        cfg.task_path,
+        sandbox=cfg.environment,
+        agent=cfg.primary_agent,
+        model=cfg.primary_model,
+        harness=cfg.harness,
+        sandbox_user=cfg.sandbox_user,
+        agent_env=inputs.agent_env,
+        task=task,
+        custom_backend=custom_backend,
+        sandbox_instance=sandbox_instance,
+        force_sandbox_local=inputs.disallow_web_tools
+        or inputs.egress_denylist is not None,
+        disallow_web_tools=inputs.disallow_web_tools,
+        execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
+    )
+    if not verifier_only:
+        check_rollout_role_credentials(cfg, planes)
+    return record
+
+
+def dry_run_plan_gate(cfg: Any, planes: Any) -> None:
+    """The checks a trial of ``cfg`` makes before any sandbox up to its plan
+    gate, in Rollout.setup's order, creating nothing: the agents' transports, the
+    config override, the verifier's isolation, kept services on Daytona, the
+    gate's inputs, the sandbox-free plan gate and each scene role's key.
+    ``bench run --dry-run`` runs it on the RolloutConfig the run builds for
+    each task, with the run's planes. Setup's later checks, also
+    before any sandbox, are not run here: the task's skill policy
+    (``resolve_task_skill_policy``) and the staging copy's refusals
+    (``--context-root``, ``--base-image-override``, skill copies)."""
+    from benchflow.task.task import Task
+
+    validate_rollout_transports(cfg)
+    task = Task(cfg.task_path)
+    apply_rollout_config_override(task, cfg)
+    resolve_rollout_verifier_isolation(task, cfg)
+    preflight_rollout_kept_services(task, cfg)
+    preflight_rollout_network_policy(task, cfg)
+    run_rollout_plan_gate(
+        task, cfg, rollout_gate_inputs(task, cfg, planes), planes=planes
+    )
+
+
+def _turn_cut_kind(exc: BaseException) -> str | None:
+    """How a turn that raised was cut: ``cancel`` (Ctrl-C and
+    SIGINT, SIGTERM: asyncio cancels the trial's task), ``budget_stop``
+    (the job's budget cancelled it), ``lost`` (the sandbox or the agent's
+    transport went away). None for the agent's own error (an ACP or
+    native-harness error, a spent login): the agent ended that turn."""
+    from benchflow.budget import budget_stopped_this_trial
+
+    if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt):
+        return "budget_stop" if budget_stopped_this_trial() else "cancel"
+    if isinstance(exc, AgentProtocolError):
+        return None
+    return "lost"
+
+
 class Rollout:
     """Decomposed trial lifecycle with independently-callable phases."""
 
@@ -923,6 +1265,13 @@ class Rollout:
     # PERF-B's queued sandbox stop of this trial, when it was queued: a
     # discarded warm-pool trial removes its folder only after it.
     _queued_stop: asyncio.Task[None] | None = None
+    # What test.sh needs, resolved before the agent's turn as the verifier
+    # will run it (task/test_sh_preflight.py); None when not checked.
+    _test_sh_preflight: dict[str, Any] | None = None
+    # A branch child's source verdict (its parent's, or the checkpoint's
+    # trial's result.json): the child carries it and never judges the
+    # restored, post-agent sandbox (RUSAGE on).
+    _test_sh_preflight_inherited: dict[str, Any] | None = None
 
     def __init__(self, config: RolloutConfig) -> None:
         self._planes = config.planes or default_rollout_planes()
@@ -1025,6 +1374,27 @@ class Rollout:
         self._has_unproxied_native_session = False
         self._mixed_usage_finalized = False
         self._native_usage_checkpoint: dict[str, int | None] | None = None
+        # the end-of-turn counts per (model, unproxied), for the list
+        # price (rollout._cost.apply_list_price), and
+        # what a count from the agent's own logs found, per response, to price.
+        self._native_usage_slices: dict[tuple[str, bool], dict[str, int]] = {}
+        # Cache counts an agent's end-of-turn report left out.
+        self._native_usage_unreported: set[str] = set()
+        self._usage_slices: list[Any] | None = None
+        # Whether a turn ended without its end-of-turn report (a timeout, a
+        # cancel, a lost sandbox): teardown then counts the trial from the
+        # agent's own logs (rollout._cost), once.
+        self._usage_report_missing = False
+        self._usage_salvaged = False
+        # How a turn was cut, when one was (``_turn_cut_kind``): a call in
+        # flight then may be missing from an agent's own count.
+        self._turn_cut: str | None = None
+        # Why the trial's count misses calls, when a count step knows
+        # (rollout._cost.mark_incomplete_usage).
+        self._usage_incomplete_reason: str | None = None
+        # Why an in-sandbox model proxy's imported log may miss calls (its
+        # server's usage_log_shortfall); kept whatever else counts.
+        self._proxy_usage_incomplete_reason: str | None = None
         # Provider failure snapshotted during cleanup, after the usage proxy
         # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
         # on stop()). Read by _provider_failure() so ACP-error classification can
@@ -1398,18 +1768,7 @@ class Rollout:
         # or sandbox creation. Use execution's compiler so later scenes, role
         # names and repeated turns cannot bypass admission through the primary
         # agent's session-factory exemption. Scripted runs bypass scene turns.
-        from benchflow.task.plan_validation import validate_agent_transport
-
-        validate_agent_transport(
-            sandbox=cfg.environment, agent=cfg.primary_agent, harness=cfg.harness
-        )
-        if not is_scripted_agent(cfg.primary_agent):
-            for step in compile_scenes_to_steps(cfg.effective_scenes):
-                validate_agent_transport(
-                    sandbox=cfg.environment,
-                    agent=scene_step_role(step).agent,
-                    harness=cfg.harness,
-                )
+        validate_rollout_transports(cfg)
 
         if cfg.sandbox_user is None:
             logger.warning(
@@ -1454,54 +1813,9 @@ class Rollout:
         # config here at the rollout layer (not in the Task constructor), so only
         # this run's tasks are patched and every downstream read sees it. No-op
         # when None.
-        if cfg.config_override:
-            from benchflow._utils.config_override import apply_config_override
+        apply_rollout_config_override(self._task, cfg)
 
-            self._task.config = apply_config_override(
-                self._task.config, cfg.config_override
-            )
-
-        from benchflow.integrity.trial import resolve_verifier_isolation
-        from benchflow.task.verifier_sandbox import effective_verifier_sandbox
-
-        # One setting before resolution, the plan check and config.json.
-        cfg.verifier_sandbox = effective_verifier_sandbox(
-            cfg.verifier_sandbox, cfg.separate_verifier
-        )
-        self._verifier_isolation = resolve_verifier_isolation(
-            self._task.config, cfg.verifier_sandbox, cfg.integrity
-        )
-        if self._verifier_isolation[1] != "task":
-            # --verifier-sandbox separate, or strict integrity (which implies
-            # it), runs the verifier in the separate verifier sandbox. A job
-            # refuses unsupported tasks at plan time (check_separate_plan);
-            # this is the backstop for SDK callers: refused here, before any
-            # sandbox exists, where that sandbox cannot run this task.
-            from benchflow.integrity.trial import (
-                force_separate_verifier,
-                separate_launch_issues,
-            )
-
-            issues = separate_launch_issues(
-                self._task.config,
-                sandbox=cfg.environment,
-                task_dir=cfg.task_path,
-                environment_manifest=cfg.environment_manifest,
-            )
-            if issues:
-                setting = (
-                    "integrity=strict"
-                    if self._verifier_isolation[1] == "integrity-strict"
-                    else "separate_verifier=True"
-                    if cfg.separate_verifier
-                    else "verifier_sandbox=separate"
-                )
-                raise ValueError(
-                    f"{setting} runs the verifier in a separate verifier "
-                    "sandbox, which this task cannot use here:\n- "
-                    + "\n- ".join(issues)
-                )
-            self._task.config = force_separate_verifier(self._task.config)
+        self._verifier_isolation = resolve_rollout_verifier_isolation(self._task, cfg)
 
         if cfg.separate_verifier_include and not separate_verifier_requested(
             self._task.config
@@ -1512,19 +1826,8 @@ class Rollout:
                 self._task.name,
             )
 
-        if not verifier_only:
-            # After the verifier's sandbox is resolved: a separate verifier
-            # keeps nothing, so is never refused.
-            from benchflow.task.keep_services import preflight_daytona
-
-            preflight_daytona(
-                self._task,
-                cfg.task_path,
-                sandbox=cfg.environment,
-                agent=cfg.primary_agent,
-                sandbox_user=cfg.sandbox_user,
-                base_image=cfg.base_image_override,
-            )
+        preflight_rollout_kept_services(self._task, cfg, verifier_only=verifier_only)
+        preflight_rollout_network_policy(self._task, cfg, verifier_only=verifier_only)
 
         prepare_terminal_review(self)
         if cfg.task_digest is None:
@@ -1534,38 +1837,12 @@ class Rollout:
 
         # Scripted runners (oracle, nop) and the task runtime launch no agent:
         # no launch-command lookup, and no agent-only web or egress policy.
-        has_agent_launch = not (
-            is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
-        )
-        self._disallow_web_tools = has_agent_launch and (
-            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
-        )
-        # An operator script under an offline agent phase in an online sandbox
-        # gets the same sandbox and uid firewall as a model agent, minus the
-        # model route (it has none).
-        self._script_agent_offline = is_operator_script(
-            cfg.primary_agent
-        ) and _task_agent_offline(self._task)
-        from benchflow.task.plan_validation import agent_egress_policy
-
-        self._egress_denylist = agent_egress_policy(
-            self._task,
-            agent=cfg.primary_agent,
-            sandbox_user=cfg.sandbox_user,
-            disallow_web_tools=self._disallow_web_tools,
-        )
-        if (
-            has_agent_launch
-            and not cfg.sandbox_user
-            and _task_agent_offline(self._task)
-        ):
-            # Only the agent user's uid firewall holds an agent offline in an
-            # online sandbox; an agent running as root would keep the network.
-            raise ValueError(
-                "[agent] network_mode='no-network' requires a sandbox_user "
-                "(--sandbox-user agent): only the agent user can be kept offline "
-                "in an online sandbox"
-            )
+        gate_inputs = rollout_gate_inputs(self._task, cfg, self._planes)
+        has_agent_launch = gate_inputs.has_agent_launch
+        self._disallow_web_tools = gate_inputs.disallow_web_tools
+        self._script_agent_offline = gate_inputs.script_agent_offline
+        self._egress_denylist = gate_inputs.egress_denylist
+        self._agent_env = gate_inputs.agent_env
         self._disallow_hosted_search = self._egress_denylist is not None
         # The compose file the sandbox factory stacks (setup.py picks the
         # same folder): main's network_mode and the other services.
@@ -1582,34 +1859,19 @@ class Rollout:
             environment_dir=task_environment_dir,
             allow_cloud_metadata=bool(getattr(cfg, "allow_cloud_metadata", False)),
         )
-        self._agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
-            ),
-            disallow=self._disallow_web_tools,
-        )
         # The same sandbox-free plan gate as `bench tasks check`, using the
         # resolved auth route (native logins do not use proxy extras). Its
         # proxy install record goes in config.json. A resolve can take
         # minutes, so the gate runs off the event loop, before any sandbox.
-        from benchflow.task.plan_validation import validate_task_plan
-
         self._litellm_proxy_record = await asyncio.to_thread(
-            validate_task_plan,
-            cfg.task_path,
-            sandbox=cfg.environment,
-            agent=cfg.primary_agent,
-            model=cfg.primary_model,
-            harness=cfg.harness,
-            sandbox_user=cfg.sandbox_user,
-            agent_env=self._agent_env,
-            task=self._task,
-            custom_backend=cfg.planes is not None or self._env_externally_owned,
+            run_rollout_plan_gate,
+            self._task,
+            cfg,
+            gate_inputs,
             sandbox_instance=self._env,
-            force_sandbox_local=self._disallow_web_tools
-            or self._egress_denylist is not None,
-            disallow_web_tools=self._disallow_web_tools,
-            execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
+            custom_backend=cfg.planes is not None or self._env_externally_owned,
+            planes=self._planes,
+            verifier_only=verifier_only,
         )
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
@@ -1804,6 +2066,10 @@ class Rollout:
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            sandbox_setup_timeout_given=cfg.sandbox_setup_timeout_given,
+            sandbox_user_setup_timeout=sandbox_user_setup_timeout_sec(
+                run_sandbox_setup_timeout(cfg)
+            ),
             skip_agent_install=cfg.skip_agent_install,
             timeout=self._timeout,
             started_at=self._started_at,
@@ -1869,10 +2135,32 @@ class Rollout:
         self._configure_daytona_layers()
         self._request_layers()
         self._reserve_host_proxy()
+        # The trial's network policy holds every process from its first
+        # instruction: the start's (start_sandbox, whatever made the
+        # sandbox) holds the services until they are covered, and main too
+        # where nothing of BenchFlow's there needs the network (a model
+        # agent's install and model proxy do: R1, checked at the
+        # agent's arm instead). A sandbox its caller started went through it
+        # too, before the run named its agent (Environment.start).
+        if self._env_externally_owned:
+            from benchflow.sandbox import service_cover
+
+            refusal = service_cover.caller_start_refusal(
+                self._env,
+                self._task,
+                agent=self._config.primary_agent,
+                verifier_only=self._verifier_only,
+            )
+            if refusal is not None:
+                raise service_cover.ServiceCoverError(refusal)
         await _start_env_and_upload(
             self._env,
             self._config.task_path,
             self._timing,
+            task=self._task,
+            agent=self._config.primary_agent,
+            verifier_only=self._verifier_only,
+            agent_uid=self._agent_uid_start_hold(),
             skip_start=self._env_externally_owned,
             on_started=_capture_and_persist_sandbox,
             uploads=self._config.uploads,
@@ -2382,6 +2670,30 @@ class Rollout:
             return keep_services.kept_by_identity(self._task) is not None
         return keep_services.trial_keep(self._task, cfg.sandbox_user) is not None
 
+    async def _lock_path_for_root_agent(self, rollout_dir: Path) -> None:
+        """Lock the image's PATH folders to root for a trial with no sandbox
+        user, as ``setup_sandbox_user`` does for an agent user's: the verifier
+        then judges them as on every other trial, so an image that leaves its
+        toolchain open (the official rust image's 0777 /usr/local/cargo/bin)
+        is graded, not refused. A root agent can open them again; hardening
+        then refuses test.sh's tools there (``verifier tools refused``).
+        Written to locked-system-path.json. Planes or a sandbox without the
+        step leave PATH as the image made it."""
+        lock = getattr(self._planes, "lock_system_path", None)
+        if (
+            lock is None
+            or getattr(self._env, "supports_system_shell", False) is not True
+        ):
+            return
+        path_lock: dict[str, Any] = {}
+        with path_lock_record.recording_into(path_lock):
+            await lock(
+                self._env,
+                workspace=self._agent_cwd,
+                timeout_sec=self._config.sandbox_setup_timeout,
+            )
+        _write_path_lock_record(rollout_dir, path_lock)
+
     async def _prove_kept_freezer(self) -> None:
         """Refuse or probe a trial that keeps services, right after its
         identities are measured and before any agent code runs (K1-R9-1).
@@ -2449,6 +2761,9 @@ class Rollout:
             identity_switch.require_barrier(self._env)
             self._env.agent_identity_switch = switch
 
+        # The agent's uid rules before anything else of the trial runs in
+        # main (M1), after the task's own refusals here.
+        await self._arm_agent_uid_at_release()
         await prepare_capture_runtime(self)
 
         present = {"agent": False, "baseline": False}
@@ -2531,12 +2846,16 @@ class Rollout:
                         self._env,
                         cfg.sandbox_user,
                         workspace=self._agent_cwd,
-                        timeout_sec=cfg.sandbox_setup_timeout,
+                        timeout_sec=sandbox_user_setup_timeout_sec(
+                            run_sandbox_setup_timeout(cfg)
+                        ),
                         guard_daemon=is_operator_script(cfg.primary_agent),
                     )
                 _write_path_lock_record(rollout_dir, path_lock)
                 if is_operator_script(cfg.primary_agent):
                     self._agent_cwd = script_cwd
+            else:
+                await self._lock_path_for_root_agent(rollout_dir)
             from benchflow.task.keep_services import prepare_identities, run_identity
 
             # The oracle's processes run as its own account, not
@@ -2566,6 +2885,7 @@ class Rollout:
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
             await _probe_integrity_access(self, "pre")
+            await self._check_test_sh()
             await mark_agent_phase_start(self)
             self._phase = "installed"
             return
@@ -2619,7 +2939,9 @@ class Rollout:
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
-                    timeout_sec=cfg.sandbox_setup_timeout,
+                    timeout_sec=sandbox_user_setup_timeout_sec(
+                        run_sandbox_setup_timeout(cfg)
+                    ),
                 )
             _write_path_lock_record(rollout_dir, path_lock)
             # After the install (it can leave them root-owned, #1183) and once
@@ -2630,6 +2952,8 @@ class Rollout:
                 cfg.sandbox_user,
                 locked_paths=self._effective_locked,
             )
+        else:
+            await self._lock_path_for_root_agent(rollout_dir)
         from benchflow.task.keep_services import prepare_identities
 
         await prepare_identities(self._env, self._task, cfg.sandbox_user)
@@ -2682,6 +3006,7 @@ class Rollout:
         # agent (the automatic one and a manually composed one alike), before
         # the agent phase's clock mark: files it writes are not the agent's.
         await _probe_integrity_access(self, "pre")
+        await self._check_test_sh()
         await mark_agent_phase_start(self)
 
         self._phase = "installed"
@@ -2907,6 +3232,7 @@ class Rollout:
         included, or when the run opted out; otherwise the trial stops here,
         before the agent, with the record's reason.
         """
+        await self._cover_task_services(rollout_dir)
         plan = self._cloud_metadata
         if plan is None:
             return
@@ -2969,6 +3295,55 @@ class Rollout:
         if record["state"] != "on" and not opt_out:
             raise cloud_metadata_refusal(str(record["state"]), str(record["why"]))
 
+    async def _cover_task_services(self, rollout_dir: Path | None) -> None:
+        """Every compose service of the trial but ``main``, covered from
+        BenchFlow's helper before the agent (or the oracle) starts: the cloud
+        metadata endpoints refused to every user there, and the agent's
+        network policy held in its namespace (benchflow.sandbox.service_cover).
+        service-network.json records each service's coverage and
+        proof; a service that cannot be covered stops the trial. Without a
+        trial folder (a rollout driven past its setup) the services are still
+        covered; only the record is not written."""
+        from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+        from benchflow.sandbox.service_cover import (
+            SERVICE_NETWORK_RECORD,
+            cover_task_services,
+            sandbox_network_mode,
+        )
+
+        task = self._task
+        config = getattr(task, "config", None)
+        if config is None or self._env is None:
+            return
+        opt_out = getattr(config, "cloud_metadata_opt_out", "")
+        task_opts_out = isinstance(opt_out, str) and bool(opt_out)
+        run_opts_out = bool(getattr(self._config, "allow_cloud_metadata", False))
+        covered = vars(self).setdefault("_covered_services", {})
+        # Covered before release, while it still waited.
+        start_covered = getattr(self._env, "_start_covered_services", None)
+        if isinstance(start_covered, dict):
+            for key, record in start_covered.items():
+                covered.setdefault(key, record)
+        records = await cover_task_services(
+            self._env,
+            config,
+            mode=sandbox_network_mode(agent_network_sandbox_config(config)),
+            metadata=not (task_opts_out or run_opts_out),
+            opt_out=task_opts_out,
+            environment_dir=getattr(
+                getattr(task, "paths", None), "environment_dir", None
+            ),
+            covered=covered,
+            # main's own rule, for every user: only the task opts out of it.
+            main_metadata=not task_opts_out,
+        )
+        if records is None or rollout_dir is None:
+            return
+        with contextlib.suppress(OSError):
+            (rollout_dir / SERVICE_NETWORK_RECORD).write_text(
+                json.dumps({"phase": "agent", "services": records}, indent=2) + "\n"
+            )
+
     async def _stop_active_egress(self) -> None:
         if self._active_egress_policy is not None:
             await self._planes.stop_egress_denylist(
@@ -3006,6 +3381,102 @@ class Rollout:
                 json.dumps({**admission, "admitted": True}, indent=2) + "\n"
             )
 
+    async def _agent_egress_policy(self) -> Any:
+        """The primary agent's egress policy as its connection applies it
+        (native subscription transport, the allowlist's model endpoint): None
+        for an open network or no-web alone."""
+        cfg = self._config
+        egress_denylist = native_oauth_egress_policy(
+            cfg.primary_agent,
+            cfg.primary_model,
+            self._agent_env,
+            no_web=self._disallow_web_tools,
+        ) or allowlist_model_transport(
+            self._egress_denylist,
+            cfg.primary_agent,
+            cfg.primary_model,
+            self._agent_env,
+        )
+        return egress_denylist
+
+    def _agent_uid_start_hold(self) -> dict[str, Any] | None:
+        """M1: a model agent's uid rules before main's release,
+        asked of the sandbox's start (a Docker sandbox's inert bootstrap
+        puts them in, the sandbox user made first): under no-network and
+        denylist, whose uid rules the task alone decides. None for an
+        allowlist, whose rules name the task services' addresses, known once
+        they run (_arm_agent_uid_at_release puts them in right after
+        release), for scripted agents (every process held from release),
+        verifier-only rollouts, an open network, a sandbox its caller
+        started, and settings the launch refuses."""
+        cfg = self._config
+        if (
+            self._verifier_only
+            or self._env_externally_owned
+            or is_scripted_agent(cfg.primary_agent)
+        ):
+            return None
+        try:
+            policy = native_oauth_egress_policy(
+                cfg.primary_agent,
+                cfg.primary_model,
+                self._agent_env,
+                no_web=self._disallow_web_tools,
+            ) or allowlist_model_transport(
+                self._egress_denylist,
+                cfg.primary_agent,
+                cfg.primary_model,
+                self._agent_env,
+            )
+        except ValueError:
+            return None
+        no_web = bool(self._disallow_web_tools)
+        if getattr(policy, "allow_mode", False):
+            return None
+        if not no_web and (policy is None or not cfg.sandbox_user):
+            return None
+        return {
+            "user": cfg.sandbox_user,
+            "no_web": no_web,
+            "policy": policy,
+            "timeout_sec": cfg.sandbox_setup_timeout,
+        }
+
+    async def _arm_agent_uid_at_release(self) -> None:
+        """M1: a model agent's uid rules right after main's
+        release, before its install. The install (most of a cold window,
+        its chmod -R a+rX /opt/runtime among it), the sandbox user's setup
+        and the model proxy then run with the agent's uid already held, so
+        none of them widens the window in which a process of that uid from
+        main's release runs unheld. The sandbox user is made first where
+        the image lacks it. The rules are the launch's own, from the policy
+        its connection applies; the launch finds them in. Root runs the
+        install, which these rules do not hold. Settings the connection
+        refuses are left to it."""
+        cfg = self._config
+        arm = getattr(type(self._planes), "arm_agent_uid_before_its_proxy", None)
+        if (
+            not callable(arm)
+            or self._env is None
+            or is_scripted_agent(cfg.primary_agent)
+            # In before main's release (_agent_uid_start_hold).
+            or getattr(self._env, "_agent_uid_held_at_start", False) is True
+        ):
+            return
+        try:
+            policy = await self._agent_egress_policy()
+        except ValueError:
+            return
+        await arm(
+            self._planes,
+            self._env,
+            cfg.sandbox_user,
+            no_web=self._disallow_web_tools,
+            egress_denylist=policy,
+            create_user=bool(cfg.sandbox_user),
+            timeout_sec=cfg.sandbox_setup_timeout,
+        )
+
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         require_safe_branch_world(self)
@@ -3018,20 +3489,12 @@ class Rollout:
         rollout_dir = self._require_rollout_dir()
         (rollout_dir / "native-oauth-network.json").unlink(missing_ok=True)
         t0 = datetime.now()
-        egress_denylist = native_oauth_egress_policy(
-            cfg.primary_agent,
-            cfg.primary_model,
-            self._agent_env,
-            no_web=self._disallow_web_tools,
-        ) or allowlist_model_transport(
-            self._egress_denylist,
-            cfg.primary_agent,
-            cfg.primary_model,
-            self._agent_env,
-        )
+        egress_denylist = await self._agent_egress_policy()
 
         previous_runtime = self._usage_runtime
         force_sandbox_local = self._disallow_web_tools or egress_denylist is not None
+        # The agent's uid rules went in right after main's release
+        # (_arm_agent_uid_at_release, M1); its launch finds them in.
         # A host proxy starts while the sandbox guards run (see
         # _guards_beside_proxy); they then check the env before its wiring.
         beside = self._guards_beside_proxy(
@@ -3204,6 +3667,9 @@ class Rollout:
                 ),
                 resume_session_id=self._resume_session_id,
             )
+            # The effort the session says it runs at.
+            applied = getattr(self._session, "effort_applied", None)
+            self._effort_applied = applied if isinstance(applied, str) else None
             replayed = getattr(self._session, "replayed_prefix", None)
             if isinstance(replayed, tuple):
                 # session/load replayed the parent's conversation: that is the
@@ -3692,6 +4158,10 @@ class Rollout:
                     idle_timeout=idle_timeout,
                 )
         except AgentPromptTimeoutError as e:
+            # The turn ended without its end-of-turn usage report: teardown
+            # counts it from the agent's own logs (rollout._cost).
+            self._usage_report_missing = True
+            self._turn_cut = "timeout"
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
                 trajectory=e.trajectory,
@@ -3702,6 +4172,12 @@ class Rollout:
                 node=node,
                 partial_trajectory=not e.terminal_trajectory_complete,
             )
+            raise
+        except BaseException as exc:
+            # A lost sandbox, an agent error, a cancel: no end-of-turn report
+            # either.
+            self._usage_report_missing = True
+            self._turn_cut = _turn_cut_kind(exc)
             raise
 
         self._commit_acp_execution(
@@ -3774,6 +4250,26 @@ class Rollout:
 
         self._phase = "executed"
 
+    def _record_native_usage_slice(self, agent: str, delta: dict[str, int]) -> None:
+        """Add one end-of-turn delta to its model's slice (pricing).
+
+        Every source reports BenchFlow's split (uncached input beside the
+        cache), so the slice prices as reported.
+        """
+        role = self._active_role
+        model = (
+            getattr(role, "model", None) if role is not None else self._config.model
+        ) or ""
+        key = (model, not self._native_usage_proxy_covered)
+        held = self._native_usage_slices.setdefault(key, {})
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cached_read_tokens",
+            "cached_write_tokens",
+        ):
+            held[field] = held.get(field, 0) + int(delta.get(field) or 0)
+
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs."""
         agent = (
@@ -3799,6 +4295,7 @@ class Rollout:
         self._native_usage_checkpoint = dict(latest)
         if not any(delta.values()):
             return
+        self._record_native_usage_slice(agent, delta)
 
         metrics = dict(self._native_usage_metrics)
         for (
@@ -3821,6 +4318,17 @@ class Rollout:
         metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
         metrics["cost_usd"] = None
         metrics["price_source"] = None
+        # A cache count the agent's report left out is unknown, not 0, for
+        # the whole trial once any turn left it out.
+        unreported = self.__dict__.setdefault("_native_usage_unreported", set())
+        for snapshot_field, result_field in (
+            ("cached_read_tokens", "n_cache_read_tokens"),
+            ("cached_write_tokens", "n_cache_creation_tokens"),
+        ):
+            if latest.get(snapshot_field) is None:
+                unreported.add(result_field)
+        for result_field in unreported:
+            metrics[result_field] = None
         self._native_usage_metrics = metrics
         if not self._native_usage_proxy_covered:
             uncovered = dict(self._unproxied_native_usage_metrics)
@@ -3986,7 +4494,12 @@ class Rollout:
             timing_spans.AGENT_STOP_TO_REWARD, into=getattr(self, "_timing", None)
         ):
             try:
-                return await Rollout._score_finished_solver(self)
+                # The trial's integrity mode decides what a reward outside
+                # the range becomes (audit/off: as written; strict: 0).
+                with out_of_range_reward_rule(
+                    getattr(getattr(self, "_config", None), "integrity", "off")
+                ):
+                    return await Rollout._score_finished_solver(self)
             except Exception as exc:
                 if verifier_infrastructure_failure(exc):
                     self._rewards = None
@@ -4348,7 +4861,11 @@ class Rollout:
         through a file only root can read, never a command line.
         """
         services_kept = getattr(getattr(self, "_env", None), "services_kept", None)
-        with services_kept() if callable(services_kept) else contextlib.nullcontext():
+        integrity = getattr(getattr(self, "_config", None), "integrity", "off")
+        with (
+            services_kept() if callable(services_kept) else contextlib.nullcontext(),
+            out_of_range_reward_rule(integrity),
+        ):
             return await self._soft_verify()
 
     async def _soft_verify(self) -> tuple[dict | None, str | None, str | None]:
@@ -4479,6 +4996,7 @@ class Rollout:
         # A trial that ended before its agent connected gives back the warm
         # proxy it asked for (_reserve_host_proxy).
         self._release_host_proxy()
+        await self._record_main_metadata_at_end()
         # Destroying an owned sandbox and releasing its lease never wait on the
         # steps before them (AG-R2-3): a disconnect that cannot remove a staged
         # Muse login raises, and that sandbox still holds the login.
@@ -4490,6 +5008,35 @@ class Rollout:
                 await self._discard_verifier_warmup()
             finally:
                 await self._teardown_sandbox()
+
+    async def _record_main_metadata_at_end(self) -> None:
+        """At every trial's end, errors and early ends included, before the
+        sandbox goes: what main's cloud metadata rules refused over the whole
+        trial (its processes, root's included), read from BenchFlow's helper,
+        into service-network.json as ``main_metadata_refused_at_end``.
+        Their own proofs make the baseline; anything above it tried the
+        metadata server. Never fails the cleanup."""
+        env = getattr(self, "_env", None)
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        if env is None or rollout_dir is None:
+            return
+        from benchflow.sandbox.service_cover import SERVICE_NETWORK_RECORD
+        from benchflow.sandbox.verifier_network import main_metadata_refused
+
+        try:
+            refused = await main_metadata_refused(env)
+        except Exception as exc:
+            logger.debug("main's metadata counter not read at the end: %s", exc)
+            return
+        if refused is None:
+            return
+        path = Path(rollout_dir) / SERVICE_NETWORK_RECORD
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            data = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(data, dict):
+                return
+            data["main_metadata_refused_at_end"] = refused
+            path.write_text(json.dumps(data, indent=2) + "\n")
 
     async def _cleanup_before_teardown(self) -> None:
         self._capture_partial_acp_trajectory()
@@ -4512,6 +5059,9 @@ class Rollout:
             await self._teardown_usage_runtime()
             await self._teardown_egress()
             await self._teardown_finalize_usage()
+            mark_incomplete_usage(self)
+            # Price what the host-side counts hold.
+            apply_list_price(self)
             raise disconnect_error
         self._enforce_required_usage_tracking()
         if self._proxy_reported_models:
@@ -4614,6 +5164,21 @@ class Rollout:
                 self._timing["agent_without_provider_wait"] = max(
                     0.0, self._timing["agent_execution"] - self._timing["provider_wait"]
                 )
+            # An in-sandbox proxy whose imported log may miss calls.
+            shortfalls = [
+                shortfall
+                for runtime in self._usage_runtimes()
+                if isinstance(
+                    shortfall := getattr(
+                        getattr(runtime, "server", None), "usage_log_shortfall", None
+                    ),
+                    str,
+                )
+            ]
+            if shortfalls:
+                self._proxy_usage_incomplete_reason = INCOMPLETE_SANDBOX_PROXY.format(
+                    detail="; ".join(dict.fromkeys(shortfalls))
+                )
             usage_runtime = self._combined_usage_runtime()
             self._usage_metrics = self._planes.extract_usage(
                 usage_runtime if usage_stopped else None
@@ -4672,11 +5237,26 @@ class Rollout:
 
     async def _teardown_finalize_usage(self) -> None:
         self._finalize_usage_metrics()
+        # A native Claude Code turn that ended without its report: count it
+        # from the stream log BenchFlow keeps on the host (needs no sandbox).
+        salvage_from_stream_log(self)
 
     async def _teardown_price(self) -> None:
         # Unpriced Claude Code usage (a subscription): estimate its USD from
         # Claude Code's session log while the sandbox is still up.
         await price_from_session_log(self)
+        # A Codex trial's own record of its calls, then its count: codex-acp
+        # reports only its last call's tokens, and a native Codex turn cut
+        # off reports nothing.
+        await copy_codex_session_log(self)
+        await count_codex_tokens(self)
+        # A Claude Code turn over ACP cut off before its report: count it
+        # from the session log just copied.
+        salvage_from_session_log(self)
+        # A count still missing a turn says so.
+        mark_incomplete_usage(self)
+        # Every trial with tokens and no cost: list prices.
+        apply_list_price(self)
 
     async def _teardown_sandbox(self) -> None:
         if self._environment is not None:
@@ -4751,19 +5331,51 @@ class Rollout:
             ) and not self._mixed_usage_finalized:
                 provider = dict(self._usage_metrics)
                 combined = dict(provider)
+                unreported = getattr(self, "_native_usage_unreported", set())
                 for field in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.values():
+                    if field in unreported:
+                        combined[field] = None  # the login's part is unknown
+                        continue
+                    proxied = provider.get(field)
+                    if proxied is None and field in provider:
+                        # A sum with an unknown part is unknown, not the other
+                        # part: a count the proxied answers never named (a
+                        # cache-write count) stays null beside the login's.
+                        combined[field] = None
+                        continue
                     combined[field] = _as_nonnegative_int(
-                        provider.get(field)
+                        proxied
                     ) + _as_nonnegative_int(native.get(field))
                 combined["usage_details"] = {
                     **(provider.get("usage_details") or {}),
                     "provider_response": provider,
                     "agent_native_acp": dict(native),
                 }
+                writes = combined["usage_details"].get("cache_writes")
+                if isinstance(writes, dict):
+                    # The proxied answers named no write count. The login's
+                    # writes stand beside its uncached input: named, they
+                    # join named_tokens; unreported, the prompt total is
+                    # unknown too (ATIF's total_prompt_tokens).
+                    writes = dict(writes)
+                    if "n_cache_creation_tokens" in unreported:
+                        writes["inside_input"] = False
+                    else:
+                        writes["named_tokens"] = _as_nonnegative_int(
+                            writes.get("named_tokens")
+                        ) + _as_nonnegative_int(native.get("n_cache_creation_tokens"))
+                    combined["usage_details"]["cache_writes"] = writes
                 # Provider spend covers only some roles; never present it as
                 # the complete cost of a run containing subscription usage,
                 # even if timeout/disconnect preceded its first usage report.
-                combined.update(cost_usd=None, price_source=None)
+                # Teardown's list price adds the login's share to it
+                # (rollout._cost.apply_list_price).
+                combined.update(
+                    cost_usd=None,
+                    price_source=None,
+                    cost_source=None,
+                    price_table_date=None,
+                )
                 self._usage_metrics = combined
                 self._mixed_usage_finalized = True
             return
@@ -4879,6 +5491,27 @@ class Rollout:
             )
         self._error = detail or f"Agent timed out after {self._timeout}s"
         self._diagnostics.capture_idle(e)
+        if (
+            ran_out_of_time
+            and "exceeded wall-clock budget" in detail
+            and self._diagnostics.get(AgentPromptTimeoutDiagnostic.field) is None
+        ):
+            # The prompt's cancel did not drain in time (the native harness's
+            # CLI was still exiting), so the timeout carried no diagnostic;
+            # record the timeout anyway.
+            role = getattr(self, "_active_role", None)
+            budget = (
+                role.timeout_sec
+                if role and role.timeout_sec is not None
+                else self._timeout
+            )
+            self._diagnostics.set(
+                AgentPromptTimeoutDiagnostic(
+                    # Unknown is None, never 0.
+                    timeout_sec=float(budget) if budget else None,
+                    n_tool_calls=self._n_tool_calls,
+                )
+            )
         # Read with getattr: continue_run's Trial records its timeouts here too.
         server = getattr(getattr(self, "_usage_runtime", None), "server", None)
         stalled = getattr(type(server), "stalled_model_requests", None)
@@ -4931,14 +5564,101 @@ class Rollout:
                             self._rollout_dir
                             if self._config.purpose == "task"
                             else None
-                        )
+                        ),
+                        usage=lambda: self._usage_metrics,
                     ),
                 ):
-                    return await self._run_with_scoring()
+                    try:
+                        return await self._run_with_scoring()
+                    except asyncio.CancelledError:
+                        # Ctrl-C, SIGTERM or a budget stop: cleanup counted
+                        # what the trial spent; keep it.
+                        if self._config.purpose == "task":
+                            self._record_cancelled_attempt()
+                        raise
             finally:
                 # A task copy a collected sandbox's finalizer had to queue goes
                 # now, whoever runs the trial (Runtime.execute, branch, regrade).
                 remove_released()
+
+    def _record_cancelled_attempt(self) -> None:
+        """Write a stopped trial's result.json with what it spent.
+
+        A trial stopped before it finished (Ctrl-C, SIGTERM, a budget stop)
+        used to leave no result: the tokens and cost cleanup counted were
+        lost, and the job's summary said 0. Its result.json now keeps them,
+        unscored and marked ``interrupted`` (``_utils.result_paths``):
+        readers still see an interrupted trial, and a resume runs the task
+        again. Never raises over the cancellation.
+        """
+        from benchflow._utils.result_paths import INTERRUPTED_MARK
+        from benchflow.review.persistence import write_json_atomic
+
+        rollout_dir = self._rollout_dir
+        if (
+            self._config.purpose != "task"
+            or rollout_dir is None
+            or not self._rollout_name
+            or self._started_at is None
+            or (rollout_dir / "result.json").exists()
+            # A solver snapshot keeps the attempt (with its spend) for its
+            # review or scoring on resume, which must publish its result.
+            or (rollout_dir / "solver.json").exists()
+            or (rollout_dir / "solver-complete.json").exists()
+        ):
+            return
+        try:
+            # What cleanup's steps may not have reached: the host's own logs.
+            salvage_from_stream_log(self)
+            apply_list_price(self)
+            if self._error is None:
+                self._error = INTERRUPTED_ERROR
+            self._rewards = None
+            self._scoring = None
+            self._partial_trajectory = True
+            # result.json only: no per-trial results.jsonl, verifiers.jsonl or
+            # rewards row, which readers take for a finished trial (a job of
+            # only stopped trials must still load as interrupted).
+            draft = rollout_dir / "result.interrupted.json"
+            self._build_result(result_filename=draft.name)
+            data = json.loads(draft.read_text())
+            data[INTERRUPTED_MARK] = True
+            write_json_atomic(rollout_dir / "result.json", data)
+            draft.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Could not record the stopped trial's spend", exc_info=True)
+
+    def result_after_failure(self, exc: BaseException) -> RolloutResult | None:
+        """The result of a run that raised, written into its own folder.
+
+        A trial whose run raised (a lost sandbox whose teardown failed) used
+        to get a new trial folder with a minimal error result from the job,
+        leaving its own folder, with the usage it captured, without one. The trial keeps its folder and id: its error, its salvaged
+        tokens and cost. None when the trial has no folder yet.
+        """
+        rollout_dir = self._rollout_dir
+        if (
+            self._config.purpose != "task"
+            or rollout_dir is None
+            or not self._rollout_name
+            or self._started_at is None
+        ):
+            return None
+        path = rollout_dir / "result.json"
+        if path.is_file():
+            # As written: the retry loop decides on the record's own ending.
+            return RolloutResult._load_record(rollout_dir)
+        salvage_from_stream_log(self)
+        apply_list_price(self)
+        if self._error is None:
+            self._error = f"Unexpected: {describe_exception(exc)}"
+        self._rewards = None
+        self._scoring = None
+        self._partial_trajectory = True
+        with scoring_lock(rollout_dir):
+            result = read_admitted_result(self) or self._build_result()
+        self._completed_result = result
+        return result
 
     async def _run_with_scoring(self) -> RolloutResult:
         """Execute, clean up, and publish the attempt's scoring when complete.
@@ -5134,6 +5854,9 @@ class Rollout:
             )
         try:
             await self._setup_and_start()
+            # Every compose service is covered before anything runs in the
+            # sandbox, whatever runs: nop and the oracle too. An agent's connect covers again only what is new.
+            await self._cover_task_services(self._rollout_dir)
 
             if cfg.primary_agent == "nop":
                 # The empty control: nothing runs, the verifier scores the
@@ -5178,7 +5901,24 @@ class Rollout:
                 script_env: dict[str, str] = {}
                 script_started = datetime.now()
                 try:
-                    if self._egress_denylist is not None:
+                    every_process = getattr(self._env, "rules_by_helper", False) is True
+                    if self._egress_denylist is not None and every_process:
+                        # Every process of main, root's included, held to the
+                        # policy for the script's turn, as the oracle's is: the
+                        # proxy runs in its own container, its marked sockets
+                        # the only way out (S2). Out at hardening, under
+                        # the handover's hold.
+                        from benchflow.sandbox.oracle_egress import arm_oracle_egress
+
+                        armed = await arm_oracle_egress(
+                            self._env, self._egress_denylist, run_as=cfg.sandbox_user
+                        )
+                        self._env._benchflow_oracle_egress = (
+                            armed,
+                            self._require_rollout_dir(),
+                        )
+                        script_env = dict(armed.env)
+                    elif self._egress_denylist is not None:
                         await self._start_egress_denylist(self._egress_denylist)
                         script_env = denylist_agent_env({}, self._egress_denylist)
                     await self._planes.enforce_agent_egress_firewall(
@@ -5192,6 +5932,18 @@ class Rollout:
                         await self._planes.enforce_offline_uid_egress(
                             self._env, cfg.sandbox_user
                         )
+                        if every_process:
+                            # And every process of main, root's included
+                            # (S2): out at hardening, under the hold.
+                            from benchflow.sandbox.verifier_network import (
+                                arm_offline_agent_phase,
+                            )
+
+                            held = await arm_offline_agent_phase(self._env)
+                            with contextlib.suppress(OSError):
+                                (
+                                    self._require_rollout_dir() / "agent-network.json"
+                                ).write_text(json.dumps(held, sort_keys=True) + "\n")
                     await self._apply_cloud_metadata_block(self._require_rollout_dir())
                     self._trajectory, self._agent_name = await _run_script(
                         self._env,
@@ -5473,6 +6225,94 @@ class Rollout:
                     max(0.0, self._trial_clock_start - ready_at),
                 )
 
+    async def _check_test_sh(self) -> None:
+        """What test.sh needs, resolved as the verifier will run it, just
+        before the agent's turn: after BenchFlow's own setup (the agent's
+        install, the sandbox user, the PATH lock), before anything of the
+        agent's. A command test.sh can never run without refuses the
+        trial, unscored and never retried; one it merely names is a warning
+        in result.json that changes no score."""
+        from benchflow._utils.config import normalize_sandbox_user
+        from benchflow.task import test_sh_preflight
+
+        if self._from_branch_snapshot:
+            # The restored checkpoint is the source trial's sandbox after its
+            # agent ran: it is never judged. A tool the agent removed there
+            # stays the agent's failure. The verdict decided once, before the
+            # source's turn on the untouched image (or, for a checkpoint that
+            # recorded none, on a fresh sandbox of the image), is carried:
+            # refused or clean, with its warnings.
+            source = self._test_sh_preflight_inherited
+            if not isinstance(source, dict) or not source:
+                # Only a test.sh the check reads has a verdict to miss.
+                if test_sh_preflight.needs_verdict(self._task):
+                    raise test_sh_preflight.TestShPreflightUnavailable(
+                        f"{test_sh_preflight.UNAVAILABLE_HEAD}: its source trial "
+                        "recorded none (a checkpoint from before the check), and "
+                        "none could be decided on a fresh sandbox of the task's "
+                        "image; the restored sandbox, after its agent ran, is never "
+                        "judged. Run the task again to branch from a new checkpoint"
+                    )
+                self._test_sh_preflight = None
+                return
+            self._test_sh_preflight = test_sh_preflight.inherited(source)
+            refusal = test_sh_preflight.carried_refusal(self._test_sh_preflight)
+            if refusal is not None:
+                raise refusal
+            with _keeping_trial_warnings(self):
+                for warning in self._test_sh_preflight.get("warnings", ()):
+                    report_trial_warning(warning)
+            return
+        with _keeping_trial_warnings(self):
+            try:
+                record = await test_sh_preflight.check(
+                    self._env,
+                    self._task,
+                    sandbox_user=normalize_sandbox_user(self._config.sandbox_user),
+                    workspace=self._agent_cwd,
+                )
+            except test_sh_preflight.TestShPreflightRefused as refused:
+                # The refused trial keeps what refused it.
+                self._test_sh_preflight = refused.record
+                raise
+            self._test_sh_preflight = record
+            for warning in (record or {}).get("warnings", ()):
+                report_trial_warning(warning)
+
+    def _test_sh_preflight_result(self) -> dict[str, Any] | None:
+        """result.json's ``test_sh_preflight``, with the wrong-0 candidate:
+        a warned command that test-stdout.txt last reported not found in a
+        trial that scored 0 (names it, never changes the score)."""
+        record = self._test_sh_preflight
+        if not record or not record.get("missing"):
+            return record
+        from benchflow.task.test_sh_preflight import wrong_zero_candidate
+
+        rewards = self._rewards if isinstance(self._rewards, dict) else {}
+        stdout = None
+        path = getattr(self._rollout_paths, "test_stdout_path", None)
+        if path is not None:
+            # The sandbox could have made it a link, a FIFO or a device: through
+            # the held capability, a regular file only, its last 64 KiB
+            # (as _setup._verifier_missed_a_program reads it).
+            import stat as _stat
+
+            try:
+                with destination(path).open("rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if _stat.S_ISREG(opened.st_mode):
+                        handle.seek(max(0, opened.st_size - 65536))
+                        stdout = handle.read(65536).decode(errors="replace")
+            except OSError:
+                stdout = None
+        try:
+            candidate = wrong_zero_candidate(record, rewards.get("reward"), stdout)
+        except Exception:
+            candidate = None
+        if candidate is None:
+            return record
+        return {**record, "wrong_zero_candidate": candidate}
+
     async def _install_agent_step(self) -> None:
         """install_agent(), unless the warm pool already ran it for this trial."""
         if getattr(self, "_prestart", None) is None:
@@ -5639,11 +6479,18 @@ class Rollout:
             disallow_web_tools=disallow_web_tools,
             disallow_hosted_search=disallow_hosted_search,
         )
+        from benchflow.effort_request import with_route_effort
+
         agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
+            with_route_effort(
                 role.agent,
                 role.model,
-                {**(cfg.agent_env or {}), **(role.env or {})},
+                role.reasoning_effort,
+                self._planes.resolve_agent_env(
+                    role.agent,
+                    role.model,
+                    {**(cfg.agent_env or {}), **(role.env or {})},
+                ),
             ),
             disallow=disallow_web_tools,
         )
@@ -5658,6 +6505,20 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         force_sandbox_local = disallow_web_tools or disallow_hosted_search
+        # The role's uid firewall before its model proxy starts.
+        arm_early = getattr(type(self._planes), "arm_agent_uid_before_its_proxy", None)
+        if (
+            callable(arm_early)
+            and self._env is not None
+            and not is_scripted_agent(role.agent)
+        ):
+            await arm_early(
+                self._planes,
+                self._env,
+                cfg.sandbox_user,
+                no_web=disallow_web_tools,
+                egress_denylist=egress_denylist,
+            )
         # A host proxy starts while the sandbox guards run (see
         # _guards_beside_proxy); they then check the env before its wiring.
         beside = self._guards_beside_proxy(
@@ -6032,6 +6893,24 @@ class Rollout:
         priced = [t for t in trajectories if t.has_provider_usage]
         if priced and all(t.total_cost_usd is not None for t in priced):
             combined.metadata["cost_usd"] = sum(t.total_cost_usd or 0.0 for t in priced)
+        # Requests a proxy saw cut before their usage report.
+        cut = sum(int(t.metadata.get("requests_cut") or 0) for t in trajectories)
+        if cut:
+            combined.metadata["requests_cut"] = cut
+        billed = [t.metadata for t in priced if "provider_cost_usd" in t.metadata]
+        if priced and len(billed) == len(priced):
+            # Every connection's provider bill, summed.
+            estimated = [m.get("estimated_cost_usd") for m in billed]
+            combined.metadata.update(
+                provider_cost_usd=sum(m["provider_cost_usd"] for m in billed),
+                provider_billed_calls=sum(
+                    m.get("provider_billed_calls") or 0 for m in billed
+                ),
+                answered_calls=sum(m.get("answered_calls") or 0 for m in billed),
+                estimated_cost_usd=sum(estimated)
+                if all(isinstance(e, int | float) for e in estimated)
+                else None,
+            )
         return SimpleNamespace(
             kind="litellm", server=SimpleNamespace(trajectory=combined)
         )
@@ -6087,6 +6966,7 @@ class Rollout:
             environment=self._config.environment,
             status=status,
             usage_source=usage_source,
+            usage_source_legacy=self._usage_metrics.get("usage_source_legacy"),
         )
 
     def _current_sandbox_id(self) -> str | None:
@@ -6128,7 +7008,8 @@ class Rollout:
             # verdicts, but an agent that did nothing before it (no tool call,
             # message, thought or output token) is an integration failure, as
             # bf.load_job reads the result: a model that never answered is
-            # not a 0. Judged once.
+            # not a 0. Judged once, as on 0.10; the timeout's own record
+            # (agent_timeout_info) stays beside it.
             if getattr(self, "_judge_timed_out_agent", False):
                 self._judge_timed_out_agent = False
                 if self._n_tool_calls == 0:
@@ -6238,6 +7119,19 @@ class Rollout:
         # to the resolved base prompts when no execute() ran (e.g. setup
         # failure paths).
         prompts = self._executed_prompts or self._resolved_prompts
+        # The effort asked for, however it was asked, beside the one that ran
+        # and the ones the calls carried.
+        from benchflow.effort_record import effort_block
+
+        effort = effort_block(
+            rollout_dir,
+            agent=self._config.primary_agent,
+            model=self._config.primary_model,
+            reasoning_effort=self._config.primary_reasoning_effort,
+            agent_env=self._config.agent_env,
+            applied=getattr(self, "_effort_applied", None),
+            requested_from=self._config.reasoning_effort_source,
+        )
         return _build_rollout_result(
             rollout_dir,
             task_name=self._config.task_path.name,
@@ -6291,7 +7185,9 @@ class Rollout:
             branches=self._branch_summary(),
             verifier_isolation=self._verifier_isolation,
             cloud_metadata=self._cloud_metadata_result,
+            test_sh_preflight=self._test_sh_preflight_result(),
             warnings=getattr(self, "_warnings", None),
+            effort=effort,
             **self._usage_metrics,
         )
 
@@ -6300,6 +7196,14 @@ class Rollout:
         from benchflow.branch_lineage import branch_summary
 
         return branch_summary(getattr(self, "_branch_forks", []))
+
+
+# The error of a trial stopped before it finished (Ctrl-C, SIGTERM, the job's
+# budget); its result.json keeps what it spent.
+INTERRUPTED_ERROR = (
+    "Interrupted: the run was stopped (Ctrl-C, SIGTERM or the job's budget) "
+    "before the trial finished"
+)
 
 
 def _credit_prestart_seconds(rollout: Rollout) -> None:

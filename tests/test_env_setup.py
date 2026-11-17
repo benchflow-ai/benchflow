@@ -318,7 +318,9 @@ class TestCreateEnvironment:
                 side_effect=ModuleNotFoundError("No module named 'daytona'"),
             ),
             patch("benchflow.sandbox._sdk_ops.apply") as apply_patches,
-            pytest.raises(RuntimeError) as exc_info,
+            pytest.raises(
+                RuntimeError, match=r"Missing optional dependency for 'daytona' sandbox"
+            ) as exc_info,
         ):
             _create_environment("daytona", task, tmp_path, "trial", rollout_paths)
 
@@ -340,7 +342,10 @@ class TestCreateEnvironment:
         self, sandbox_type, extra
     ):
         """Optional backends raise actionable install guidance."""
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(
+            RuntimeError,
+            match=r"Missing optional dependency for '(daytona|modal)' sandbox",
+        ) as exc_info:
             _raise_missing_optional_sandbox_dependency(
                 sandbox_type,
                 ModuleNotFoundError("No module named optional_backend"),

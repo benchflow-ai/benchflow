@@ -34,7 +34,7 @@ from benchflow.models import RolloutResult
 from benchflow.runtime import run as arun
 
 if TYPE_CHECKING:
-    from benchflow.jobs import Denominators
+    from benchflow.jobs import Denominators, Trial
     from benchflow.rollout import RolloutConfig
     from benchflow.runtime import Agent, Environment, RuntimeConfig
 
@@ -285,6 +285,7 @@ _RECORD_FIELDS = [
     "assessment",
     "error",
     "error_category",
+    "integration_failure_info",
     "verifier_error",
     "verifier_error_category",
     "n_tool_calls",
@@ -296,6 +297,8 @@ _RECORD_FIELDS = [
     "total_tokens",
     "cost_usd",
     "usage_source",
+    "cost_source",
+    "price_table_date",
     "started_at",
     "finished_at",
     "duration_sec",
@@ -303,15 +306,30 @@ _RECORD_FIELDS = [
 ]
 
 
-def _record(result: RolloutResult) -> dict[str, Any]:
-    """``to_record`` plus the viewer's execution and assessment."""
+def _trial(result: RolloutResult) -> Trial:
+    """``result`` as the Trial ``bf.load_trial`` reads: with the judge's
+    finding (benchflow.integration_health) when the result carries one, so a
+    withheld trial is the integration failure it is in the records and the
+    counts alike."""
     from benchflow.jobs import Trial
 
-    trial = Trial(path=result.rollout_dir or Path("."), result=result, raw={})
+    info = result.integration_failure_info
+    return Trial(
+        path=result.rollout_dir or Path("."),
+        result=result,
+        raw={"integration_failure_info": info} if info is not None else {},
+    )
+
+
+def _record(result: RolloutResult) -> dict[str, Any]:
+    """``to_record`` plus the viewer's execution and assessment, and the
+    judge's finding for a withheld trial."""
+    trial = _trial(result)
     return {
         **result.to_record(),
         "execution": trial.execution,
         "assessment": trial.assessment,
+        "integration_failure_info": result.integration_failure_info,
     }
 
 
@@ -323,7 +341,12 @@ def write_csv(results: Iterable[RolloutResult], path: str | Path) -> Path:
         writer = csv.DictWriter(handle, fieldnames=_RECORD_FIELDS)
         writer.writeheader()
         for result in results:
-            writer.writerow(_record(result))
+            row = _record(result)
+            if row["integration_failure_info"] is not None:
+                row["integration_failure_info"] = json.dumps(
+                    row["integration_failure_info"], sort_keys=True
+                )
+            writer.writerow(row)
     return path
 
 
@@ -369,11 +392,9 @@ class Results(list[RolloutResult]):
 
         Control runs (oracle, empty) are left out unless ``include_controls=True``.
         """
-        from benchflow.jobs import Denominators, Trial
+        from benchflow.jobs import Denominators
 
-        trials = [
-            Trial(path=r.rollout_dir or Path("."), result=r, raw={}) for r in self
-        ]
+        trials = [_trial(r) for r in self]
         kept = [t for t in trials if include_controls or t.control is None]
         return Denominators.of(kept, controls_excluded=len(trials) - len(kept))
 

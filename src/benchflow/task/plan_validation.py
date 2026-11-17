@@ -50,12 +50,15 @@ def agent_egress_policy(
 def validate_agent_transport(*, sandbox: str, agent: str, harness: str) -> None:
     """Check one selected connection without resolving credentials or a proxy."""
     from benchflow.agents.registry import is_scripted_agent, session_factory_entrypoint
+    from benchflow.agents.scripts import refuse_script_backend
     from benchflow.sandbox.providers import PROVIDERS_BY_NAME
     from benchflow.task.runtime_capabilities import (
         UnsupportedTaskFeature,
         UnsupportedTaskFeatureError,
     )
 
+    # An operator script's connection is the backend's trusted root runner.
+    refuse_script_backend(agent, sandbox)
     provider = PROVIDERS_BY_NAME.get(sandbox)
     if (
         provider is not None

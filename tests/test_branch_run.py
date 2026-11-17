@@ -949,3 +949,66 @@ async def test_branch_trial_loads_the_task_documents_environment_manifest(tmp_pa
     manifest = ScriptedRollout.last._config.environment_manifest
     assert manifest is not None
     assert [s.name for s in manifest.services] == ["svc"]
+
+
+async def test_each_in_place_child_records_mains_metadata_count_at_its_end(
+    tmp_path, task, monkeypatch
+):
+    """EN-609: every trial end records main_metadata_refused_at_end. An
+    in-place child ends inside the branch loop, with no cleanup of its own,
+    so the loop records it into the child's own folder before the next
+    child's restore. (Isolated children and the parent record it in their
+    cleanup; the deterministic tier checks both shapes on Docker.)"""
+
+    async def record(self):
+        self.calls.append(("at_end", self._rollout_dir))
+
+    monkeypatch.setattr(ScriptedRollout, "_record_main_metadata_at_end", record)
+    plan = _plan(
+        tmp_path,
+        task_paths=[task],
+        prompts=["Draft first.", "@instruction"],
+        checkpoint_after=1,
+    )
+    outcome = await run_branch_trial(plan, task, rollout_factory=ScriptedRollout)
+    assert outcome.error is None, outcome.error
+    calls = ScriptedRollout.last.calls
+    ends = [c[1] for c in calls if c[0] == "at_end"]
+    assert len(ends) == 2
+    assert [p.parent.name for p in ends] == ["children", "children"]
+    assert len({p.name for p in ends}) == 2
+    # Each child's end comes before the next restore.
+    order = [c[0] for c in calls if c[0] in ("restore", "at_end")]
+    assert order[:4] == ["restore", "at_end", "restore", "at_end"]
+
+
+async def test_every_branch_trial_covers_its_services_into_its_own_folder(
+    tmp_path, task, monkeypatch
+):
+    """EN-609 (RCI F5): an oracle connects no session, whose connect covered
+    the compose services; every branch path covers them itself, after start
+    and after each restore, into the trial's own folder: the parent's, and
+    each child's, in place and isolated."""
+    from benchflow import rollout_branch
+
+    folders: list[Path] = []
+
+    async def cover(rollout):
+        folders.append(Path(rollout._rollout_dir))
+
+    monkeypatch.setattr(rollout_branch, "cover_branch_services", cover)
+    for concurrency in (1, 2):
+        folders.clear()
+        plan = _plan(
+            tmp_path / f"c{concurrency}",
+            task_paths=[task],
+            prompts=["Draft first.", "@instruction"],
+            checkpoint_after=1,
+            concurrency=concurrency,
+        )
+        outcome = await run_branch_trial(plan, task, rollout_factory=ScriptedRollout)
+        assert outcome.error is None, outcome.error
+        children = {p for p in folders if p.parent.name == "children"}
+        parents = {p for p in folders if p.parent.name != "children"}
+        assert len(children) == 2, folders
+        assert len(parents) == 1, folders

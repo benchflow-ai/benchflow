@@ -167,6 +167,7 @@ def test_native_yaml_reasoning_effort_normalizes(tmp_path):
     config.write_text("""
 tasks_dir: tasks
 agent: claude-agent-acp
+model: claude-sonnet-4-6
 reasoning_effort: MAX
 """)
 

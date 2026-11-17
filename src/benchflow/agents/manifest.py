@@ -101,6 +101,9 @@ _SHIM_ONLY = frozenset(
         "subscription_auth",
         "acp_model_config_id",
         "acp_effort_config_id",
+        # Whether that option needs a model with variants (OpenCode): read
+        # from what the pinned agent builds, like the option id itself.
+        "acp_effort_needs_variants",
         "acp_subagent_transcript",  # Producer-specific, verified shim capability.
         "acp_typed_failures",  # Likewise: checked against the pinned adapter.
         "disallow_web_tools_setup_cmd",

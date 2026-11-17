@@ -114,8 +114,9 @@ def test_incomplete_timeout_keeps_evidence_without_exporting_a_score(tmp_path):
     assert row["passed"] is None
     assert "reward" not in row["metrics"]
     trainer = json.loads((trial_path / "trainer/verifiers.jsonl").read_text())
-    # The older ORS schema requires a number plus an explicit invalid flag.
-    assert trainer["reward"] == 0.0
+    # Null and not completed, as results.jsonl (EN-374, audit RECORDS-4).
+    assert trainer["reward"] is None
+    assert trainer["is_completed"] is False
     assert trainer["info"]["reward_valid"] is False
     for job in (load_job(job_path), load_job(trial_path / "results.jsonl")):
         trial = job.trials[0]
@@ -155,3 +156,17 @@ def test_rescore_refreshes_plan_score_in_both_summaries(tmp_path, passed):
         assert refreshed["score_of_plan"] == (0.5 if passed else 0.0)
         assert refreshed["planned"] == 2 and refreshed["ran"] == 1
         assert refreshed["not_run_tasks"] == ["unfinished"]
+
+
+def test_a_reviewed_timeout_s_trainer_record_matches_results_jsonl(tmp_path):
+    """The review path writes trainer/verifiers.jsonl with the trial's own
+    completion, as results.jsonl does: a timed-out, truncated trial whose
+    review scored it is not completed (EN-374, the trainer records)."""
+    trial_path = _solver(tmp_path / "job", timeout=True)
+    commit_scoring_result(trial_path, _complete(reward=0.6))
+    trainer = json.loads((trial_path / "trainer/verifiers.jsonl").read_text())
+    row = json.loads((trial_path / "results.jsonl").read_text())
+    assert trainer["is_completed"] is False
+    assert trainer["is_truncated"] is True
+    assert row["is_completed"] is False
+    assert trainer["reward"] == row["reward"]

@@ -43,13 +43,17 @@ def normalize_sandbox_user(sandbox_user: str | None) -> str | None:
     return sandbox_user
 
 
-# Documented effort levels accepted across vendors (none → minimal → … → max).
-# Vendors that expose a reasoning/thinking effort map these onto their own
-# scales; values outside the set are rejected so a typo cannot silently launch
-# a run with no effort applied.
-_REASONING_EFFORT_VALUES = frozenset(
-    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-)
+#: BenchFlow's effort levels, lowest first: the one list every other place
+#: takes its levels from. Vendors that expose a reasoning/thinking
+#: effort map these onto their own scales; values outside it are rejected so
+#: a typo cannot silently launch a run with no effort applied.
+EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+#: The levels Claude Code (and Anthropic's ``output_config.effort``) takes:
+#: BenchFlow's ``none``, ``minimal`` and ``ultra`` have no Claude equivalent.
+CLAUDE_EFFORT_LEVELS = EFFORT_LEVELS[
+    EFFORT_LEVELS.index("low") : EFFORT_LEVELS.index("max") + 1
+]
+_REASONING_EFFORT_VALUES = frozenset(EFFORT_LEVELS)
 
 
 def normalize_reasoning_effort(effort: object) -> str | None:

@@ -32,34 +32,63 @@ def _finite(value: Any) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
+def _tokens(value: Any) -> int | None:
+    """A token count, or None when it is not one (nothing reported it)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def child_cost(
-    native_usage: Any, timing: Any, sandbox_seconds: float | None = None
-) -> dict[str, dict]:
+    native_usage: Any,
+    timing: Any,
+    sandbox_seconds: float | None = None,
+    *,
+    no_model_call: bool = False,
+) -> dict[str, Any]:
     """Token counters, phase seconds and cost of one child, for tree.json.
 
     ``cost``: total tokens, USD when the provider reported it (None for
     native-subscription runs, which report no price), and the seconds the
     child held a sandbox (the parent's for an in-place child, its own for an
-    isolated one).
+    isolated one). ``cost_incomplete`` (present only when true): the USD
+    was priced from some of the child's calls only, so it is a floor.
+
+    A child whose usage carries no token count (``usage_source``
+    ``unavailable``: its agent died before reporting any) has ``usage``
+    None and ``tokens`` None: unknown, not 0. A count its usage
+    did not report (a cache count the agent's report left out) is None in
+    ``usage``. A scripted child (``no_model_call``: an oracle, a nop)
+    called no model, so its zeros are real.
     """
+    from benchflow._utils.result_metadata import incomplete_usage_fields
+
     usage = native_usage if isinstance(native_usage, dict) else {}
     phases = timing if isinstance(timing, dict) else {}
-    total = usage.get("total_tokens")
+    tokens = _tokens(usage.get("total_tokens"))
+    usd = _finite(usage.get("cost_usd"))
+    cost: dict[str, Any] = {
+        "tokens": tokens if tokens is not None else 0 if no_model_call else None,
+        "usd": usd,
+        "sandbox_seconds": None
+        if sandbox_seconds is None
+        else round(sandbox_seconds, 3),
+    }
+    if usd is not None and (
+        usage.get("cost_incomplete") is True
+        or "cost_incomplete" in incomplete_usage_fields(usage)
+    ):
+        cost["cost_incomplete"] = True
+    counts: dict[str, int | None] | None = (
+        {key: _tokens(usage.get(key)) or 0 for key in _USAGE_COUNTERS}
+        if no_model_call
+        else {key: _tokens(usage.get(key)) for key in _USAGE_COUNTERS}
+        if tokens is not None
+        else None
+    )
     return {
-        "cost": {
-            "tokens": int(total)
-            if isinstance(total, int) and not isinstance(total, bool)
-            else 0,
-            "usd": _finite(usage.get("cost_usd")),
-            "sandbox_seconds": None
-            if sandbox_seconds is None
-            else round(sandbox_seconds, 3),
-        },
-        "usage": {
-            key: int(usage.get(key) or 0)
-            for key in _USAGE_COUNTERS
-            if isinstance(usage.get(key) or 0, int)
-        },
+        "cost": cost,
+        "usage": counts,
         "timing_sec": {
             key: round(float(value), 3)
             for key, value in phases.items()
@@ -75,7 +104,11 @@ def fork_cost(
 
     The parent's sandbox is alive for the whole fork (``wall_seconds``); an
     in-place child runs inside it, an isolated child adds its own sandbox.
-    ``usd`` is summed only when every child reported one (``usd_known``).
+    ``usd`` is summed only when every child reported one (``usd_known``);
+    ``cost_incomplete`` (present only when true) when a child's is a floor.
+    ``tokens`` sums the children whose count is known, and
+    ``children_without_usage`` (present only when there are any) counts the
+    others: ``tokens`` is then a floor.
     """
     costs = [child.get("cost") or {} for child in record["children"]]
     usds = [cost.get("usd") for cost in costs]
@@ -84,7 +117,7 @@ def fork_cost(
     )
     known = bool(usds) and all(usd is not None for usd in usds)
     wall = round(wall_seconds, 3)
-    return {
+    out = {
         "tokens": sum(cost.get("tokens") or 0 for cost in costs),
         "usd": round(math.fsum(u for u in usds if u is not None), 6) if known else None,
         "usd_known": known,
@@ -93,11 +126,30 @@ def fork_cost(
         "children_sandbox_seconds": round(children_seconds, 3),
         "sandbox_seconds": round(wall + children_seconds, 3),
     }
+    unknown = sum(1 for cost in costs if cost.get("tokens", 0) is None)
+    return _carry_floor(out, costs, without_usage=unknown)
+
+
+def _carry_floor(
+    total: dict[str, Any], parts: list[dict[str, Any]], *, without_usage: int
+) -> dict[str, Any]:
+    """``total`` marked ``cost_incomplete`` when its USD is known and a part's
+    is a floor, and given ``children_without_usage`` when its ``tokens``
+    leave out children whose count is unknown."""
+    if total["usd_known"] and any(
+        part.get("cost_incomplete") is True for part in parts
+    ):
+        total["cost_incomplete"] = True
+    if without_usage:
+        total["children_without_usage"] = without_usage
+    return total
 
 
 def cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
     """Totals over a trial's forks. A nested fork's parent sandbox is an
-    isolated child's, already counted in that child's sandbox seconds."""
+    isolated child's, already counted in that child's sandbox seconds; the
+    USD is a floor (``cost_incomplete``) when a fork's is, and ``tokens``
+    when a fork's leaves children out (``children_without_usage``)."""
     child_nodes = {child["node_id"] for fork in forks for child in fork["children"]}
     costs = [(fork, fork.get("cost") or {}) for fork in forks]
     usds = [cost.get("usd") for _, cost in costs]
@@ -107,12 +159,14 @@ def cost_totals(forks: list[dict[str, Any]]) -> dict[str, Any]:
         seconds += cost.get("children_sandbox_seconds") or 0.0
         if fork.get("rollout") not in child_nodes:
             seconds += cost.get("parent_sandbox_seconds") or 0.0
-    return {
+    out = {
         "tokens": sum(cost.get("tokens") or 0 for _, cost in costs),
         "usd": round(math.fsum(u for u in usds if u is not None), 6) if known else None,
         "usd_known": known,
         "sandbox_seconds": round(seconds, 3),
     }
+    unknown = sum(_tokens(cost.get("children_without_usage")) or 0 for _, cost in costs)
+    return _carry_floor(out, [cost for _, cost in costs], without_usage=unknown)
 
 
 def branch_summary(forks: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -120,17 +174,25 @@ def branch_summary(forks: list[dict[str, Any]]) -> dict[str, Any] | None:
 
     ``final_metrics`` and ``timing`` in result.json cover the parent's own
     turns only; children's native token usage and phase time are summed here
-    so dashboards built on result.json can count them. None when the rollout
-    never branched.
+    so dashboards built on result.json can count them. A count a child left
+    unknown makes its sum unknown (None), and a child whose count is unknown
+    makes every sum unknown; ``cost.tokens`` then sums the others, a floor. None when the rollout never branched.
     """
     if not forks:
         return None
     children = [child for fork in forks for child in fork["children"]]
-    usage = dict.fromkeys(_USAGE_COUNTERS, 0)
+    usage: dict[str, int | None] = dict.fromkeys(_USAGE_COUNTERS, 0)
     timing: dict[str, float] = {}
     for child in children:
-        for key, value in (child.get("usage") or {}).items():
-            usage[key] = usage.get(key, 0) + value
+        counts = child.get("usage")
+        if "usage" in child and not isinstance(counts, dict):
+            # Its count is unknown, so is every sum it is in.
+            counts = dict.fromkeys(_USAGE_COUNTERS)
+        for key, value in (counts or {}).items():
+            have, count = usage.get(key, 0), _tokens(value)
+            usage[key] = (
+                have + count if have is not None and count is not None else None
+            )
         for key, value in (child.get("timing_sec") or {}).items():
             timing[key] = round(timing.get(key, 0.0) + value, 3)
     child_nodes = {child["node_id"] for child in children}

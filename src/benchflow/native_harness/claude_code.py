@@ -29,6 +29,7 @@ import os
 import re
 from typing import Any
 
+from benchflow._utils.config import CLAUDE_EFFORT_LEVELS
 from benchflow.acp.types import McpServerSpec, StopReason
 from benchflow.native_harness.spec import (
     NativeLaunch,
@@ -39,7 +40,7 @@ from benchflow.native_harness.spec import (
 CLI = "claude-code"
 # The CLI's --effort values. BenchFlow's "none" and "minimal" have no Claude
 # Code equivalent; they are refused rather than silently widened.
-CLAUDE_CODE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+CLAUDE_CODE_EFFORTS = frozenset(CLAUDE_EFFORT_LEVELS)
 
 _BASE_ARGS = (
     "-p",

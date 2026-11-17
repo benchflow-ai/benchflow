@@ -127,12 +127,17 @@ def credit_trial_seconds(seconds: float) -> None:
 @contextmanager
 def cancelled_attempt_receipt(
     directory: Callable[[], Path | None],
+    usage: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> Iterator[None]:
     """Retain cancelled execution spend without publishing a scored result.
 
     The boundary surrounds the full rollout, including cleanup and scoring.
     Child tasks inherit these lists; nested rollouts contribute their verifier
     intervals to their parent too, just as the live job guard does.
+
+    ``usage`` gives the tokens and USD the attempt spent, which cleanup
+    counted: the receipt keeps them as its ``agent_result``, and the
+    job's guard counts them in ``budget.spent``.
     """
     started = time.monotonic()
     charges: list[VerifierCharge] = []
@@ -154,6 +159,7 @@ def cancelled_attempt_receipt(
                 if owner is not None and owner[1] in owner[0]._cancel_requested
                 else "interrupted"
             )
+            spent = _cancelled_spend(usage)
             write_json_atomic(
                 path / CANCELLED_BUDGET_RECORD,
                 {
@@ -166,11 +172,61 @@ def cancelled_attempt_receipt(
                             for c in charges
                         ),
                     },
+                    **({"agent_result": spent} if spent else {}),
                 },
             )
+            if owner is not None and spent:
+                owner[0].add_cancelled_spend(
+                    owner[1],
+                    cost=spent.get("cost_usd"),
+                    tokens=spent.get("total_tokens"),
+                )
         raise
     finally:
         _attempt_charges.reset(token)
+
+
+_SPEND_FIELDS = (
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "n_cache_write_tokens",
+    "n_cache_creation_tokens",
+    "total_tokens",
+    "cost_usd",
+    "usage_source",
+    "cost_source",
+    "price_table_date",
+    # A count that missed calls says so in the receipt too.
+    "usage_incomplete",
+    "usage_incomplete_reason",
+)
+
+
+def budget_stopped_this_trial() -> bool:
+    """Whether the running trial's cancel is the job's budget stopping it."""
+    owner = _trial_budget.get()
+    return owner is not None and owner[1] in owner[0]._cancel_requested
+
+
+def _cancelled_spend(
+    usage: Callable[[], Mapping[str, Any] | None] | None,
+) -> dict[str, Any] | None:
+    """The tokens and USD a cancelled attempt spent, in result.json's terms;
+    None when nothing counted them. Never fails the cancellation."""
+    if usage is None:
+        return None
+    try:
+        metrics = usage()
+    except Exception:
+        logger.debug("Could not read a cancelled attempt's usage", exc_info=True)
+        return None
+    if not isinstance(metrics, Mapping):
+        return None
+    spent = {key: metrics.get(key) for key in _SPEND_FIELDS if key in metrics}
+    if spent.get("total_tokens") is None and spent.get("cost_usd") is None:
+        return None
+    return spent
 
 
 def with_cancelled_budget(
@@ -207,6 +263,11 @@ def with_cancelled_budget(
     merged: dict[str, Any] = (
         dict(result) if result is not None else {"_budget_cancelled": True}
     )
+    spent = receipt.get("agent_result")
+    if result is None and isinstance(spent, Mapping):
+        # What the stopped attempt spent; a result of the same
+        # attempt carries its own figures.
+        merged["agent_result"] = dict(spent)
     previous = merged.get("timing")
     previous = previous if isinstance(previous, Mapping) else {}
     # Legacy snapshots may have absent or unknown timings. Only a known
@@ -221,6 +282,86 @@ def with_cancelled_budget(
         **{k: max(timing[k], prior_seconds.get(k, 0)) for k in keys},
     }
     return merged
+
+
+#: The earlier ``usage_source`` names of a result whose tokens nothing
+#: counted: such a result wrote 0, not null.
+_UNCOUNTED_LEGACY = frozenset({"unavailable", "none"})
+
+
+def _usd(value: Any) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) else None
+    return None
+
+
+def _tokens(value: Any, legacy: Any = None) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    if value == 0 and legacy in _UNCOUNTED_LEGACY:
+        return None
+    return value
+
+
+@dataclass(frozen=True)
+class AttemptSpend:
+    """What one attempt spent, as the budget counts it.
+
+    ``cost_usd`` and ``tokens`` are its agent's, each None when unknown,
+    never 0. :meth:`of` reads a result.json dict, a stopped attempt's
+    cancellation receipt (:func:`with_cancelled_budget`) or a
+    :class:`RolloutResult` the same way, as ``BudgetGuard.seed`` reads them,
+    so ``budget.spent`` and summary.json's ``spend_all_attempts`` agree.
+    """
+
+    cost_usd: float | None
+    tokens: int | None
+    agent: str | None = None
+    # Its agent made no model call (an oracle, a nop, a script):
+    # ``no_usage_reason`` ``no_model_call``.
+    no_model_call: bool = False
+    # Its USD is priced from a count of some of its calls only
+    # (``usage_incomplete``): a floor, never the whole.
+    cost_incomplete: bool = False
+
+    @classmethod
+    def of(cls, result: Any) -> AttemptSpend:
+        if isinstance(result, Mapping):
+            usage = result.get("agent_result")
+            usage = usage if isinstance(usage, Mapping) else {}
+            cost = usage.get("cost_usd", result.get("cost_usd"))
+            tokens = usage.get("total_tokens", result.get("total_tokens"))
+            legacy = usage.get("usage_source_legacy", usage.get("usage_source"))
+            no_usage = usage.get("no_usage_reason")
+            incomplete = usage.get("usage_incomplete", result.get("usage_incomplete"))
+            agent = result.get("agent")
+        else:
+            cost = getattr(result, "cost_usd", None)
+            tokens = getattr(result, "total_tokens", None)
+            legacy = getattr(result, "usage_source_legacy", None)
+            no_usage = getattr(result, "no_usage_reason", None)
+            incomplete = getattr(result, "usage_incomplete", None)
+            agent = getattr(result, "agent", None)
+        return cls(
+            cost_usd=_usd(cost),
+            tokens=_tokens(tokens, legacy),
+            agent=agent if isinstance(agent, str) and agent else None,
+            no_model_call=no_usage == "no_model_call",
+            cost_incomplete=incomplete is True and _usd(cost) is not None,
+        )
+
+    @property
+    def usd_unknown(self) -> bool:
+        """Its agent's USD is unknown."""
+        return self.cost_usd is None
+
+    @property
+    def called_no_model(self) -> bool:
+        """A control or a script, or a result that says its agent made no
+        model call: it spent nothing on a model, and nothing is unknown."""
+        from benchflow.agents.registry import is_scripted_agent
+
+        return self.no_model_call or is_scripted_agent(self.agent)
 
 
 @dataclass(frozen=True)
@@ -388,9 +529,13 @@ class BudgetGuard:
             seconds = timing.get("total") if isinstance(timing, Mapping) else None
             self.rollouts += 1
             if r.get("_budget_cancelled"):
-                # No completed rollout means no new USD/token observation.
+                # No completed rollout, but what it spent before the stop
+                # counts (its receipt's agent_result).
                 self.sandbox_seconds += float(seconds or 0) + _verifier_sandbox_seconds(
                     timing
+                )
+                self._add_spend(
+                    cost=agent.get("cost_usd"), tokens=agent.get("total_tokens")
                 )
                 if isinstance(name, str):
                     self._task_seconds[name] = self._task_seconds.get(name, 0) + (
@@ -479,6 +624,27 @@ class BudgetGuard:
                     "A rollout finished without a USD cost; --max-cost-usd counts "
                     "only rollouts that report one (see summary.json budget.spent)."
                 )
+
+    def _add_spend(self, *, cost: Any, tokens: Any) -> None:
+        """Count known tokens and USD of an attempt that never finished
+        (unknown ones are not a finished rollout's missing figure)."""
+        if isinstance(tokens, int) and not isinstance(tokens, bool):
+            self.tokens += tokens
+            self._token_rollouts += 1
+        if (
+            isinstance(cost, int | float)
+            and not isinstance(cost, bool)
+            and math.isfinite(cost)
+        ):
+            self.cost_usd += float(cost)
+            self._usd_rollouts += 1
+
+    def add_cancelled_spend(self, name: str, *, cost: Any, tokens: Any) -> None:
+        """Count trial *name*'s cancelled attempt's tokens and USD:
+        spent, though nothing was scored."""
+        del name  # the job's totals; a trial's seconds are counted apart
+        self._add_spend(cost=cost, tokens=tokens)
+        self._notify()
 
     def spent(self, *, now: float | None = None) -> dict[str, Any]:
         """What the job has spent so far (``summary.json``'s ``budget.spent``)."""

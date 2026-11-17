@@ -89,6 +89,8 @@ class FakeDocker:
 
     async def __call__(self, *argv, **kwargs):
         argv = [str(a) for a in argv]
+        if argv[:2] == ["sh", "-c"]:  # EN-718: dial-stdio under EN-482's held stdin
+            argv = argv[4:]
         self.calls.append((argv, kwargs))
         argv = _without_client_options(argv)
         out = b""

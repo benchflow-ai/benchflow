@@ -105,6 +105,9 @@ class TaskEnvRequest:
     shown: str | None = None
     #: What clears the refusal, when naming ``variable`` does not.
     remedy: str | None = None
+    #: What the refusal's headline says the task has, when it is not that
+    #: it reaches outside the task (Compose files that do not resolve).
+    headline: str | None = None
 
     @property
     def template(self) -> str:
@@ -251,8 +254,12 @@ class TaskEnvNotAllowedError(ValueError, UserError):
                 f"{'asks' if one else 'ask'} for {', '.join(variables)} "
                 "from your environment"
             )
-        if remedies:
+        if any(r.remedy and not r.headline for r in requests):
             what.append(f"{'reaches' if one else 'reach'} outside the task")
+        what += [
+            f"{'has' if one else 'have'} {headline}"
+            for headline in dict.fromkeys(r.headline for r in requests if r.headline)
+        ]
         self.variables = variables
         self.hint = "\n".join(
             ([refusal_reason(variables)] if variables else []) + remedies

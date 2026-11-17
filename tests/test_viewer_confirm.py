@@ -489,7 +489,8 @@ def test_legacy_result_fields_and_rollout_title_escape_hostile_json(tmp_path):
     assert "&lt;script&gt;turnsPwned()&lt;/script&gt;" in page
     assert "<script>resultPwned()</script>" not in page
     assert "&lt;script&gt;resultPwned()&lt;/script&gt;" in page
-    assert "cost=$0.0000" in page
+    # An unreadable cost is unknown, never $0 (EN-624).
+    assert "cost=unknown" in page and "cost=$0.0000" not in page
 
 
 def test_single_file_response_normalizes_all_text_to_valid_utf8(tmp_path):

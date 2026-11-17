@@ -199,7 +199,9 @@ def test_summarize_llm_trajectory_usage_splits_recorded_and_live(tmp_path):
 
     usage = summarize_llm_trajectory_usage(traj, n_recorded=1)
 
-    assert usage.n_input_tokens == 30
+    # prompt_tokens is cache-inclusive (LiteLLM's chat shape): the uncached
+    # input is (10 - 3 written) + (20 - 7 read) (EN-374).
+    assert usage.n_input_tokens == 20
     assert usage.n_output_tokens == 7
     assert usage.total_tokens == 37
     assert usage.recorded_total_tokens == 12
@@ -258,7 +260,9 @@ def test_update_continued_metadata_writes_model_and_usage(tmp_path):
     assert config["model"] == "aws-bedrock/us.anthropic.claude-opus-4-8"
     assert result["model"] == "aws-bedrock/us.anthropic.claude-opus-4-8"
     assert result["agent_result"]["total_tokens"] == 12
-    assert result["agent_result"]["usage_source"] == "provider_response"
+    # EN-374's names: the proxy counted it; the 0.9.2 name stays beside it.
+    assert result["agent_result"]["usage_source"] == "proxy"
+    assert result["agent_result"]["usage_source_legacy"] == "provider_response"
     assert result["usage_tracking"]["requested"] == "required"
     assert result["usage_tracking"]["endpoint_kind"] == "sandbox"
     assert result["usage_tracking"]["status"] == "captured_from_stitched_llm_trajectory"

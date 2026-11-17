@@ -416,3 +416,41 @@ def job_factory(tmp_path):
         return job, tasks_dir
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _host_access_is_not_cloud_gated(monkeypatch):
+    """The suite runs on cloud VMs and CI runners, where a metadata server
+    answers: tests that opt into host access keep it (EN-609's second opt-in
+    set, the probe never asked); tests of the cloud refusal undo both."""
+    from benchflow.task import compose_env
+
+    monkeypatch.setenv(compose_env.ALLOW_HOST_ACCESS_ON_CLOUD_VAR, "1")
+    monkeypatch.setattr(compose_env, "_CLOUD_PROBE", [False])
+
+
+@pytest.fixture(autouse=True)
+def _fresh_netns_answers():
+    """Each test reads its own fake daemon's netns answers (EN-609's host
+    netns guard keeps them per process): many fakes share container ids."""
+    from benchflow.sandbox import _metadata_helper
+
+    _metadata_helper._HOST_NETNS.clear()
+    _metadata_helper._NETNS_IS_HOST.clear()
+    yield
+
+
+@pytest.fixture
+def strict_reward_rule(monkeypatch):
+    """Integrity strict's rule for a reward outside the range: refused and
+    scored 0. Audit and off record it as written (the default)."""
+    from contextvars import ContextVar
+
+    from benchflow.rewards import validation
+
+    monkeypatch.setattr(
+        validation,
+        "_KEEP_OUT_OF_RANGE_REWARD",
+        ContextVar("strict_reward_rule", default=False),
+        raising=False,
+    )

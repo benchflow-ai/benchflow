@@ -171,6 +171,8 @@ def _dummies(files: dict[str, str], launch: dict[str, str]) -> dict[str, list[st
     places += [(f"env {k}", v) for k, v in launch.items()]
     for where, text in places:
         for token in text.replace('"', " ").replace(",", " ").split():
+            if token.startswith("sk-ant-oat01-dummy-"):  # a login-shaped dummy
+                token = token.removeprefix("sk-ant-oat01-")
             if token.startswith("dummy-"):
                 found.setdefault(token.rstrip("}"), []).append(where)
     return found

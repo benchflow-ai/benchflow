@@ -132,6 +132,10 @@ class RolloutConfig:
     sandbox_user: str | None = "agent"
     sandbox_locked_paths: list[str] | None = None
     sandbox_setup_timeout: int = 120
+    # Whether the run named sandbox_setup_timeout (a flag or a config key):
+    # then the sandbox user setup gets it as given, else 600 s. None reads
+    # it from the value: anything but the default 120 was named.
+    sandbox_setup_timeout_given: bool | None = field(default=None, kw_only=True)
     skip_agent_install: bool = False
     # Install the model proxy and the agent in the trial, with no cached
     # layer (``--fresh-install``; ``BENCHFLOW_FRESH_INSTALL=1`` does the same).
@@ -204,6 +208,8 @@ class RolloutConfig:
     prompts: list[str | None] | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    # Where the effort was asked; kept across dataclasses.replace().
+    reasoning_effort_source: str | None = None
     agent_env: dict[str, str] | None = None
     skills_dir: str | Path | None = None
     # The skills in skills_dir came from earlier agents (a learner store), not
@@ -301,6 +307,8 @@ class RolloutConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
+        if self.sandbox_setup_timeout_given is None:
+            self.sandbox_setup_timeout_given = self.sandbox_setup_timeout != 120
         # A task in a registered task format runs as its native package.
         from benchflow.task.formats import materialize_task_dir
 
@@ -391,6 +399,19 @@ class RolloutConfig:
         self.agent = normalize_agent_name(self.agent)
         self.sandbox_user = normalize_sandbox_user(self.sandbox_user)
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        from benchflow.effort_request import effort_source, settle_effort
+
+        # Every way of asking counts: a model[effort] suffix or a
+        # CODEX_CONFIG effort is the run's effort, and a level the agent's
+        # model cannot take is refused before the rollout starts.
+        settled = settle_effort(
+            self.agent, self.model, self.reasoning_effort, self.agent_env
+        )
+        # The effort suffix is consumed: the model id goes upstream bare.
+        self.model, self.reasoning_effort = settled.model, settled.effort
+        self.reasoning_effort_source = effort_source(
+            self.reasoning_effort_source, settled.source
+        )
         self.agent_idle_timeout = normalize_agent_idle_timeout(self.agent_idle_timeout)
         # None keeps the task's own budget; 0 is "no limit of its own", as in
         # 0.7.11 (the rollout deadline bounds it). Anything else is whole
@@ -426,9 +447,13 @@ class RolloutConfig:
         for scene in self.scenes:
             for role in scene.roles:
                 role.agent = normalize_agent_name(role.agent)
-                role.reasoning_effort = normalize_reasoning_effort(
-                    role.reasoning_effort
+                settled = settle_effort(
+                    role.agent,
+                    role.model,
+                    normalize_reasoning_effort(role.reasoning_effort),
+                    self.agent_env,
                 )
+                role.model, role.reasoning_effort = settled.model, settled.effort
         from benchflow.agents.muse_config import validate_muse_roles
 
         validate_muse_roles(

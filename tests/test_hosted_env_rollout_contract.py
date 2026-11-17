@@ -148,6 +148,8 @@ def test_hosted_env_writes_contract_result_json(tmp_path, monkeypatch):
         "total_completion_tokens",
         "total_cached_tokens",
         "total_cost_usd",
+        # EN-374: the token split and its provenance.
+        "extra",
     }
     assert payload["trajectory_summary"]["steps"] >= 0
     assert payload["trajectory_summary"]["tool_call_steps"] >= 0

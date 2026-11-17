@@ -27,7 +27,7 @@ from benchflow.providers.runtime import ensure_litellm_runtime
 from benchflow.rollout import session_factory_runtime as sf_runtime
 
 MASTER_KEY_ENV = "BENCHFLOW_LITELLM_MASTER_KEY"
-SELECTED = "dummy-selected-a"
+SELECTED = "sk-ant-oat01-dummy-selected-a"
 CLAUDE_LOGINS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_OAUTH_TOKEN",
@@ -73,15 +73,21 @@ def _known_host_credentials() -> list[str]:
 HOST_CREDENTIALS = _known_host_credentials()
 
 
+def _login_shape(name: str) -> str:
+    # ANTHROPIC_AUTH_TOKEN's contents decide its route (EN-374, CRED-4): a
+    # dummy login there is shaped like a Claude OAuth token.
+    return "sk-ant-oat01-" if name == "ANTHROPIC_AUTH_TOKEN" else ""
+
+
 def _dummy(name: str) -> str:
-    token = f"dummy-host-{name.lower()}"
+    token = f"{_login_shape(name)}dummy-host-{name.lower()}"
     if name.endswith("_JSON"):
         return json.dumps({"dummy": token})
     return token
 
 
 def _host_token(name: str) -> str:
-    return f"dummy-host-{name.lower()}"
+    return f"{_login_shape(name)}dummy-host-{name.lower()}"
 
 
 @pytest.fixture

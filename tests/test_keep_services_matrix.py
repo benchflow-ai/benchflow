@@ -317,6 +317,8 @@ async def test_oracle_install_resolves_the_oracles_account(tmp_path, row, monkey
         "prepare_verifier_runtime",
         "deploy_skills",
         "lockdown_paths",
+        # EN-712: a trial with no sandbox user locks PATH to root first.
+        "lock_system_path",
         # K1: a trial that keeps services proves the freezer before solve.sh.
         "probe_kept_service_freezer",
     ):

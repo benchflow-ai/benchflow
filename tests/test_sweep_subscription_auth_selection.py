@@ -80,10 +80,12 @@ def test_claude_token_never_selects_another_host_login(
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "relocated-claude"))
     probe = Mock(wraps=auth.check_subscription_auth)
     monkeypatch.setattr(auth, "check_subscription_auth", probe)
-    supplied = _inputs(tmp_path, monkeypatch, source, {token: "dummy-account-A"})
+    supplied = _inputs(
+        tmp_path, monkeypatch, source, {token: "sk-ant-oat01-dummy-account-A"}
+    )
     canonical = resolve_agent(agent).name
     result = auth.resolve_agent_env(canonical, model, supplied)
-    assert result[token] == "dummy-account-A"
+    assert result[token] == "sk-ant-oat01-dummy-account-A"
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
     assert "BENCHFLOW_PROVIDER_API_KEY" not in result
     assert "BENCHFLOW_PROVIDER_BASE_URL" not in result
@@ -97,7 +99,10 @@ def test_claude_token_never_selects_another_host_login(
 )
 def test_any_nonempty_token_suppresses_host_login(model, tokens):
     """Guards 3df70b5e: blank aliases cannot hide another nonempty credential."""
-    values = {key: "dummy-account-A" if key in tokens else "" for key in CLAUDE_TOKENS}
+    values = {
+        key: "sk-ant-oat01-dummy-account-A" if key in tokens else ""
+        for key in CLAUDE_TOKENS
+    }
     result = auth.resolve_agent_env("claude-agent-acp", model, values)
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
@@ -110,9 +115,9 @@ def test_codex_credentials_also_suppress_host_fallback(
 ):
     """Guards the 3df70b5e sibling: inline auth and API aliases keep precedence."""
     value = (
-        '{"tokens":{"access_token":"dummy-account-A"}}'
+        '{"tokens":{"access_token":"sk-ant-oat01-dummy-account-A"}}'
         if credential == "CODEX_AUTH_JSON"
-        else "dummy-account-A"
+        else "sk-ant-oat01-dummy-account-A"
     )
     supplied = _inputs(tmp_path, monkeypatch, source, {credential: value})
     probe = Mock(wraps=auth.check_subscription_auth)
@@ -148,9 +153,9 @@ def test_reresolution_discards_the_previous_host_selection(model, token):
     previous = auth.resolve_agent_env("claude-agent-acp", model, {})
     assert previous["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
     result = auth.resolve_agent_env(
-        "claude-agent-acp", model, {**previous, token: "dummy-account-A"}
+        "claude-agent-acp", model, {**previous, token: "sk-ant-oat01-dummy-account-A"}
     )
-    assert result[token] == "dummy-account-A"
+    assert result[token] == "sk-ant-oat01-dummy-account-A"
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
 
@@ -163,7 +168,7 @@ def test_public_network_backend_plan_keeps_only_the_supplied_account(
     """Guards 3df70b5e on each backend's ordinary public-network task path."""
     task = _task(tmp_path / "task")
     result = auth.resolve_agent_env(
-        "claude-agent-acp", model, {token: "dummy-account-A"}
+        "claude-agent-acp", model, {token: "sk-ant-oat01-dummy-account-A"}
     )
     validate_task_plan(
         task, sandbox=backend, agent="claude-agent-acp", model=model, agent_env=result
@@ -190,11 +195,11 @@ class TestRoleHostLoginSelection:
             name="reviewer",
             agent="claude-agent-acp",
             model=model,
-            env={token: "dummy-account-A"},
+            env={token: "sk-ant-oat01-dummy-account-A"},
         )
         await trial.connect_as(role)
         trial._planes.connect_acp.assert_awaited_once()
         trial._planes.upload_subscription_auth.assert_not_awaited()
         staged = trial._planes.write_credential_files.await_args.args[2]
-        assert staged[token] == "dummy-account-A"
+        assert staged[token] == "sk-ant-oat01-dummy-account-A"
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in staged

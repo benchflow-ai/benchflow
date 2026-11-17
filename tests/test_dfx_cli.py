@@ -473,18 +473,21 @@ def test_an_include_that_matches_no_task_exits_2(monkeypatch, tmp_path):
     """DFR-p5-8: `-i fix-gti` exited 1."""
     import benchflow.evaluation as evaluation
 
-    class Refusing:
-        def __init__(self, *args, **kwargs):
-            pass
+    def no_setup(self, *args, **kwargs):
+        pass
 
-        async def run(self):
-            raise evaluation.EmptyTaskSelectionError(
-                "No tasks selected after include/exclude filtering (x). --include "
-                "'fix-gti' matches no task (did you mean 'fix-git'?). Refusing to "
-                "publish an empty 0/0 summary."
-            )
+    async def refusing_run(self):
+        raise evaluation.EmptyTaskSelectionError(
+            "No tasks selected after include/exclude filtering (x). --include "
+            "'fix-gti' matches no task (did you mean 'fix-git'?). Refusing to "
+            "publish an empty 0/0 summary."
+        )
 
-    monkeypatch.setattr(evaluation, "Evaluation", Refusing)
+    # Patch the class, not its name: a module first imported during this run
+    # binds Evaluation by value (eval_sharding does), and a stand-in class
+    # would stay there for every later test on the worker.
+    monkeypatch.setattr(evaluation.Evaluation, "__init__", no_setup)
+    monkeypatch.setattr(evaluation.Evaluation, "run", refusing_run)
     result = runner.invoke(
         app, ["run", str(HELLO), "-i", "fix-gti", "--jobs-dir", str(tmp_path / "j")]
     )
@@ -547,7 +550,9 @@ def test_a_held_job_lock_says_what_to_do(tmp_path):
     job.mkdir(parents=True)
     held = JobLock.acquire(job / ".lock")
     try:
-        with pytest.raises(RuntimeError) as refused:
+        with pytest.raises(
+            RuntimeError, match=r"is already running; wait for its lock"
+        ) as refused:
             JobLock.acquire(job / ".lock")
     finally:
         held.close()

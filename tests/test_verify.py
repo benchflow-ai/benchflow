@@ -152,6 +152,9 @@ class TestResultJson:
             timing={},
             n_input_tokens=18000,
             n_output_tokens=5993,
+            # Known zeros: an ATIF prompt total with an unknown part is unknown.
+            n_cache_read_tokens=0,
+            n_cache_creation_tokens=0,
             total_tokens=23993,
             usage_source="provider_response",
         )
@@ -316,6 +319,7 @@ class TestSdkVerify:
         ],
     )
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("strict_reward_rule")
     async def test_verifier_returning_noncanonical_rewards_is_verifier_error(
         self, verify_harness, rewards, caplog
     ):

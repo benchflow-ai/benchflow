@@ -144,7 +144,9 @@ async def test_async_started_callback_runs_before_upload(tmp_path):
         order.append("upload")
 
     runtime = SimpleNamespace(start=start, upload_file=upload)
-    await _start_env_and_upload(runtime, tmp_path, {}, on_started=capture)
+    await _start_env_and_upload(
+        runtime, tmp_path, {}, task=None, agent=None, on_started=capture
+    )
     assert order == ["start", "baseline", "upload"]
 
 

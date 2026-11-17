@@ -144,9 +144,20 @@ async def test_late_relative_helpers_cannot_become_scored_failures(
         if when == "during-verification":
             script += "mkdir -p bin; printf '#!/bin/sh\\nexit 0\\n' > bin/check-answer; chmod +x bin/check-answer\n"
         script += "if check-answer >/dev/null 2>&1; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n"
-        reward, error, _ = await verify(
+        reward, error, record = await verify(
             box, tmp_path, script, required=required, helper=when == "upload"
         )
+    if required is None and entry.startswith("/") and ".." not in entry:
+        # EN-712 (EN-278 lead ruling, 2026-11-16): an absolute entry absent
+        # when judged, under folders root alone can write, with no link
+        # another user controls, is kept: only root could make it (here the
+        # verifier's upload or test.sh, both root). The late helper is found
+        # and test.sh's own score stands, never a scored failure.
+        assert (reward, error) == ({"reward": 1.0}, None)
+        assert record["absent_root_only"] == [entry]
+        return
+    # A `..` part is refused as written (RUSAGE on #292): /tests/bin/../bin
+    # is left out and needs the contract.
     assert reward is None
     assert error and "required_tools" in error
 

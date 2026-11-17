@@ -94,23 +94,60 @@ def _reward(value: float | None) -> str:
 
 
 def _usd(cost: dict | None) -> str:
+    """A fork's USD; "+" when it is a floor (a child priced from some of its
+    calls only)."""
     if not cost or not cost.get("usd_known"):
         return "-"
-    return f"{cost['usd']:.4f}"
+    return f"{cost['usd']:.4f}" + ("+" if cost.get("cost_incomplete") else "")
 
 
 def _count(usage: dict, *keys: str) -> str:
-    if not usage:
+    """The summed counts; "-" when there is no record or one of them is
+    unknown (None): a sum with an unknown part is unknown."""
+    if not usage or any(key in usage and usage[key] is None for key in keys):
         return "-"
     return f"{sum(int(usage.get(key) or 0) for key in keys):,}"
 
 
+def _tokens_cell(cost: dict) -> str:
+    """A fork's tokens; "+" when they leave out children whose count is
+    unknown."""
+    tokens = cost.get("tokens")
+    if isinstance(tokens, bool) or not isinstance(tokens, int):
+        return "-"
+    return f"{tokens:,}" + ("+" if cost.get("children_without_usage") else "")
+
+
+#: A child whose report named no count of a token class (a cache count).
+_UNCLASSED = "child(ren) with an unreported cache count"
+
+
 def _totals_line(view: dict) -> str:
     """Tokens by class, reported and estimated USD, sandbox-seconds, and the
-    same per scored child (branch-view 1.1 ``totals``)."""
+    same per scored child (branch-view 1.1 ``totals``). A total that leaves
+    a child's count out is a floor, and one with an unknown part is
+    unknown, never 0."""
     totals = view["totals"]
     cost = totals.get("cost") or {}
     usage = totals.get("usage")
+    children = [
+        child
+        for fork in view.get("forks") or []
+        for child in fork.get("children") or []
+    ]
+    # Children with no usage record (their agent died before reporting any,
+    # or they never ran): the estimate is unknown, not their share left out.
+    unknown = sum(1 for child in children if child.get("usage") is None)
+    # Of those, the ones that ran: the token total leaves them out.
+    left_out = sum(
+        1 for child in children if (child.get("cost") or {}).get("tokens", 0) is None
+    )
+    unclassed = sum(
+        1
+        for child in children
+        if isinstance(child.get("usage"), dict)
+        and any(value is None for value in child["usage"].values())
+    )
     parts = []
     if usage is not None:
         parts.append(
@@ -118,9 +155,18 @@ def _totals_line(view: dict) -> str:
             f"{usage['output']:,} · cache read {usage['cache_read']:,} · cache "
             f"write {usage['cache_creation']:,})"
         )
-    no_model = usage is not None and usage["total"] == 0
+    elif isinstance(cost.get("tokens"), int) and (left_out or unclassed):
+        notes: list[str] = []
+        if left_out:
+            notes.append(f"a floor: {left_out} child(ren) with no usage record")
+        if unclassed:
+            notes.append(f"classes unknown: {unclassed} {_UNCLASSED}")
+        plus = "+" if left_out else ""
+        parts.append(f"{cost['tokens']:,}{plus} tokens ({'; '.join(notes)})")
+    no_model = usage is not None and usage["total"] == 0 and not unknown
+    floor = "+ (floor)" if cost.get("cost_incomplete") else ""
     if cost.get("usd_known"):
-        parts.append(f"USD {cost['usd']:.4f} reported")
+        parts.append(f"USD {cost['usd']:.4f}{floor} reported")
     elif no_model:
         parts.append("no model calls")
     else:
@@ -131,6 +177,13 @@ def _totals_line(view: dict) -> str:
             f"estimate ~USD {totals['usd_estimate']:.4f} at list price for "
             f"{pricing['model']} ({pricing['source']})"
         )
+    elif (unknown and (usage is not None or left_out)) or unclassed:
+        why: list[str] = []
+        if unknown:
+            why.append(f"{unknown} child(ren) with no usage record")
+        if unclassed:
+            why.append(f"{unclassed} {_UNCLASSED}")
+        parts.append(f"estimate unknown ({', '.join(why)})")
     if cost.get("sandbox_seconds") is not None:
         parts.append(f"{cost['sandbox_seconds']:.0f} sandbox-s")
     per = totals.get("per_scored_child") or {}
@@ -141,7 +194,7 @@ def _totals_line(view: dict) -> str:
             else []
         )
         if per.get("usd") is not None:
-            each.insert(0, f"USD {per['usd']:.4f}")
+            each.insert(0, f"USD {per['usd']:.4f}{floor}")
         elif per.get("usd_estimate") is not None and not no_model:
             each.insert(0, f"~USD {per['usd_estimate']:.4f}")
         if each:
@@ -149,8 +202,10 @@ def _totals_line(view: dict) -> str:
     return "Totals: " + "; ".join(parts) + "."
 
 
-def _print_cost_table(outcomes) -> None:
-    """Per fork: children, V, tokens, USD, sandbox-seconds and wall seconds."""
+def _print_cost_table(outcomes, total: dict[str, Any]) -> None:
+    """Per fork: children, V, tokens, USD, sandbox-seconds and wall seconds;
+    then the job's ``total`` (``branch_run.job_cost``), a floor when it
+    leaves a trial's USD or a child's tokens out."""
     cost_table = Table(title="Cost per fork")
     many = len(outcomes) > 1
     columns = ("Task",) * many + (
@@ -169,35 +224,53 @@ def _print_cost_table(outcomes) -> None:
             justify="left" if column in {"Task", "Fork", "From"} else "right",
             no_wrap=True,
         )
-    unknown_usd = False
     for outcome in outcomes:
         for fork in outcome.forks:
             cost = fork.get("cost") or {}
-            unknown_usd = unknown_usd or not cost.get("usd_known")
             cost_table.add_row(
                 *([escape(outcome.task)] if many else []),
                 escape(str(fork["id"])[:8]),
                 escape(str(fork.get("from") or "-")),
                 str(fork.get("children", "-")),
                 _reward(fork.get("value")),
-                f"{cost.get('tokens', 0):,}",
+                _tokens_cell(cost),
                 _usd(cost),
                 f"{cost.get('sandbox_seconds') or 0:.0f}",
                 f"{cost.get('wall_seconds') or 0:.0f}",
             )
     if cost_table.row_count:
         console.print(cost_table)
-        totals = [o.cost for o in outcomes if o.cost]
+        trials = len(outcomes)
+        unrecorded = total["trials_without_cost_record"]
+        unknown = total["trials_without_cost"] - unrecorded
+        no_record = f"{unrecorded} of {trials} trials have no cost record"
+        why = [no_record] if unrecorded else []
+        if total["trials_cost_incomplete"]:
+            why.append(
+                f"{total['trials_cost_incomplete']} counted only some of their calls"
+            )
+        left_out = total["children_without_usage"]
+        tokens = f"{total['tokens']:,}" + (
+            f"+ tokens (a floor: {left_out} child(ren) with no usage record)"
+            if left_out
+            else " tokens"
+        )
         console.print(
-            f"Total: {sum(c.get('tokens') or 0 for c in totals):,} tokens, "
-            f"{sum(c.get('sandbox_seconds') or 0 for c in totals):.0f} sandbox-seconds"
+            f"Total: {tokens}, {total['sandbox_seconds']:.0f} sandbox-seconds"
             + (
                 "; no model calls"
-                if not any(c.get("tokens") for c in totals)
+                if not total["tokens"]
+                and not total["total_cost_incomplete"]
+                and not left_out
+                else f", USD {total['usd']:.4f}"
+                if total["usd"] is not None and not total["total_cost_incomplete"]
+                else f", USD {total['usd']:.4f}+ (a floor: {'; '.join(why)})"
+                if total["usd"] is not None
                 else "; USD not reported (subscription or no provider price; "
                 "bench eval branches shows a list-price estimate)"
-                if unknown_usd
-                else f", USD {sum(c.get('usd') or 0 for c in totals):.4f}"
+                + (f"; {no_record}" if unrecorded else "")
+                if unknown
+                else f"; USD unknown: {no_record}"
             ),
             highlight=False,
             soft_wrap=True,
@@ -409,6 +482,7 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
             --child "label=baseline" --child "label=hint,prompt=Rename draft.txt."
         """
         from benchflow import branch_run
+        from benchflow.agents.registry import is_scripted_agent
         from benchflow.cli.doctor import eval_preflight
         from benchflow.cli.main import _normalize_eval_agent_or_exit
 
@@ -525,7 +599,13 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
                     escape(str(row["reward_source"] or "-")),
                 )
         console.print(table)
-        _print_cost_table(outcomes)
+        _print_cost_table(
+            outcomes,
+            branch_run.job_cost(
+                [outcome.cost for outcome in outcomes],
+                no_model_call=is_scripted_agent(plan.agent),
+            ),
+        )
         for outcome in outcomes:
             line = (
                 f"{escape(outcome.task)}: V = {_reward(outcome.value)}, fork "
@@ -625,6 +705,7 @@ def register_eval_branches(eval_app: typer.Typer) -> None:
                         ),
                         # reported, else "~" + the list-price estimate
                         f"{cost['usd']:.4f}"
+                        + ("+" if cost.get("cost_incomplete") else "")
                         if cost.get("usd") is not None
                         else "-"
                         if child.get("usd_estimate") is None

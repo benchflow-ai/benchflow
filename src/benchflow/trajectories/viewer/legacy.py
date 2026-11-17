@@ -361,9 +361,10 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
                     blocks.append(_user_prompt_html("\n".join(texts)))
 
         elif etype == "result":
-            # Final summary
-            cost = _coerce_cost(event.get("total_cost_usd", 0))
-            cost_text = html.escape(f"{cost if cost is not None else 0:.4f}")
+            # Final summary. A result with no readable cost is unknown, never
+            # $0.
+            cost = _coerce_cost(event.get("total_cost_usd"))
+            cost_text = html.escape(f"${cost:.4f}" if cost is not None else "unknown")
             turns = html.escape(str(event.get("num_turns", "?")))
             raw_result = event.get("result", "")
             result_text = html.escape(
@@ -372,7 +373,7 @@ def render_turn(events: list[dict], turn_number: int, prompt: str = "") -> str:
             blocks.append(
                 f'<div class="step result">'
                 f'<div class="step-header"><span class="label result">RESULT</span>'
-                f'<span class="meta-inline">turns={turns} cost=${cost_text}</span></div>'
+                f'<span class="meta-inline">turns={turns} cost={cost_text}</span></div>'
                 f'<div class="msg">{result_text}</div>'
                 f"</div>"
             )
@@ -479,9 +480,8 @@ def render_rollout(rollout_dir: Path, prompts: list[str] | None = None) -> str:
 
     badges = _stream_header_badges(all_events)
     badges.append(("turns", str(len(turn_files))))
-    total_cost = _result_cost(all_events)
-    if total_cost is not None:
-        badges.append(("total cost", f"${total_cost:.4f}"))
+    if (cost_badge := _result_cost_badge(all_events)) is not None:
+        badges.append(cost_badge)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -736,6 +736,22 @@ def _result_cost(events: list[dict]) -> float | None:
     return total if seen else None
 
 
+def _result_cost_badge(events: list[dict]) -> tuple[str, str] | None:
+    """The header's ``total cost`` badge: None when no result event carries
+    a cost, and a floor when some result event carries none."""
+    total = _result_cost(events)
+    if total is None:
+        return None
+    results = [event for event in events if event.get("type") == "result"]
+    unknown = sum(
+        1 for event in results if _coerce_cost(event.get("total_cost_usd")) is None
+    )
+    text = f"${total:.4f}"
+    if unknown:
+        text += f"+ (a floor: {unknown} of {len(results)} results reported no cost)"
+    return ("total cost", text)
+
+
 def _meta_badges_html(badges: list[tuple[str, str]]) -> str:
     """The header's ``.meta`` badge row; empty string when nothing is known."""
     if not badges:
@@ -755,9 +771,8 @@ def _stream_json_page(
     session_fallback: str | None = None,
 ) -> str:
     badges = _stream_header_badges(events, session_fallback=session_fallback)
-    total_cost = _result_cost(events)
-    if total_cost is not None:
-        badges.append(("total cost", f"${total_cost:.4f}"))
+    if (cost_badge := _result_cost_badge(events)) is not None:
+        badges.append(cost_badge)
     return f"""<!DOCTYPE html>
 <html>
 <head>

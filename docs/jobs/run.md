@@ -58,6 +58,14 @@ models:
 
 `--dry-run` prints the plan, with the agent, model, tasks and budgets, and runs nothing.
 
+`bench run --dry-run` runs the run's own checks before any sandbox, on the plan the run builds (its `--config-override`, agent, model and `--agent-env`, each `--matrix` entry's, and the agents a task's roles pin). A missing key for one of those agents is refused too, so give the dry run the keys the run will have. A task the run would refuse is listed under `errors` with the text its trials would record, and a refusal of the whole job under `(job)`; the dry run then exits 1, as the run does.
+
+For a task with a Compose file, the dry run checks it with `docker compose config` as the run does, which reads your Docker registry logins: it passes them in a copy (mode 0600, in a private folder) and removes the copy before it exits.
+
+A repository or dataset target (`--source-repo`, `-d`) is not fetched in a dry run, so its tasks are not checked: the plan lists each under `unchecked`, a repository with the ref and path the run would fetch.
+
+Not checked either, though the run checks them before any sandbox: `--skill-mode` and `--skills-dir` against the task's skills, the staging copy's refusals for `--context-root` and `--base-image-override`, a reviewer's preparation, and the host checks (`bench doctor`'s: a Docker daemon the run cannot reach is refused).
+
 ## Where a run happens
 
 ```mermaid

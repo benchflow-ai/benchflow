@@ -44,7 +44,7 @@ flowchart TD
   T -- yes --> R
   T -- no --> E
   R -- yes --> OK[scored]
-  R -- no --> E2["score 0:<br/>reward out of range warning"]
+  R -- no --> E2["recorded as written, with a note<br/>(strict: score 0)"]
 ```
 
 ## Reward rules
@@ -52,8 +52,8 @@ flowchart TD
 - `reward.json` may hold a numeric `reward` with other keys, or only named metrics.
 - Beside a numeric `reward`, keys that are not numbers, such as `"feature1_passed": true`, are kept and not scored. A score in `reward.txt` counts as that `reward` for a `reward.json` that has none and declares no aggregate, so `1` in `reward.txt` beside `{"answer": "Empowering"}` scores 1 and keeps `answer`.
 - Without a numeric `reward` in either file, every top-level key must be a number. The reward comes from `outputs.aggregate_policy` in `verifier.md`.
-- Every other top-level number in `reward.json` is a metric, held to the reward range. Write details that are not scores, such as a seed, to `reward-details.json`.
-- A reward outside `[0, 1]` is never clamped. The trial scores 0 with a `reward out of range: ...` warning, and `result.json` keeps the raw value under `reward_out_of_range_info`.
+- Beside a numeric `reward`, only `reward` is held to the reward range and decides the score, with an aggregate declared or not (an aggregate checks the reward against the numbers in the range only). Another top-level number outside the range, such as a count (`"code_lines": 5`, `"f2p_total": 20`) or a `"seed": 3`, is kept as written in the trial's `rewards` with a log line saying so, and is not scored. Without a `reward`, the top-level numbers are what the aggregate makes the reward from, so each is a metric held to the reward range. Details that are not scores can also go to `reward-details.json`.
+- A reward outside `[0, 1]` is never clamped or rewritten. Under integrity `audit` and `off` it is the trial's reward as written, with a `reward outside 0-1: ...` note in `result.json`'s `reward_out_of_range_info` and in summary.json's `rewards_outside_range`. Under integrity `strict` the trial scores 0 with a `reward out of range: ...` warning.
 - To score negative rewards on purpose, widen the range: `verifier.reward_range: [-1.0, 1.0]`.
 - A missing, empty, malformed, unsafe, non-finite or larger-than-16-MiB reward file gives score 0 and a warning. A malformed JSON file beside a valid text file never falls back to a higher score.
 - `/logs/verifier/reward-details.json` is kept when present.

@@ -293,7 +293,7 @@ async def test_lockdown_error_uses_diagnostic_copy(tmp_path, monkeypatch, backen
     emit_process(
         monkeypatch, lambda args: ('{"setup.py": true}', "warning 'setup.py'", 1)
     )
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(RuntimeError, match=r"fixture reader exited with rc=1") as error:
         await lockdown._checked_exec(env, "read-fixture", "fixture reader")
     assert ("setup.py" in str(error.value)) is (backend == "docker")
     assert "stdout:" in str(error.value) and "stderr:" in str(error.value)

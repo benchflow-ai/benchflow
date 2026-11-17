@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.command_hints import command_arg
+from benchflow._utils.result_paths import is_interrupted_result
 
 # Job folders are looked for this many levels below the listed folder: a
 # --matrix or --trials run keeps them in <jobs>/<alias>/trial-NN/<job>.
@@ -138,7 +139,13 @@ def _row(label: str, job: Path) -> JobRow:
             return JobRow(row.label, row.tasks, row.summary, row.memory, resume)
         return row
     trials = _trials(job)
-    done = {_task_name(d) for d in trials if (d / "result.json").is_file()}
+    # A stopped trial's result.json is its spend record, not a result.
+    done = {
+        _task_name(d)
+        for d in trials
+        if (d / "result.json").is_file()
+        and not is_interrupted_result(_read(d / "result.json"))
+    }
     if pid is not None:
         # A live process holds the job's lock (DFR-p3-10): nothing to resume.
         of = f" of {planned_n}" if planned_n is not None else ""

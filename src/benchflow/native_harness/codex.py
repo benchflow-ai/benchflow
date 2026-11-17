@@ -29,6 +29,7 @@ import json
 import shlex
 from typing import Any
 
+from benchflow._utils.config import EFFORT_LEVELS
 from benchflow.acp.types import McpServerSpec, StopReason
 from benchflow.agents.codex_config import codex_config_overrides
 from benchflow.native_harness.spec import (
@@ -38,8 +39,10 @@ from benchflow.native_harness.spec import (
 )
 
 CLI = "codex"
-# model_reasoning_effort values Codex accepts.
-CODEX_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+# model_reasoning_effort values Codex accepts: BenchFlow's levels (the
+# pinned Codex 0.159.3 lists max and ultra for its gpt-6 models;
+# agents/codex_models.py has each model's own).
+CODEX_EFFORTS = frozenset(EFFORT_LEVELS)
 
 _FLAGS = (
     "--json",
@@ -123,10 +126,10 @@ def _provider(config: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def codex_usage(usage: Any) -> dict[str, int] | None:
-    """A ``turn.completed`` usage block in ACP ``PromptResponse.usage`` fields.
-
-    OpenAI's ``input_tokens`` includes the cached ones, as the proxy's
-    provider usage counts them.
+    """A ``turn.completed`` usage block in ACP ``PromptResponse.usage`` fields,
+    in BenchFlow's split: OpenAI's ``input_tokens`` includes the
+    cached ones, and ``input_tokens`` here leaves them out, as every other
+    source's does. ``total_tokens`` is still Codex's input plus output.
     """
     if not isinstance(usage, dict):
         return None
@@ -135,14 +138,17 @@ def codex_usage(usage: Any) -> dict[str, int] | None:
         value = usage.get(key)
         return value if isinstance(value, int) and value >= 0 else 0
 
+    prompt = count("input_tokens")
+    cached = count("cached_input_tokens")
+    written = count("cache_write_input_tokens")
     snapshot = {
-        "input_tokens": count("input_tokens"),
+        "input_tokens": max(prompt - cached - written, 0),
         "output_tokens": count("output_tokens"),
-        "cached_read_tokens": count("cached_input_tokens"),
-        "cached_write_tokens": count("cache_write_input_tokens"),
+        "cached_read_tokens": cached,
+        "cached_write_tokens": written,
         "thought_tokens": count("reasoning_output_tokens"),
     }
-    snapshot["total_tokens"] = snapshot["input_tokens"] + snapshot["output_tokens"]
+    snapshot["total_tokens"] = prompt + snapshot["output_tokens"]
     return snapshot
 
 

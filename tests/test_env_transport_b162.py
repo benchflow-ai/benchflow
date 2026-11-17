@@ -240,8 +240,14 @@ async def test_a_non_root_verifier_beside_live_agents_is_refused_on_daytona(
     with pytest.raises(Exception) as raised:
         await verifier.verify()
     message = str(raised.value)
-    assert "only on a command line the agent can read" in message, message
-    assert "Run the verifier as root" in message
+    assert type(raised.value).__name__ == "VerifierSetupError", repr(raised.value)
+    assert message == (
+        "Verifier setup failed: the verifier runs as uid 1001 while agent code is "
+        "alive, and VerifierSandbox can pass its environment only on a command line "
+        "the agent can read. Run the verifier as root ([verifier] user), or use a "
+        "sandbox whose exec passes the environment on stdin (Docker, Apple "
+        "container)."
+    ), message
     assert not (tmp_path / "rollout" / "verifier" / "reward.txt").exists()
 
 

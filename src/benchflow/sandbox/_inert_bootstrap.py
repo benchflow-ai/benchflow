@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import os
 import shlex
 from typing import Any
@@ -189,6 +190,20 @@ async def overlay(env: Any, project: dict, ids: list[str]) -> dict:
     if "main" not in configs:
         raise RuntimeError("Bootstrap has no main service; fix the task services")
     guarded = await protected_services(env, project, prototypes)
+    hold_mode = getattr(env, "_start_hold_mode", "")
+    if getattr(env, "_main_metadata_rule", False) is True or (
+        isinstance(hold_mode, str) and hold_mode
+    ):
+        # main's cloud metadata rule for every user goes in before its own
+        # processes start, and so does the task's network policy
+        # on every process: main waits here, whatever its binds.
+        guarded.add("main")
+    if getattr(env, "_hold_every_service", False) is True:
+        # Under a network policy every service waits too, until its rules are
+        # in: none of its processes, healthcheck included, runs
+        # before them. The wait is the fixed shell below.
+        await _require_bootstrap_tools(env, set(configs) - guarded, prototypes)
+        guarded |= set(configs)
     for name in sorted(guarded):
         config = configs[name]
         service = project["services"][name]
@@ -213,6 +228,36 @@ async def overlay(env: Any, project: dict, ids: list[str]) -> dict:
     env._bootstrap_project = project
     env._bootstrap_services = guarded
     return {"services": services}
+
+
+#: What :data:`BOOTSTRAP` runs in a service before its release.
+BOOTSTRAP_TOOLS = ("/bin/sh", "/bin/sleep", "/usr/bin/env")
+
+
+async def _require_bootstrap_tools(env: Any, names: set[str], prototypes: dict) -> None:
+    """Refuse a service that cannot wait in the bootstrap: its image lacks a
+    tool the wait runs (a distroless or scratch image). Read from the stopped
+    prototype (``docker cp -L``, which runs nothing in it)."""
+    import tempfile
+
+    from benchflow.sandbox.service_cover import ServiceCoverError
+
+    policy = str(getattr(env, "_network_policy", "") or "the task's")
+    for name in sorted(names):
+        cid = str(prototypes[name].get("Id") or "")
+        for tool in BOOTSTRAP_TOOLS:
+            with tempfile.TemporaryDirectory() as scratch:
+                copied = await env._docker_cli(
+                    ["cp", "-L", f"{cid}:{tool}", scratch], check=False
+                )
+            if getattr(copied, "return_code", 1) != 0:
+                raise ServiceCoverError(
+                    f"sandbox startup refused: the task's network policy ({policy}) "
+                    f"holds every compose service until its rules are in, and "
+                    f"service {name!r} cannot wait for them: its image has no "
+                    f"{tool}, which the wait runs. Give the image a shell and "
+                    "coreutils, or run the task on an open network"
+                )
 
 
 async def protected_services(env: Any, project: dict, prototypes: dict) -> set[str]:
@@ -362,6 +407,38 @@ async def wait_completed(env: Any, cid: str) -> None:
     raise RuntimeError("Task init service timed out; inspect the task logs")
 
 
+#: How often a readiness command's watch looks again, in seconds.
+READINESS_TICK_SEC = 0.1
+#: How long the host waits past a readiness command's timeout for its exec
+#: to answer: the command's process group ends in the container at the
+#: timeout, so this is only a backstop.
+READINESS_GRACE_SEC = 10.0
+
+
+def bounded_readiness(command: str, timeout_sec: float) -> str:
+    """sh: *command* in the background of the readiness exec's shell, and
+    the exec's whole process group ended (SIGKILL) once *timeout_sec* has
+    passed: the command, every process it started that stayed in its group,
+    and the shell and its watch, so nothing of a readiness check BenchFlow
+    stopped waiting for runs on (such a process would run outside
+    the task's network policy, and R1 would refuse the trial for it). A
+    ``docker exec`` is a session and process group of its own (runc makes
+    its process a session leader), so ``kill -KILL 0`` reaches exactly the
+    exec's processes. The exit status is the command's when it ends in
+    time. The watch counts ticks of :data:`READINESS_TICK_SEC` and needs
+    only the shell, ``sleep`` (the bootstrap's own) and ``/proc``."""
+    ticks = max(1, math.ceil(timeout_sec / READINESS_TICK_SEC))
+    return (
+        f"{command} & bf_p=$!; bf_n=0; "
+        'while kill -0 "$bf_p" 2>/dev/null; do '
+        '{ read -r bf_s < "/proc/$bf_p/stat"; } 2>/dev/null || break; '
+        'case $bf_s in *") Z "*) break;; esac; '
+        f'[ "$bf_n" -lt {ticks} ] || kill -KILL 0; '
+        f"sleep {READINESS_TICK_SEC}; bf_n=$((bf_n + 1)); done; "
+        'wait "$bf_p"'
+    )
+
+
 async def wait_healthy(
     env: Any,
     cid: str,
@@ -413,19 +490,25 @@ async def wait_healthy(
             # be shell-less and never need a root runtime or a kit probe.
             route = await system_shell_route(getattr(env, "_env", env), service)
             env_tool = f"{KIT_BIN}/env" if route.kit else "/usr/bin/env"
+            # The command ends with its process group at its timeout, in
+            # the container (bounded_readiness): when BenchFlow stops
+            # waiting, nothing of it runs on.
             result = await asyncio.wait_for(
                 env._docker_cli(
                     route_exec_argv(
                         route,
-                        shlex.join(
-                            [env_tool, "--", *(config.get("Env") or []), *command]
+                        bounded_readiness(
+                            shlex.join(
+                                [env_tool, "--", *(config.get("Env") or []), *command]
+                            ),
+                            timeout,
                         ),
                         container=cid,
                         user=config.get("User") or "0",
                     ),
                     check=False,
                 ),
-                timeout,
+                timeout + READINESS_GRACE_SEC,
             )
             if result.return_code == 0:
                 return

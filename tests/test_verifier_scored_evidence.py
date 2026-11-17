@@ -101,14 +101,9 @@ async def run(
 @pytest.mark.parametrize(
     "files,reason",
     [
-        ({}, "reward.txt"),
-        ({"reward.txt": ""}, "reward.txt"),
         ({"reward.txt": "1 passed\n1\n"}, "reward.txt"),
         ({"reward.txt": "NaN"}, "reward.txt"),
-        ({"reward.txt": "2"}, "reward.txt"),
-        ({"reward.txt": "-1"}, "reward.txt"),
         ({"reward.txt": "<directory>"}, "reward.txt"),
-        ({"reward.txt": "<fifo>"}, "reward.txt"),
         ({"reward.txt": "<symlink>"}, "reward.txt"),
         ({"reward.txt": "<oversized>"}, "reward.txt"),
         ({"reward.txt": b"\xff"}, "reward.txt"),
@@ -117,7 +112,6 @@ async def run(
         ({"reward.txt": "1", "reward.json": "{"}, "reward.json"),
         ({"reward.txt": "0", "reward.json": '{"reward": 1}'}, "reward.json"),
         ({"reward.txt": "broken", "reward.json": '{"reward": 1}'}, "reward.txt"),
-        ({"reward.json": '{"reward": 2}'}, "reward.json"),
         ({"reward.json": "[]"}, "reward.json"),
     ],
 )
@@ -126,6 +120,60 @@ async def test_bad_reward_evidence_scores_zero(tmp_path, monkeypatch, files, rea
     assert error is None
     assert rewards == {"reward": 0.0}
     assert any(reason in warning and "scored 0" in warning for warning in warnings)
+
+
+# Integrity strict keeps the old contract: a number outside the task's range is
+# the verifier's verdict, named and scored 0 (#1178). Audit and off record it
+# as written (next test).
+@pytest.mark.parametrize(
+    "files,reason",
+    [
+        ({"reward.txt": "2"}, "reward.txt"),
+        ({"reward.txt": "-1"}, "reward.txt"),
+        ({"reward.json": '{"reward": 2}'}, "reward.json"),
+    ],
+)
+@pytest.mark.usefixtures("strict_reward_rule")
+async def test_an_out_of_range_reward_scores_zero(tmp_path, monkeypatch, files, reason):
+    """Under strict, not an unusable file: scored 0 with the named warning."""
+    rewards, error, warnings, _ = await run(tmp_path, monkeypatch, files)
+    assert error is None
+    assert rewards == {"reward": 0.0}
+    assert any(reason in warning and "scored 0" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "files,written",
+    [
+        ({"reward.txt": "2"}, 2.0),
+        ({"reward.txt": "-1"}, -1.0),
+        ({"reward.json": '{"reward": 2}'}, 2),
+    ],
+)
+async def test_an_out_of_range_reward_is_recorded_as_written(
+    tmp_path, monkeypatch, files, written
+):
+    rewards, error, warnings, _ = await run(tmp_path, monkeypatch, files)
+    assert error is None
+    assert rewards == {"reward": written}
+    assert any("recorded as test.sh wrote it" in warning for warning in warnings)
+    assert not any("scored 0" in warning for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [{}, {"reward.txt": ""}, {"reward.txt": "<fifo>"}],
+    ids=["missing", "empty", "fifo"],
+)
+async def test_no_usable_reward_is_a_verifier_error(tmp_path, monkeypatch, files):
+    """EN-376: a verifier that leaves no reward (none, an empty file, or no
+    regular file) is a verifier error that counts as a failure, not a 0."""
+    from benchflow._utils.scoring import NO_USABLE_REWARD, counts_as_failure
+
+    rewards, error, _, _ = await run(tmp_path, monkeypatch, files)
+    assert rewards is None
+    assert error is not None and error.startswith(NO_USABLE_REWARD)
+    assert counts_as_failure(error)
 
 
 async def test_a_marker_that_fails_validation_cannot_leave_a_pass(

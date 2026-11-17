@@ -61,7 +61,9 @@ async def test_checked_exec_keeps_task_tls_errors(monkeypatch, consumer, said):
     monkeypatch.setattr(
         DockerSandbox, method, AsyncMock(side_effect=RuntimeError(said))
     )
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError, match=r"tls: failed to verify certificate: x509: "
+    ) as caught:
         await getattr(sandbox, method)(["exec", "main", "false"])
     assert str(caught.value) == said
 

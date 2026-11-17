@@ -449,8 +449,12 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
     if total_errors:
         if mean_reward is not None:
             mean_part += f" over all {result.total} trials (unscored as 0)"
-        # The score buckets are disjoint: scored = passed + failed.
-        scored = result.total - total_errors
+        # The score buckets are disjoint: scored = passed + failed. A refusal
+        # (the plugin guard's, or no usable reward) stays in as a failure, as
+        # in summary.json's score_excl_errors. 0.9.3's guard_refused counts
+        # both (_utils.scoring.count_guard_refusals).
+        refused = int(getattr(result, "guard_refused", 0) or 0)
+        scored = result.total - total_errors + refused
         mean_scored = getattr(result, "mean_reward_scored_only", None)
         scored_part = (
             f"; scored only: {result.passed}/{scored} ({result.passed / scored:.1%})"
@@ -611,6 +615,22 @@ def _print_verifier_tail(job_dir: Path, rollouts: list[str]) -> None:
         return
 
 
+def _counted_tokens(trial: Any) -> int | None:
+    """A trial's token total, or None when nothing counted it.
+
+    A 0 with no usage source is a count that never happened, not a trial
+    that used no model: 0.9.2 recorded a native Claude Code turn cut off at
+    its time cap as 0 tokens from an unavailable source, and this summary
+    then said no model tokens were used.
+    """
+    total = getattr(trial, "total_tokens", None)
+    if not isinstance(total, int) or isinstance(total, bool):
+        return None
+    if total == 0 and getattr(trial, "usage_source", None) is None:
+        return None
+    return total
+
+
 def _report_outcomes(result: object, job_dir: Path | None) -> None:
     """Scored, unscored and errored trials, by cause, with whose fault and what next.
 
@@ -716,10 +736,7 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         and not isinstance(c, bool)
     ]
     tokens = [
-        t
-        for trial in results.values()
-        if isinstance(t := getattr(trial, "total_tokens", None), int)
-        and not isinstance(t, bool)
+        t for trial in results.values() if (t := _counted_tokens(trial)) is not None
     ]
     token_text = f", {sum(tokens):,} tokens" if tokens else ""
     trials = len(results)
@@ -729,7 +746,13 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
     )
     if costs:
         missing = trials - len(costs)
-        note = f" ({missing} of {trials} trials reported no cost)" if missing else ""
+        # A known cost does not make unknown tokens known.
+        gaps = [
+            f"{n} of {trials} trials reported no {what}"
+            for n, what in ((no_usage, "usage"), (missing, "cost"))
+            if n
+        ]
+        note = f" ({'; '.join(gaps)})" if gaps else ""
         cost_text = f"${sum(costs):.2f}{token_text}{note}"
     elif tokens and not sum(tokens) and not no_usage:
         cost_text = "none: no model tokens were used"
@@ -742,7 +765,42 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
         cost_text = f"not reported{usage_note}; the others used no model tokens"
     else:
         cost_text = "not reported"
-    console.print(f"[dim]Cost:     [/dim] {cost_text}", soft_wrap=True)
+    from benchflow._utils.result_metadata import floor_causes, unpriced_warmup
+
+    warm = sum(
+        1
+        for trial in results.values()
+        if unpriced_warmup(getattr(trial, "usage_details", None))
+    )
+    if warm:
+        # Their tokens are the generating calls' only.
+        cost_text += (
+            f"; {warm} trial(s) count generating calls only: Codex's "
+            "generate=false warm-up is not observed or priced"
+            + (", so the total is a floor" if costs else "")
+        )
+    # The other floors, each by its own cause (a known cost only).
+    causes = [floor_causes(trial) for trial in results.values()]
+    calls = sum("calls" in c for c in causes)
+    writes = sum("cache_writes" in c for c in causes)
+    if calls:
+        cost_text += (
+            f"; {calls} trial(s) counted only some of their calls, so the total "
+            "is a floor"
+        )
+    if writes:
+        cost_text += (
+            f"; {writes} trial(s) left out cache writes their answers did not "
+            "report, on a route that prices them, so the total is a floor"
+        )
+    # The attempts these trials are not: stopped, or retried away.
+    # From the summary.json the run has just written (no other file read).
+    from benchflow._utils.result_metadata import spend_note
+
+    spend = spend_note(summary.get("spend_all_attempts"), trials)
+    if spend:
+        cost_text += f" (each task's kept attempt); {spend}"
+    console.print(f"[dim]Cost:     [/dim] {escape(cost_text)}", soft_wrap=True)
     elapsed = getattr(result, "elapsed_sec", None)
     if isinstance(elapsed, int | float) and not isinstance(elapsed, bool):
         reused = int(getattr(result, "reused", 0) or 0)

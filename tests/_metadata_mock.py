@@ -33,7 +33,8 @@ MOCK_SH = (
     )
     # BusyBox's persistent server keeps the listening socket open between
     # connects. Restarting nc after each accept races the next endpoint.
-    + " exec nc -lk -p 80 -e /bin/true"
+    # Port 53 too: the rules leave DNS open (EN-609's root probe checks it).
+    + " nc -lk -p 53 -e /bin/true & exec nc -lk -p 80 -e /bin/true"
 )
 
 # Prints the endpoints that are local addresses of the namespace it runs in.

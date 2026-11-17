@@ -85,7 +85,7 @@ Hooks, setup commands, healthchecks, custom uploads and runtime environment over
 
 ## Network policies
 
-For `denylist`, `allowlist`, `no-network` with an agent, and the cloud-metadata block on open networks, BenchFlow adds `NET_ADMIN` to `main` through its own compose overlay. Your `Dockerfile` and `docker-compose.yaml` need nothing extra.
+For `denylist`, `allowlist`, `no-network` and the cloud-metadata block, BenchFlow adds the rules from its own helper container, joined to `main`'s network namespace; `main` holds no `NET_ADMIN` or `NET_RAW` (BenchFlow's compose overlay drops `NET_RAW`). Your `Dockerfile` and `docker-compose.yaml` need nothing extra. Under any policy but open, a compose service given `NET_ADMIN`, `NET_RAW`, `ALL`, `privileged` or the host's network is refused before start.
 
 The host's kernel must provide the iptables `nat` table and `owner` match for `allowlist`. When either is missing, the trial fails before the agent starts. See [Sandbox security](./security.md#network-policy-by-stage).
 

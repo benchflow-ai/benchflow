@@ -92,7 +92,10 @@ async def test_normalized_tcp_exec_failure_is_masked(
     )
     monkeypatch.setattr(DockerSandbox, call, mock)
     if checked:
-        with pytest.raises(RuntimeError) as caught:
+        with pytest.raises(
+            RuntimeError,
+            match=r"remote-docker\[tcp\]: tls: failed to verify certificate: <remote certificate error>",
+        ) as caught:
             await getattr(sandbox, call)(["exec", "main", "false"])
         outputs = [str(caught.value)]
     else:

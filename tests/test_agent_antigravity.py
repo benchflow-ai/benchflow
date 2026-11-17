@@ -12,6 +12,7 @@ events onto ACP updates with raw tool I/O and turn usage.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -122,17 +123,35 @@ class TestRegistryEntry:
         )
 
     def test_install_cmd_is_idempotent_on_matching_version(self, tmp_path):
-        """A binary already reporting AGY_VERSION short-circuits the download."""
+        """A binary already reporting AGY_VERSION, beside the SHA-512 a verified
+        download records (``agy.sha512``), short-circuits the download. With no
+        such record the installer replaces the binary (AG-R2-2), so this test
+        fetched the real 215 MB release on Linux and failed at curl on a Mac
+        (EN-489); a curl on PATH that fails now fails it if it downloads."""
         fake = tmp_path / "opt" / "benchflow" / "antigravity" / "agy"
         fake.parent.mkdir(parents=True)
         fake.write_text(f"#!/bin/sh\necho {cfgmod.AGY_VERSION}\n")
         fake.chmod(0o755)
+        (fake.parent / "agy.sha512").write_text(
+            hashlib.sha512(fake.read_bytes()).hexdigest()
+        )
+        stubs = tmp_path / "stubs"
+        stubs.mkdir()
+        fetched = tmp_path / "curl.log"
+        (stubs / "curl").write_text(f'#!/bin/sh\necho "$@" >> "{fetched}"\nexit 1\n')
+        (stubs / "curl").chmod(0o755)
         cmd = cfgmod.agy_install_cmd("exit 99").replace(
             "/opt/benchflow/antigravity", str(fake.parent)
         )
-        result = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+        result = subprocess.run(
+            ["sh", "-c", cmd],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"},
+        )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == cfgmod.AGY_VERSION
+        assert not fetched.exists(), fetched.read_text()
 
 
 # ── model / effort helpers (shim) ────────────────────────────────────────────
@@ -220,8 +239,12 @@ def test_shim_collapses_benchflow_efforts_onto_agy_levels(value, expected):
 
 
 def test_shim_rejects_unknown_effort_labels():
+    shim = _load_shim_module()
     with pytest.raises(ValueError):
-        _load_shim_module().normalize_effort("ultra")
+        shim.normalize_effort("extreme")
+    # Every BenchFlow level reaches one of agy's three (EN-383: ultra, like
+    # max, runs at high, a clamp the run names), never an error mid-trial.
+    assert shim.normalize_effort("ultra") == "high"
 
 
 # ── web-tool policy: PreToolUse deny hooks ───────────────────────────────────

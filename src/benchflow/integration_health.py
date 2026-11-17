@@ -344,9 +344,12 @@ def diagnose_trial_dir(
 
     Only trials the scorer would otherwise count are judged: a trial with a
     stored finding is returned as is by :func:`stored_integration_failure`,
-    and a trial that already failed with an error (other than a timeout) is
-    left to that error. A folder without its trajectory is left alone (a
-    partial copy of a job, not an empty run). Never raises.
+    and a trial whose result.json names how it ended (an ``error_category``)
+    is left to that answer: the run that wrote it decided, and every reader
+    keeps its decision. The check is for a result written without a
+    category, and for an idle timeout, the one ending the run leaves to its
+    readers. A folder without its trajectory is left alone (a partial copy
+    of a job, not an empty run). Never raises.
     """
     try:
         return _diagnose_trial_dir(Path(trial_dir), result)
@@ -354,16 +357,143 @@ def diagnose_trial_dir(
         return None
 
 
+def judged_integration_failure(
+    trial_dir: str | Path, result: Mapping[str, Any], *, control: bool = False
+) -> dict[str, Any] | None:
+    """The integration failure every reader reads for one trial.
+
+    bf.load_trial and bf.load_job (and through them the job export and
+    ``bench eval inspect``), collect_metrics (``bench metrics``) and the
+    summary.json a run writes all call this one judge, so they agree: the
+    run's recorded finding when it has one, else the read-time check
+    (:func:`diagnose_trial_dir`) of a trial with a reward and no tool call,
+    with the reward it withholds. A control run is never judged on read.
+    """
+    from benchflow._utils.scoring import extract_reward
+
+    stored = stored_integration_failure(result)
+    if stored is not None:
+        return stored
+    if control or result.get("n_tool_calls") or extract_reward(result) is None:
+        return None
+    finding = diagnose_trial_dir(trial_dir, result)
+    if finding is None:
+        return None
+    return {
+        **finding.to_dict(),
+        "reward_withheld": result.get("rewards"),
+        "detected": "on read",
+    }
+
+
+def scored_as_read(result: Mapping[str, Any], trial_dir: str | Path) -> dict[str, Any]:
+    """``result``, the trial's result.json, as every reader scores it: a trial
+    the judge finds broken on read is an unscored integration failure, its
+    reward withheld. A control run, by the rule bf.load_job reads
+    (:func:`benchflow.jobs.trial_control`), is never judged on read."""
+    from benchflow.jobs import _read_json, trial_control
+
+    if isinstance(result.get("integration_failure_info"), Mapping):
+        return dict(result)
+    config = _read_json(Path(trial_dir) / "config.json")
+    control = (
+        trial_control(
+            str(result.get("task_name") or result.get("task_id") or ""),
+            result,
+            config if isinstance(config, Mapping) else {},
+        )
+        is not None
+    )
+    info = judged_integration_failure(trial_dir, result, control=control)
+    if info is None:
+        return dict(result)
+    return {
+        **result,
+        "rewards": None,
+        "error": f"agent integration failure [{info['cause']}]: {info['evidence']}",
+        "error_category": "agent_integration",
+        "integration_failure_info": info,
+    }
+
+
+# The fields the judge sets on a row it withholds.
+_JUDGED_FIELDS = ("rewards", "error", "error_category", "integration_failure_info")
+
+
+def row_as_read(row: Mapping[str, Any], trial_dir: str | Path) -> dict[str, Any]:
+    """``row``, a summary row of the trial in ``trial_dir``, as every reader
+    scores it.
+
+    The judge reads the trial's own result.json, the record bf.load_job
+    reads, not the row: a run's row for a trial it ran now is rebuilt from
+    the RolloutResult, which carries neither the agent nor the prompt count
+    the judge needs. A trial with no readable result.json is judged on the
+    row. Only the judged fields change; the rest of the row is kept.
+    """
+    try:
+        record = json.loads((Path(trial_dir) / "result.json").read_text())
+    except (OSError, ValueError):
+        record = None
+    judged = scored_as_read(record if isinstance(record, dict) else row, trial_dir)
+    if not isinstance(judged.get("integration_failure_info"), Mapping):
+        return dict(row)
+    return {**row, **{key: judged.get(key) for key in _JUDGED_FIELDS}}
+
+
+def result_as_read(result: Any) -> Any:
+    """``result``, a trial's RolloutResult, as every reader scores the trial; what the SDK hands its caller (``bf.run``,
+    ``bf.run_batch``, ``Evaluation.stream`` and ``on_result``).
+
+    When the judge withholds the trial on read (:func:`row_as_read`), a copy
+    with no reward, the judged ``error`` and ``error_category``
+    (``agent_integration``) and the finding (``integration_failure_info``),
+    never a 0.0 failure. A trial the run withheld itself keeps its fields and
+    gets its recorded finding. Any other result is returned as it is.
+    """
+    import copy
+
+    rollout_dir = getattr(result, "rollout_dir", None)
+    if rollout_dir is None:
+        return result
+    try:
+        record = json.loads((Path(rollout_dir) / "result.json").read_text())
+    except (OSError, ValueError):
+        return result
+    if not isinstance(record, dict):
+        return result
+    stored = record.get("integration_failure_info")
+    if isinstance(stored, Mapping):
+        if getattr(result, "integration_failure_info", None) is not None:
+            return result
+        as_read = copy.copy(result)
+        as_read.integration_failure_info = dict(stored)
+        return as_read
+    judged = scored_as_read(record, rollout_dir)
+    info = judged.get("integration_failure_info")
+    if not isinstance(info, Mapping):
+        return result
+    as_read = copy.copy(result)
+    as_read.rewards = None
+    as_read.error = judged.get("error")
+    as_read.error_category = judged.get("error_category")
+    as_read.integration_failure_info = dict(info)
+    return as_read
+
+
 def _diagnose_trial_dir(
     trial_dir: Path, result: Mapping[str, Any]
 ) -> IntegrationFailure | None:
     if result.get("purpose") not in (None, "task"):
         return None
-    if result.get("error") and result.get("error_category") not in (
-        None,
-        "timeout",
-        "idle_timeout",
-    ):
+    if result.get("error_category") not in (None, "idle_timeout"):
+        # The run decided how the trial ended, and every reader keeps that
+        # answer. An idle timeout is the one exception: the run keeps
+        # it so the trial can be retried (an integration failure is not), and
+        # 0.9.3 keeps no attempt records that would tell it which attempt is
+        # the final one, so its readers judge a final zero-activity idle
+        # timeout here. 0.10 differs: there the run itself judges such an
+        # idle timeout as agent_integration, on the attempt its R2 attempt
+        # record marks final.
         return None
     if result.get("trajectory_source") not in (None, "acp", "partial_acp"):
         return None

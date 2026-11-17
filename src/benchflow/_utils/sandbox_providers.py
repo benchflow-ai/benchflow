@@ -51,11 +51,19 @@ class SandboxProvider:
     #: proxy in allow mode, plus the DNS filter and CIDR rules on the uid
     #: firewall). Set only for backends validated by a live check.
     enforces_allowlist: bool = False
+    #: Whether hardening holds the verifier, root included, to
+    #: ``verifier.network_mode = "allowlist"`` (every process's rules
+    #: and the marked egress proxy, from BenchFlow's metadata helper's side).
+    enforces_verifier_allowlist: bool = False
     #: Whether an agent can hold an interactive ACP stdio transport.
     supports_live_process: bool = False
     #: Whether the backend runs a task's verifier in a fresh sandbox of its own
     #: (``verifier.sandbox_mode: separate``, ``--verifier-sandbox separate``).
     runs_separate_verifier: bool = False
+    #: Whether the backend has the trusted root runner an operator script
+    #: (``--agent script:<file>``) needs. Elsewhere the plan refuses the
+    #: script before any sandbox starts.
+    runs_operator_scripts: bool = False
     #: When that sandbox starts in ``run()``'s own lifecycle: ``"prestart"``
     #: (from task files at verify() entry, while the agent's run is captured)
     #: or ``"after_stop"`` (once the agent's sandbox has stopped); None keeps
@@ -82,10 +90,12 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         model_proxy=ModelProxyLocation.HOST,
         supports_live_process=True,
         runs_separate_verifier=True,
+        runs_operator_scripts=True,
         separate_verifier_start="prestart",
         supports_compose=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        enforces_verifier_allowlist=True,
         agent_container_no_new_privs="always",
     ),
     SandboxProvider(
@@ -97,10 +107,12 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         model_proxy=ModelProxyLocation.SANDBOX,
         supports_live_process=True,
         runs_separate_verifier=True,
+        runs_operator_scripts=True,
         separate_verifier_start="prestart",
         supports_compose=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        enforces_verifier_allowlist=True,
         agent_container_no_new_privs="always",
     ),
     SandboxProvider(
@@ -183,6 +195,14 @@ DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "allowlist"``.
 ALLOWLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_allowlist
+)
+#: Providers whose verifier allowlist hardening enforces.
+VERIFIER_ALLOWLIST_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.enforces_verifier_allowlist
+)
+#: Providers that run operator scripts (``--agent script:<file>``).
+OPERATOR_SCRIPT_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.runs_operator_scripts
 )
 #: Providers that run a separate verifier sandbox.
 SEPARATE_VERIFIER_PROVIDERS: frozenset[str] = frozenset(

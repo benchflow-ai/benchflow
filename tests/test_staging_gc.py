@@ -231,6 +231,11 @@ def test_a_jobs_end_removes_queued_copies(tmp_path, monkeypatch):
 
     evaluation = Evaluation.__new__(Evaluation)
     evaluation._preflight = False
+    # run() refuses a script: agent first (EN-632); a non-script agent on a
+    # backend other than docker, so no subnet read starts.
+    evaluation._config = type(
+        "C", (), {"agent": "claude-agent-acp", "environment": "daytona"}
+    )()
     monkeypatch.setattr(evaluation, "_check_verifier_sandbox_plan", lambda: None)
     monkeypatch.setattr(evaluation, "_settle_auto_job_name", lambda: None)
     monkeypatch.setattr(evaluation, "_acquire_job_lock", Lock)

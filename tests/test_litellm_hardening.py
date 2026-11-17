@@ -640,7 +640,10 @@ async def test_sandbox_litellm_startup_failure_tears_down():
     )
     sandbox = _FakeSandbox(fail_launch=True)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError,
+        match=r"start sandbox LiteLLM failed with exit code 1; stderr: boom",
+    ):
         await runtime_mod._start_sandbox_litellm(
             sandbox=sandbox,
             route=route,

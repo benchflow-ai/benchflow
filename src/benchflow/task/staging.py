@@ -223,10 +223,15 @@ def copy_tree(
 
     # Pin every component of the root as well, starting at /. A single
     # absolute open would leave the root's ancestors open to substitution.
-    directory = _open_directory(os.sep)
+    # An ancestor is only passed through, so it needs search permission
+    # alone (a task below a root-owned 0711 folder, benchflow#1237); the
+    # root is opened to be listed.
+    parts = Path(real).parts[1:]
+    directory = _open_ancestor(os.sep) if parts else _open_directory(os.sep)
     try:
-        for component in Path(real).parts[1:]:
-            child = _open_directory(component, directory)
+        for index, component in enumerate(parts, 1):
+            opener = _open_directory if index == len(parts) else _open_ancestor
+            child = opener(component, directory)
             os.close(directory)
             directory = child
         walk(directory, "")
@@ -245,6 +250,25 @@ def _open_directory(path: str, parent: int | None = None) -> int:
     return os.open(
         path,
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=parent,
+    )
+
+
+def _open_ancestor(path: str, parent: int | None = None) -> int:
+    """A folder above a copied one, pinned for the next open below it.
+
+    With ``O_PATH`` (Linux) the open needs search permission alone, as
+    passing through the folder does; its descriptor serves only as the
+    ``dir_fd`` of that next open. Like :func:`_open_directory` it refuses a
+    link (``ENOTDIR``) and a missing folder. Without ``O_PATH`` (macOS) the
+    folder is opened to be read, as before.
+    """
+    return os.open(
+        path,
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | os.O_CLOEXEC,
         dir_fd=parent,
     )
 

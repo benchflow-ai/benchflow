@@ -30,7 +30,7 @@ import shlex
 import string
 import tokenize
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -361,6 +361,7 @@ def _agent_egress_firewall_cmd(
     allow_networks: tuple[str, ...] | None = None,
     root_gid: int | None = None,
     refuse_dns: bool = False,
+    uid: int | None = None,
 ) -> str:
     """The uid firewall: the agent's packets leave only on loopback.
 
@@ -405,24 +406,38 @@ def _agent_egress_firewall_cmd(
         )
     return (
         "set -e; "
-        "if ! command -v iptables >/dev/null 2>&1; then "
-        "if command -v apt-get >/dev/null 2>&1; then "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
-        "elif command -v dnf >/dev/null 2>&1; then "
-        "dnf -y install iptables >/dev/null; "
-        "elif command -v apk >/dev/null 2>&1; then "
-        "apk add --no-cache iptables >/dev/null; "
-        "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+        # *uid* given: BenchFlow's helper runs this (its own iptables; main's
+        # users are not its), with the agent's uid read from main first.
+        + (
+            "if ! command -v iptables >/dev/null 2>&1; then "
+            "if command -v apt-get >/dev/null 2>&1; then "
+            "export DEBIAN_FRONTEND=noninteractive; "
+            "apt-get update -qq && apt-get install -y -qq iptables >/dev/null; "
+            "elif command -v dnf >/dev/null 2>&1; then "
+            "dnf -y install iptables >/dev/null; "
+            "elif command -v apk >/dev/null 2>&1; then "
+            "apk add --no-cache iptables >/dev/null; "
+            "else echo 'No supported iptables package manager' >&2; exit 86; fi; fi; "
+            if uid is None
+            else ""
+        )
         + (
             "agent_uid=0; "
             if root_gid is not None
+            else f"agent_uid={int(uid)}; "
+            if uid is not None
             else f"agent_uid=$(id -u {user}) || exit 86; "
         )
         + f"iptables -C OUTPUT -o lo {owner} "
         "-j ACCEPT 2>/dev/null || "
         f"iptables -I OUTPUT 1 -o lo {owner} "
         "-j ACCEPT; "
+        # TCP first, with a reset: a connection the uid opened before these
+        # rules is cut at its next packet (a plain REJECT's ICMP answer only
+        # stalls it, and what it queued left once the rules came out:).
+        f"iptables -C OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset "
+        "2>/dev/null || "
+        f"iptables -A OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset; "
         f"iptables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"iptables -A OUTPUT {owner} -j REJECT; "
@@ -437,6 +452,9 @@ def _agent_egress_firewall_cmd(
         "-j ACCEPT 2>/dev/null || "
         f"ip6tables -I OUTPUT 1 -o lo {owner} "
         "-j ACCEPT; "
+        f"ip6tables -C OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset "
+        "2>/dev/null || "
+        f"ip6tables -A OUTPUT -p tcp {owner} -j REJECT --reject-with tcp-reset; "
         f"ip6tables -C OUTPUT {owner} "
         "-j REJECT 2>/dev/null || "
         f"ip6tables -A OUTPUT {owner} -j REJECT; " + dns6 + f"fi{allow}"
@@ -821,16 +839,107 @@ def _is_loopback_http(url: str) -> bool:
     )
 
 
+async def arm_agent_uid_before_its_proxy(
+    env: Any,
+    sandbox_user: str | None,
+    *,
+    no_web: bool,
+    egress_denylist: Any = None,
+    create_user: bool = False,
+    timeout_sec: int = 120,
+) -> bool:
+    """A model agent's uid firewall ahead of its launch: right
+    after main's release, before the agent's install (M1, the rollout's
+    ``_arm_agent_uid_at_release``), and for a role before its model proxy.
+    Root runs the install and the proxy, which these rules neither hold nor
+    block, so neither runs in the window in which a process of the agent's
+    uid from main's release runs unheld. *create_user*: make the sandbox
+    user first where the image lacks it (:func:`_create_sandbox_user_cmd`,
+    which keeps one the image has; :func:`setup_sandbox_user` later finds
+    it), with ids above the image's regular range, so a ``useradd`` the
+    task's ENTRYPOINT runs gets the ids it got before. A user that cannot be
+    made so arms nothing here: it is made at its setup, as before, and its
+    rules go in at the launch, before the agent's process starts
+    (``connect_acp``). The rules are
+    :func:`enforce_agent_egress_firewall`'s, read from the task's policy
+    (no-web, the denylist, the allowlist's networks); that call at the
+    agent's launch checks the proxy's wiring and finds them in (each rule is
+    ``-C`` checked). Main's processes are checked when the agent is about to
+    start (:func:`refuse_task_processes`), not here: only what still runs
+    then is refused. Whether it armed; a combination the launch refuses
+    (denylist without a sandbox user, no-web with an allowlist) is left to
+    it."""
+    denylist = egress_denylist is not None
+    allow_mode = bool(getattr(egress_denylist, "allow_mode", False))
+    if not (no_web or denylist) or (no_web and allow_mode):
+        return False
+    if not sandbox_user:
+        if denylist:
+            return False
+        await enforce_sandbox_uid_egress(
+            env, "root", root_gid=NO_WEB_ROOT_GID, refuse_dns=True
+        )
+        return True
+    allow = (
+        tuple(getattr(egress_denylist, "allow_networks", ()) or ())
+        if allow_mode
+        else None
+    )
+    if create_user:
+        made = await exec_raw(
+            env.exec,
+            _create_sandbox_user_cmd(sandbox_user, above_regular_ids=True),
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        if _exec_return_code(made) != 0:
+            return False
+    await enforce_sandbox_uid_egress(
+        env, sandbox_user, allow_networks=allow, refuse_dns=no_web
+    )
+    return True
+
+
+#: Set on a sandbox once R1 found main quiet at its agent's first launch.
+_QUIET_AT_LAUNCH_ATTR = "_benchflow_quiet_at_launch"
+
+
+def _launch_is_held(agent_env: dict[str, str]) -> bool:
+    """Whether the agent's launch arms its uid firewall: the no-web policy
+    or the denylist (an allowlist is one)."""
+    return (
+        agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
+        or agent_env.get(EGRESS_DENYLIST_ENV) == "1"
+    )
+
+
+async def refuse_task_processes_before_launch(
+    env: Any, agent_env: dict[str, str]
+) -> None:
+    """R1 right before a model agent's process first starts in
+    *env*, for a launch whose firewall holds only the agent (the no-web
+    policy, the denylist, an allowlist): a refused trial never starts its
+    agent. Once per sandbox: a later connection (another role, a resumed
+    turn) finds what the agent itself left, which is not the task's."""
+    if not _launch_is_held(agent_env) or getattr(env, _QUIET_AT_LAUNCH_ATTR, False):
+        return
+    await refuse_task_processes(env)
+    with contextlib.suppress(AttributeError):
+        setattr(env, _QUIET_AT_LAUNCH_ATTR, True)
+
+
 async def enforce_agent_egress_firewall(
     env: Any,
     sandbox_user: str | None,
     agent_env: dict[str, str],
 ) -> None:
-    """Block sandbox-user external egress after ACP bootstrap, before prompting.
+    """Block the agent's external egress before its process starts.
 
     Armed by the no-web policy (model traffic must already use the sandbox-local
     proxy) or by the denylist mode (all traffic must already use the loopback
-    egress proxy).
+    egress proxy). Every launcher calls it before the agent's process exists,
+    the ACP one included: an agent started first had the network
+    until this ran, after ACP's initialize and session/new.
     """
     no_web = agent_env.get("BENCHFLOW_DISALLOW_WEB_TOOLS") == "1"
     denylist = agent_env.get(EGRESS_DENYLIST_ENV) == "1"
@@ -879,6 +988,398 @@ async def enforce_agent_egress_firewall(
     )
 
 
+#: BenchFlow's keep-alive, main's command (the compose files' ``sh -c sleep
+#: infinity``): PID 1 when the image's ENTRYPOINT execs it, and the one
+#: ``sleep`` that shell may run.
+_KEEP_ALIVE_ARGV = {
+    "sh -c sleep infinity",
+    "sh -c exec sleep infinity",
+    "sleep infinity",
+}
+#: The programs that may run each keep-alive command line: a shell for the
+#: shell's, sleep (or a multi-call binary) for sleep's. A command line is
+#: what a process says of itself (``exec -a``); its program is not.
+_SHELLS = ("sh", "dash", "bash", "ash", "busybox", "mksh")
+_KEEP_ALIVE_PROGRAMS = {
+    "sh -c sleep infinity": _SHELLS,
+    "sh -c exec sleep infinity": _SHELLS,
+    "sleep infinity": ("sleep", "busybox", "coreutils"),
+}
+#: An init the image's ENTRYPOINT may be, as PID 1 over the keep-alive.
+_INITS = ("tini", "tini-static", "dumb-init", "catatonit", "docker-init")
+#: A process that is not running: a zombie its parent has not reaped.
+_DEAD_STATES = ("Z", "X", "x")
+#: Where the host keeps the daemons BenchFlow started in main (its model
+#: proxy, egress proxy, OpenTelemetry receiver): their pid and start time.
+OWN_PROCESSES_ATTR = "_benchflow_own_processes"
+#: The most processes a refusal names one by one.
+_NAMED_MAX = 20
+
+# Root's scan of main's processes (POSIX sh, awk and readlink): each process
+# with its parent, uid, the number of its sockets whose remote end is neither
+# loopback nor unset (connected or connecting), its state and start time
+# (clock ticks after boot; with the pid it names one process), its program
+# its kernel name (``comm``, set from the program at exec, which ``exec -a``
+# does not change; the program of another user's process is not root's to
+# read without CAP_SYS_PTRACE) and its argv. Tabs and newlines in a program,
+# name or argv are printed as spaces, so no command line reads as another row.
+_TASK_PROCS_SH = r"""set +e
+P=/proc
+command -v awk >/dev/null 2>&1 && command -v readlink >/dev/null 2>&1 || { echo "BF task-procs status=2"; exit 0; }
+remote=" $(awk 'FNR > 1 { split($3, r, ":"); a = r[1];
+  if (a ~ /^0+$/) next; if (length(a) == 8 && a ~ /7F$/) next;
+  if (a == "00000000000000000000000001000000") next;
+  if (a ~ /^0000000000000000FFFF0000/ && a ~ /7F$/) next; print $10 }' \
+  $P/net/tcp $P/net/tcp6 $P/net/udp $P/net/udp6 2>/dev/null | tr '\n' ' ') "
+for d in $P/[0-9]*; do
+  p=${d##*/}
+  st=$(awk '/^PPid:/ { pp = $2 } /^Uid:/ { u = $2 } END { if (pp != "") print pp, u }' $d/status 2>/dev/null)
+  [ -n "$st" ] || continue
+  ss=$(awk '{ sub(/.*\) /, ""); print $1, $20 }' $d/stat 2>/dev/null)
+  [ -n "$ss" ] || continue
+  n=0
+  for f in $d/fd/*; do
+    l=$(readlink "$f" 2>/dev/null) || continue
+    case $l in socket:\[*\]) i=${l#socket:[}; i=${i%]}; case "$remote" in *" $i "*) n=$((n + 1));; esac;; esac
+  done
+  exe=$(readlink $d/exe 2>/dev/null | tr '\t\n\r' '   ')
+  comm=$(tr '\t\n\r' '   ' < $d/comm 2>/dev/null)
+  argv=$(tr '\000\t\n\r' '    ' < $d/cmdline 2>/dev/null | cut -c1-160)
+  printf 'BF proc %s %s %s %s\t%s\t%s\t%s\n' "$p" "$st" "$n" "$ss" "$exe" "$comm" "$argv"
+done
+echo "BF task-procs status=0"
+"""
+
+
+def _scan_rows(out: str) -> dict[int, dict[str, Any]]:
+    """The scan's rows by pid; a pid's first row stands."""
+    rows: dict[int, dict[str, Any]] = {}
+    for line in out.splitlines():
+        if not line.startswith("BF proc "):
+            continue
+        head, _, rest = line[len("BF proc ") :].partition("\t")
+        parts = rest.split("\t")
+        # (program, kernel name, argv); a row without the name is two.
+        exe, comm, argv = parts if len(parts) == 3 else (parts[0], "", parts[-1])
+        fields = head.split()
+        if len(fields) != 6:
+            continue
+        try:
+            pid, ppid, uid, sockets, start = (int(x) for x in (*fields[:4], fields[5]))
+        except ValueError:
+            continue
+        rows.setdefault(
+            pid,
+            {
+                "pid": pid,
+                "ppid": ppid,
+                "uid": uid,
+                "sockets": sockets,
+                "state": fields[4],
+                "start": start,
+                "exe": exe.strip(),
+                "comm": comm.strip(),
+                "argv": argv.strip(),
+            },
+        )
+    return rows
+
+
+def _program(row: dict[str, Any]) -> str:
+    """The program a process runs: its executable's name, or where root may
+    not read that (another user's process) the kernel's name for it. Never
+    its command line, which the process sets itself."""
+    return row["exe"].removesuffix(" (deleted)").rsplit("/", 1)[-1] or row["comm"]
+
+
+def _is_keep_alive(row: dict[str, Any], *, pid_1: bool) -> bool:
+    """BenchFlow's keep-alive (its command line, run by the program that
+    command line names), or, as PID 1, an init; either with no connection
+    out."""
+    if row["sockets"]:
+        return False
+    if pid_1 and _program(row) in _INITS:
+        return True
+    return _program(row) in _KEEP_ALIVE_PROGRAMS.get(row["argv"], ())
+
+
+def _task_processes(
+    out: str, own: Iterable[tuple[int, int]] = ()
+) -> list[dict[str, Any]]:
+    """The scan's task processes: every live process of main that is not
+    BenchFlow's own. BenchFlow's are known from the host's side, never from
+    anything a process sets for itself (its environment, its program's
+    path, its name):
+
+    - what the container engine's exec started: a process whose parent is
+      outside main's pid namespace (ppid 0, which only an exec from the
+      host gives; PID 1 aside), and every process under it;
+    - a daemon BenchFlow started there whose pid and start time the host
+      recorded (:func:`note_own_process`), and every process under it;
+    - the keep-alive: PID 1 when it is BenchFlow's keep-alive or an init,
+      and the one keep-alive under it, each known by its program (a shell or
+      sleep for the keep-alive's command line, an init's own) with no
+      connection out, never by its command line alone.
+
+    *own* is the host's record, (pid, start time) pairs. A zombie runs
+    nothing and is left out."""
+    rows = _scan_rows(out)
+    children: dict[int, list[int]] = {}
+    for pid, row in rows.items():
+        children.setdefault(row["ppid"], []).append(pid)
+    ours: set[int] = set()
+
+    def take(root: int) -> None:
+        stack = [root]
+        while stack:
+            pid = stack.pop()
+            if pid not in ours:
+                ours.add(pid)
+                stack.extend(children.get(pid, ()))
+
+    for pid, row in rows.items():
+        if row["ppid"] == 0 and pid != 1:
+            take(pid)
+    for pid, start in own:
+        row = rows.get(pid)
+        if row is not None and row["start"] == start:
+            take(pid)
+    pid = 1
+    while pid in rows and pid not in ours:
+        row = rows[pid]
+        if not _is_keep_alive(row, pid_1=pid == 1):
+            break
+        ours.add(pid)
+        if row["argv"] == "sleep infinity":
+            break
+        under = sorted(
+            c
+            for c in children.get(pid, ())
+            if c not in ours and _is_keep_alive(rows[c], pid_1=False)
+        )
+        if not under:
+            break
+        pid = under[0]
+    return sorted(
+        (
+            row
+            for pid, row in rows.items()
+            if pid not in ours and row["state"] not in _DEAD_STATES
+        ),
+        key=lambda r: r["pid"],
+    )
+
+
+def own_processes(env: Any) -> tuple[tuple[int, int], ...]:
+    """The daemons BenchFlow started in *env*'s main, as the host recorded
+    them: (pid, start time) pairs."""
+    record = getattr(env, OWN_PROCESSES_ATTR, None)
+    return tuple(record) if isinstance(record, list) else ()
+
+
+async def note_own_process(
+    env: Any, *, pid: int | None = None, pid_file: str | None = None
+) -> None:
+    """Record on the host a daemon BenchFlow just started in main (*pid*,
+    or the pid its launch wrote to *pid_file*), with the start time root
+    reads for it now, so R1's check (:func:`refuse_task_processes`) knows it
+    for BenchFlow's own. Docker sandboxes only (the others start nothing of
+    the task's in main); a read that fails records nothing, and a daemon not
+    recorded counts as a task process."""
+    if not callable(getattr(type(env), "metadata_rules_install", None)):
+        return
+    if pid is not None:
+        source = f"p={int(pid)}"
+    elif pid_file is not None:
+        source = f"read -r p < {shlex.quote(pid_file)}"
+    else:
+        raise ValueError("note_own_process needs a pid or a pid file")
+    command = (
+        f'{source} && read -r s < "/proc/$p/stat" && s=${{s##*") "}} && '
+        'set -- $s && printf "%s %s\\n" "$p" "${20}"'
+    )
+    try:
+        read = await _read_exec(env, command, user="root", timeout_sec=30)
+    except Exception:
+        return
+    words = str(getattr(read, "stdout", "") or "").split()
+    if (
+        _exec_return_code(read) != 0
+        or len(words) != 2
+        or not all(w.isdigit() for w in words)
+    ):
+        return
+    record = getattr(env, OWN_PROCESSES_ATTR, None)
+    if not isinstance(record, list):
+        record = []
+        setattr(env, OWN_PROCESSES_ATTR, record)
+    entry = (int(words[0]), int(words[1]))
+    if entry not in record:
+        record.append(entry)
+
+
+def _every_process_held(env: Any) -> bool:
+    """Whether every process of main is under the policy already (the start
+    hold, an offline oracle's or script's rules, a policy oracle's)."""
+    return any(
+        isinstance(getattr(env, name, None), tuple)
+        for name in (
+            "_benchflow_start_hold",
+            "_benchflow_offline_rules",
+            "_benchflow_oracle_egress",
+        )
+    )
+
+
+def _image_entrypoint(env: Any) -> list[str]:
+    """main's image (or compose) ENTRYPOINT as the inert bootstrap read it
+    from the stopped prototype; [] when it has none or the sandbox has no
+    such record."""
+    configs = getattr(env, "_bootstrap_configs", None)
+    main = configs.get("main") if isinstance(configs, dict) else None
+    entry = main.get("Entrypoint") if isinstance(main, dict) else None
+    return [str(e) for e in entry] if isinstance(entry, list) else []
+
+
+async def _stop_task_processes(env: Any, pids: list[int]) -> None:
+    """SIGKILL main's task processes (``pids``, then whatever a re-read of
+    main finds), at most three rounds; best effort, for a trial already
+    refused."""
+    for _round in range(3):
+        if not pids:
+            return
+        with contextlib.suppress(Exception):
+            await _read_exec(
+                env,
+                "kill -KILL "
+                + " ".join(str(int(p)) for p in pids)
+                + " 2>/dev/null; true",
+                user="root",
+                timeout_sec=30,
+            )
+        try:
+            scan = await _read_exec(env, _TASK_PROCS_SH, user="root", timeout_sec=60)
+        except Exception:
+            return
+        pids = [
+            row["pid"]
+            for row in _task_processes(
+                str(getattr(scan, "stdout", "") or ""), own_processes(env)
+            )
+            if row["pid"] != 1
+        ]
+
+
+def _quiet_main_refusal(rows: list[dict[str, Any]], entry: str) -> str:
+    """R1's refusal: each process (pid, uid, command line), and what the
+    task's author changes."""
+    named = "; ".join(
+        f"pid {row['pid']} (uid {row['uid']}): {row['argv'] or row['exe'] or '?'}"
+        for row in rows[:_NAMED_MAX]
+    )
+    if len(rows) > _NAMED_MAX:
+        named += f"; and {len(rows) - _NAMED_MAX} more"
+    started = (
+        f"main's image ENTRYPOINT ({entry})" if entry else "the task's own commands"
+    )
+    count = "1 task process is" if len(rows) == 1 else f"{len(rows)} task processes are"
+    return (
+        "sandbox startup refused: main must be quiet when a model agent starts "
+        "under the task's network policy (only BenchFlow's own processes "
+        f"running), and {count} still running there, started by {started} "
+        f"outside the policy: {named}. BenchFlow applies the network policy "
+        "itself, so the task needs none of its own: drop the image's "
+        "ENTRYPOINT, or make it exec its command without leaving background "
+        "processes (no '&', daemon or service started at container start)"
+    )
+
+
+async def refuse_task_processes(env: Any) -> None:
+    """R1 (the rule, approved as "refuse those images"):
+    under the task's network policy a model agent's main keeps the network
+    its agent install and model proxy need, held only by the agent's own
+    uid rules, so main must be quiet when the agent is about to start. Root
+    lists main's processes then: the trial is refused, unscored and never
+    retried, when any process runs there that is not BenchFlow's own
+    (:func:`_task_processes`: known from the host's record of what it
+    started, never from a process's environment or path), whatever its uid,
+    naming each one. The refused trial's task processes are stopped at once.
+    Docker sandboxes only (the others start nothing of the task's in main);
+    not where every process of main is held already."""
+    if _every_process_held(env):
+        return
+    if not callable(getattr(type(env), "metadata_rules_install", None)):
+        return
+    scan = await _read_exec(env, _TASK_PROCS_SH, user="root", timeout_sec=60)
+    out = str(getattr(scan, "stdout", "") or "")
+    entry = " ".join(_image_entrypoint(env))[:120]
+    if "BF task-procs status=0" not in out:
+        raise RuntimeError(
+            "sandbox startup refused: main must be quiet when a model agent "
+            "starts under the task's network policy, but main's processes could "
+            "not be read (its image needs awk and readlink); run the task with an "
+            "oracle, script: or nop agent, or on an open network"
+        )
+    rows = _task_processes(out, own_processes(env))
+    if not rows:
+        return
+    # Refused: main's task processes stop now, not when the sandbox is torn
+    # down, so none has a connection after the refusal (the looping-
+    # connect check). What one started meanwhile is found and stopped too.
+    await _stop_task_processes(env, [row["pid"] for row in rows if row["pid"] != 1])
+    if any(row["pid"] == 1 for row in rows):
+        # PID 1, which nothing in main may kill, stops from the host: main
+        # ends with it, and the trial is refused anyway.
+        stop_main = getattr(type(env), "kill_main", None)
+        if callable(stop_main):
+            with contextlib.suppress(Exception):
+                await stop_main(env)
+    raise RuntimeError(_quiet_main_refusal(rows, entry))
+
+
+async def _uid_egress_from_helper(
+    env: Any,
+    sandbox_user: str,
+    *,
+    allow_networks: tuple[str, ...] | None,
+    root_gid: int | None,
+    refuse_dns: bool,
+) -> None:
+    """The uid firewall from BenchFlow's helper (main without NET_ADMIN),
+    its rules recorded in the rule ledger as ``agent-uid``."""
+    from benchflow.sandbox.verifier_network import install_from_helper
+
+    uid = 0
+    if root_gid is None:
+        read = await _read_exec(
+            env, f"id -u {shlex.quote(sandbox_user)}", user="root", timeout_sec=60
+        )
+        text = str(getattr(read, "stdout", "") or "").strip()
+        if _exec_return_code(read) != 0 or not text.isdigit():
+            raise RuntimeError(
+                "Failed to enforce sandbox-user egress firewall: the uid of "
+                f"{sandbox_user!r} could not be read"
+            )
+        uid = int(text)
+    command = _agent_egress_firewall_cmd(
+        sandbox_user,
+        allow_networks=allow_networks,
+        root_gid=root_gid,
+        refuse_dns=refuse_dns,
+        uid=uid,
+    )
+    try:
+        await install_from_helper(env, command, phase="agent-uid")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"Failed to enforce sandbox-user egress firewall: {exc}"
+        ) from exc
+    logger.info(
+        "Sandbox-user egress firewall active for %s from the helper (loopback allowed)",
+        sandbox_user,
+    )
+
+
 async def enforce_sandbox_uid_egress(
     env: Any,
     sandbox_user: str,
@@ -893,6 +1394,17 @@ async def enforce_sandbox_uid_egress(
     rules for listed IP ranges; see ``_allowlist_firewall_cmd``.
     ``refuse_dns`` (an offline agent) refuses DNS on loopback too.
     """
+    if getattr(env, "rules_by_helper", False) is True:
+        # main holds no NET_ADMIN: the rules come from BenchFlow's helper
+        # with the agent's uid read from main before it starts.
+        await _uid_egress_from_helper(
+            env,
+            sandbox_user,
+            allow_networks=allow_networks,
+            root_gid=root_gid,
+            refuse_dns=refuse_dns,
+        )
+        return
     result = await exec_raw(
         env.exec,
         _agent_egress_firewall_cmd(
@@ -1869,6 +2381,324 @@ def _metadata_rules(env: Any) -> Any:
     so a mocked sandbox never grows one."""
     install = getattr(type(env), "metadata_rules_install", None)
     return env if callable(install) else None
+
+
+async def _arm_verifier_network(
+    env: Any, task: Any, seconds: dict[str, float], *, separate: bool = False
+) -> None:
+    """Hold test.sh to the verifier's network
+    (:func:`benchflow.sandbox.verifier_network.arm_verifier_network`) where
+    it runs in ``main``, keep what was armed on the sandbox for the verifier,
+    and give test.sh the egress proxy's variables. Recorded as the
+    ``verifier_network`` step only where a policy holds it."""
+    from benchflow.sandbox import verifier_network as vn
+
+    config: Any = getattr(task, "config", None)
+    verifier: Any = getattr(config, "verifier", None)
+    if verifier is None:
+        return
+    service = getattr(verifier, "service", "main") or "main"
+    # The agent phase's every-process rules (an offline task's oracle turn, a
+    # root oracle's policy) give way to the verifier's with no moment unheld
+    #: a hold refuses everything but loopback
+    # while they come out, until the verifier's rules are in.
+    await vn.hold_for_handover(env)
+    await vn.remove_offline_agent_phase(env)
+    await _hand_over_oracle_egress(env)
+    # The task's policy held on every process of main since its start.
+    await vn.remove_start_hold(env)
+    if service != "main":
+        if callable(getattr(type(env), "metadata_service_targets", None)):
+            opt_out = getattr(config, "cloud_metadata_opt_out", "")
+            with _prep_timing(seconds, "verifier_network"):
+                armed = await vn.arm_verifier_service(
+                    env,
+                    task,
+                    service,
+                    vn.verifier_network_mode(config),
+                    metadata=not (isinstance(opt_out, str) and opt_out),
+                )
+            env._benchflow_verifier_network = armed
+        await vn.release_handover(env)
+        return
+    docker = _metadata_rules(env) is not None
+    if separate:
+        mode, where = vn.separate_verifier_network(config), "separate sandbox"
+        if not docker:
+            # A provider's separate sandbox keeps the network it declares
+            # (WeightBench grades on Modal under public): no rule, no launch.
+            with contextlib.suppress(AttributeError):
+                env._benchflow_verifier_network = vn.VerifierNetwork(
+                    mode, "its own", where=where, launch=False
+                )
+            await vn.release_handover(env)
+            return
+    else:
+        mode, where = vn.verifier_network_mode(config), "in-container"
+    # What main's metadata rules refused during the agent's turn, for the
+    # record.
+    refused_before = (
+        await vn.main_metadata_refused(env) if where == "in-container" else None
+    )
+    if mode == "public":
+        # The launch keeps root from removing the cloud metadata rules, where
+        # they went in.
+        cover = getattr(env, "_benchflow_metadata_cover", None)
+        covered = isinstance(cover, dict) and cover.get("state") == "on"
+        with contextlib.suppress(AttributeError):
+            env._benchflow_verifier_network = vn.VerifierNetwork(
+                "public",
+                "open",
+                where=where,
+                launch=docker or covered,
+                metadata_refused_before=refused_before,
+            )
+        await vn.release_handover(env)
+        return
+    with _prep_timing(seconds, "verifier_network"):
+        # Takes the handover's hold out once its rules are in.
+        armed = await vn.arm_verifier_network(env, task, mode, where=where)
+    armed.metadata_refused_before = refused_before
+    env._benchflow_verifier_network = armed
+    if armed.env:
+        verifier.env = {**(verifier.env or {}), **armed.env}
+
+
+async def _hand_over_oracle_egress(env: Any) -> None:
+    """The oracle's every-process rules and its proxy's container, kept from
+    the end of solve.sh (rollout._setup): out now, under the handover's hold,
+    its refusals kept in the trial folder."""
+    pending = getattr(env, "_benchflow_oracle_egress", None)
+    if not isinstance(pending, tuple) or len(pending) != 2:
+        return
+    with contextlib.suppress(AttributeError):
+        env._benchflow_oracle_egress = None
+    from benchflow.sandbox.oracle_egress import disarm_oracle_egress
+
+    armed, rollout_dir = pending
+    await disarm_oracle_egress(env, armed, rollout_dir)
+
+
+def _verifier_metadata_connect_cmd() -> str:
+    """Root's TCP connect to 169.254.169.254:80 and nothing more, telling the
+    kernel's unreachable from a refusal: ``BF metadata-connect <refused|
+    reached|timeout|unreachable|failed|skipped>``."""
+    return (
+        "if command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then "
+        f'e=$(timeout 3 bash -c "exec 3<>/dev/tcp/{_CLOUD_METADATA_PROBE}/80" 2>&1); r=$?; '
+        "case $r in 0) s=reached;; 124) s=timeout;; *) case $e in "
+        "*[Rr]efused*) s=refused;; *[Uu]nreachable*|*'No route'*) s=unreachable;; "
+        "*) s=failed;; esac;; esac; else s=skipped; fi; "
+        'echo "BF metadata-connect $s"'
+    )
+
+
+def _verifier_metadata_failure(why: str) -> RuntimeError:
+    return RuntimeError(
+        "Verifier hardening failed: the cloud metadata endpoints could not be "
+        f"refused to root before test.sh ({why}). test.sh runs as root and runs "
+        "code the agent wrote, so it does not run with them open; "
+        "set allow_cloud_metadata = true in the task's [environment] table if "
+        "its verifier must reach them"
+    )
+
+
+def _cloud_metadata_verifier_applies(env: Any, task: Any) -> bool:
+    """Whether hardening refuses root the cloud metadata endpoints
+    (:func:`cover_cloud_metadata_for_verifier`): a sandbox with BenchFlow's
+    metadata helper, whose provider gives it a route to them, and a task that
+    does not opt out."""
+    opt_out = getattr(getattr(task, "config", None), "cloud_metadata_opt_out", "")
+    return (
+        not (isinstance(opt_out, str) and opt_out)
+        and _metadata_rules(env) is not None
+        and getattr(type(env), "cloud_metadata_unreachable", False) is not True
+    )
+
+
+async def cover_cloud_metadata_for_verifier(
+    env: Any, task: Any
+) -> dict[str, Any] | None:
+    """Refuse the cloud metadata endpoints to every user, root included, from
+    the end of the agent's turn to the end of the verifier.
+
+    The agent's block refuses them to non-root users (to root too only for
+    a root agent), and under ``no-network``, ``allowlist`` and ``denylist``
+    only the uid firewall holds the agent's user. test.sh runs as root,
+    though, and runs code the agent wrote: a solution module a test imports,
+    a hook the agent left. On a GCE VM's Docker that root reached the VM's
+    metadata server under every network policy. So before test.sh, whatever
+    the policy, root's script adds the rules again with ``cover_root``
+    (:func:`_cloud_metadata_rule`: TCP to every endpoint but port 53, which
+    GCE and Azure also serve DNS on), from BenchFlow's metadata helper, which
+    shares main's network namespace, else as root in main. They stay while
+    main runs: main cannot restart (the block's own condition), and where
+    the helper adds them main's root holds no NET_ADMIN to remove them. A
+    ``main`` on the host's network, or another container's, gets no rule (it
+    would land in that namespace) and test.sh does not run, as a ``main``
+    that could restart.
+
+    The proof is root's own test connect to 169.254.169.254:80, refused,
+    raising the rule's packet counter, which only this namespace's rules
+    count: a host's own block never passes for it.
+
+    Only the task's own opt-out (``allow_cloud_metadata = true`` in its
+    ``[environment]`` table, or ``metadata.x-allow-cloud-metadata = true``)
+    leaves the verifier the endpoints; a run's ``--allow-cloud-metadata``
+    opens them to its agent alone. A sandbox without BenchFlow's helper
+    (Daytona, Modal, AgentCore, Apple) runs on its provider's hosts, whose
+    own metadata policy applies, as for a root agent there
+    (``provider-managed``): nothing is installed. Returns the record (state,
+    why, rules_from), or None when nothing applies. Raises RuntimeError
+    ("Verifier hardening failed") when the rules cannot be added or proven,
+    and test.sh does not run.
+    """
+    config = getattr(task, "config", None)
+    opt_out = getattr(config, "cloud_metadata_opt_out", "")
+    if isinstance(opt_out, str) and opt_out:
+        return {"state": "off", "why": f"the task opts out ({opt_out})"}
+    rules = _metadata_rules(env)
+    if rules is None or getattr(type(env), "cloud_metadata_unreachable", False) is True:
+        return None
+    from benchflow.sandbox.cloud_metadata import ComposeTopology, task_compose_topology
+
+    # The project the run resolved and froze (DockerSandbox.freeze_launch):
+    # what runs, include and extends resolved;
+    # else the task's raw file.
+    resolved = getattr(env, "_resolved_topology", None)
+    environment_dir = getattr(getattr(task, "paths", None), "environment_dir", None)
+    topology = (
+        resolved
+        if isinstance(resolved, ComposeTopology)
+        else task_compose_topology(
+            environment_dir if isinstance(environment_dir, Path) else None
+        )
+    )
+    if topology.main_network_mode == "host" and not topology.unresolved:
+        # The host's own namespace: no rule of the trial's goes there. A restricted policy was refused before start, so the
+        # network is open; the record says so and test.sh runs as on the rc.
+        from benchflow.sandbox._metadata_helper import HOST_NETWORK
+
+        return {"state": "host network", "why": HOST_NETWORK.format(what="main")}
+    if topology.main_shares_outside_network:
+        # The helper joins main's namespace: there that is another container's
+        # (or one the file does not name), where no rule of the trial's may
+        # go, as the agent's block is not installed there either.
+        raise _verifier_metadata_failure(topology.outside_why())
+    if callable(getattr(type(env), "metadata_main_restarts", None)):
+        why_restarts = await env.metadata_main_restarts()
+        if why_restarts:
+            # A restarted main gets a new namespace without the rules.
+            raise _verifier_metadata_failure(f"{why_restarts}, so no rule could hold")
+    from benchflow.sandbox.verifier_network import _no_route_cmd
+
+    routes, _ = await _cloud_metadata_exec(
+        env, _no_route_cmd(), user="root", timeout_sec=60
+    )
+    if "BF verifier-network routes 0" in (getattr(routes, "stdout", "") or ""):
+        # network: none (an oracle's or a script's offline run): no endpoint
+        # has a route; the verifier's network proof shows the kernel says so.
+        return {"state": NOT_REACHABLE, "why": "main has no route out"}
+    command = _cloud_metadata_block_cmd(cover_root=True)
+
+    def report(out: Any) -> dict[str, str]:
+        out = out if isinstance(out, str) else ""
+        line = next(
+            (ln for ln in out.splitlines() if ln.startswith("BF metadata ")), ""
+        )
+        return _report_fields(line)
+
+    async def count(fw4: str) -> int | None:
+        after_cmd = _cloud_metadata_after_cmd(fw4, f"BFMD{secrets.token_hex(4)}")
+        if from_helper:
+            result, failed = await rules.metadata_rules_run(after_cmd, timeout_sec=60)
+        else:
+            result, failed = await _cloud_metadata_exec(
+                env, after_cmd, user="root", timeout_sec=60
+            )
+        found = re.search(
+            r"BF metadata-hits (\d+)", getattr(result, "stdout", "") or ""
+        )
+        return int(found[1]) if found and not failed else None
+
+    from_helper = False
+    try:
+        fields: dict[str, str] = {}
+        outcome = await rules.metadata_rules_install(command)
+        if outcome is not None:
+            result, failed = outcome
+            fields = report(getattr(result, "stdout", ""))
+            from_helper = not failed and fields.get("status") == "0"
+        if not from_helper:
+            result, failed = await _cloud_metadata_exec(
+                env, command, user="root", timeout_sec=_CLOUD_METADATA_EXEC_SEC
+            )
+            fields = {} if failed else report(getattr(result, "stdout", ""))
+            if failed:
+                raise _verifier_metadata_failure(f"root's script did not run: {failed}")
+        status = fields.get("status", "")
+        if status != "0":
+            raise _verifier_metadata_failure(
+                _CLOUD_METADATA_NOT_INSTALLED.get(
+                    status, f"root's script reported status {status or 'missing'}"
+                )
+            )
+        fw4 = fields.get("fw4", "")
+        fw4 = fw4 if fw4 in _CLOUD_METADATA_TOOLS4 else "iptables"
+        before = await count(fw4)
+        probed, _ = await _cloud_metadata_exec(
+            env, _verifier_metadata_connect_cmd(), user="root", timeout_sec=30
+        )
+        found = re.search(
+            r"BF metadata-connect (\w+)", getattr(probed, "stdout", "") or ""
+        )
+        connect = found[1] if found else ""
+        if connect == "skipped" and from_helper:
+            # No bash and timeout in the image: the helper connects as root
+            # in main's namespace.
+            connect, _ = await _cloud_metadata_helper_test_connect(env, rules, None)
+        if connect == "unreachable":
+            # The kernel has no route to the endpoint (an internal compose
+            # network): nothing reaches it, rule or not.
+            return {
+                "state": "on",
+                "why": "the kernel has no route to the endpoint (unreachable)",
+                "rules_from": "helper" if from_helper else "sandbox",
+                "proof": {"connect": "unreachable", "kernel": "unreachable"},
+            }
+        after = await count(fw4)
+        hits = after - before if before is not None and after is not None else 0
+        if connect != "refused" or hits < 1:
+            raise _verifier_metadata_failure(
+                f"root's test connect to {_CLOUD_METADATA_PROBE}:80 was "
+                f"{connect or 'not made'} and the rule counted {hits}"
+            )
+        if from_helper:
+            from benchflow.sandbox import rule_ledger
+            from benchflow.sandbox.service_cover import (
+                _metadata_rules as metadata_rule_specs,
+            )
+
+            m4, m6 = metadata_rule_specs()
+            fw6 = fields.get("fw6", "")
+            rule_ledger.record(
+                env,
+                rule_ledger.InstalledRules(
+                    where="main",
+                    phase="verifier-metadata",
+                    v4=m4,
+                    v6=m6,
+                    tool4=fw4,
+                    tool6=fw6 if fw6 in _CLOUD_METADATA_TOOLS6 else "ip6tables",
+                ),
+            )
+    finally:
+        rules.metadata_rules_close()
+    return {
+        "state": "on",
+        "why": "root's test connect was refused and the rule counted it",
+        "rules_from": "helper" if from_helper else "sandbox",
+    }
 
 
 async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str, Any]:
@@ -2889,6 +3719,25 @@ async def _kit_services(env) -> list[str]:
 # 0-65535 user namespace and nobody's 65534 that a fresh uid stays under.
 _SANDBOX_UID_MIN = 1000
 _SANDBOX_UID_LIMIT = 60000
+#: Below nobody (65534) and 65535: the last id a user made above the
+#: image's regular range may take.
+_SANDBOX_UID_ABOVE_LIMIT = 65534
+# The first id above the image's regular users and groups: past
+# login.defs' UID_MAX and GID_MAX (useradd's and groupadd's ranges),
+# adduser.conf's LAST_UID and LAST_GID (Debian's adduser) and 60000
+# (busybox's), whichever is highest.
+_ABOVE_REGULAR_IDS_SH = (
+    "bf_top=60000; "
+    "if [ -r /etc/login.defs ]; then while read -r bf_k bf_v bf_x; do "
+    'case "$bf_k" in UID_MAX|GID_MAX) case "$bf_v" in ""|*[!0-9]*) ;; '
+    '*) [ "$bf_v" -le "$bf_top" ] || bf_top=$bf_v;; esac;; esac; '
+    "done < /etc/login.defs; fi; "
+    "if [ -r /etc/adduser.conf ]; then while IFS='= ' read -r bf_k bf_v bf_x; do "
+    'case "$bf_k" in LAST_UID|LAST_GID) case "$bf_v" in ""|*[!0-9]*) ;; '
+    '*) [ "$bf_v" -le "$bf_top" ] || bf_top=$bf_v;; esac;; esac; '
+    "done < /etc/adduser.conf; fi; "
+    "bf_uid=$((bf_top + 1))"
+)
 
 # Every uid and gid the image already uses: the ids /etc/passwd and /etc/group
 # name, and every file's owner and group, including image VOLUMEs and task
@@ -2914,8 +3763,17 @@ printf '%s\n' "$bf_ids" | tr '\n' ' '
 """.strip()
 
 
-def _create_sandbox_user_cmd(sandbox_user: str) -> str:
+def _create_sandbox_user_cmd(
+    sandbox_user: str, *, above_regular_ids: bool = False
+) -> str:
     """Create *sandbox_user* with a uid and gid that own nothing in the image.
+
+    *above_regular_ids*: for a user made before the task's ENTRYPOINT runs
+    (M1), ids above the image's regular range
+    (:data:`_ABOVE_REGULAR_IDS_SH`, below :data:`_SANDBOX_UID_ABOVE_LIMIT`),
+    so a ``useradd`` or ``groupadd`` the ENTRYPOINT runs gets exactly the
+    ids it got before: the user takes none of them. None free there: the
+    command fails and makes nothing.
 
     ``useradd`` takes the first uid /etc/passwd does not name, which can be
     one the image's own files belong to: an image whose ``uv`` is uid 1001's
@@ -2927,14 +3785,19 @@ def _create_sandbox_user_cmd(sandbox_user: str) -> str:
     is: the task chose it. busybox images (Alpine) have adduser, not useradd.
     """
     user = shlex.quote(sandbox_user)
+    start, limit = (
+        (_ABOVE_REGULAR_IDS_SH, _SANDBOX_UID_ABOVE_LIMIT)
+        if above_regular_ids
+        else (f"bf_uid={_SANDBOX_UID_MIN}", _SANDBOX_UID_LIMIT)
+    )
     return (
         f"{{ id -u {user} >/dev/null 2>&1 || {{ "
         f'bf_ids=" $({_system_probe(_USED_IDS_CMD, "bf-used-ids")})" || '
         '{ echo "sandbox uid/gid inventory could not complete" >&2; exit 1; }; '
-        f"bf_uid={_SANDBOX_UID_MIN}; "
+        f"{start}; "
         f'while case "$bf_ids" in *" $bf_uid "*) true;; *) false;; esac; '
         f"do bf_uid=$((bf_uid + 1)); done; "
-        f'[ "$bf_uid" -lt {_SANDBOX_UID_LIMIT} ] && '
+        f'[ "$bf_uid" -lt {limit} ] && '
         f"if command -v useradd >/dev/null 2>&1; then "
         f'groupadd -g "$bf_uid" {user} && '
         f'useradd -m -u "$bf_uid" -g "$bf_uid" -s /bin/bash {user}; '
@@ -3380,22 +4243,24 @@ VERIFIER_ENV: dict[str, str] = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     # The freeze makes the workspace's repositories root's, so root's git
     # trusts what the agent wrote in them. At command-line scope (git >= 2.31)
-    # git runs no hook, fsmonitor, external diff or signing program of theirs;
-    # a test.sh that wants one names it with -c, which comes later. Drivers and
-    # includes named in the repository's config are purged with the freeze.
-    "GIT_CONFIG_COUNT": "6",
+    # git runs no hook, fsmonitor or signing program of theirs; a test.sh that
+    # wants one names it with -c, which comes later. An external diff, a
+    # driver or an include the agent named in a repository's config is purged
+    # with the freeze (_PURGE_GIT_CONTROLS_SCRIPT). diff.external is not pinned
+    # here: git has no command-line value that unsets it, and an empty one
+    # made every git diff in test.sh run "" and die, an empty patch scored 0
+    # (SWT-bench). The image's own value, if it has one, stays.
+    "GIT_CONFIG_COUNT": "5",
     "GIT_CONFIG_KEY_0": "core.hooksPath",
     "GIT_CONFIG_VALUE_0": "/dev/null",
     "GIT_CONFIG_KEY_1": "core.fsmonitor",
     "GIT_CONFIG_VALUE_1": "false",
-    "GIT_CONFIG_KEY_2": "diff.external",
-    "GIT_CONFIG_VALUE_2": "",
-    "GIT_CONFIG_KEY_3": "commit.gpgSign",
+    "GIT_CONFIG_KEY_2": "commit.gpgSign",
+    "GIT_CONFIG_VALUE_2": "false",
+    "GIT_CONFIG_KEY_3": "tag.gpgSign",
     "GIT_CONFIG_VALUE_3": "false",
-    "GIT_CONFIG_KEY_4": "tag.gpgSign",
+    "GIT_CONFIG_KEY_4": "log.showSignature",
     "GIT_CONFIG_VALUE_4": "false",
-    "GIT_CONFIG_KEY_5": "log.showSignature",
-    "GIT_CONFIG_VALUE_5": "false",
     # PEP-668 base images (Fedora, recent Debian) refuse pip installs into
     # system-site without this flag. Verifier runs as root and system-site is
     # root-owned, so allowing it is safe; without it, tasks that pip-install
@@ -4172,7 +5037,8 @@ def _merge_trusted_verifier_path(extras: list[str]) -> str:
 # pre-agent record of the PATH folders' names, or ''. The
 # compiled predicate tests the captured filesystem coordinates (or an
 # uncaptured, namespace-local policy). Prints, for each entry in order,
-# ``K <entry>`` (kept: root's), ``O <entry>`` (kept: another user's) or
+# ``K <entry>`` (kept: root's), ``O <entry>`` (kept: another user's),
+# ``A <entry>`` (kept: absent, and only root could ever make it) or
 # ``D <entry>`` and then ``W <why>`` (left out); nothing for an entry that is
 # no folder.
 _TRUSTED_PATH_EXTRAS_SCRIPT = r"""
@@ -4396,12 +5262,74 @@ bf_judge() (
 bf_drop() {
   printf 'D '; bf_encode "$1"; printf '\nW '; bf_encode "$2"; printf '\n'
 }
+# bf_rootonly <folder>: root owns it, and neither group nor others may write
+# it (no POSIX ACL either).
+bf_rootonly() {
+  set -- "$1" $(ls -ldn -- "$1" 2>/dev/null)
+  [ $# -ge 5 ] || { echo "$1 could not be read"; return 1; }
+  [ "$4" = 0 ] || { echo "$1 is not root's (uid $4)"; return 1; }
+  case "$2" in
+    ?????w*|????????w*) echo "$1 is writable by group or others"; return 1 ;;
+    ??????????+*) echo "$1 has a POSIX ACL"; return 1 ;;
+  esac
+  return 0
+}
+# bf_absent <entry>: an entry absent now that only root could ever make.
+# From /, every part of it that exists is a folder bf_rootonly accepts, none
+# under a blocked prefix, no part of it (or of a link's target) is `..`, and
+# every link on the way is root's (its folder is
+# root's alone, so no one else can replace it) and is followed; the first
+# part that does not exist ends the walk. Anything else says why not.
+bf_absent() {
+  case "$1" in *[[:cntrl:]]*) echo "its name has a control character"; return 1 ;; esac
+  # A `..` anywhere, even past the first part that does not exist.
+  case "/$1/" in */../*) echo "it has a .. part"; return 1 ;; esac
+  rest=$1; cur=; n=0
+  bf_rootonly / || return 1
+  while [ -n "$rest" ]; do
+    c=${rest%%/*}
+    case "$rest" in */*) rest=${rest#*/} ;; *) rest= ;; esac
+    case "$c" in ''|.) continue ;; ..) echo "it has a .. part"; return 1 ;; esac
+    p=$cur/$c
+    if b=$(bf_under "$p"); then echo "$p is under $b"; return 1; fi
+    if [ -L "$p" ]; then
+      n=$((n + 1))
+      [ "$n" -le 40 ] || { echo "the way passes more than 40 links"; return 1; }
+      set -- $(ls -ldn -- "$p" 2>/dev/null)
+      [ $# -ge 4 ] || { echo "$p could not be read"; return 1; }
+      [ "$3" = 0 ] || { echo "$p is a link root does not own (uid $3)"; return 1; }
+      t=$(readlink -- "$p" && echo .) || { echo "$p could not be read"; return 1; }
+      t=${t%"$nl."}
+      [ -n "$t" ] || { echo "$p has an empty link target"; return 1; }
+      case "/$t/" in */../*) echo "$p links to a target with a .. part"; return 1 ;; esac
+      case "$t" in /*) cur= ;; esac
+      rest=$t${rest:+/$rest}
+      continue
+    fi
+    [ -e "$p" ] || return 0
+    [ -d "$p" ] || { echo "$p is not a folder"; return 1; }
+    bf_rootonly "$p" || return 1
+    cur=$p
+  done
+  echo "it exists"
+  return 1
+}
 __BF_SYSTEM_EXCLUSIONS__
 IFS=$nl
 for d in __BF_ENTRIES__; do
   unset IFS
   bf_count=$((bf_count + 1))
   if b=$(bf_under "$d"); then bf_drop "$d" "under $b"; continue; fi
+  # Absent here, in the agent's sandbox: kept only when root alone could
+  # ever make it (the SWE-bench Multilingual images' /root/.cargo/bin under a
+  # 0700 /root); else left out with the reason. A dangling link goes on to
+  # the checks below.
+  if [ "$bf_fresh_image" != 1 ] && [ ! -e "$d" ] && [ ! -L "$d" ]; then
+    if why=$(bf_absent "$d"); then
+      printf 'A '; bf_encode "$d"; printf '\n'
+    else bf_drop "$d" "not present when the verifier PATH was checked, and $why"; fi
+    continue
+  fi
   real=$(cd -P "$d" 2>/dev/null && pwd -P && echo .) || continue
   real=${real%"$nl."}
   [ -n "$real" ] || continue
@@ -5365,6 +6293,8 @@ PYTEST_PLUGIN_GUARD_MARKER_KINDS = (
     "unrecorded",
     "refused",
     "checking",
+    "starting",
+    "exited",
 )
 # At most this many verdict markers (every kind but ``registered``), each at
 # most this big, are read back. More, or a bigger one, makes the read
@@ -7441,6 +8371,10 @@ class GuardMarker:
     ``installed`` does, the files of a refused plugin test.sh installed after
     the agent stopped from inputs the agent changed, and ``unlisted`` those
     of a vouched release the published table lacks (V2-R1-B-1, V2-R1-B-2).
+    ``starting`` is left by a pytest that stopped before it had read its
+    whole command line, and ``exited`` holds, on its first line, the exit
+    status of a pytest run that judged nothing (3, 4 or 5), then what pytest
+    said.
     """
 
     name: str
@@ -8042,6 +8976,7 @@ async def _move_verifier_tool_state(
             for name in (
                 _verifier_tool_state.UV_CONFIG,
                 _verifier_tool_state.PIP_CONFIG,
+                _verifier_tool_state.GIT_CONFIG,
             )
         )
         await _checked_exec(
@@ -8087,6 +9022,11 @@ async def _move_verifier_tool_state(
                 found[key] != expected
                 for key, expected in _verifier_home_paths(directory).items()
                 if key in found
+            )
+            or (
+                "GIT_CONFIG_GLOBAL" in found
+                and found["GIT_CONFIG_GLOBAL"]
+                != os.path.join(directory, _verifier_tool_state.GIT_CONFIG)
             )
         ):
             raise ValueError(f"invalid probe response {stdout[:200]!r}")
@@ -8253,11 +9193,15 @@ async def _judge_trusted_entries(
     kept, other, dropped = _parse_trusted_path_output(output, entries)
     replacements: dict[str, str] = {}
     omitted: list[tuple[str, str]] = []
+    absent: list[str] = []
     pending = None
     for line in output.split("\n"):
         tag, _, encoded = line.partition(" ")
         value = decode_path_field(encoded)
-        if tag == "F" and value in kept:
+        if tag == "A" and value in entries and value not in absent:
+            # Absent, and only root could ever make it: kept, in its place.
+            absent.append(value)
+        elif tag == "F" and value in kept:
             pending = value
         elif tag == "P" and pending is not None:
             replacements[pending] = value
@@ -8269,12 +9213,16 @@ async def _judge_trusted_entries(
                     "route contains a control or PATH separator; install the tool at a representable image path",
                 )
             )
+    if absent:
+        held = set(kept) | set(absent)
+        kept = [entry for entry in entries if entry in held]
     return TrustedPathReport(
         path=_merge_trusted_verifier_path([replacements.get(p, p) for p in kept]),
         kept=tuple(kept),
         kept_other=tuple(other),
         dropped=tuple(dropped),
         omitted_tools=tuple(omitted),
+        absent_root_only=tuple(absent),
     )
 
 
@@ -8558,15 +9506,20 @@ async def _check_required_path_tools(env, report: TrustedPathReport, verifier) -
     lookups and subprocesses. Required tools must exist before verification in
     a kept directory; uploaded/generated tools must be invoked by explicit path.
     No inventory can prove future absence is harmless, even for absolute entries.
+    A refusal is :class:`VerifierToolsRefusedError`: unscored with its reason,
+    never a verifier crash or a 0.
     """
+    from benchflow.task.verifier_errors import VerifierToolsRefusedError
+
     required = getattr(verifier, "required_tools", None)
     if report.dropped and not isinstance(required, list):
-        raise RuntimeError(
-            "Verifier hardening failed: omitted PATH entries (including relative "
-            "entries) require an explicit "
-            "[verifier] required_tools contract (complete PATH dependencies; [] "
-            "for none). Use absolute paths for uploaded/generated helpers. "
-            "Entries left out: " + report.dropped_text()
+        raise VerifierToolsRefusedError(
+            "the verifier's PATH leaves out folders of the image's PATH, and "
+            "the task declares no [verifier] required_tools contract (complete "
+            "PATH dependencies; [] for none), so test.sh did not run. Make "
+            "each folder root's alone in the image, or declare required_tools; "
+            "use absolute paths for uploaded/generated helpers. Entries left "
+            "out: " + report.dropped_text()
         )
     if not isinstance(required, list) or not required:
         return
@@ -8613,11 +9566,12 @@ done
         decode_path_field(name) for name in (result.stdout or "").split("\x00") if name
     ]
     if missing:
-        raise RuntimeError(
-            "Verifier hardening failed: required_tools absent from the trusted PATH: "
+        raise VerifierToolsRefusedError(
+            "required_tools absent from the verifier's trusted PATH: "
             + repr(missing)
-            + "; install them in a trusted image directory or invoke uploaded/generated "
-            "helpers by absolute path. Entries left out: " + report.dropped_text()
+            + ", so test.sh did not run; install them in a trusted image directory "
+            "or invoke uploaded/generated helpers by absolute path. Entries left "
+            "out: " + report.dropped_text()
         )
 
 
@@ -9507,6 +10461,211 @@ def _read_hardening_config(task_dir: "Path | str | None") -> dict[str, bool]:
     return result
 
 
+# The conftest sweep's rule in the sandbox, on the protected Python (the bfx
+# form decides it on the host: benchflow.sandbox._hook_cleanup.package_owned
+# and unchanged_in_workspace). stdin: the NUL-separated conftest.py paths find
+# printed; argv: ``baseline=<the pre-agent copy, or empty>``, then the
+# workspace and its aliases. A conftest.py stays when it is
+# - an installed package's own file: a regular file outside the workspace,
+#   inside a site-packages or dist-packages folder, that a *.dist-info/RECORD
+#   in that folder lists with this exact sha256, such as beartype's
+#   _conf/conftest.py in an agent's install tree (r4); or
+# - the repository's own file: in the workspace and byte for byte the file at
+#   the same place in the root-owned pre-agent copy (/testbed_verify), read
+#   without following a link at any level, so the agent neither added nor
+#   changed it (#1171, #1177). Only with a baseline, which the caller passes
+#   when the agent ran as another user than root and the copy is root's and
+#   closed to everyone else. Such a file is written again as a new root-owned
+#   file renamed over the name, so no descriptor a kept service holds reaches
+#   what the verifier runs.
+# Every decision is made before anything is removed: the sweep's own matches
+# include the copy's conftest.py files. Every other one is removed.
+_CONFTEST_SWEEP_SCRIPT = r"""
+import base64, csv, hashlib, io, os, stat, sys
+names = ("site-packages", "dist-packages")
+args = sys.argv[1:]
+baseline = ""
+if args and args[0].startswith("baseline="):
+    baseline, args = args[0][len("baseline="):], args[1:]
+roots = []
+for p in args:
+    if p:
+        roots.append(os.path.normpath(p))
+        roots.append(os.path.realpath(p))
+def inside(path):
+    return any(path == r or path.startswith(r.rstrip("/") + "/") for r in roots)
+cache = {}
+def records(site):
+    if site not in cache:
+        found = {}
+        try:
+            listed = os.listdir(site)
+        except OSError:
+            listed = []
+        for n in listed:
+            if not n.endswith(".dist-info"):
+                continue
+            try:
+                fd = os.open(os.path.join(site, n, "RECORD"), os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                continue
+            with os.fdopen(fd, "rb") as f:
+                data = f.read(64 << 20)
+            for row in csv.reader(io.StringIO(data.decode("utf-8", "replace"))):
+                if len(row) >= 2 and row[1].startswith("sha256="):
+                    found.setdefault(row[0], set()).add(row[1])
+        cache[site] = found
+    return cache[site]
+def owned(path):
+    parts = path.split("/")
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] in names:
+            site, rel = "/".join(parts[: i + 1]), "/".join(parts[i + 1 :])
+            break
+    else:
+        return False
+    if inside(path):
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return False
+        data = f.read((64 << 20) + 1)
+    if len(data) > 64 << 20:
+        return False
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=")
+    return "sha256=" + digest.decode() in records(site).get(rel, ())
+def closed(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077
+base_ok = bool(baseline) and closed(baseline)
+def read_at(fd, name):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            return None
+        data = f.read((64 << 20) + 1)
+    return None if len(data) > 64 << 20 else data
+def in_baseline(rel):
+    parts = rel.split("/")
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        return None
+    try:
+        fd = os.open(baseline, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        return read_at(fd, parts[-1])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+def unchanged(path):
+    if not base_ok:
+        return None
+    for r in roots:
+        prefix = r.rstrip("/") + "/"
+        if path.startswith(prefix):
+            here = read_at(None, path)
+            if here is not None and here == in_baseline(path[len(prefix):]):
+                return here
+    return None
+def rewrite(path, data):
+    tmp = os.path.join(os.path.dirname(path), ".bf-conftest-%s.tmp" % os.urandom(8).hex())
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            os.write(fd, data)
+            os.fchmod(fd, 0o644)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+found = [os.fsdecode(raw) for raw in sys.stdin.buffer.read().split(b"\0") if raw]
+decided = [(path, True, None) if owned(path) else (path, False, unchanged(path)) for path in found]
+for path, package, data in decided:
+    if package or (data is not None and rewrite(path, data)):
+        continue
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+"""
+
+
+def _conftest_sweep_cmd(
+    keep: tuple[str, ...] = (),
+    workspace: str | None = None,
+    workspace_aliases: tuple[str, ...] = (),
+    *,
+    agent_user: bool = False,
+) -> str:
+    """The conftest.py sweep: every conftest.py outside /tests and /verifier,
+    found by one ``find /`` with its prunes, goes, except an installed
+    package's own file and, when the agent ran as a user other than root
+    (*agent_user*), a workspace file unchanged since the pre-agent copy
+    (:data:`_CONFTEST_SWEEP_SCRIPT`). Without the protected Python (127), or
+    when the check fails, the plain sweep removes every match, as before: the
+    exceptions are never granted by default.
+
+    ``keep`` lists absolute folders the walk prunes."""
+    select = (
+        # Prune virtual filesystems so the full-rootfs walk stays bounded and
+        # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
+        # routinely exceeds the setup timeout and false-errors a valid verifier.
+        # `-exec rm`, not `-delete`: GNU find refuses -delete next to -prune
+        # (exit 1, nothing removed), which made this sweep a silent no-op.
+        # V2's protected verifier runtime holds a copy of the image's site
+        # folders, a package's own tests/conftest.py included: it is root's
+        # alone and checked file by file before test.sh, so a conftest.py
+        # planted or changed there refuses grading anyway; removing one
+        # made that check refuse an honest trial.
+        "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
+        + f"-path {shlex.quote(VERIFIER_DIR)} -prune -o "
+        + "".join(f"-path {shlex.quote(path)} -prune -o " for path in keep)
+        + "-name conftest.py "
+        "-not -path '/verifier/*' -not -path '/tests/*' "
+    )
+    roots = [workspace] if workspace else []
+    roots += [
+        a
+        for a in workspace_aliases
+        if not workspace or os.path.normpath(a) != os.path.normpath(workspace)
+    ]
+    # A root agent could have written the pre-agent copy too: no baseline.
+    baseline = _VERIFIER_WORKSPACE_COPY if agent_user and workspace else ""
+    check = root_python_sh(
+        _CONFTEST_SWEEP_SCRIPT,
+        f"baseline={baseline}",
+        raw_args=" ".join(shlex.quote(p) for p in roots if p),
+        fallback='"${__bf_root_python:-/nonexistent/benchflow-judged-python3}"',
+    )
+    return (
+        f"{{ {select}-print0 2>/dev/null | {check}; }} || "
+        f"{select}-exec rm -f -- {{}} + 2>/dev/null"
+    )
+
+
 def _build_cleanup_cmd(
     hardening: dict[str, bool] | None = None,
     workspace: str | None = None,
@@ -9518,7 +10677,9 @@ def _build_cleanup_cmd(
     """Build the cleanup shell command, honoring per-task hardening opt-outs.
 
     Steps:
-      - conftest.py removal outside /tests (skippable via cleanup_conftests=false)
+      - conftest.py removal outside /tests (skippable via cleanup_conftests=false),
+        sparing an installed package's own file and the repository's own,
+        unchanged since the pre-agent copy (:func:`_conftest_sweep_cmd`)
       - *.py purge from /tmp /var/tmp outside the submission workspace and
         its mount aliases
       - start-up hooks new or changed since the pre-agent record removed,
@@ -9535,25 +10696,13 @@ def _build_cleanup_cmd(
     (there are no verifier-cache exemptions).
     """
     h = hardening or HARDENING_DEFAULTS
+    agent_user = _hook_agent_user.get() if agent_user is None else agent_user
     parts: list[str] = []
     if h.get("cleanup_conftests", True):
         parts.append(
-            # Prune virtual filesystems so the full-rootfs walk stays bounded and
-            # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
-            # routinely exceeds the setup timeout and false-errors a valid verifier.
-            # `-exec rm`, not `-delete`: GNU find refuses -delete next to -prune
-            # (exit 1, nothing removed), which made this sweep a silent no-op.
-            # V2's protected verifier runtime holds a copy of the image's site
-            # folders, a package's own tests/conftest.py included: it is root's
-            # alone and checked file by file before test.sh, so a conftest.py
-            # planted or changed there refuses grading anyway; removing one
-            # made that check refuse an honest trial.
-            "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
-            + f"-path {shlex.quote(VERIFIER_DIR)} -prune -o "
-            + "".join(f"-path {shlex.quote(path)} -prune -o " for path in keep)
-            + "-name conftest.py "
-            "-not -path '/verifier/*' -not -path '/tests/*' "
-            "-exec rm -f -- {} + 2>/dev/null"
+            _conftest_sweep_cmd(
+                keep, workspace, workspace_aliases, agent_user=agent_user
+            )
         )
     if workspace:
         # pwd -P covers a workspace reached through a symlink. Never use
@@ -9597,7 +10746,7 @@ def _build_cleanup_cmd(
     parts.append(
         _cleanup_site_cmd(
             workspace,
-            agent_user=_hook_agent_user.get() if agent_user is None else agent_user,
+            agent_user=agent_user,
             workspace_aliases=workspace_aliases,
         )
     )
@@ -10008,6 +11157,19 @@ _RESTORE_WORKSPACE_PY = (
 # group- or world-writable unless sticky (a sticky directory's entries
 # cannot be replaced by others). A home directory that is not ours fails the
 # ownership half.
+# Another process may remove entries while this runs: on Daytona with
+# workspace /root, the daemon deletes finished session folders under
+# /root/.daytona/sessions (#1238). The walk is os.walk, which follows no link
+# and skips a folder gone before it is listed; Path.rglob does so only from
+# 3.12, and before 3.12 it raised FileNotFoundError and failed hardening.
+# Only FileNotFoundError is skipped, from listing a folder or checking an
+# entry. Any other error fails the step: os.walk without onerror, or
+# os.path.islink, would pass over a folder or entry it cannot read (one
+# deeper than PATH_MAX, say) and leave the link to outside in it for the
+# verifier.
+# Only a link becomes a Path: a Path per entry walks slower than rglob does
+# from 3.12. A link gone before it is read or removed has nothing left to
+# purge (drop() is Path.unlink(missing_ok=True), which needs 3.8).
 _PURGE_EXTERNAL_SYMLINKS_SCRIPT = """\
 import errno, os, sys, pathlib, stat
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -10084,6 +11246,29 @@ def startup_files_recorded(rel):
     if rel.parent.parts:
         names.append(rel.parent.parent / 'pyvenv.cfg')
     return all(content(root, n.parts) == content(baseline, n.parts) for n in names)
+def unlisted(error):
+    if not isinstance(error, FileNotFoundError):
+        raise error
+def links(top):
+    for folder, dirs, files in os.walk(str(top), onerror=unlisted):
+        for name in dirs + files:
+            path = os.path.join(folder, name)
+            try:
+                mode = os.lstat(path).st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(mode):
+                yield pathlib.Path(path)
+def link_text(p):
+    try:
+        return os.readlink(str(p))
+    except FileNotFoundError:
+        return None
+def drop(p):
+    try:
+        os.unlink(str(p))
+    except FileNotFoundError:
+        pass
 original = {}
 try:
     st = baseline.lstat()
@@ -10092,11 +11277,11 @@ try:
                     for p in baseline.rglob('*') if p.is_symlink()}
 except OSError:
     original = {}
-for p in root.rglob('*'):
+for p in links(root):
     if not p.is_symlink():
         continue
     previous = original.get(p.relative_to(root))
-    if previous is not None and previous == os.readlink(str(p)):
+    if previous is not None and previous == link_text(p):
         try:
             recorded = pathlib.Path(real(str(baseline / p.relative_to(root))))
             if recorded == baseline or baseline in recorded.parents:
@@ -10112,10 +11297,10 @@ for p in root.rglob('*'):
     try:
         target = real(str(p))
     except (OSError, RuntimeError):
-        p.unlink()
+        drop(p)
         continue
     if target != str(root) and not (target + os.sep).startswith(root_str):
-        p.unlink()
+        drop(p)
 """
 
 # Workspace venv startup hooks run before the verifier's first Python command
@@ -12777,6 +13962,7 @@ async def _cleanup_hooks_on_bfx(
                     agent_user=(
                         _hook_agent_user.get() if agent_user is None else agent_user
                     ),
+                    baseline=_VERIFIER_WORKSPACE_COPY if workspace else None,
                 )
             finally:
                 await session.__aexit__(None, None, None)
@@ -13407,6 +14593,11 @@ async def _assemble_verifier_env(
     verifier_uid = (
         await _verifier_uid(env, task.config.verifier.user) if in_main else None
     )
+    # The verifier's check that its user can write its output file reads the
+    # same answer (task/verifier_core.py): "" when this read could not
+    # tell, which a non-root image user gives, since the read takes a receipt.
+    with contextlib.suppress(AttributeError):
+        env._benchflow_verifier_uid = verifier_uid or ""
     verifier_root = _verifier_is_root(verifier_uid, task.config.verifier.user)
     # Auto-discover pytest plugins that resolve to root-owned system code, plus
     # task config declarations. Appends -p flags to the hardened base.
@@ -13691,6 +14882,14 @@ async def _harden_steps(
                 await remove_muse_credentials(
                     env, sandbox_user, timeout_sec=VERIFIER_SETUP_TIMEOUT_SEC
                 )
+    # From here to the end of the verifier the cloud metadata endpoints are
+    # refused to root too: test.sh runs as root and runs the agent's code
+    # A separate verifier sandbox runs the agent's files there.
+    if _cloud_metadata_verifier_applies(env, task):
+        with _prep_timing(seconds, "cloud_metadata_verifier"):
+            cover = await cover_cloud_metadata_for_verifier(env, task)
+        with contextlib.suppress(AttributeError):
+            env._benchflow_metadata_cover = cover
     # Decide before clear/reclaim/restore/freeze changes any ownership. Even
     # main can mount its workspace a second time under an unblocked alias.
     # A file the agent could write must not become trusted merely because
@@ -13936,5 +15135,10 @@ async def _harden_steps(
                 target_blocked=target_blocked,
                 image_pythonpath=image_pythonpath,
             )
+        # test.sh runs under the verifier's network, held for root too, last:
+        # nothing after it runs as root with the agent's code.
+        await _arm_verifier_network(
+            env, task, seconds, separate=agent_paths is not None
+        )
     finally:
         _root_python.reset(token)

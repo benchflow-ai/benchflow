@@ -398,7 +398,11 @@ async def test_local_docker_keeps_the_users_own_docker_host(
     (task / "tests").mkdir()
     (task / "tests" / "test.sh").write_text("#!/bin/sh\n")
     (task / "instruction.md").write_text("Say hi.\n")
-    (task / "task.toml").write_text('version = "1.0"\n')
+    # Out of the metadata block: its rules need BenchFlow's helper image,
+    # which this fake daemon cannot build (EN-609); the routing is the test.
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n[environment]\nallow_cloud_metadata = true\n'
+    )
     paths = RolloutPaths(rollout_dir=tmp_path / "run")
     paths.mkdir()
     sandbox = _create_sandbox_environment("docker", Task(task), task, "task__1", paths)

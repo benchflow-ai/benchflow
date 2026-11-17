@@ -102,7 +102,21 @@ def test_a_stale_total_falls_back_to_list_prices(tmp_path):
 def test_no_log_or_an_unpriced_model_gives_no_estimate(tmp_path):
     assert estimate_claude_code_cost(tmp_path / "missing") is None
     _log(tmp_path, [_response("msg_1", model="claude-unknown-9")])
+    estimate = estimate_claude_code_cost(tmp_path)
+    assert estimate is not None and estimate["usd"] is None
+    assert estimate["unpriced_models"] == ["claude-unknown-9"]
+
+
+def test_an_empty_cost_state_is_no_estimate_not_zero(tmp_path):
+    """Guards EN-380 (0.9.2 and rc3): a session log holding only a cost-state
+    line with zero responses and a 0 total priced a trial with no usage at
+    $0.0; that is no evidence of a cost, so there is no estimate."""
+    _log(tmp_path, [_state(0.0, input_tokens=0, output_tokens=0)])
     assert estimate_claude_code_cost(tmp_path) is None
+    charged = tmp_path / "charged"
+    _log(charged, [_state(0.25, input_tokens=1000, output_tokens=50)])
+    estimate = estimate_claude_code_cost(charged)
+    assert estimate is not None and estimate["usd"] == 0.25
 
 
 TOKEN = "sk-ant-oat01-" + "x" * 40

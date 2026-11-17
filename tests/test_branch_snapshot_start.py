@@ -251,7 +251,9 @@ async def test_start_env_without_uploads_only_starts(tmp_path):
     task = tmp_path / "task"
     (task / "solution").mkdir(parents=True)
     (task / "instruction.md").write_text("Do it.")
-    await _start_env_and_upload(env, task, {}, upload_task_files=False)
+    await _start_env_and_upload(
+        env, task, {}, task=None, agent=None, upload_task_files=False
+    )
     env.start.assert_awaited_once()
     env.upload_file.assert_not_awaited()
     env.upload_dir.assert_not_awaited()

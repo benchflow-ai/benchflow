@@ -556,6 +556,10 @@ async def test_exit127_is_not_treated_as_missing_python_without_absence_proof(
 _PYTEST_7_HOOK_ARGUMENTS = {
     "pytest_addhooks": {"pluginmanager"},
     "pytest_plugin_registered": {"plugin", "manager"},
+    "pytest_cmdline_main": {"config"},
+    "pytest_load_initial_conftests": {"early_config", "parser", "args"},
+    "pytest_collectreport": {"report"},
+    "pytest_internalerror": {"excrepr", "excinfo"},
 }
 _BUILTIN_GENERICS = {"dict", "frozenset", "list", "set", "tuple", "type"}
 

@@ -30,6 +30,7 @@ from benchflow.branch_run import (
     ChildSpec,
     load_checkpoint_source,
     parse_child_spec,
+    refuse_script_branch,
     run_branch_trial,
     write_branch_job,
 )
@@ -315,7 +316,9 @@ def _plan(
             harness=harness,
         )
     except BranchPlanError as exc:
-        raise BranchPlanError(_python_names(str(exc))) from None
+        reworded = BranchPlanError(_python_names(str(exc)))
+        reworded.hint = exc.hint
+        raise reworded from None
 
 
 def _build_plan(
@@ -385,6 +388,8 @@ def _build_plan(
         agent = str(recorded["agent"])
         model = model or recorded.get("model")
     sandbox = sandbox or (source.provider if source else "docker")
+    # Before check_host's Daytona key check.
+    refuse_script_branch(agent, sandbox)
     requested = RolloutConfig(
         task_path=Path(task_path), agent=agent, environment=sandbox, harness=harness
     )

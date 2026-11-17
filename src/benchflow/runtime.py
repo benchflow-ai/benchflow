@@ -64,6 +64,10 @@ class Environment:
         self.task_path = task_path
         self.sandbox = sandbox
         self._started = False
+        # What runs in it, once prepare_kept_services names it: its start
+        # holds main from release for a run with nothing of BenchFlow's
+        # there that needs the network.
+        self._runner: str | None = None
 
     @classmethod
     def from_task(
@@ -140,15 +144,30 @@ class Environment:
         """Tell the sandbox, before :meth:`start`, what will run in it, so a
         task that keeps services (``x-keep-services``) gets the kept-service
         freezer it needs: the oracle, or an agent run as the non-root
-        ``sandbox_user``. ``Runtime.execute`` does this for an environment
+        ``sandbox_user``; and so, under the task's network policy, an oracle,
+        ``nop`` or ``script:`` run's main is held by it from its first
+        instruction. ``Runtime.execute`` does this for an environment
         it starts; call it yourself for one you start (K1-R14-1)."""
         from benchflow.task import keep_services
 
         keep_services.assign_runner_intent(self._inner, self.task, agent, sandbox_user)
+        self._runner = agent
 
     async def start(self, force_build: bool = False) -> None:
-        """Start the sandbox (``force_build=True`` rebuilds its image first)."""
-        await self._inner.start(force_build=force_build)
+        """Start the sandbox (``force_build=True`` rebuilds its image first).
+
+        Under the start holds: under the task's network policy its
+        services wait until their rules are in, and main too for the agent
+        :meth:`prepare_kept_services` named when nothing of BenchFlow's in
+        main needs the network (the oracle, ``nop``, ``script:``). Without
+        one named, main is started as for a model agent, and a later oracle,
+        ``nop`` or ``script:`` run in it is refused when the image's
+        ENTRYPOINT ran outside the policy."""
+        from benchflow.sandbox.service_cover import start_sandbox
+
+        await start_sandbox(
+            self._inner, self.task, agent=self._runner, force_build=force_build
+        )
         self._started = True
 
     async def stop(self, delete: bool = True) -> None:
@@ -708,6 +727,13 @@ def check_runnable_task(task_path: Path, *, image_supplied: bool = False) -> Non
     linked = task_symlink_issues(task_path)
     if linked:
         logger.warning("Task %r: %s", task_path.name, linked[0])
+    from benchflow.task.ctrf_report import verifier_script_ctrf_issue
+    from benchflow.task.paths import TaskPaths
+
+    lost = verifier_script_ctrf_issue(TaskPaths(task_path).test_path)
+    if lost is not None:
+        # The task grades itself, so it runs; check warns the same.
+        logger.warning("Task %r: %s", task_path.name, lost)
 
 
 def check_rollout_config(config: TrialConfig) -> None:
@@ -944,6 +970,30 @@ def check_host(configs: Sequence[Any]) -> None:
             )
 
 
+def _as_read(result: RolloutResult) -> RolloutResult:
+    """The trial as every reader scores it: one the judge
+    withholds on read gets no reward in its results.jsonl, trainer files or
+    rewards.jsonl, as Evaluation.run does for its trials, and the result
+    handed back says so too (reward None, ``agent_integration``, the
+    finding), never a 0.0 failure. Never fails the run."""
+    from benchflow.integration_health import result_as_read
+    from benchflow.rollout._results import rewrite_exports_as_read
+
+    rollout_dir = getattr(result, "rollout_dir", None)
+    if rollout_dir is None:
+        return result
+    try:
+        rewrite_exports_as_read(Path(rollout_dir))
+    except Exception:
+        logger.warning("Rewriting %s's exports failed", rollout_dir, exc_info=True)
+    # Reading the trial does not need its records rewritten.
+    try:
+        return result_as_read(result)
+    except Exception:
+        logger.warning("Reading %s as judged failed", rollout_dir, exc_info=True)
+        return result
+
+
 async def run(
     subject: Agent | TrialConfig | str,
     env: Environment | str | None = None,
@@ -970,7 +1020,8 @@ async def run(
     from benchflow.task.staging import remove_released
 
     try:
-        return await _run(subject, env, config, task_path=task_path, model=model)
+        result = await _run(subject, env, config, task_path=task_path, model=model)
+        return _as_read(result)
     finally:
         # As at a job's end (Evaluation.run): a task copy a collected
         # sandbox's finalizer had to queue is removed now.

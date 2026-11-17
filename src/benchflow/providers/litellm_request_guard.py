@@ -19,6 +19,11 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode
 
+# Anthropic's output_config.effort levels. This file runs standalone in the
+# model proxy and imports nothing of BenchFlow's: tests/test_effort_request.py
+# holds it to benchflow._utils.config.CLAUDE_EFFORT_LEVELS.
+_CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "benchflow_model_request", default=None
@@ -54,6 +59,8 @@ class _UpstreamAttempt:
         self.error_body = bytearray()
         self.encoding = ""
         self.ended = False
+        # The provider's stream raised while it was read.
+        self.stream_error = False
         if self.request is not None:
             import httpx
 
@@ -109,6 +116,7 @@ class _UpstreamAttempt:
             response_bytes=self.bytes,
             upstream_seconds=elapsed,
             invalid_provider_response=invalid,
+            stream_error=self.stream_error,
         )
 
 
@@ -127,6 +135,12 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+            except Exception:
+                # The provider's stream broke while it was read: a reset, a
+                # body cut short. A reader that stops early raises
+                # GeneratorExit, which is no break.
+                attempt.stream_error = True
+                raise
             finally:
                 attempt.end()
 
@@ -142,6 +156,9 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 async for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+            except Exception:
+                attempt.stream_error = True
+                raise
             finally:
                 attempt.end()
 
@@ -489,8 +506,7 @@ def _local_messages(body, *, messages):
             if (
                 not isinstance(config, dict)
                 or not config.keys() <= {"effort"}
-                or config.get("effort")
-                not in (None, "low", "medium", "high", "xhigh", "max")
+                or config.get("effort") not in (None, *_CLAUDE_EFFORTS)
             ):
                 return False
         if not _text_fields_are_data(
@@ -1933,10 +1949,11 @@ class SingleRouteGuard:
         started = time.monotonic()
         status = None
         response_bytes = 0
+        response_complete = False
         _lifecycle("request_start", request_id=state["id"], request_bytes=size)
 
         async def counted_send(message):
-            nonlocal status, response_bytes
+            nonlocal status, response_bytes, response_complete
             if message["type"] == "http.response.start":
                 status = message["status"]
                 # The provider answered: from here a pending request is the
@@ -1945,6 +1962,12 @@ class SingleRouteGuard:
             if message["type"] == "http.response.body":
                 response_bytes += len(message.get("body", b""))
             await send(message)
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                # The response's last part went out. A stream its client
+                # left (a cancel, a timeout) never gets here.
+                response_complete = True
 
         try:
             await self.app(scope, replay, counted_send)
@@ -1954,6 +1977,7 @@ class SingleRouteGuard:
                 request_id=state["id"],
                 status=status,
                 response_bytes=response_bytes,
+                response_complete=response_complete,
                 duration_seconds=time.monotonic() - started,
                 upstream_seconds=state["upstream_seconds"],
                 retry_wait_seconds=state["retry_wait_seconds"],

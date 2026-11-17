@@ -1,6 +1,6 @@
 """Denylist egress mode: task config, capability gate, and stdlib mirrors.
 
-Guards the denylist egress mode, benchflow-ai/FrontierPhysics#365.
+Guards the denylist egress mode a task repository reported.
 """
 
 from __future__ import annotations

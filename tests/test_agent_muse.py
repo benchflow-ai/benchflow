@@ -372,10 +372,11 @@ def test_shim_streams_tool_calls_messages_plan_and_usage(shim):
         },
     )
     assert resp["result"]["stopReason"] == "end_turn"
-    # Main session (two model calls) plus the reminder sub-session; input counts
-    # include the cached prefix, OpenAI style.
+    # Main session (two model calls) plus the reminder sub-session. Muse's
+    # input counts include the cached prefix, OpenAI style; ACP's inputTokens
+    # is the uncached input, 160 - 70 (EN-374).
     assert resp["result"]["usage"] == {
-        "inputTokens": 160,
+        "inputTokens": 90,
         "cachedReadTokens": 70,
         "outputTokens": 32,
         "thoughtTokens": 6,
@@ -715,8 +716,8 @@ def test_shim_waits_out_an_exhausted_window_and_continues(tmp_path):
     assert waits[0]["sessionUpdate"] == "tool_call"
     assert waits[0]["title"].startswith("wait for the Muse usage window to reset at ")
     assert waits[-1]["status"] == "completed"
-    # The quota-failed call's tokens still count.
-    assert resp["result"]["usage"]["inputTokens"] == 165
+    # The quota-failed call's tokens still count (uncached: 165 - 70).
+    assert resp["result"]["usage"]["inputTokens"] == 95
     client.proc.kill()
 
 

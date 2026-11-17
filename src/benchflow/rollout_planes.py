@@ -63,6 +63,7 @@ from benchflow.sandbox.lockdown import (
     enforce_sandbox_uid_egress,
     ensure_legacy_app_dir,
     kill_switched_accounts,
+    lock_system_path,
     lockdown_paths,
     probe_kept_service_freezer,
     release_kept_services,
@@ -178,6 +179,13 @@ class DefaultRolloutPlanes:
             guard_daemon=guard_daemon,
         )
 
+    async def lock_system_path(
+        self, env: Any, *, workspace: str, timeout_sec: int = 120
+    ) -> None:
+        """The PATH lock ``setup_sandbox_user`` runs, for a trial with no
+        sandbox user (a root agent) and for the equivalence check."""
+        await lock_system_path(env, workspace, timeout_sec=timeout_sec)
+
     async def snapshot_build_config(self, env: Any, *, workspace: str) -> None:
         await _snapshot_build_config(env, workspace=workspace)
 
@@ -237,6 +245,27 @@ class DefaultRolloutPlanes:
         self, env: Any, sandbox_user: str | None, agent_env: dict[str, str]
     ) -> None:
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+
+    async def arm_agent_uid_before_its_proxy(
+        self,
+        env: Any,
+        sandbox_user: str | None,
+        *,
+        no_web: bool,
+        egress_denylist: Any = None,
+        create_user: bool = False,
+        timeout_sec: int = 120,
+    ) -> bool:
+        from benchflow.sandbox.lockdown import arm_agent_uid_before_its_proxy
+
+        return await arm_agent_uid_before_its_proxy(
+            env,
+            sandbox_user,
+            no_web=no_web,
+            egress_denylist=egress_denylist,
+            create_user=create_user,
+            timeout_sec=timeout_sec,
+        )
 
     async def enforce_offline_uid_egress(self, env: Any, sandbox_user: str) -> None:
         await enforce_sandbox_uid_egress(env, sandbox_user, refuse_dns=True)

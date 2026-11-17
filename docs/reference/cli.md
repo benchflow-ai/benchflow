@@ -363,7 +363,7 @@ A retry child without `@instruction` (and without `--retry-resume-session`) does
 | Flag | Default | Description |
 |---|---|---|
 | `--usage-tracking` | `auto` | `auto`; `required` (a rollout without usage data fails); or `off` (leave provider traffic alone, for recovery runs). |
-| `--fail-on` | off | Exit 1 when any trial ended this way: `timeout`, `error` or `verifier-error`; comma-separated or repeated. |
+| `--fail-on` | off | Exit 1 when any trial ended this way: `timeout`, `error`, `verifier-error` or `effort-mismatch` (its effort is not the one asked for); comma-separated or repeated. |
 | `--summary-out` | off | Write the run's `benchflow.run-summary` JSON ([schema](./schemas/benchflow-run-summary.v2.schema.json)). |
 | `--run-config-out` | none | Write a record of what ran, with credential names but no values. `--config` cannot read it back; to save a runnable config, use `Evaluation.to_yaml(path)` ([Python API](./python-api.md)). |
 | `--task-manifest-out` | none | Write the selected tasks, with ids, paths, digests and source. |

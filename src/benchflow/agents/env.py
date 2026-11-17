@@ -130,9 +130,19 @@ def _missing_provider_base_url_message(
     )
 
 
+# The agent calls the gateway, never the provider, and the gateway calls the
+# provider in the route's own protocol. An Anthropic Messages call reaches
+# every route: as itself where the provider serves Messages, as chat
+# completions elsewhere (``use_chat_completions_url_for_anthropic_messages``
+# in litellm_config), so Claude Code runs an OpenRouter model as it
+# runs a vllm one. A Responses call stays a Responses call on an
+# OpenAI-compatible route, so Codex still needs a provider that serves them.
+_GATEWAY_BRIDGED_PROTOCOLS = frozenset({"anthropic-messages"})
+
+
 def _provider_supports_agent_protocol(provider, agent_protocol: str) -> bool:
     """Return True when a registered provider can serve the agent protocol."""
-    if not agent_protocol:
+    if not agent_protocol or agent_protocol in _GATEWAY_BRIDGED_PROTOCOLS:
         return True
     if agent_protocol in provider.all_endpoints:
         return True
@@ -453,12 +463,18 @@ def _has_codex_auth_json_auth(
     agent_env: dict[str, str],
 ) -> bool:
     """Return True when inline Codex auth.json can satisfy native OpenAI auth."""
-    return _can_use_codex_subscription_auth(
-        agent,
-        model,
-        required_key,
-        agent_env,
-    ) and bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
+    inline = agent_env.get(_CODEX_AUTH_JSON_ENV)
+    return (
+        _can_use_codex_subscription_auth(
+            agent,
+            model,
+            required_key,
+            agent_env,
+        )
+        and bool(inline)
+        # An inline auth.json that stores an API key is no login.
+        and login_file_kind(inline or "") == "login"
+    )
 
 
 # Agents that call Vertex themselves with the host's ADC login:
@@ -511,9 +527,10 @@ def uses_native_subscription_auth(
             agent_env,
         ):
             return False
+        inline = agent_env.get(_CODEX_AUTH_JSON_ENV)
         return (
             bool(agent_env.get(_CODEX_ACCESS_TOKEN_ENV))
-            or bool(agent_env.get(_CODEX_AUTH_JSON_ENV))
+            or (bool(inline) and login_file_kind(inline or "") == "login")
             or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
             or check_subscription_auth(agent, required_key)
         )
@@ -534,7 +551,7 @@ def uses_native_subscription_auth(
         return (
             bool(agent_env.get(_CLAUDE_CODE_OAUTH_TOKEN_ENV))
             or bool(agent_env.get(_CLAUDE_OAUTH_TOKEN_ENV))
-            or bool(agent_env.get("ANTHROPIC_AUTH_TOKEN"))
+            or claude_auth_token_is_login(agent_env)
             or agent_env.get(_SUBSCRIPTION_AUTH_MARKER) == "1"
             or check_subscription_auth(agent, "ANTHROPIC_API_KEY")
         )
@@ -788,15 +805,178 @@ def resolve_provider_env(
         agent_env.setdefault("LLM_MODEL", _normalize_openhands_model(model))
 
 
+def login_file_kind(text: str) -> str:
+    """What a CLI's login file holds: ``api-key`` when it stores an API key
+    (``codex login --with-api-key`` writes ``{"OPENAI_API_KEY": ...}`` to
+    Codex's auth.json), else ``login``: an ``auth_mode`` of ``chatgpt`` or a
+    ``tokens`` object is a ChatGPT login. An API key is no subscription login: it goes through
+    BenchFlow's model proxy, metered and priced (audit CRED-1)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return "login"
+    if not isinstance(data, dict):
+        return "login"
+    mode = str(data.get("auth_mode") or "").lower()
+    if mode in ("apikey", "api_key", "api-key"):
+        return "api-key" if data.get("OPENAI_API_KEY") else "login"
+    if mode or data.get("tokens"):
+        # A ChatGPT login; older Codex builds also kept an exchanged key.
+        return "login"
+    return "api-key" if data.get("OPENAI_API_KEY") else "login"
+
+
+def _login_file_text(path: Path) -> str | None:
+    try:
+        return path.read_text() if path.is_file() else None
+    except OSError:
+        return None
+
+
 def check_subscription_auth(agent: str, required_key: str) -> bool:
-    """Return True if host subscription auth can substitute for required_key."""
+    """Return True if host subscription auth can substitute for required_key.
+
+    The login file must hold a login: a Codex auth.json that stores an API
+    key is an API key, which goes through BenchFlow's model proxy.
+    """
     agent_cfg = AGENTS.get(agent)
     if not agent_cfg or not agent_cfg.subscription_auth:
         return False
     sa = agent_cfg.subscription_auth
     if sa.replaces_env != required_key:
         return False
-    return login_path(sa.detect_file).is_file()
+    text = _login_file_text(login_path(sa.detect_file))
+    return text is not None and login_file_kind(text) == "login"
+
+
+def _stored_api_key(text: str, required_key: str) -> str | None:
+    if login_file_kind(text) != "api-key":
+        return None
+    key = json.loads(text).get(required_key)
+    return key if isinstance(key, str) and key.strip() else None
+
+
+def login_file_api_key(agent: str, required_key: str) -> str | None:
+    """The API key the agent's login file stores in place of a login (a Codex
+    auth.json written by ``codex login --with-api-key``), or None."""
+    agent_cfg = AGENTS.get(agent)
+    if not agent_cfg or not agent_cfg.subscription_auth:
+        return None
+    sa = agent_cfg.subscription_auth
+    if sa.replaces_env != required_key:
+        return None
+    text = _login_file_text(login_path(sa.detect_file))
+    return None if text is None else _stored_api_key(text, required_key)
+
+
+def anthropic_auth_token_kind(value: object) -> str:
+    """What an ANTHROPIC_AUTH_TOKEN holds, by its contents: ``api-key`` (an
+    Anthropic API key, ``sk-ant-api…``), ``login`` (a Claude OAuth token,
+    ``sk-ant-oat…``) or ``unknown`` (audit CRED-4)."""
+    text = value.strip() if isinstance(value, str) else ""
+    if text.startswith("sk-ant-api"):
+        return "api-key"
+    if text.startswith("sk-ant-oat"):
+        return "login"
+    return "unknown"
+
+
+def claude_auth_token_is_login(agent_env: dict[str, str]) -> bool:
+    """Whether ANTHROPIC_AUTH_TOKEN stands for a login: never an Anthropic
+    API key, unless it comes with its own ANTHROPIC_BASE_URL (a gateway's
+    endpoint, whose bearer it is). An unrecognised token with no endpoint is
+    refused by :func:`resolve_agent_env` before launch."""
+    token = agent_env.get("ANTHROPIC_AUTH_TOKEN")
+    if not token:
+        return False
+    return (
+        bool(agent_env.get("ANTHROPIC_BASE_URL"))
+        or anthropic_auth_token_kind(token) != "api-key"
+    )
+
+
+def _route_anthropic_auth_token(
+    agent: str, model: str, agent_env: dict[str, str], explicit: set[str]
+) -> None:
+    """ANTHROPIC_AUTH_TOKEN's contents decide its route, for an agent that
+    runs Claude Code on an Anthropic model: an API key becomes ANTHROPIC_API_KEY and goes through the
+    proxy, with its usage and cost; a Claude OAuth token stays a login;
+    anything else is refused before launch, never guessed. A token that
+    comes with its own ANTHROPIC_BASE_URL is that gateway's bearer and is
+    left as it was, and a key the caller set outranks the token, as an
+    explicit Claude login outranks an inherited one."""
+    token = agent_env.get("ANTHROPIC_AUTH_TOKEN")
+    cfg = AGENTS.get(agent)
+    if (
+        not token
+        or cfg is None
+        or cfg.subscription_auth is None
+        or cfg.subscription_auth.replaces_env != "ANTHROPIC_API_KEY"
+        or infer_env_key_for_model(model) != "ANTHROPIC_API_KEY"
+        or agent_env.get("ANTHROPIC_BASE_URL")
+        or _has_provider_api_key("ANTHROPIC_API_KEY", agent_env)
+        or (
+            "ANTHROPIC_AUTH_TOKEN" not in explicit
+            and any(
+                agent_env.get(name) and name in explicit
+                for name in (_CLAUDE_CODE_OAUTH_TOKEN_ENV, _CLAUDE_OAUTH_TOKEN_ENV)
+            )
+        )
+    ):
+        return
+    kind = anthropic_auth_token_kind(token)
+    if kind == "api-key":
+        agent_env["ANTHROPIC_API_KEY"] = token.strip()
+        agent_env.pop("ANTHROPIC_AUTH_TOKEN")
+        logger.info(
+            "ANTHROPIC_AUTH_TOKEN holds an API key: using it as ANTHROPIC_API_KEY"
+        )
+    elif kind == "unknown":
+        raise MissingCredentialError(
+            "ANTHROPIC_AUTH_TOKEN is neither an Anthropic API key (sk-ant-api...) "
+            "nor a Claude login token (sk-ant-oat...), and no ANTHROPIC_BASE_URL "
+            "names the endpoint it is for: BenchFlow does not guess its route.",
+            hint=(
+                "set ANTHROPIC_API_KEY for an API key, CLAUDE_CODE_OAUTH_TOKEN "
+                "(`claude setup-token`) for a login, or ANTHROPIC_BASE_URL with "
+                "the gateway's token"
+            ),
+        )
+
+
+def _use_stored_api_key(agent: str, model: str, agent_env: dict[str, str]) -> None:
+    """Use the API key a login file stores (the host's Codex auth.json, or an
+    inline CODEX_AUTH_JSON) as the run's key, before the route is chosen, so
+    the run goes through BenchFlow's model proxy, metered and priced, instead
+    of counting as a ChatGPT login (audit CRED-1). A key or login the
+    caller set outranks the file, as before."""
+    required_key = infer_env_key_for_model(model)
+    agent_cfg = AGENTS.get(agent)
+    if (
+        not required_key
+        or agent_cfg is None
+        or agent_cfg.subscription_auth is None
+        or agent_cfg.subscription_auth.replaces_env != required_key
+        # Never send an OpenAI key to a custom endpoint it was not set for.
+        or not _can_use_codex_subscription_auth(agent, model, required_key, agent_env)
+        or _has_provider_api_key(required_key, agent_env)
+        or agent_env.get(_CODEX_ACCESS_TOKEN_ENV)
+    ):
+        return
+    inline = agent_env.get(_CODEX_AUTH_JSON_ENV)
+    if inline:
+        key = _stored_api_key(inline, required_key)
+        if key is None:
+            return
+        agent_env.pop(_CODEX_AUTH_JSON_ENV)
+        origin = _CODEX_AUTH_JSON_ENV
+    else:
+        key = login_file_api_key(agent, required_key)
+        if key is None:
+            return
+        origin = agent_cfg.subscription_auth.detect_file
+    agent_env[required_key] = key
+    logger.info("Using the API key %s stores as %s (no login)", origin, required_key)
 
 
 def validate_aws_bedrock_env(agent_env: dict[str, str], model: str) -> None:
@@ -1033,6 +1213,16 @@ def resolve_agent_env(
         # in particular, no host Vertex ADC is discovered or injected.
         _record_credential_policy(agent, model, agent_env, explicit_agent_env_keys)
         return agent_env
+    if model:
+        _route_anthropic_auth_token(agent, model, agent_env, explicit_agent_env_keys)
+        _use_stored_api_key(agent, model, agent_env)
+        # A key moved out of a login slot the caller set stays the caller's.
+        for slot, key in (
+            ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
+            (_CODEX_AUTH_JSON_ENV, "OPENAI_API_KEY"),
+        ):
+            if slot in explicit_agent_env_keys and slot not in agent_env:
+                explicit_agent_env_keys.add(key)
     pre_provider_env = dict(agent_env)
     agent_cfg = AGENTS.get(agent)
     if (

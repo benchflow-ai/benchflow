@@ -60,6 +60,7 @@ _EFFORT_ALIASES = {
     "high": "high",
     "xhigh": "high",
     "max": "high",
+    "ultra": "high",
 }
 _MODEL_EFFORT_SUFFIX = re.compile(r"^(?P<model>.+?)-(?P<effort>low|medium|high)$")
 _MODELS_DEV_PREFIXES = ("google/", "gemini/")

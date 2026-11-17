@@ -171,7 +171,11 @@ async def test_required_plugins_finds_the_pinned_release_on_the_guard_path(
     tmp_path, monkeypatch, requirement, reward
 ):
     """V2PT-3: pytest's ``required_plugins`` sees the pinned release the guard
-    registered, and still refuses a version it is not."""
+    registered, and still refuses a version it is not.
+
+    That refusal is a usage error (exit 4) before any test ran, so since
+    EN-647 the trial has no usable reward rather than a scored 0."""
+    from benchflow._utils.scoring import NO_USABLE_REWARD
     from tests.test_verifier_uv_state import CTRF_PLUGIN, PASSING, score
 
     _pinning(monkeypatch, "ctrf-model==0.3.5")
@@ -191,8 +195,13 @@ async def test_required_plugins_finds_the_pinned_release_on_the_guard_path(
             }
         },
     )
-    assert error is None, error
-    assert rewards == {"reward": reward}
+    if reward:
+        assert error is None, error
+        assert rewards == {"reward": reward}
+    else:
+        assert rewards is None
+        assert error is not None
+        assert error.startswith(NO_USABLE_REWARD + "pytest stopped before"), error
 
 
 # --- Round 4: the lows of the r3 review (L1, L3, L5) -----------------------
