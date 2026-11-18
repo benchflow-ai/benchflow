@@ -138,8 +138,12 @@ def test_python_matrix_is_the_package_classifiers(workflow: str, job_id: str) ->
 
 def test_unit_job_runs_pytest_under_xdist() -> None:
     steps = _workflows()["test.yml"]["jobs"]["unit"]["steps"]
-    (pytest_step,) = [s for s in steps if "pytest" in str(s.get("run", ""))]
+    pytest_steps = [s for s in steps if "pytest" in str(s.get("run", ""))]
+    # The shard's run under xdist, then only the ceiling checks, alone (-n 0).
+    (pytest_step,) = [s for s in pytest_steps if "--splits" in s["run"]]
     assert re.search(r"\s-n auto\b", pytest_step["run"]), pytest_step["run"]
+    others = [s["run"] for s in pytest_steps if s is not pytest_step]
+    assert all("-m ceiling" in run and "-n 0" in run for run in others), others
     setup = next(s for s in steps if _is_setup_uv(s))
     assert setup["with"]["python-version"] == "${{ matrix.python-version }}"
 

@@ -96,7 +96,16 @@ def assert_linear(seconds: Sequence[float]) -> None:
 
 def within_ceiling(call: Callable[..., Any], *args: Any) -> Any:
     """*call* on *args*, which must take less than the ceiling in CPU time;
-    its result."""
+    its result. Never under xdist, where a neighbour on the same core inflates
+    CPU time (the lead's ruling, 2026-11-18): a test that calls it carries the
+    ``ceiling`` mark, which conftest leaves out of an xdist run and CI runs
+    with -n 0."""
+    import os
+
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        raise AssertionError(
+            "within_ceiling ran under xdist: mark the test `ceiling` and run it with -n 0"
+        )
     start = time.process_time()
     out = call(*args)
     took = time.process_time() - start

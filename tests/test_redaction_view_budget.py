@@ -80,6 +80,7 @@ def _pathological(size: int) -> tuple[str, list[str]]:
     return "\n".join(head + tail), keys
 
 
+@pytest.mark.ceiling
 def test_a_pathological_file_leaks_nothing_and_counts_its_over_mask(monkeypatch):
     """At a budget of one unit (the file's views need about two), the budget runs
     out before the planted lines; the default budget's run is measured in the PR."""

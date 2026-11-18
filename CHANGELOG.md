@@ -8,7 +8,24 @@
 - **A reviewer can be told to judge the file the agent submitted.** BenchFlow's review instruction never says which file is the deliverable. `--reviewer-submitted-file-rule` (`ReviewerConfig.submitted_file_rule`, `--submitted-file-rule` on `bench review`) adds one paragraph before its "Work through the criteria" step (`benchflow.review.prompts.SUBMITTED_FILE_RULE`): when the task asks for a written deliverable, judge the submitted file, read its text and page images before judging its content, cite page numbers, and where sources, drafts or earlier extracted text differ from it, the submitted file wins, so a compiled PDF wins over its TeX or Markdown sources; criteria that check code, results or the trajectory still need those records. A custom `--prompt` template without that step gets the paragraph at its end. Off by default, and the default instruction is unchanged byte for byte. Each review records `submitted_file_rule`, the sha256 of the template its instruction came from (`template_sha256`) and of the instruction itself (`instruction_sha256`), so reviews made under different prompts can be told apart.
 - **Each review records its reviewer image and the PDF tools in it.** `reviewer-environment.json`, and now the review record too (`scoring/<attempt>.json`, and each trial of a detached review's `review_report.json`, under `reviewer_environment`), add the image's digest (from a reference pinned by digest; for a tag on Docker, the local image id in `image_id`), `pdf_tools`, and what a probe found in the image: `pdftotext`, `pdftoppm`, `pdfinfo`, `mutool`, `gs` and `qpdf` with their versions, and the Python packages numpy, pypdf, PyMuPDF, pdfplumber, pdfminer.six and pillow. The probe runs as root before the reviewer's setup commands, so `artifact_packages` lists what the setup adds; it reads package metadata without importing anything, and never fails a review: an error is recorded in its place.
 
-## [0.10.0rc4] - release candidate
+## [0.10.0rc5] - release candidate
+
+0.10.0rc4 with its tests fixed, and nothing else: no file under `src/` changed but the version. `v0.10.0rc4` was tagged on 17 November 2026 and never published. The release workflow runs every test job on the tagged commit before it builds anything, and those jobs failed, so nothing reached PyPI. The changes since 0.10.0rc3 are 0.10.0rc4's, below.
+
+### Fixed
+
+- **The release's test jobs build bfx.** A checkout has no bfx (git ignores `src/benchflow/_bfx/bin`), so in GitHub's runners every model agent's Docker trial was refused before its turn (`integrity_unavailable`), as 0.10.0rc4 means it to be where bfx can't run. The jobs that run BenchFlow's Docker tests now build the pinned bfx from source, as the release build does, and stop on any other bytes.
+- **They run on the release gate's Docker.** The runner image's Docker is Docker CE 28.0.4 with Compose 2.38.2; the jobs the release waits on now install the release gate's (Ubuntu 24.04's docker.io 29.1.3 with Compose 2.40.3), so CI tests what the gate tests. On the image's Docker, Compose 2.38.2 cannot describe a build-only service's output, which BenchFlow refuses rather than guess a name, and the checks below failed.
+- One test assumed `/usr/share` is writable by root alone; the runner image lets others write there, so it now finds a folder only root can write.
+- The CPU-time ceiling checks run alone, with no xdist neighbour on the same core, where CPU time inflates (`-n 0` after the shard's run); the ceiling is unchanged.
+
+### Known issues
+
+- **Docker CE 28 with Compose 2.38, as on GitHub's ubuntu-24.04 runner image today, is older than the Docker BenchFlow is tested on.** On it, a task with a build-only Compose service is refused, because Compose 2.38 can't describe the service's build output and BenchFlow won't guess its name. Processes that main's ENTRYPOINT starts as root can reach the network for up to about a second before the trial's network policy holds. An oracle's leftover processes can survive the stop before a separate verifier, which ends the trial as an error: unscored, never misscored. None of these happen on the Docker the release is tested on: Ubuntu 24.04's docker.io 29.1.3 with Compose 2.40.3, and Docker CE 29.9.3 with Compose 5.7.1. Use Docker 29 or newer with Compose 2.40 or newer.
+- After a wall-clock timeout, the native Claude Code agent can make one more model call before it stops. The call is billed and recorded. Fixed before 0.10.0.
+- 0.10.0rc4's known issues stand.
+
+## [0.10.0rc4] - release candidate, tagged, not on PyPI
 
 The fourth 0.10 release candidate, on top of 0.10.0rc3. The headline is how `audit` (the default) and `off` grade: the reward scored is the one test.sh wrote, and each trial records where it came from (see Grading in audit and off below).
 

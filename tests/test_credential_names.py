@@ -2631,6 +2631,7 @@ def test_delta_192_the_code_shape_is_built_from_its_own_lists():
     assert not credential_names.is_code_value("bytes")
 
 
+@pytest.mark.ceiling
 def test_delta_192_the_code_shape_does_not_blow_up():
     """Long values that are no code are answered at once (the length cap),
     and the shape itself stays under the shared ceiling on values at the

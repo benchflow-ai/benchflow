@@ -75,19 +75,19 @@ uv add 'benchflow==0.9.3'
 
 ## Install the 0.10 prerelease
 
-Some pages in these docs need a 0.10 release candidate; each says so in its first line, and the nav marks them (0.10). The latest, 0.10.0rc4, is on PyPI as a pre-release, so name the version to get it; without the pin, uv and pip stay on the 0.9 line:
+Some pages in these docs need a 0.10 release candidate; each says so in its first line, and the nav marks them (0.10). The latest, 0.10.0rc5, is on PyPI as a pre-release, so name the version to get it; without the pin, uv and pip stay on the 0.9 line:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.10.0rc4' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.0rc4/constraints.txt
+uv tool install --python 3.12 'benchflow==0.10.0rc5' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.0rc5/constraints.txt
 bench --version
 ```
 
 ```text
-benchflow 0.10.0rc4
+benchflow 0.10.0rc5
 ```
 
-Extras go inside the quotes as above (`'benchflow[sandbox-daytona]==0.10.0rc4'`), and `pip install 'benchflow==0.10.0rc4'` works too. Its new commands and flags may still change before 0.10.0, and where 0.9.3 has another way to do a 0.10 page's job, the page says so. [What's in the 0.10 release candidates](../versions/0.10.md) lists what it adds and what may still change. To go back, run the 0.9.3 install line above.
+Extras go inside the quotes as above (`'benchflow[sandbox-daytona]==0.10.0rc5'`), and `pip install 'benchflow==0.10.0rc5'` works too. Its new commands and flags may still change before 0.10.0, and where 0.9.3 has another way to do a 0.10 page's job, the page says so. [What's in the 0.10 release candidates](../versions/0.10.md) lists what it adds and what may still change. To go back, run the 0.9.3 install line above.
 
 ## Upgrade, go back or uninstall
 

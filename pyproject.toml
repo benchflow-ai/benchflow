@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.10.0rc4"
+version = "0.10.0rc5"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -240,6 +240,7 @@ markers = [
     "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
     "e2e: end-to-end scenarios per SDK feature: real bench CLI and Python API on real sandboxes (tests/e2e/README.md: BENCHFLOW_E2E_SANDBOX=daytona for the feature tier; Docker or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona for the self-hosted policy scenario); excluded by default, run with -m e2e",
     "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
+    "ceiling: the test holds one call to tests/_timing.py's CPU-time ceiling (within_ceiling); it never runs under xdist, where a neighbour on the same core inflates CPU time: conftest leaves it out of an xdist run and CI runs it with -n 0",
     "bfx_refusal: the test asserts the integrity refusal before the turn on a unit fake, so conftest gives its fake sandbox no stand-in bfx (tests/_fake_bfx.py)",
     "grading_matrix: the grading-integrity matrix (tests/test_grading_integrity_matrix.py), whole trials on real Docker; left out of the default run, selected by -m deterministic (pass D) or -m grading_matrix; it fails, never skips, without Docker",
     "transport_over_bound: the test hands a backend's provider a command over the exec transport bound on purpose (tests/conftest.py exec_transport_tripwire)",
