@@ -1,6 +1,23 @@
 # Changelog
 
-## [0.10.0rc4] - release candidate
+## [0.10.0rc5] - release candidate
+
+0.10.0rc4 with its tests fixed, and nothing else: no file under `src/` changed but the version. `v0.10.0rc4` was tagged on 17 November 2026 and never published. The release workflow runs every test job on the tagged commit before it builds anything, and those jobs failed, so nothing reached PyPI. The changes since 0.10.0rc3 are 0.10.0rc4's, below.
+
+### Fixed
+
+- **The release's test jobs build bfx.** A checkout has no bfx (git ignores `src/benchflow/_bfx/bin`), so in GitHub's runners every model agent's Docker trial was refused before its turn (`integrity_unavailable`), as 0.10.0rc4 means it to be where bfx can't run. The jobs that run BenchFlow's Docker tests now build the pinned bfx from source, as the release build does, and stop on any other bytes.
+- **They run on the release gate's Docker.** The runner image's Docker is Docker CE 28.0.4 with Compose 2.38.2; the jobs the release waits on now install the release gate's (Ubuntu 24.04's docker.io 29.1.3 with Compose 2.40.3), so CI tests what the gate tests. On the image's Docker, Compose 2.38.2 cannot describe a build-only service's output, which BenchFlow refuses rather than guess a name, and the checks below failed.
+- One test assumed `/usr/share` is writable by root alone; the runner image lets others write there, so it now finds a folder only root can write.
+- The CPU-time ceiling checks run alone, with no xdist neighbour on the same core, where CPU time inflates (`-n 0` after the shard's run); the ceiling is unchanged.
+
+### Known issues
+
+- **Docker CE 28 with Compose 2.38, as on GitHub's ubuntu-24.04 runner image today, is older than the Docker BenchFlow is tested on.** On it, a task with a build-only Compose service is refused, because Compose 2.38 can't describe the service's build output and BenchFlow won't guess its name. Processes that main's ENTRYPOINT starts as root can reach the network for up to about a second before the trial's network policy holds. An oracle's leftover processes can survive the stop before a separate verifier, which ends the trial as an error: unscored, never misscored. None of these happen on the Docker the release is tested on: Ubuntu 24.04's docker.io 29.1.3 with Compose 2.40.3, and Docker CE 29.9.3 with Compose 5.7.1. Use Docker 29 or newer with Compose 2.40 or newer.
+- After a wall-clock timeout, the native Claude Code agent can make one more model call before it stops. The call is billed and recorded. Fixed before 0.10.0.
+- 0.10.0rc4's known issues stand.
+
+## [0.10.0rc4] - release candidate, tagged, not on PyPI
 
 The fourth 0.10 release candidate, on top of 0.10.0rc3. The headline is how `audit` (the default) and `off` grade: the reward scored is the one test.sh wrote, and each trial records where it came from (see Grading in audit and off below).
 

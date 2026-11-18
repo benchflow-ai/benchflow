@@ -283,6 +283,7 @@ def test_truncated_documents_in_a_json_string_finish_and_mask(lines):
 
 
 @pytest.mark.parametrize("layer", ["object", "acp", "record text"])
+@pytest.mark.ceiling
 def test_ten_thousand_unclosed_documents_in_one_json_string_finish(layer):
     """The lead's guard: 10,000 unclosed documents in one JSON string finish
     with no exception and under the 10 s ceiling, in the object, ACP and

@@ -304,13 +304,35 @@ def _judge_on_this_host(entry: str) -> str:
     ).stdout
 
 
+def _root_only_folder() -> str:
+    """A folder in which only root could make an entry on this host, the whole
+    chain root's and written by no group or other user. Not assumed: GitHub's
+    ubuntu-24.04 runner image leaves /usr/share writable by others."""
+    import os
+    import stat
+
+    for folder in ("/usr/share", "/usr/lib", "/usr/libexec", "/usr/include", "/opt"):
+        chain = [Path(folder), *Path(folder).parents]
+        try:
+            if all(
+                (st := os.stat(p)).st_uid == 0
+                and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                for p in chain
+            ):
+                return folder
+        except OSError:
+            continue
+    pytest.skip("no folder on this host that only root could write")
+
+
 def test_the_judge_keeps_an_absent_entry_under_root_only_folders():
-    """/usr/share is root's alone here, as in CI: only root could make it."""
+    """An absent entry under folders only root could write is kept: only root
+    could make it."""
     import uuid
 
     from benchflow._utils.trusted_path import decode_path_field
 
-    entry = f"/usr/share/benchflow-absent-{uuid.uuid4().hex}/bin"
+    entry = f"{_root_only_folder()}/benchflow-absent-{uuid.uuid4().hex}/bin"
     out = _judge_on_this_host(entry)
     records = [line.partition(" ") for line in out.splitlines()]
     assert [(tag, decode_path_field(value)) for tag, _, value in records] == [

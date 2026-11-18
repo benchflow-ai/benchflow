@@ -109,6 +109,17 @@ def _group_tests_by_session_job(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]):
+    # The CPU-time ceiling checks never run beside xdist neighbours (the lead's
+    # ruling, 2026-11-18): an xdist worker leaves them out, and CI runs them
+    # with -n 0 (`-m ceiling`); tests/_timing.py's within_ceiling fails under
+    # xdist if one is ever left in.
+    if hasattr(config, "workerinput"):
+        alone = [item for item in items if item.get_closest_marker("ceiling")]
+        if alone:
+            config.hook.pytest_deselected(items=alone)
+            items[:] = [
+                item for item in items if not item.get_closest_marker("ceiling")
+            ]
     # Only in an xdist worker under loadgroup (xdist reads the marks after
     # this hook, as it collects; a worker sees `dist` as "no" and the mode
     # as `loadgroup`); `-n 0` and a serial run keep the file order.
