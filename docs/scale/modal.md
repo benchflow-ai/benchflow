@@ -55,6 +55,16 @@ sandbox:
 
 Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
+## When Modal ends a sandbox
+
+Modal can end a sandbox on its own: when its lifetime runs out, when a process goes over its memory limit (Modal ends the whole sandbox, where Docker kills the one process), and when it evicts or preempts it. The trial then fails as an infrastructure error, with Modal's return code:
+
+```text
+Sandbox not found: Modal ended the sandbox before BenchFlow stopped it (returncode 124: its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)); an exec failed with it
+```
+
+124 is the lifetime; 137 is a kill (the memory limit, an eviction, a preemption, or a terminate from outside BenchFlow).
+
 ## Limits
 
 Modal runs one container per sandbox, so a task with a `docker-compose.yaml` is refused before it starts. Of the network policies, `no-network` works; `allowlist` and `denylist` don't, and tasks that use them are refused.

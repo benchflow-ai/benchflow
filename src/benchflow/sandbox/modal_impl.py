@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
 import math
 import os
 import re
 import shlex
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -72,6 +74,8 @@ from benchflow.task.paths import RolloutPaths, SandboxPaths
 if TYPE_CHECKING:
     from benchflow.sandbox.process import LiveProcess
 
+logger = logging.getLogger(__name__)
+
 #: Inert Secret names for the values a Modal command re-exports by name
 #:: no loader or shell reads them.
 MODAL_CARRY_PREFIX = "_BF_MODAL_ENV_"
@@ -126,6 +130,69 @@ def modal_exec_timeout(timeout_sec: float | None) -> int | None:
     return max(1, math.ceil(timeout_sec))
 
 
+#: How long a check for Modal's own end of a sandbox waits for ``poll``.
+PLATFORM_END_POLL_SEC = 15.0
+
+#: How long a failure that looks like Modal ending the sandbox waits for
+#: ``poll`` to report the end, asking every :data:`PLATFORM_END_SETTLE_STEP_SEC`.
+#: While Modal shuts a sandbox down, an exec fails with "Modal Sandbox is
+#: shutting down." and ``poll`` still answers None (measured, modal 1.6.2).
+PLATFORM_END_SETTLE_SEC = 20.0
+PLATFORM_END_SETTLE_STEP_SEC = 1.0
+#: The modal errors an exec in an ending or ended sandbox raises.
+_ENDING_ERRORS = frozenset(
+    {"ConflictError", "NotFoundError", "SandboxTerminatedError", "SandboxTimeoutError"}
+)
+
+
+def modal_ending_error(exc: BaseException) -> bool:
+    """Whether *exc* is how Modal fails an exec in a sandbox it is ending or
+    ended ("is shutting down", "not found ... has already shut down")."""
+    text = str(exc).lower()
+    return (
+        type(exc).__name__ in _ENDING_ERRORS
+        or "shutting down" in text
+        or "shut down" in text
+    )
+
+
+#: The start of every error raised for a sandbox Modal ended itself. A trial
+#: error that holds "sandbox not found" is an infrastructure error
+#: (``benchflow._utils.scoring``).
+MODAL_ENDED = "Sandbox not found: Modal ended the sandbox"
+
+
+def platform_end_reason(returncode: int) -> str:
+    """What the ``returncode`` Modal reports for an ended sandbox says ended it.
+
+    Measured with modal 1.6.2: 124 when its lifetime (``Sandbox.create``'s
+    ``timeout``) ran out; 137 when it was killed, which is also what a
+    process over a hard memory limit does (Modal ends the whole sandbox).
+    """
+    if returncode == 124:
+        return "its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)"
+    if returncode == 137:
+        return (
+            "it was killed: a process went over its memory limit, or Modal "
+            "evicted or preempted it, or it was terminated from outside BenchFlow"
+        )
+    return f"its main process exited with {returncode}"
+
+
+def modal_ended_message(end: Mapping[str, Any], what: str) -> str:
+    """The error for *what* failing in a sandbox Modal ended (*end*:
+    :attr:`ModalSandbox.platform_end`)."""
+    return (
+        f"{MODAL_ENDED} before BenchFlow stopped it (returncode "
+        f"{end['returncode']}: {end['reason']}); {what}"
+    )
+
+
+class ModalSandboxEndedError(RuntimeError):
+    """An exec failed because Modal ended the sandbox before BenchFlow stopped
+    it. The message starts with :data:`MODAL_ENDED`."""
+
+
 #: ``Sandbox.filesystem``'s errors and the builtin ones the legacy file API
 #: raised, which BenchFlow's callers catch (FileNotFoundError, ...).
 _FILESYSTEM_ERRORS: dict[str, type[OSError]] = {
@@ -173,6 +240,14 @@ class ModalSandbox(BaseSandbox):
     # exec passes the env as a Modal Secret, never in the command (exec below),
     # so another verifier user gets it privately (b173 PY8-MAIN-40).
     exec_env_is_private = True
+
+    #: How Modal ended this sandbox before BenchFlow stopped it
+    #: (``returncode``, ``reason``, ``seen_at``), or None
+    #: (:meth:`check_platform_end`).
+    platform_end: dict[str, Any] | None = None
+    # True once stop() has looked for Modal's own end: an end seen after that
+    # is BenchFlow's terminate.
+    _stopping = False
 
     @classmethod
     def preflight(cls) -> None:
@@ -251,7 +326,7 @@ class ModalSandbox(BaseSandbox):
     ) -> object:
         from modal import Sandbox
 
-        return await Sandbox.create.aio(
+        sandbox = await Sandbox.create.aio(
             app=self._app,
             image=self._image,
             timeout=self._sandbox_timeout,
@@ -264,6 +339,9 @@ class ModalSandbox(BaseSandbox):
             secrets=secrets_config,
             volumes=volumes_config,
         )
+        self.platform_end = None
+        self._stopping = False
+        return sandbox
 
     async def start(self, force_build: bool) -> None:
         gpu_config = modal_gpu_request(
@@ -398,13 +476,66 @@ class ModalSandbox(BaseSandbox):
         if self._sandbox:
             await self._sandbox.terminate.aio()
 
+    async def check_platform_end(
+        self, seen_at: str, *, settle_sec: float = 0.0
+    ) -> dict[str, Any] | None:
+        """Whether Modal ended the sandbox itself, from its public ``poll``.
+
+        Modal ends a sandbox on its own when its lifetime runs out, when a
+        process goes over a hard memory limit, and when it evicts or
+        preempts it; the next exec then fails with Modal's "shutting down" or
+        "not found". *settle_sec*: how long to keep asking while ``poll``
+        still answers None (a sandbox Modal is shutting down). The first end
+        seen is kept in :attr:`platform_end` and logged. None while the
+        sandbox runs, once :meth:`stop` has begun (BenchFlow's own
+        terminate), or when ``poll`` does not answer within
+        :data:`PLATFORM_END_POLL_SEC`. Never raises.
+        """
+        if self.platform_end is not None:
+            return self.platform_end
+        sandbox = self._sandbox
+        if sandbox is None or self._stopping:
+            return None
+        deadline = time.monotonic() + settle_sec
+        while True:
+            try:
+                code = await asyncio.wait_for(sandbox.poll.aio(), PLATFORM_END_POLL_SEC)
+            except Exception as exc:
+                logger.debug("Modal did not answer poll: %r", exc)
+                return None
+            if self._stopping:
+                return None
+            if isinstance(code, int) and not isinstance(code, bool):
+                break
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(PLATFORM_END_SETTLE_STEP_SEC)
+        self.platform_end = {
+            "returncode": code,
+            "reason": platform_end_reason(code),
+            "seen_at": seen_at,
+        }
+        logger.warning(
+            "Modal ended sandbox %s before BenchFlow stopped it (returncode %d: %s)",
+            getattr(sandbox, "object_id", "?"),
+            code,
+            self.platform_end["reason"],
+        )
+        return self.platform_end
+
     async def stop(self, delete: bool) -> None:
         if not self._sandbox:
             return
 
+        # Before the terminate, after which an ended sandbox is BenchFlow's
+        # doing: whether Modal ended it first (platform_end). A sandbox Modal
+        # ended needs no terminate.
+        ended = await self.check_platform_end("stop")
+        self._stopping = True
         try:
-            await self._terminate_sandbox()
-            await self._sandbox.wait.aio(raise_on_termination=False)
+            if ended is None:
+                await self._terminate_sandbox()
+                await self._sandbox.wait.aio(raise_on_termination=False)
         except Exception as e:
             self.logger.warning(f"Error terminating Modal sandbox: {e}")
         finally:
@@ -847,21 +978,34 @@ class ModalSandbox(BaseSandbox):
         fitted = fit(argv_for, command, cat=reader_cat(route), agent=agent)
         _transport.sent("Modal", fitted.sent)
         env = process_env
-        process = await self._sandbox.exec.aio(
-            *fitted.sent,
-            workdir=cwd,
-            secrets=[Secret.from_dict(env)] if env else [],
-            timeout=modal_exec_timeout(timeout_sec),
-        )
-        if fitted.payload is not None:
-            process.stdin.write(fitted.payload)
-            process.stdin.write_eof()
-            await process.stdin.drain.aio()
+        try:
+            process = await self._sandbox.exec.aio(
+                *fitted.sent,
+                workdir=cwd,
+                secrets=[Secret.from_dict(env)] if env else [],
+                timeout=modal_exec_timeout(timeout_sec),
+            )
+            if fitted.payload is not None:
+                process.stdin.write(fitted.payload)
+                process.stdin.write_eof()
+                await process.stdin.drain.aio()
 
-        stdout = await process.stdout.read.aio()
-        stderr = await process.stderr.read.aio()
+            stdout = await process.stdout.read.aio()
+            stderr = await process.stderr.read.aio()
 
-        return_code = await process.wait.aio()
+            return_code = await process.wait.aio()
+        except Exception as exc:
+            # Modal ended the sandbox (its lifetime, a memory kill, an
+            # eviction): its error names no cause, so poll says what ended.
+            end = await self.check_platform_end(
+                "command",
+                settle_sec=PLATFORM_END_SETTLE_SEC if modal_ending_error(exc) else 0.0,
+            )
+            if end is None:
+                raise
+            raise ModalSandboxEndedError(
+                modal_ended_message(end, "an exec failed with it")
+            ) from exc
 
         return ExecResult(
             stdout=stdout,
