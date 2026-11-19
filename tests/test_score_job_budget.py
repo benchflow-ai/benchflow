@@ -275,14 +275,20 @@ async def test_independent_batch_shares_one_job_budget(scoring, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_score_respects_job_lock(scoring):
-    """An independent scorer cannot race an evaluation or another scoring process."""
+    """An independent scorer cannot race an evaluation or another scoring process.
+
+    The holder is this test's parent, a live process that is not this one. A
+    lock that names the caller's own pid is stale since PR #128 (a run killed
+    in a container often leaves one); this test used its own pid as the live
+    holder and failed once #128 merged.
+    """
     import os
     import socket
 
     path, task, finish = scoring
     _job_record(path, {"max_sandbox_seconds": 60})
     _write(
-        path.parent / ev.JOB_LOCK, {"pid": os.getpid(), "host": socket.gethostname()}
+        path.parent / ev.JOB_LOCK, {"pid": os.getppid(), "host": socket.gethostname()}
     )
     with pytest.raises(RuntimeError, match="already running"):
         await resume_review(path, tasks_root=task)

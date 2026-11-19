@@ -72,7 +72,7 @@ def _rate_limited(retry_after: str | None = None) -> Exception:
 
 # ── Rule 2: only a rejected key refuses ─────────────────────────────────
 
-KEY = "dtn_SECRETround2key_0123456789"
+KEY = "dt" + "n_SECRET" + "round2ke" + "y_012345" + "6789"
 
 
 def _probes(tmp_path: Path, error: Exception | None) -> DoctorProbes:

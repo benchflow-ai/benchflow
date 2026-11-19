@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
+import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -132,6 +136,54 @@ async def test_resume_only_reviews_and_preserves_solver_identity(
     assert saved_config.agent_env == {}
 
 
+@pytest.fixture
+def other_mount():
+    """A private folder on /dev/shm when it is another filesystem than the
+    cwd and TMPDIR (BenchFlow's pinned roots besides /)."""
+    shm = Path("/dev/shm")
+    if not shm.is_dir() or not os.access(shm, os.W_OK):
+        pytest.skip("no writable /dev/shm")
+    devices = {os.stat(p).st_dev for p in (Path.cwd(), Path(tempfile.gettempdir()))}
+    if shm.stat().st_dev in devices:
+        pytest.skip("/dev/shm is not another mount here")
+    folder = Path(tempfile.mkdtemp(dir=shm))
+    try:
+        yield folder
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_a_rollout_on_another_mount_is_reviewed(
+    saved_trial, other_mount, monkeypatch
+):
+    """FP patch 95: a resume pins the rollout as the run did, so the review
+    reads its evidence through BenchFlow's no-mount-crossing reader."""
+    from benchflow.review import evidence
+
+    rollout, task = saved_trial
+    moved = other_mount / "job" / rollout.name
+    shutil.copytree(rollout.parent, moved.parent)
+    verdict = _complete()
+    read: list[str] = []
+
+    async def finish(plan, rollout_dir):
+        read.append(evidence._digest(rollout_dir / "solver.json"))
+        return verdict
+
+    prepare = Mock(return_value=SimpleNamespace(config=ReviewerConfig()))
+    monkeypatch.setattr(automatic, "prepare_review", prepare)
+    monkeypatch.setattr(automatic, "finish_review", finish)
+    monkeypatch.setattr(
+        persistence, "commit_scoring_result", lambda path, score: _parent(path, score)
+    )
+
+    result = await resume_review(moved, tasks_root=task.parent)
+
+    assert result["scoring"]["passed"] is True
+    assert len(read) == 1
+
+
 @pytest.mark.asyncio
 async def test_valid_negative_is_not_rejudged(saved_trial, monkeypatch):
     rollout, task = saved_trial
@@ -183,14 +235,200 @@ async def test_changed_task_rejected_before_reviewer(saved_trial, monkeypatch):
     finish.assert_not_awaited()
 
 
+def _link(entry: Path, target: Path) -> None:
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.symlink_to(target, target_is_directory=target.is_dir())
+
+
 @pytest.mark.asyncio
-async def test_untrusted_task_symlink_cannot_escape_root(saved_trial, tmp_path):
+async def test_a_task_linked_into_the_root_is_reviewed(
+    saved_trial, tmp_path, monkeypatch
+):
+    """#1126's guard, narrowed (FP patch 32).
+
+    #1126 (edbf30cab) refused every task whose real folder lies outside
+    --tasks-root, so its test refused a link sitting directly in the root
+    with the task's own name and digest. ``bench run`` runs such a root (a
+    task list made of links into a task store), so every review resume of
+    that run failed and a reviewer that died in the run left the trial
+    unscored. A review resume now takes a root entry by bench run's rule,
+    ``tasks_root_entry_refusal``: a link directly in the root to a folder of
+    the same name is followed, and solver.json's task_digest pins the files
+    it reaches. The tests below keep the rest of #1126's guard: a link to a
+    folder of another name, to a file or to another link, a link not
+    directly in the root, and changed task files are still refused, and
+    links inside the task still go through copy_tree's rules.
+    """
     rollout, task = saved_trial
-    unsafe_root = tmp_path / "unsafe"
-    unsafe_root.mkdir()
-    (unsafe_root / "physics").symlink_to(task, target_is_directory=True)
-    with pytest.raises(ReviewResumeError, match="not inside"):
-        await resume_review(rollout, tasks_root=unsafe_root)
+    listed = tmp_path / "listed"
+    _link(listed / "physics", task)
+    prepare = Mock(return_value=SimpleNamespace(config=ReviewerConfig()))
+    finish = AsyncMock(return_value=_complete())
+    monkeypatch.setattr(automatic, "prepare_review", prepare)
+    monkeypatch.setattr(automatic, "finish_review", finish)
+    monkeypatch.setattr(
+        persistence, "commit_scoring_result", lambda path, score: _parent(path, score)
+    )
+
+    result = await resume_review(rollout, tasks_root=listed)
+
+    assert prepare.call_args.args[0] == task.resolve()
+    finish.assert_awaited_once_with(prepare.return_value, rollout)
+    assert result["scoring"]["passed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("layout", "reason"),
+    [
+        ("other-name", "a linked task keeps its folder's name"),
+        ("file", "which is not a folder"),
+        ("link-to-link", "which is a link too"),
+        ("nested", "has no folder physics"),
+        ("parent", "is not the name of a folder"),
+    ],
+)
+async def test_a_root_entry_bench_run_would_not_take_is_refused(
+    saved_trial, tmp_path, monkeypatch, layout, reason
+):
+    """Each layout reaches files with the solver's digest; only the link is wrong.
+
+    other-name: a link to a copy of the task in a folder of another name;
+    file: a link to a file; link-to-link: a link to a link to the task;
+    nested: the task linked one folder down (task_name ``group/physics``);
+    parent: task_name ``..``, the folder that holds the root.
+    """
+    rollout, task = saved_trial
+    root = tmp_path / "listed"
+    root.mkdir()
+    name = "physics"
+    if layout == "other-name":
+        renamed = tmp_path / "store" / "chemistry"
+        shutil.copytree(task, renamed)
+        _link(root / name, renamed)
+    elif layout == "file":
+        (tmp_path / "store").mkdir()
+        (tmp_path / "store" / name).write_text("")
+        _link(root / name, tmp_path / "store" / name)
+    elif layout == "link-to-link":
+        _link(tmp_path / "middle" / name, task)
+        _link(root / name, tmp_path / "middle" / name)
+    elif layout == "nested":
+        _link(root / "group" / name, task)
+        name = "group/physics"
+    else:
+        root = task / "inner"
+        root.mkdir()
+        name = ".."
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(rollout / "solver.json", {**solver, "task_name": name})
+    prepare = Mock(side_effect=AssertionError("must not prepare a reviewer"))
+    monkeypatch.setattr(automatic, "prepare_review", prepare)
+
+    # The refusal names the rule's own reason (a review): a link to a file
+    # is refused by the rule, not only by the folder check after it.
+    refusal = rf"in --tasks-root .+ is refused: .*{re.escape(reason)}"
+    with pytest.raises(ReviewResumeError, match=refusal):
+        await resume_review(rollout, tasks_root=root)
+    prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("caller", ["resume", "bench review"])
+@pytest.mark.parametrize(
+    ("swapped_to", "reason"),
+    [
+        ("chemistry", "a linked task keeps its folder's name"),
+        ("linked-env/physics", "environment/extra"),
+    ],
+)
+def test_a_link_swapped_after_the_entry_check_is_judged_on_the_folder_used(
+    tmp_path, monkeypatch, swapped_to, reason, caller
+):
+    """a review: the review checked the root's entry, then resolved
+    it a second time, so a link swapped between the two took a copy of the
+    task (same files, same digest) in a folder of another name, or with a
+    link bench run refuses in a folder it uploads. The folder the review
+    resolves once is the one judged, by a resume and by ``bench review
+    --tasks-root`` alike (one helper, ``tasks_root_entry_folder``)."""
+    from benchflow._utils import task_authoring
+    from benchflow.review import resume
+    from benchflow.review.runner import _source_task_dir
+
+    task = tmp_path / "store" / "physics"
+    (task / "environment").mkdir(parents=True)
+    (task / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task / "task.md").write_text('---\nschema_version: "1.3"\n---\n\nDo nothing.\n')
+    root = tmp_path / "tasks"
+    _link(root / "physics", task)
+    other = tmp_path / "store" / swapped_to
+    shutil.copytree(task, other)
+    if swapped_to.startswith("linked-env"):
+        (other / "environment" / "extra").symlink_to("Dockerfile")
+    solver = {"task_name": "physics", "task_digest": task_digest(task)}
+    assert task_digest(other) == solver["task_digest"]
+    check = task_authoring.tasks_root_entry_refusal
+
+    def check_then_swap(root_dir: Path, name: str) -> str | None:
+        refusal = check(root_dir, name)
+        (root / "physics").unlink()
+        _link(root / "physics", other)
+        return refusal
+
+    monkeypatch.setattr(task_authoring, "tasks_root_entry_refusal", check_then_swap)
+    if caller == "resume":
+        with pytest.raises(ReviewResumeError, match=reason):
+            resume._trusted_task(tmp_path / "rollout", solver, root)
+        return
+    rollout = tmp_path / "rollout"
+    _write(
+        rollout / "config.json",
+        {"task_path": "/elsewhere/physics", "task_digest": solver["task_digest"]},
+    )
+    folder, skip = _source_task_dir(rollout, tasks_root=root)
+    assert folder is None
+    assert skip is not None and skip.startswith("task evidence skipped: ")
+    assert reason in skip
+
+
+@pytest.mark.asyncio
+async def test_a_linked_task_still_pins_its_digest(saved_trial, tmp_path):
+    rollout, task = saved_trial
+    listed = tmp_path / "listed"
+    _link(listed / "physics", task)
+    (task / "rubric.json").write_text("changed")
+    with pytest.raises(ReviewResumeError, match="Task digest mismatch"):
+        await resume_review(rollout, tasks_root=listed)
+
+
+def test_links_inside_a_linked_task_keep_copy_tree_rules(saved_trial, tmp_path):
+    """Following the root's link does not widen what is copied from the task.
+
+    copy_tree judges each link inside the task against the task's real
+    folder, whether it is given the root's link or the folder the resume
+    returns: a link to a file beside the task is refused, and a link inside
+    the task is made again as a relative link.
+    """
+    from benchflow.review.resume import _trusted_task
+    from benchflow.task.staging import StagingRefused, copy_tree
+
+    rollout, task = saved_trial
+    listed = tmp_path / "listed"
+    _link(listed / "physics", task)
+    (task / "alias.json").symlink_to("rubric.json")
+    (task.parent / "operator.txt").write_text("not a task file")
+    (task / "notes").symlink_to(os.path.join("..", "operator.txt"))
+    solver = json.loads((rollout / "solver.json").read_text())
+
+    accepted = _trusted_task(rollout, solver, listed)
+
+    assert accepted == task.resolve()
+    for index, source in enumerate((accepted, listed / "physics")):
+        with pytest.raises(StagingRefused, match="notes is a link to") as refused:
+            copy_tree(source, tmp_path / f"copy-{index}", label="physics")
+        assert "outside the task's folder" in str(refused.value)
+    (task / "notes").unlink()
+    copy_tree(listed / "physics", tmp_path / "kept", label="physics")
+    assert os.readlink(tmp_path / "kept" / "alias.json") == "rubric.json"
 
 
 @pytest.mark.asyncio
@@ -847,3 +1085,68 @@ def test_a_pending_review_whose_solver_hit_a_usage_limit_reruns(saved_trial):
         job_name=rollout.parent.name,
     )
     assert "physics" not in job._get_completed_tasks()
+
+
+# Follow-up to PR #141, 2026-11-13 (the readers of reruns_on_resume): a model
+# refusal is never run again, as within the run (Evaluation._run_task).
+REFUSAL = "ACP error -32603: Internal error"
+MODEL_REFUSAL = {"by": "stop_reason", "stop_reason": "refusal", "call": None}
+
+
+def test_resume_keeps_a_rubric_solver_whose_model_refused(saved_trial):
+    """Follow-up to PR #141, 2026-11-13: a rubric trial whose model refused,
+    with a scoring block that judged nothing. The run does not retry it (the
+    refusal is the model's answer), but reruns_on_resume says yes to its ACP
+    error, so a resume ran the solver again and re-rolled the refusal. It is
+    kept."""
+    from benchflow.evaluation import Evaluation, RetryConfig
+
+    rollout, task = saved_trial
+    scoring = scoring_error(
+        "Deterministic verifier produced no reward",
+        tests_pass=None,
+        verifier_reward=None,
+    )
+    result = _parent(rollout, scoring)
+    result.update(
+        error=REFUSAL,
+        error_category="acp_error",
+        rewards=None,
+        model_refusal=MODEL_REFUSAL,
+    )
+    _write(rollout / "result.json", result)
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" in job._get_completed_tasks()
+    # What the retry policy alone says of its error.
+    assert RetryConfig().reruns_unjudged_solver(
+        scoring, REFUSAL, category="acp_error", on_resume=True
+    )
+
+
+def test_a_pending_review_whose_model_refused_is_kept(saved_trial):
+    """Follow-up to PR #141, 2026-11-13: the solver.json-only case of the
+    test above. The solver is kept for `bench eval score`, never run again."""
+    from benchflow.evaluation import Evaluation
+
+    rollout, task = saved_trial
+    solver = json.loads((rollout / "solver.json").read_text())
+    _write(
+        rollout / "solver.json",
+        {
+            **solver,
+            "rewards": None,
+            "error": REFUSAL,
+            "error_category": "acp_error",
+            "model_refusal": MODEL_REFUSAL,
+        },
+    )
+    job = Evaluation(
+        tasks_dir=task.parent,
+        jobs_dir=rollout.parent.parent,
+        job_name=rollout.parent.name,
+    )
+    assert "physics" in job._get_completed_tasks()

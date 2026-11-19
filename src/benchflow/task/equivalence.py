@@ -38,8 +38,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from benchflow._utils import path_lock_record
+from benchflow._utils.scoring import VERIFIER_TOOLS_REFUSED, classify_verifier_error
 from benchflow.sandbox._exec_output import exec_raw
-from benchflow.task.config import effective_agent_timeout_sec
+from benchflow.task.config import (
+    effective_agent_timeout_sec,
+    sandbox_user_setup_timeout_sec,
+)
 from benchflow.task.equivalence_variants import (
     FAMILIES,
     Variant,
@@ -50,7 +55,14 @@ from benchflow.task.paths import TaskPaths
 logger = logging.getLogger(__name__)
 
 Status = Literal[
-    "clean", "defects", "blocked", "oracle-fails", "no-answer", "flaky", "error"
+    "clean",
+    "defects",
+    "blocked",
+    "oracle-fails",
+    "unscored",
+    "no-answer",
+    "flaky",
+    "error",
 ]
 Verdict = Literal[
     "rejected",
@@ -130,6 +142,9 @@ class EquivalenceReport:
     answer_files: list[str] = field(default_factory=list)
     results: list[VariantResult] = field(default_factory=list)
     skipped_variants: int = 0
+    # What the PATH lock before the oracle did (the record a trial writes to
+    # locked-system-path.json); None when it did not run.
+    locked_system_path: dict[str, Any] | None = None
 
     @property
     def false_negatives(self) -> list[VariantResult]:
@@ -144,7 +159,7 @@ class EquivalenceReport:
         return [r for r in self.results if r.verdict == "form-fixed-by-instruction"]
 
     def issues(self) -> list[str]:
-        if self.status in ("blocked", "oracle-fails", "no-answer", "error"):
+        if self.status in ("blocked", "oracle-fails", "unscored", "no-answer", "error"):
             return [f"equivalence: {self.reason}"]
         out: list[str] = []
         oracle = _fmt(self.oracle_reward)
@@ -182,6 +197,7 @@ class EquivalenceReport:
             "false_positives": len(self.false_positives),
             "warnings": len(self.warnings),
             "skipped_variants": self.skipped_variants,
+            "locked_system_path": self.locked_system_path,
             "issues": self.issues(),
             "results": [r.to_dict() for r in self.results],
         }
@@ -289,6 +305,12 @@ async def run_equivalence_battery(
     control = await grader.grade({})
     report.oracle_reward = control.reward
     if control.reward is None:
+        if classify_verifier_error(control.error) == VERIFIER_TOOLS_REFUSED:
+            # Hardening refused test.sh's tools, so the oracle's output was
+            # never graded: not the oracle's failure, and no verifier crash.
+            report.status = "unscored"
+            report.reason = f"the oracle output was not scored: {control.error}"
+            return report
         report.status = "oracle-fails"
         report.reason = f"oracle output produced no reward: {control.error}"
         return report
@@ -582,7 +604,9 @@ async def check_equivalence_async(
         )
         try:
             # The battery runs the oracle in this sandbox.
-            await _start_env_and_upload(env, task_dir, {}, upload_solution=True)
+            await _start_env_and_upload(
+                env, task_dir, {}, task=task, agent="oracle", upload_solution=True
+            )
             workspace = await _resolve_agent_cwd(env, task)
             await planes.prepare_log_dirs(env, sandbox_user=None)
             # As a trial does before the agent's turn: seed the verifier's copy
@@ -594,6 +618,37 @@ async def check_equivalence_async(
                 env, workspace=workspace, sandbox_user=None
             )
             await planes.prepare_verifier_runtime(env, task=task, sandbox_user=None)
+            # As a trial does before its agent: the image's PATH folders that
+            # a user other than root could write are locked to root, so the
+            # verifier judges them as on every bench run (an official rust
+            # image's 0777 /usr/local/cargo/bin is kept, not refused). The
+            # report keeps what was locked, as locked-system-path.json does.
+            # Planes without the step leave PATH as the image made it.
+            lock = getattr(planes, "lock_system_path", None)
+            if lock is not None:
+                path_lock: dict[str, Any] = {}
+                with path_lock_record.recording_into(path_lock):
+                    await lock(
+                        env,
+                        workspace=workspace,
+                        timeout_sec=sandbox_user_setup_timeout_sec(
+                            None, task.config.sandbox
+                        ),
+                    )
+                report.locked_system_path = path_lock or None
+            # What test.sh needs, as a trial checks it before the agent's
+            # turn: one it can never run without leaves the
+            # oracle's output unscored, with the reason.
+            from benchflow.task import test_sh_preflight
+
+            try:
+                await test_sh_preflight.check(
+                    env, task, sandbox_user=None, workspace=workspace
+                )
+            except test_sh_preflight.TestShPreflightRefused as refused:
+                report.status = "unscored"
+                report.reason = f"the oracle output was not scored: {refused}"
+                return report
             await exec_raw(
                 env.exec, f": > {_MARKER} && sleep 1", user="root", timeout_sec=30
             )
@@ -627,7 +682,7 @@ async def check_equivalence_async(
             grader = SandboxAnswerGrader(
                 env, task, planes, rollout_paths, workspace, answers, staging
             )
-            return await run_equivalence_battery(
+            result = await run_equivalence_battery(
                 task_dir,
                 grader,
                 answers,
@@ -636,6 +691,8 @@ async def check_equivalence_async(
                 sandbox=sandbox_type,
                 text_paths=text_paths,
             )
+            result.locked_system_path = report.locked_system_path
+            return result
         except Exception as exc:
             logger.exception("equivalence battery failed")
             report.status = "error"

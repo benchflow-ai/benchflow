@@ -10,6 +10,7 @@ Terminology (per https://leehanchung.github.io/blogs/2026/03/21/rl-environments-
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 import tomllib
 import warnings
@@ -57,6 +58,39 @@ def effective_agent_timeout_sec(agent: Any) -> float | None:
     """
     value = getattr(agent, "timeout_sec", None)
     return value or None
+
+
+#: Seconds a task's sandbox user setup gets when the task names none: handing
+#: the workspace to the agent's user walks every file in it, and a workspace
+#: with a large ``node_modules`` took longer than the run's 120 s.
+DEFAULT_SANDBOX_USER_SETUP_SEC = 600
+
+
+def sandbox_user_setup_timeout_sec(run_timeout: int | None, sandbox: Any) -> int:
+    """Seconds the sandbox user setup may take: the run's
+    ``--sandbox-setup-timeout`` when the run named one (*run_timeout*, None
+    when it did not), else the task's ``sandbox.setup_timeout_sec``, else
+    :data:`DEFAULT_SANDBOX_USER_SETUP_SEC`. The run's value wins either way,
+    so it can lower the limit as well as raise it.
+
+    Takes any object with ``setup_timeout_sec`` (a SandboxConfig, or a test's
+    stand-in); one without it, or None, reads as naming none.
+    """
+    if run_timeout is not None:
+        return int(run_timeout)
+    declared = getattr(sandbox, "setup_timeout_sec", None)
+    if isinstance(declared, bool) or not isinstance(declared, int | float):
+        return DEFAULT_SANDBOX_USER_SETUP_SEC
+    return math.ceil(declared)
+
+
+def run_sandbox_setup_timeout(config: Any) -> int | None:
+    """The run's ``sandbox_setup_timeout`` when the run named it, else None
+    (a RolloutConfig, or a stand-in without ``sandbox_setup_timeout_given``,
+    which reads as named)."""
+    if getattr(config, "sandbox_setup_timeout_given", True) is False:
+        return None
+    return getattr(config, "sandbox_setup_timeout", None)
 
 
 #: How the record names the task's ``allow_cloud_metadata = true``
@@ -591,6 +625,16 @@ class VerifierConfig(TaskConfigModel):
         "Omitting the field inherits this default; zero, negative, and "
         "non-finite budgets are rejected at validation time.",
     )
+    setup_timeout_sec: float | None = Field(
+        default=None,
+        gt=60,
+        allow_inf_nan=False,
+        description="Seconds each command that sets up the verifier may take "
+        "(hardening the sandbox, preparing a separate verifier's runtime); "
+        "default 180. The run's --verifier-setup-timeout wins over it. It must "
+        "be more than 60, the time the pytest plugin guard keeps of each "
+        "command; non-finite values are rejected.",
+    )
     env: dict[str, str] = Field(default_factory=dict)
     collect: list[VerifierCollectConfig] = Field(
         default_factory=list,
@@ -619,7 +663,9 @@ class VerifierConfig(TaskConfigModel):
         default_factory=list,
         description="PATH program names used only for optional probes. The task author "
         "guarantees that every use tolerates the program being unavailable without "
-        "changing grading. Refusals of any other program invalidate every reward.",
+        "changing grading. One found only in a folder the verifier's PATH leaves out "
+        "is left missing, so a lookup (which, command -v) finds nothing; any other "
+        "such program gets a refusal stub, and running one invalidates every reward.",
     )
 
     @field_validator("optional_tools")
@@ -1031,6 +1077,18 @@ class SandboxConfig(TaskConfigModel):
         ),
     )
     build_timeout_sec: float = 600.0
+    setup_timeout_sec: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Seconds BenchFlow may take to give the workspace to the sandbox "
+            "user before the agent or oracle starts (default 600). The run's "
+            "--sandbox-setup-timeout, when named, wins over it, longer or "
+            "shorter. Raise it for a workspace with many files, such as a "
+            "large node_modules."
+        ),
+    )
     docker_image: str | None = Field(
         default=None,
         validation_alias=AliasChoices("docker_image", "image"),
@@ -1251,6 +1309,11 @@ class SandboxConfig(TaskConfigModel):
     # metadata helper adds the block's rules from outside main
     # (sandbox._metadata_helper): main then gets no NET_ADMIN for them.
     _cloud_metadata_by_helper: bool = PrivateAttr(default=False)
+    # Set by the sandbox factory for an oracle's run of an offline task whose
+    # verifier needs a network: main keeps its network, and the
+    # agent phase is offline by every-process rules
+    # (verifier_network.arm_offline_agent_phase), not by the container.
+    _offline_by_rules: bool = PrivateAttr(default=False)
     # Set by the sandbox factory when the run enforces no-web at the agent
     # layer: root's uid firewall in main needs main's NET_ADMIN then.
     _agent_uid_firewall: bool = PrivateAttr(default=False)

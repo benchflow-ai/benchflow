@@ -30,6 +30,7 @@ from benchflow.trajectories.training_signal import (
     GroupAdvantage,
     TrainingSignals,
     compute_training_signals,
+    replaced_attempts,
     scored_reward,
     unfinished_rollout_dirs,
 )
@@ -1269,6 +1270,8 @@ def _is_benchflow_results_row(row: dict[str, Any]) -> bool:
 
 
 def _benchflow_row_training_skip_reason(row: dict[str, Any]) -> str | None:
+    from benchflow._utils.result_rows import row_reward
+
     if not _is_benchflow_results_row(row):
         return None
     info = row.get("info")
@@ -1276,6 +1279,12 @@ def _benchflow_row_training_skip_reason(row: dict[str, Any]) -> str | None:
         return "not_training_ready"
     if row.get("error"):
         return "terminal_error"
+    # A trial no verifier scored is not training data: results.jsonl and
+    # trainer/verifiers.jsonl write its reward as null, older rows as 0.0
+    # (result_rows.row_reward, the rule bf.load_job reads them by).
+    # Not is_completed: an agent that failed can still have a real reward.
+    if "reward" in row and row_reward(row) is None:
+        return "unscored"
     if row.get("is_truncated") is True:
         return "partial_trajectory"
     stop_condition = row.get("stop_condition")
@@ -1570,15 +1579,22 @@ def _rollout_dirs_for_groups(
     canonical_selection: str | Path | None,
     group_advantage: str | None,
 ) -> list[Path]:
-    """The rollouts to convert. With ``group_advantage``, trial folders that
-    never wrote a ``result.json`` come too: they are members of their group,
-    which they keep from being whole (training_signal.unfinished_rollout_dirs)."""
+    """The rollouts to convert: in an Evaluation job, one per task, the
+    attempt the run kept (``bf.load_job``'s rule). An attempt the run retried
+    or a later one replaced writes no row, whatever reward it carries.
+
+    With ``group_advantage`` every attempt comes, and trial folders that
+    never wrote a ``result.json`` too: they are members of their group, which
+    they keep from being whole (training_signal.unfinished_rollout_dirs), and
+    the group marks a replaced attempt ``retried`` itself. A canonical
+    selection names its rollouts and is taken as written."""
     if canonical_selection is not None:
         return _iter_selected_rollout_dirs(canonical_selection)
     dirs = _iter_rollout_dirs(jobs_dir)
     if group_advantage is not None:
-        dirs = [*dirs, *unfinished_rollout_dirs(dirs)]
-    return dirs
+        return [*dirs, *unfinished_rollout_dirs(dirs)]
+    replaced = replaced_attempts((d, load_rollout_result(d)) for d in dirs)
+    return [d for d in dirs if d not in replaced]
 
 
 def _keeps_its_group(signals: TrainingSignals, result: dict[str, Any]) -> bool:

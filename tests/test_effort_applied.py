@@ -9,6 +9,7 @@ only the effort it had asked for (a published run's xhigh rows).
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,7 +40,8 @@ ASTRA = {
 
 def _acp(model_state=None, config_options=None):
     session = ACPSession("s1")
-    session.model_state = model_state
+    # A copy: set_model makes the session's current model the one it took.
+    session.model_state = copy.deepcopy(model_state)
     session.config_options = list(config_options or [])
     init = MagicMock()
     init.agent_info = None
@@ -152,11 +154,16 @@ def test_the_calls_say_which_effort_was_sent():
     )
     assert effort == {
         "requested": "max",
+        "requested_from": None,
         "applied": "max",
         "route": None,
         "sent": {"high": 884},
         "sent_source": "proxy",
+        "calls_with_effort": 884,
+        "calls_with_budget": 0,
+        "calls_without_effort": None,
         "matches": False,
+        "reason": "mismatch",
     }
     assert effort_warning(effort) == (
         "reasoning effort max was asked for, but the agent's model calls "
@@ -165,16 +172,19 @@ def test_the_calls_say_which_effort_was_sent():
 
 
 def test_the_proxy_seeing_no_effort_is_evidence_a_session_log_is_not():
+    # The proxy saw calls and none carried an effort: unmeasured, warned, not
+    # a mismatch (ruling: a route BenchFlow sets is tested apart).
     dropped = effort_outcome(_summary(), requested="xhigh", applied="xhigh")
-    assert (dropped["sent"], dropped["matches"]) == ({}, False)
+    assert (dropped["sent"], dropped["matches"]) == ({}, None)
     assert "none of the agent's model calls carried an effort" in (
         effort_warning(dropped) or ""
     )
-    # Claude Code's session log records no request settings.
+    # Claude Code's session log records no request settings: with no calls
+    # to read, the session's word alone confirms nothing.
     unknown = effort_outcome(
         _summary(source="claude-code-session-log"), requested="max", applied="max"
     )
-    assert (unknown["sent"], unknown["matches"]) == (None, True)
+    assert (unknown["sent"], unknown["matches"]) == (None, None)
     assert effort_warning(unknown) is None
     assert (
         effort_outcome(_summary(), requested=None, applied="medium")["matches"] is None
@@ -191,9 +201,48 @@ def test_a_route_or_an_adapter_that_lowers_the_effort_is_named():
     assert effort["matches"] is False
     assert effort_warning(effort) == (
         "reasoning effort max was asked for, but the agent applied high; the "
-        "model proxy's route sets high; the agent's model calls carried high "
-        "(4 calls)"
+        "agent's model calls carried high (4 calls)"
     )
+
+
+@pytest.mark.parametrize("label", ["default", "auto"])
+def test_a_session_label_that_is_no_level_is_nothing_applied(label):
+    """R383 M1: with no -e, claude-agent-acp answers its effort option with
+    ``default``; its calls carried Claude Code's own level, which differs from
+    nothing that was asked or applied. The label is kept as said."""
+    effort = effort_outcome(
+        _summary(agent_effort={"medium": 2}), requested=None, applied=label
+    )
+    assert effort["applied"] == label
+    assert (effort["matches"], effort["reason"]) == (None, "nothing_to_compare")
+    assert effort_warning(effort) is None
+    asked = effort_outcome(
+        _summary(agent_effort={"max": 2}), requested="max", applied=label
+    )
+    assert (asked["matches"], asked["reason"]) == (True, None)
+
+
+def test_a_routes_pinned_effort_decides_nothing():
+    """R383 L1: the calls say what was sent; a route's pin is kept beside."""
+    effort = effort_outcome(
+        _summary(agent_effort={"low": 3}), requested="low", applied=None, route="high"
+    )
+    assert (effort["matches"], effort["route"]) == (True, "high")
+    assert effort_warning(effort) is None
+
+
+def test_a_messages_call_records_its_own_effort_not_the_routes_pin(tmp_path):
+    """R383 L1: a Bedrock Claude route pins reasoning_effort, which the
+    proxy's log copies into each call, but an Anthropic Messages call goes
+    upstream with its own output_config.effort."""
+    trial = tmp_path / "task__one"
+    (trial / "trajectory").mkdir(parents=True)
+    call = _call("high")
+    call["request"]["body"]["output_config"] = {"effort": "medium"}
+    (trial / "trajectory/llm_trajectory.jsonl").write_text(json.dumps(call) + "\n")
+    summary = write_model_calls(trial)
+    assert summary is not None
+    assert summary["agent_effort"] == {"medium": 1}
 
 
 def _call(effort, purpose="agent"):
@@ -326,10 +375,12 @@ def test_a_connection_keeps_the_sessions_effort_and_the_routes(tmp_path):
     )
 
 
-@pytest.mark.parametrize(("env", "applied"), [("high", "high"), ("auto", "max")])
+@pytest.mark.parametrize(("env", "applied"), [("high", None), ("auto", "max")])
 def test_claude_codes_effort_variable_is_the_effort_it_applies(tmp_path, env, applied):
     """With --effort max and CLAUDE_CODE_EFFORT_LEVEL=high in the agent's env,
-    Claude Code sends high: the record says so instead of "applied max"."""
+    Claude Code sends high: the record does not say "applied max", nor echo
+    the variable back as applied; the variable is the request, and
+    the calls say what ran."""
     from types import SimpleNamespace
 
     from benchflow.rollout import Rollout

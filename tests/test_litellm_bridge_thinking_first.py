@@ -240,7 +240,7 @@ async def test_an_upstream_error_comes_after_the_events_it_interrupted():
         model="m",
     )
     seen: list[Any] = []
-    with pytest.raises(RuntimeError) as raised:
+    with pytest.raises(RuntimeError, match=r"^upstream connection reset$") as raised:
         async for event in wrapper:
             seen.append(event)
 

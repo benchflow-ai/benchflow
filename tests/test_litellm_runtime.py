@@ -666,7 +666,10 @@ async def test_proxy_start_failure_keeps_the_exception_type_and_retries(monkeypa
 
     monkeypatch.setattr(runtime_mod, "_start_host_litellm", fail_start)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError,
+        match=r"LiteLLM proxy failed to start for model 'openai/gpt-4\.1-mini': TransientSandboxTransportError",
+    ) as excinfo:
         await ensure_litellm_runtime(
             agent="codex-acp",
             agent_env={"OPENAI_API_KEY": "sk-openai"},

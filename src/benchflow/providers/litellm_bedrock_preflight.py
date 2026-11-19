@@ -65,6 +65,47 @@ try:
         failures.append("system-message cache override inactive")
 except Exception as exc:  # noqa: BLE001 - report any import/shape drift
     failures.append(f"bedrock invoke messages transform unavailable: {exc}")
+try:
+    # The Messages adapters' effort must be the one asked for.
+    from litellm.llms.anthropic.experimental_pass_through import utils as _passthrough
+
+    keep = _passthrough.normalize_reasoning_effort_value
+    if not getattr(keep, "__benchflow_bedrock_patch__", False):
+        failures.append("effort pass-through inactive")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"messages adapter effort hook unavailable: {exc}")
+try:
+    # A Bedrock Claude effort goes out as asked, not at LiteLLM's ceiling.
+    import importlib
+
+    for name in (
+        "litellm.llms.bedrock.common_utils",
+        "litellm.llms.bedrock.chat.converse_transformation",
+        "litellm.llms.bedrock.chat.invoke_transformations.anthropic_claude3_transformation",
+        "litellm.llms.bedrock.messages.invoke_transformations.anthropic_claude3_transformation",
+    ):
+        ceiling = getattr(
+            importlib.import_module(name),
+            "normalize_bedrock_opus_output_config_effort",
+            None,
+        )
+        if ceiling is not None and not getattr(
+            ceiling, "__benchflow_bedrock_patch__", False
+        ):
+            failures.append(f"bedrock effort ceiling active in {name}")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"bedrock effort ceiling check unavailable: {exc}")
+try:
+    # A level the model does not take fails; it never becomes a thinking budget.
+    from litellm.llms.anthropic.experimental_pass_through.messages.transformation import (
+        AnthropicMessagesConfig,
+    )
+
+    gate = AnthropicMessagesConfig._translate_adaptive_effort_for_non_adaptive_model
+    if not getattr(gate, "__benchflow_bedrock_patch__", False):
+        failures.append("effort level gate inactive")
+except Exception as exc:  # noqa: BLE001 - report any import/shape drift
+    failures.append(f"messages effort level gate unavailable: {exc}")
 # Upstream models passed as arguments must keep ``output_config.effort``:
 # LiteLLM drops it for Claude ids its model map does not know, unless
 # sitecustomize registered their effort capabilities.

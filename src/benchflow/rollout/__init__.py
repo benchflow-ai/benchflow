@@ -60,7 +60,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from benchflow._diagnostics import render_text
@@ -81,12 +81,18 @@ from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.log_context import trial_log_context
 from benchflow._utils.reachable_write import ReachablePath, destination
 from benchflow._utils.scoring import (
+    CLEANUP_FAILED_HEADER,
     ORIGINAL_ERROR,
+    PHASE_TIMEOUT_HEADER,
     PROVIDER_STALL,
     is_output_cap_error,
 )
 from benchflow._utils.text import describe_exception
-from benchflow._utils.trial_warnings import recording_trial_warnings
+from benchflow._utils.trial_warnings import (
+    recording_trial_warnings,
+    report_trial_warning,
+)
+from benchflow._verifier_setup import verifier_setup_timeout_for
 from benchflow.acp.types import McpServerSpec
 from benchflow.agents.codex_connector_policy import (
     effective_apps_policy,
@@ -99,7 +105,11 @@ from benchflow.agents.credentials import (
     upload_credential,
 )
 from benchflow.agents.env import with_prompt_budget
-from benchflow.agents.errors import ModelCatalogMiss, UsageLimitError
+from benchflow.agents.errors import (
+    AgentTurnFailedError,
+    ModelCatalogMiss,
+    UsageLimitError,
+)
 from benchflow.agents.launch_env import agent_launch_env, credential_policy
 from benchflow.agents.muse_config import validate_muse_roles
 from benchflow.agents.registry import (
@@ -124,14 +134,23 @@ from benchflow.contracts import (
 )
 from benchflow.contracts.planes import install_agent_with_policy
 from benchflow.diagnostics import (
+    AgentDeadlineTimeoutError,
     AgentModelNotOfferedError,
+    AgentPromptTimeoutDiagnostic,
     AgentPromptTimeoutError,
     IdleTimeoutError,
     IntegrationFailureDiagnostic,
+    PhaseTimeoutDiagnostic,
+    PostTurnFailureDiagnostic,
     ProviderApiErrorDiagnostic,
     RolloutDiagnostics,
     SuspectedApiErrorDiagnostic,
     UsageLimitDiagnostic,
+)
+from benchflow.effort_request import (
+    effort_request,
+    effort_source,
+    with_route_effort,
 )
 from benchflow.errors import UserError, user_message
 from benchflow.integration_health import IntegrationFailure
@@ -145,13 +164,23 @@ from benchflow.native_harness.harnesses import HARNESS_NATIVE, native_harness_fo
 from benchflow.review.automatic import PreparedReview
 from benchflow.review.outcome import ScoringResult, scoring_from_result
 from benchflow.review.persistence import scoring_lock
+from benchflow.rewards import judge_usage
+from benchflow.rewards.validation import out_of_range_reward_rule
 from benchflow.rollout import _deadline as _deadline
+from benchflow.rollout import _reward_provenance
 from benchflow.rollout._artifacts import (
     collect_rollout_artifacts,
     collect_unverified_rollout_artifacts,
 )
 from benchflow.rollout._config import GENERATED_SKILLS_ROOT as GENERATED_SKILLS_ROOT
 from benchflow.rollout._config import RolloutConfig as RolloutConfig
+from benchflow.rollout._cost import (
+    INCOMPLETE_SANDBOX_PROXY,
+    apply_list_price,
+    mark_incomplete_usage,
+    resolve_provider_bills,
+)
+from benchflow.rollout._grading_outcome import IntegrityUnavailableError
 from benchflow.rollout._results import _build_rollout_result as _build_rollout_result
 from benchflow.rollout._results import (
     _environment_manifest_metadata as _environment_manifest_metadata,
@@ -177,11 +206,25 @@ from benchflow.rollout._review import (
     prepare_terminal_review,
     read_admitted_result,
 )
+from benchflow.rollout._salvage import (
+    salvage_from_session_log,
+    salvage_from_stream_log,
+)
 from benchflow.rollout._separate_verifier import run_separate_verifier
 from benchflow.rollout._session_log import (
+    clear_session_log_folders_in_sandbox,
+    close_session_log_snapshot,
+    count_codex_tokens,
     count_compactions,
     keep_session_logs,
     price_from_session_log,
+    session_log_root,
+    settle_session_log_folders,
+    snapshot_session_logs,
+)
+from benchflow.rollout._session_mirror import (
+    place_session_mirror,
+    start_session_mirror,
 )
 from benchflow.rollout._setup import VerifierPublicationError
 from benchflow.rollout._setup import (
@@ -283,11 +326,14 @@ from benchflow.rollout_branch import (
 )
 from benchflow.rollout_branch import branch as _branch_engine
 from benchflow.sandbox._base import system_shell_exec
+from benchflow.sandbox._bounded_exec import end_agent_turn
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox._in_order import in_order, runs_steps_at_once
 from benchflow.sandbox._task_route import as_task_command
 from benchflow.sandbox.agent_otel import (
     agent_otel_env,
+    export_interval_sec,
+    settle_agent_otel,
     start_agent_otel,
     stop_agent_otel,
     wants_agent_otel,
@@ -333,6 +379,11 @@ from benchflow.skill_policy import (
 )
 from benchflow.skill_policy import SKILL_MODE_WITH_SKILL as SKILL_MODE_WITH_SKILL
 from benchflow.task import keep_services
+from benchflow.task.config import (
+    run_sandbox_setup_timeout,
+    sandbox_user_setup_timeout_sec,
+)
+from benchflow.task.refused_tasks import refuse_listed_task
 from benchflow.task.steps import StepsUser, has_steps
 from benchflow.task.verifier_errors import (
     verifier_failure_reason,
@@ -351,6 +402,7 @@ from benchflow.trajectories._capture import (
 from benchflow.trajectories._llm_capture import LiveLLMTrajectoryWriter
 from benchflow.trajectories.model_calls import (
     agent_outcome,
+    subagent_usage,
     summarize_proxy_log,
     write_model_calls,
 )
@@ -420,10 +472,14 @@ def write_error_traceback(rollout_dir: Path | None, exc: BaseException) -> Path 
         return None
     from benchflow.cli._errors import _secrets
     from benchflow.doctor import redacted_traceback
+    from benchflow.trajectories.types import redact_trajectory_text
 
     path = Path(rollout_dir) / ERROR_TRACEBACK_FILE
     try:
-        path.write_text(redacted_traceback(exc, _secrets()), encoding="utf-8")
+        # The host's own secret values, then secret shapes: an error can
+        # carry a key the host never held (a job file's, the model proxy's).
+        text = redact_trajectory_text(redacted_traceback(exc, _secrets()))
+        path.write_text(text, encoding="utf-8")
     except OSError:
         return None
     return path
@@ -447,6 +503,35 @@ def _write_guard_progress(rollout_dir: Path | None, exc: BaseException) -> None:
         )
     except OSError:
         logger.debug("daemon guard log not written", exc_info=True)
+
+
+def _turn_cut_kind(exc: BaseException) -> str | None:
+    """How a turn that raised was cut: ``cancel`` (Ctrl-C and
+    SIGINT, SIGTERM: asyncio cancels the trial's task), ``budget_stop``
+    (the job's budget cancelled it), ``lost`` (the sandbox or the agent's
+    transport went away). None for the agent's own error (an ACP or
+    native-harness error, a spent login): the agent ended that turn."""
+    from benchflow.budget import budget_stopped_this_trial
+
+    if isinstance(exc, asyncio.CancelledError | KeyboardInterrupt):
+        return "budget_stop" if budget_stopped_this_trial() else "cancel"
+    if isinstance(exc, AgentProtocolError):
+        return None
+    return "lost"
+
+
+def _post_turn_failure_kind(exc: BaseException) -> str:
+    """What ended a step after the agent's turn, by the exception's type
+    (``post_turn_failure_info``'s ``kind``)."""
+    from benchflow.sandbox.protocol import ExecTimeoutError
+
+    if isinstance(exc, ExecTimeoutError):
+        return "exec_timeout"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, ConnectionError):
+        return "connection_lost"
+    return "error"
 
 
 def _nop_trajectory() -> tuple[list[dict], str]:
@@ -725,6 +810,10 @@ async def _run_one_environment_setup_command(
     env_vars: dict[str, str] | None,
     index: int,
 ) -> None:
+    from benchflow.sandbox.protocol import ExecTimeoutError, ended_by_time_limit
+
+    limit = round(command_config.timeout_sec)
+    started = time.monotonic()
     # The task's own command (C8's task route).
     with as_task_command(env):
         result = await exec_raw(
@@ -732,10 +821,14 @@ async def _run_one_environment_setup_command(
             command_config.command,
             cwd=command_config.cwd,
             env=env_vars,
-            timeout_sec=round(command_config.timeout_sec),
+            timeout_sec=limit,
             user=command_config.user,
             service=command_config.service,
         )
+    if ended_by_time_limit(result, limit, time.monotonic() - started):
+        # Docker raises this for the same overrun; Daytona and Modal answer
+        # it with an exit status, which read as the command's own failure.
+        raise ExecTimeoutError(limit)
     if getattr(result, "return_code", 0) != 0:
         stdout = (diagnostic_result(result).stdout.render() or "").strip()
         stderr = (diagnostic_result(result).stderr.render() or "").strip()
@@ -1071,8 +1164,9 @@ def _log_task(rollout: Any) -> str:
 
 @contextlib.contextmanager
 def _keeping_trial_warnings(rollout: Any):
-    """Keep the trial warnings a verifier run reports (in the agent's sandbox,
-    a separate one, or a recovery) for the rollout's result.json."""
+    """Keep the trial warnings a step reports (the sandbox-user setup, a
+    verifier run in the agent's sandbox, a separate one, or a recovery) for
+    the rollout's result.json."""
     with recording_trial_warnings() as warnings:
         try:
             yield
@@ -1080,6 +1174,19 @@ def _keeping_trial_warnings(rollout: Any):
             # vars(): a Rollout built without __init__ (tests) has none.
             kept = vars(rollout).setdefault("_warnings", [])
             kept.extend(w for w in warnings if w not in kept)
+
+
+@contextlib.contextmanager
+def _keeping_judge_calls(rollout: Any):
+    """Keep the LLM judge calls a verifier run makes (in the agent's
+    sandbox, a separate one, or a recovery) for the rollout's result.json
+    ``judge_usage``."""
+    with judge_usage.recording() as calls:
+        try:
+            yield
+        finally:
+            # vars(): a Rollout built without __init__ (tests) has none.
+            vars(rollout).setdefault("_judge_calls", []).extend(calls)
 
 
 def _with_harness_cpus(method):
@@ -1095,6 +1202,419 @@ def _with_harness_cpus(method):
             return await method(self, *args, **kwargs)
 
     return run
+
+
+def _with_verifier_setup_budget(method):
+    """Run the phase *method* under the trial's verifier-setup budget, the one
+    its task view carries (benchflow._verifier_setup), whichever asyncio task
+    runs it: a prestarted trial is set up in a task of its own, and the
+    budget that task settled would not reach the run's."""
+
+    @functools.wraps(method)
+    async def phase(self, *args, **kwargs):
+        with verifier_setup_timeout_for(vars(self).get("_task")):
+            return await method(self, *args, **kwargs)
+
+    return phase
+
+
+# --- What a trial checks before any sandbox -------------------------
+# Rollout.setup and a dry run (cli/main.py) both run these, in this order, on
+# the RolloutConfig the run builds, so a dry run refuses what a trial refuses
+# before its sandbox, and only that.
+
+
+def validate_rollout_transports(cfg: Any) -> None:
+    """Refuse an agent (the primary or a scene role) the sandbox gives no live
+    transport (``validate_agent_transport``)."""
+    from benchflow.task.plan_validation import validate_agent_transport
+
+    validate_agent_transport(
+        sandbox=cfg.environment, agent=cfg.primary_agent, harness=cfg.harness
+    )
+    if not is_scripted_agent(cfg.primary_agent):
+        for step in compile_scenes_to_steps(cfg.effective_scenes):
+            validate_agent_transport(
+                sandbox=cfg.environment,
+                agent=scene_step_role(step).agent,
+                harness=cfg.harness,
+            )
+
+
+def apply_rollout_config_override(task: Any, cfg: Any) -> None:
+    """C-axis overlay: deep-merge ``cfg.config_override`` into the task's
+    resolved config at the rollout layer (not in the Task constructor), so
+    only this run's tasks are patched and every downstream read sees it.
+    No-op when None."""
+    if cfg.config_override:
+        from benchflow._utils.config_override import apply_config_override
+
+        task.config = apply_config_override(task.config, cfg.config_override)
+
+
+def resolve_rollout_verifier_isolation(task: Any, cfg: Any) -> Any:
+    """Where the verifier runs and why, refusing a separate verifier the
+    sandbox cannot run (Rollout.setup and the dry run). Moves the
+    task's verifier to its separate sandbox when it runs there."""
+    from benchflow.integrity.trial import resolve_verifier_isolation
+    from benchflow.task.verifier_sandbox import effective_verifier_sandbox
+
+    # One setting before resolution, the plan check and config.json.
+    cfg.verifier_sandbox = effective_verifier_sandbox(
+        cfg.verifier_sandbox, cfg.separate_verifier
+    )
+    isolation = resolve_verifier_isolation(
+        task.config, cfg.verifier_sandbox, cfg.integrity
+    )
+    if isolation[1] != "task":
+        # --verifier-sandbox separate, or strict integrity (which implies
+        # it), runs the verifier in the separate verifier sandbox. A job
+        # refuses unsupported tasks at plan time (check_separate_plan);
+        # this is the backstop for SDK callers: refused here, before any
+        # sandbox exists, where that sandbox cannot run this task.
+        from benchflow.integrity.trial import (
+            force_separate_verifier,
+            separate_launch_issues,
+        )
+
+        issues = separate_launch_issues(
+            task.config,
+            sandbox=cfg.environment,
+            task_dir=cfg.task_path,
+            environment_manifest=cfg.environment_manifest,
+        )
+        if issues:
+            setting = (
+                "integrity=strict"
+                if isolation[1] == "integrity-strict"
+                else "separate_verifier=True"
+                if cfg.separate_verifier
+                else "verifier_sandbox=separate"
+            )
+            raise ValueError(
+                f"{setting} runs the verifier in a separate verifier "
+                "sandbox, which this task cannot use here:\n- " + "\n- ".join(issues)
+            )
+        task.config = force_separate_verifier(task.config)
+    return isolation
+
+
+def preflight_rollout_kept_services(
+    task: Any, cfg: Any, *, verifier_only: bool = False
+) -> None:
+    """Refuse, before any sandbox, a native Daytona trial whose kept services
+    the freezer cannot hold (``KeptServiceFreezerUnavailable``). Runs after
+    the verifier's isolation is resolved: a separate verifier keeps nothing,
+    so is never refused. A verifier-only rollout launches no agent."""
+    if verifier_only:
+        return
+    from benchflow.task.keep_services import preflight_daytona
+
+    preflight_daytona(
+        task,
+        cfg.task_path,
+        sandbox=cfg.environment,
+        agent=cfg.primary_agent,
+        sandbox_user=cfg.sandbox_user,
+        base_image=cfg.base_image_override,
+    )
+
+
+def preflight_rollout_network_policy(
+    task: Any, cfg: Any, *, verifier_only: bool = False
+) -> None:
+    """Refuse, before any sandbox, a trial whose agent-phase network policy
+    its backend cannot hold (``runtime_capabilities.NETWORK_POLICY_REFUSALS``:
+    restricted policies on Daytona). The dry run and setup call it
+    alike. A verifier-only rollout launches no agent."""
+    if verifier_only:
+        return
+    from benchflow.task.runtime_capabilities import (
+        UnsupportedTaskFeatureError,
+        network_policy_issue,
+    )
+
+    agent_launches = not (
+        is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
+    )
+    issue = network_policy_issue(
+        task.config,
+        sandbox=str(cfg.environment),
+        agent_launches=agent_launches,
+        task_dir=Path(cfg.task_path),
+    )
+    if issue is not None:
+        raise UnsupportedTaskFeatureError([issue])
+    # A service the task declares for BenchFlow to start in main, beside a
+    # model agent under a restricted policy: refused before the turn.
+    from benchflow.task.runtime_capabilities import environment_services_issue
+
+    issue = environment_services_issue(
+        task.config,
+        sandbox=str(cfg.environment),
+        agent_launches=agent_launches,
+        task_dir=Path(cfg.task_path),
+        manifest=getattr(cfg, "environment_manifest", None),
+    )
+    if issue is not None:
+        raise UnsupportedTaskFeatureError([issue])
+
+
+class RolloutGateInputs:
+    """What the sandbox-free plan gate reads besides the task: whether an
+    agent launches, the web policy, an offline operator script, the agent's
+    egress denylist and its resolved environment."""
+
+    def __init__(
+        self,
+        *,
+        has_agent_launch: bool,
+        disallow_web_tools: bool,
+        script_agent_offline: bool,
+        egress_denylist: Any,
+        agent_env: dict[str, str],
+    ) -> None:
+        self.has_agent_launch = has_agent_launch
+        self.disallow_web_tools = disallow_web_tools
+        self.script_agent_offline = script_agent_offline
+        self.egress_denylist = egress_denylist
+        self.agent_env = agent_env
+
+
+def rollout_gate_inputs(task: Any, cfg: Any, planes: Any) -> RolloutGateInputs:
+    """The gate's inputs for a trial of ``cfg`` on ``task`` (overridden), with
+    the agent environment ``planes`` resolves (``--agent-env`` and a matrix
+    entry's included), refusing an offline agent with no sandbox user."""
+    from benchflow.task.plan_validation import agent_egress_policy
+
+    has_agent_launch = not (
+        is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
+    )
+    disallow_web_tools = has_agent_launch and (
+        _task_disallows_internet(task) or cfg.self_gen_no_internet
+    )
+    # An operator script under an offline agent phase in an online sandbox
+    # gets the same sandbox and uid firewall as a model agent, minus the
+    # model route (it has none).
+    script_agent_offline = is_operator_script(
+        cfg.primary_agent
+    ) and _task_agent_offline(task)
+    egress_denylist = agent_egress_policy(
+        task,
+        agent=cfg.primary_agent,
+        sandbox_user=cfg.sandbox_user,
+        disallow_web_tools=disallow_web_tools,
+    )
+    if has_agent_launch and not cfg.sandbox_user and _task_agent_offline(task):
+        # Only the agent user's uid firewall holds an agent offline in an
+        # online sandbox; an agent running as root would keep the network.
+        raise ValueError(
+            "[agent] network_mode='no-network' requires a sandbox_user "
+            "(--sandbox-user agent): only the agent user can be kept offline "
+            "in an online sandbox"
+        )
+    # A route that sets an effort of its own is sent the run's.
+    from benchflow.effort_request import with_route_effort
+
+    agent_env = _apply_web_policy(
+        with_route_effort(
+            cfg.primary_agent,
+            cfg.primary_model,
+            cfg.primary_reasoning_effort,
+            planes.resolve_agent_env(
+                cfg.primary_agent, cfg.primary_model, cfg.agent_env
+            ),
+        ),
+        disallow=disallow_web_tools,
+    )
+    return RolloutGateInputs(
+        has_agent_launch=has_agent_launch,
+        disallow_web_tools=disallow_web_tools,
+        script_agent_offline=script_agent_offline,
+        egress_denylist=egress_denylist,
+        agent_env=agent_env,
+    )
+
+
+def check_rollout_role_credentials(cfg: Any, planes: Any) -> None:
+    """Each scene role's key, before any sandbox: resolved as the role's
+    scene resolves it (``cfg.agent_env`` under the role's ``env``) and checked
+    as ``runtime.check_credentials`` checks a job's, so only a missing key
+    (``MissingCredentialError``) is raised here; anything else the scene's
+    own resolution still raises. A role with no key for its own agent used
+    to fail at its scene, after the sandbox and the scenes before it."""
+    from benchflow.errors import MissingCredentialError
+
+    seen: set[tuple[str, str | None, tuple[tuple[str, str], ...]]] = set()
+    for scene in cfg.scenes:
+        for role in scene.roles:
+            if not role.agent or role.agent == "task-runtime":
+                continue
+            if is_scripted_agent(role.agent):
+                continue
+            env = {**(cfg.agent_env or {}), **(role.env or {})}
+            key = (role.agent, role.model, tuple(sorted(env.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                planes.resolve_agent_env(role.agent, role.model, env)
+            except MissingCredentialError:
+                raise
+            except Exception:
+                continue
+
+
+def _refuse_allowlist_outbound_services(task: Any) -> None:
+    """:func:`benchflow.sandbox.egress_denylist.allowlist_outbound_refusal`
+    for an allowlist agent policy, on the task's Compose project as Compose
+    resolves it for the run (``include`` and ``extends`` applied: the
+    document the launch freezes, which the start checks again), so the plan
+    and the run read the same services (L1). Where Compose cannot
+    resolve it (the compose check refuses that task itself), the task's own
+    file."""
+    from benchflow.sandbox.egress_denylist import (
+        agent_network_sandbox_config,
+        allowlist_outbound_refusal,
+    )
+    from benchflow.sandbox.service_cover import (
+        _compose_networks,
+        _compose_services,
+        sandbox_network_mode,
+    )
+    from benchflow.task.compose_env import (
+        check_compose,
+        compose_path,
+        task_compose_values,
+    )
+
+    config = getattr(task, "config", None)
+    if config is None:
+        return
+    sandbox_config = agent_network_sandbox_config(config)
+    if sandbox_network_mode(sandbox_config) != "allowlist":
+        return
+    environment_dir = getattr(getattr(task, "paths", None), "environment_dir", None)
+    if (
+        not isinstance(environment_dir, Path)
+        or not compose_path(environment_dir).exists()
+    ):
+        return
+    project = None
+    with contextlib.suppress(OSError):
+        project = check_compose(
+            environment_dir,
+            task_compose_values(
+                getattr(getattr(config, "sandbox", None), "env", None),
+                task_id=environment_dir.parent.name,
+            ),
+            sandbox_type="docker",
+            sandbox_config=sandbox_config,
+        ).project
+    if not isinstance(project, dict):
+        project = {
+            "services": _compose_services(environment_dir),
+            "networks": _compose_networks(environment_dir),
+        }
+    if project.get("services"):
+        allowlist_outbound_refusal(project)
+
+
+def run_rollout_plan_gate(
+    task: Any,
+    cfg: Any,
+    inputs: RolloutGateInputs,
+    *,
+    planes: Any,
+    sandbox_instance: Any = None,
+    custom_backend: bool = False,
+    verifier_only: bool = False,
+) -> Any:
+    """The same sandbox-free plan gate as `bench tasks check`, using the
+    resolved auth route (native logins do not use proxy extras); returns the
+    proxy install record config.json keeps. Then each scene role's key
+    (:func:`check_rollout_role_credentials`), as ``planes`` resolves it."""
+    from benchflow.task.plan_validation import validate_task_plan
+
+    record = validate_task_plan(
+        cfg.task_path,
+        sandbox=cfg.environment,
+        agent=cfg.primary_agent,
+        model=cfg.primary_model,
+        harness=cfg.harness,
+        sandbox_user=cfg.sandbox_user,
+        agent_env=inputs.agent_env,
+        task=task,
+        custom_backend=custom_backend,
+        sandbox_instance=sandbox_instance,
+        force_sandbox_local=inputs.disallow_web_tools
+        or inputs.egress_denylist is not None,
+        disallow_web_tools=inputs.disallow_web_tools,
+        execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
+        usage_tracking=cfg.usage_tracking,
+        integrity=getattr(cfg, "integrity", None),
+    )
+    # An allowlist's task services must stay inside the sandbox: refused in
+    # the plan, from the task's compose file, before any container starts
+    # the launch checks the project it resolves again.
+    if cfg.environment == "docker":
+        _refuse_allowlist_outbound_services(task)
+    # A scene's other roles share this sandbox and network: one that routes
+    # its own model calls is held to the primary agent's refusal.
+    # A verifier-only rollout launches no agent.
+    from benchflow.task.plan_validation import (
+        OwnModelRouteError,
+        own_model_route_refusal,
+    )
+
+    role_agents = (
+        set()
+        if verifier_only
+        else {role.agent for scene in cfg.scenes for role in scene.roles}
+    )
+    for role_agent in sorted(role_agents - {cfg.primary_agent}):
+        reason = own_model_route_refusal(
+            task,
+            agent=role_agent,
+            usage_tracking=cfg.usage_tracking,
+            no_web=inputs.disallow_web_tools,
+        )
+        if reason is not None:
+            raise OwnModelRouteError(reason)
+    if not verifier_only:
+        check_rollout_role_credentials(cfg, planes)
+    return record
+
+
+def dry_run_plan_gate(cfg: Any, planes: Any) -> None:
+    """The checks a trial of ``cfg`` makes before any sandbox up to its plan
+    gate, in Rollout.setup's order, creating nothing: the agents' transports, the
+    config override, the verifier's isolation, kept services on Daytona, the
+    gate's inputs, the sandbox-free plan gate and each scene role's key, then
+    the sandbox start's PID 1 refusal (``pid1_ptrace.dry_run_check``) where
+    it can be decided without a sandbox.
+    ``bench run --dry-run`` runs it on the RolloutConfig the run builds for
+    each task, with the run's planes. Setup's later checks, also
+    before any sandbox, are not run here: the task's skill policy
+    (``resolve_task_skill_policy``) and the staging copy's refusals
+    (``--context-root``, ``--base-image-override``, skill copies)."""
+    from benchflow.task.task import Task
+
+    validate_rollout_transports(cfg)
+    task = Task(cfg.task_path)
+    apply_rollout_config_override(task, cfg)
+    resolve_rollout_verifier_isolation(task, cfg)
+    preflight_rollout_kept_services(task, cfg)
+    preflight_rollout_network_policy(task, cfg)
+    refuse_listed_task(cfg.task_path)
+    run_rollout_plan_gate(
+        task, cfg, rollout_gate_inputs(task, cfg, planes), planes=planes
+    )
+    # The sandbox start's refusal of a PID 1 its user could trace,
+    # where the task's files and this host decide it; else a note.
+    from benchflow.sandbox.pid1_ptrace import dry_run_check
+
+    dry_run_check(task, cfg)
 
 
 class Rollout:
@@ -1116,8 +1636,28 @@ class Rollout:
     # None scores with the task itself.
     _verify_task: Any = None
     _steps_user: StepsUser | None = None
+    # The export interval of a connection whose OpenTelemetry BenchFlow's
+    # receiver takes; disconnect() waits for its last export (patch 081).
+    _agent_otel_export_sec: float | None = None
+    # The Yama ptrace_scope the sandbox read when it started (result.json's
+    # host_ptrace_scope, sandbox/pid1_ptrace.py); None until it is read.
+    _host_ptrace_scope: int | str | None = None
+    # The user the task's own harness runs the agent as, beside BenchFlow's
+    # (result.json's agent_user, sandbox/agent_user.py); None until setup.
+    _agent_user: dict[str, Any] | None = None
+    # What test.sh needs, resolved before the agent's turn as the verifier
+    # will run it (task/test_sh_preflight.py); None when not checked.
+    _test_sh_preflight: dict[str, Any] | None = None
+    # A branch child's source verdict (its parent's, or the checkpoint's
+    # trial's result.json): the child carries it and never judges the
+    # restored, post-agent sandbox (RUSAGE on).
+    _test_sh_preflight_inherited: dict[str, Any] | None = None
 
     def __init__(self, config: RolloutConfig) -> None:
+        # The build this rollout's records name, read as it starts.
+        from benchflow.build_info import read_at_start
+
+        read_at_start()
         self._planes = config.planes or default_rollout_planes()
         # Activate Docker DinD compatibility shim on first rollout
         # construction (idempotent). Keeps `import benchflow.rollout`
@@ -1224,6 +1764,35 @@ class Rollout:
         )
         self._agent_routed_session = False
         self._native_usage_checkpoint: dict[str, int | None] | None = None
+        # the end-of-turn counts per (model, unproxied), for the
+        # list price (rollout._cost.apply_list_price), and the counts some
+        # report gave (one never reported stays None);
+        # whether a turn ended without its report (a timeout, a cancel, a
+        # lost sandbox), so teardown salvages the count from the agent's
+        # logs; and what a salvage counted, per response, to price.
+        self._native_usage_slices: dict[tuple[str, bool], dict[str, int]] = {}
+        self._native_usage_reported: set[str] = set()
+        self._usage_report_missing = False
+        self._usage_salvaged = False
+        # How a turn was cut, when one was (``_turn_cut_kind``): a call in
+        # flight then may be missing from an agent's own count.
+        self._turn_cut: str | None = None
+        self._usage_slices: list[Any] | None = None
+        self._last_usage_update: dict[str, Any] | None = None
+        # The verifier's LLM judge calls, for result.json's judge_usage.
+        self._judge_calls: list[judge_usage.JudgeCall] = []
+        # The copy of the agent's session log kept while its turns run
+        # (rollout._session_mirror), and the copies teardown placed under
+        # agent/, each with whether it had caught up when the turns ended.
+        self._session_mirror: Any = None
+        self._mirror_placed: dict[str, bool] = {}
+        # Why the trial's count misses calls, when a count step knows
+        # (rollout._cost.mark_incomplete_usage).
+        self._usage_incomplete_reason: str | None = None
+        # Why an in-sandbox model proxy's imported log may miss calls (its
+        # server's usage_log_shortfall); kept whatever else
+        # counts.
+        self._proxy_usage_incomplete_reason: str | None = None
         # Provider failure snapshotted during cleanup, after the usage proxy
         # imports its captures (Daytona's SandboxUsageProxy only fills trajectory
         # on stop()). Read by _provider_failure() so ACP-error classification can
@@ -1343,6 +1912,15 @@ class Rollout:
         self._provider_stall: bool = False
         # Set by mark_solver_complete(); later failures keep the solver result.
         self._solver_execution_complete: bool = False
+        # Set when the agent's turn is over and recorded the trial's ending
+        # (its time limit, the host deadline, the trial budget, a model
+        # refusal, an output-cap ending, a script stopped at its limit):
+        # nothing that fails after it replaces that ending (_kept_turn_ending).
+        self._turn_ended_trial: bool = False
+        # A step of BenchFlow's own that the lifecycle phase does not name
+        # (a multi-step task's step set-up or soft verify, a script's
+        # tear-down, cleanup), for the step a later failure is recorded with.
+        self._step_under_way: str | None = None
         # The running agent phase, so the host deadline can stop the agent
         # alone and still verify (#1134); the reason is set only by that stop.
         self._agent_phase: asyncio.Task | None = None
@@ -1384,6 +1962,9 @@ class Rollout:
         # install_agent() keep what the snapshot already holds, and
         # _snapshot_start records what was reused.
         self._from_branch_snapshot = False
+        # The record of the links before the source sandbox's turn, for a
+        # sandbox restored from its snapshot: a _verifier_links.Walked.
+        self._inherited_link_record: Any = None
         self._snapshot_start: dict[str, str] | None = None
         self._docker_recovery_baseline: Any | None = None
         self._recovery_lease_owned = False
@@ -1636,18 +2217,7 @@ class Rollout:
         # or sandbox creation. Use execution's compiler so later scenes, role
         # names and repeated turns cannot bypass admission through the primary
         # agent's session-factory exemption. Scripted runs bypass scene turns.
-        from benchflow.task.plan_validation import validate_agent_transport
-
-        validate_agent_transport(
-            sandbox=cfg.environment, agent=cfg.primary_agent, harness=cfg.harness
-        )
-        if not is_scripted_agent(cfg.primary_agent):
-            for step in compile_scenes_to_steps(cfg.effective_scenes):
-                validate_agent_transport(
-                    sandbox=cfg.environment,
-                    agent=scene_step_role(step).agent,
-                    harness=cfg.harness,
-                )
+        validate_rollout_transports(cfg)
 
         if cfg.sandbox_user is None:
             logger.warning(
@@ -1692,59 +2262,24 @@ class Rollout:
         # config here at the rollout layer (not in the Task constructor), so only
         # this run's tasks are patched and every downstream read sees it. No-op
         # when None.
-        if cfg.config_override:
-            from benchflow._utils.config_override import apply_config_override
+        apply_rollout_config_override(self._task, cfg)
+        # From the task's files until main's image is ready.
+        self._agent_user = await self._agent_user_record()
+        # Verifier setup: the run's --verifier-setup-timeout over the task's
+        # verifier.setup_timeout_sec over 180 s. The task view every
+        # verifier step reads carries the value, and so does this trial.
+        from benchflow._verifier_setup import apply_verifier_setup_timeout
 
-            self._task.config = apply_config_override(
-                self._task.config, cfg.config_override
-            )
+        verifier_setup_timeout = apply_verifier_setup_timeout(
+            self._task, cfg.verifier_setup_timeout
+        )
         # The budget the model proxy enforces: the run's measures over the
         # task's own [agent] ones.
         self._trial_budget, self._trial_budget_sources = effective_budget(
             cfg.trial_budget, task_budget(self._task.config.agent)
         )
 
-        from benchflow.integrity.trial import resolve_verifier_isolation
-        from benchflow.task.verifier_sandbox import effective_verifier_sandbox
-
-        # One setting before resolution, the plan check and config.json.
-        cfg.verifier_sandbox = effective_verifier_sandbox(
-            cfg.verifier_sandbox, cfg.separate_verifier
-        )
-        self._verifier_isolation = resolve_verifier_isolation(
-            self._task.config, cfg.verifier_sandbox, cfg.integrity
-        )
-        if self._verifier_isolation[1] != "task":
-            # --verifier-sandbox separate, or strict integrity (which implies
-            # it), runs the verifier in the separate verifier sandbox. A job
-            # refuses unsupported tasks at plan time (check_separate_plan);
-            # this is the backstop for SDK callers: refused here, before any
-            # sandbox exists, where that sandbox cannot run this task.
-            from benchflow.integrity.trial import (
-                force_separate_verifier,
-                separate_launch_issues,
-            )
-
-            issues = separate_launch_issues(
-                self._task.config,
-                sandbox=cfg.environment,
-                task_dir=cfg.task_path,
-                environment_manifest=cfg.environment_manifest,
-            )
-            if issues:
-                setting = (
-                    "integrity=strict"
-                    if self._verifier_isolation[1] == "integrity-strict"
-                    else "separate_verifier=True"
-                    if cfg.separate_verifier
-                    else "verifier_sandbox=separate"
-                )
-                raise ValueError(
-                    f"{setting} runs the verifier in a separate verifier "
-                    "sandbox, which this task cannot use here:\n- "
-                    + "\n- ".join(issues)
-                )
-            self._task.config = force_separate_verifier(self._task.config)
+        self._verifier_isolation = resolve_rollout_verifier_isolation(self._task, cfg)
 
         if cfg.separate_verifier_include and not separate_verifier_requested(
             self._task.config
@@ -1755,19 +2290,10 @@ class Rollout:
                 self._task.name,
             )
 
-        if not verifier_only:
-            # After the verifier's sandbox is resolved: a separate verifier
-            # keeps nothing, so is never refused.
-            from benchflow.task.keep_services import preflight_daytona
-
-            preflight_daytona(
-                self._task,
-                cfg.task_path,
-                sandbox=cfg.environment,
-                agent=cfg.primary_agent,
-                sandbox_user=cfg.sandbox_user,
-                base_image=cfg.base_image_override,
-            )
+        preflight_rollout_kept_services(self._task, cfg, verifier_only=verifier_only)
+        preflight_rollout_network_policy(self._task, cfg, verifier_only=verifier_only)
+        # A task on BenchFlow's refusal list, before any sandbox or agent.
+        refuse_listed_task(cfg.task_path)
 
         prepare_terminal_review(self)
         if cfg.task_digest is None:
@@ -1777,38 +2303,12 @@ class Rollout:
 
         # Scripted runners (oracle, nop) and the task runtime launch no agent:
         # no launch-command lookup, and no agent-only web or egress policy.
-        has_agent_launch = not (
-            is_scripted_agent(cfg.primary_agent) or cfg.primary_agent == "task-runtime"
-        )
-        self._disallow_web_tools = has_agent_launch and (
-            _task_disallows_internet(self._task) or cfg.self_gen_no_internet
-        )
-        # An operator script under an offline agent phase in an online sandbox
-        # gets the same sandbox and uid firewall as a model agent, minus the
-        # model route (it has none).
-        self._script_agent_offline = is_operator_script(
-            cfg.primary_agent
-        ) and _task_agent_offline(self._task)
-        from benchflow.task.plan_validation import agent_egress_policy
-
-        self._egress_denylist = agent_egress_policy(
-            self._task,
-            agent=cfg.primary_agent,
-            sandbox_user=cfg.sandbox_user,
-            disallow_web_tools=self._disallow_web_tools,
-        )
-        if (
-            has_agent_launch
-            and not cfg.sandbox_user
-            and _task_agent_offline(self._task)
-        ):
-            # Only the agent user's uid firewall holds an agent offline in an
-            # online sandbox; an agent running as root would keep the network.
-            raise ValueError(
-                "[agent] network_mode='no-network' requires a sandbox_user "
-                "(--sandbox-user agent): only the agent user can be kept offline "
-                "in an online sandbox"
-            )
+        gate_inputs = rollout_gate_inputs(self._task, cfg, self._planes)
+        has_agent_launch = gate_inputs.has_agent_launch
+        self._disallow_web_tools = gate_inputs.disallow_web_tools
+        self._script_agent_offline = gate_inputs.script_agent_offline
+        self._egress_denylist = gate_inputs.egress_denylist
+        self._agent_env = gate_inputs.agent_env
         self._disallow_hosted_search = self._egress_denylist is not None
         # The compose file the sandbox factory stacks (setup.py picks the
         # same folder): main's network_mode and the other services.
@@ -1825,58 +2325,31 @@ class Rollout:
             environment_dir=task_environment_dir,
             allow_cloud_metadata=bool(getattr(cfg, "allow_cloud_metadata", False)),
         )
-        self._agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
-                cfg.primary_agent, cfg.primary_model, cfg.agent_env
-            ),
-            disallow=self._disallow_web_tools,
-        )
         # The same sandbox-free plan gate as `bench tasks check`, using the
         # resolved auth route (native logins do not use proxy extras). Its
         # proxy install record goes in config.json. A resolve can take
         # minutes, so the gate runs off the event loop, before any sandbox.
-        from benchflow.task.plan_validation import validate_task_plan
-
         self._litellm_proxy_record = await asyncio.to_thread(
-            validate_task_plan,
-            cfg.task_path,
-            sandbox=cfg.environment,
-            agent=cfg.primary_agent,
-            model=cfg.primary_model,
-            harness=cfg.harness,
-            sandbox_user=cfg.sandbox_user,
-            agent_env=self._agent_env,
-            task=self._task,
-            custom_backend=cfg.planes is not None or self._env_externally_owned,
+            run_rollout_plan_gate,
+            self._task,
+            cfg,
+            gate_inputs,
             sandbox_instance=self._env,
-            force_sandbox_local=self._disallow_web_tools
-            or self._egress_denylist is not None,
-            disallow_web_tools=self._disallow_web_tools,
-            execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
-            usage_tracking=cfg.usage_tracking,
+            custom_backend=cfg.planes is not None or self._env_externally_owned,
+            planes=self._planes,
+            verifier_only=verifier_only,
         )
-        # A scene's other roles share this sandbox and network: one that routes
-        # its own model calls is held to the primary agent's refusal.
-        # A verifier-only rollout launches no agent.
-        from benchflow.task.plan_validation import (
-            OwnModelRouteError,
-            own_model_route_refusal,
+        # An unpinned plugin test.sh installs that nothing in the task uses:
+        # never loaded, and result.json says so.
+        from benchflow.task.verifier_plugin_installs import (
+            INERT_WARNING,
+            inert_installs,
         )
 
-        role_agents = (
-            set()
-            if verifier_only
-            else {role.agent for scene in cfg.scenes for role in scene.roles}
-        )
-        for role_agent in sorted(role_agents - {cfg.primary_agent}):
-            reason = own_model_route_refusal(
-                self._task,
-                agent=role_agent,
-                usage_tracking=cfg.usage_tracking,
-                no_web=self._disallow_web_tools,
-            )
-            if reason is not None:
-                raise OwnModelRouteError(reason)
+        if inert_installs(self._task):
+            kept = vars(self).setdefault("_warnings", [])
+            if INERT_WARNING not in kept:
+                kept.append(INERT_WARNING)
         env_config = getattr(getattr(self._task, "config", None), "sandbox", None)
         task_skill_policy = resolve_task_skill_policy(
             task_path=cfg.task_path,
@@ -2070,6 +2543,12 @@ class Rollout:
             context_root=cfg.context_root,
             sandbox_locked_paths=self._effective_locked,
             sandbox_setup_timeout=cfg.sandbox_setup_timeout,
+            sandbox_setup_timeout_given=cfg.sandbox_setup_timeout_given,
+            sandbox_user_setup_timeout=sandbox_user_setup_timeout_sec(
+                run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+            ),
+            verifier_setup_timeout=verifier_setup_timeout,
+            verifier_setup_timeout_run=cfg.verifier_setup_timeout,
             skip_agent_install=cfg.skip_agent_install,
             timeout=self._timeout,
             started_at=self._started_at,
@@ -2113,6 +2592,7 @@ class Rollout:
 
     # Phase 2: START (container comes up)
 
+    @_with_verifier_setup_budget
     async def start(self) -> None:
         """Start the environment and upload task files."""
 
@@ -2136,20 +2616,68 @@ class Rollout:
         self._configure_daytona_layers()
         self._request_layers()
         self._reserve_host_proxy()
-        await _start_env_and_upload(
-            self._env,
-            self._config.task_path,
-            self._timing,
-            skip_start=self._env_externally_owned,
-            on_started=_capture_and_persist_sandbox,
-            uploads=self._config.uploads,
-            # A sandbox created from a branch snapshot already holds them.
-            upload_task_files=not self._from_branch_snapshot,
-            # The solution only where the oracle runs (GAP-ORACLE-READABLE).
-            upload_solution=self._config.primary_agent == "oracle",
-            # A learner store's skills baked into the image (M3).
-            image_holds_agent_bytes=self._skills_agent_derived and self._skills_baked,
-        )
+        # The trial's network policy holds every process from its first
+        # instruction: the start's (start_sandbox, whatever made the
+        # sandbox) holds the services until they are covered, and main too
+        # where nothing of BenchFlow's there needs the network (a model
+        # agent's install and model proxy do: R1, checked at the
+        # agent's arm instead). A sandbox its caller started went through it
+        # too, before the run named its agent (Environment.start).
+        if self._env_externally_owned:
+            from benchflow.sandbox import service_cover
+
+            refusal = service_cover.caller_start_refusal(
+                self._env,
+                self._task,
+                agent=self._config.primary_agent,
+                verifier_only=self._verifier_only,
+            )
+            if refusal is not None:
+                raise service_cover.ServiceCoverError(refusal)
+        # main stopped right after its release ends the start as
+        # sandbox_setup, whatever else failed (item 6).
+        try:
+            await _start_env_and_upload(
+                self._env,
+                self._config.task_path,
+                self._timing,
+                task=self._task,
+                agent=self._config.primary_agent,
+                verifier_only=self._verifier_only,
+                agent_uid=self._agent_uid_start_hold(),
+                skip_start=self._env_externally_owned,
+                on_started=_capture_and_persist_sandbox,
+                uploads=self._config.uploads,
+                # A sandbox created from a branch snapshot already holds them.
+                upload_task_files=not self._from_branch_snapshot,
+                # The solution only where the oracle runs (GAP-ORACLE-READABLE).
+                upload_solution=self._config.primary_agent == "oracle",
+                # A learner store's skills baked into the image (M3).
+                image_holds_agent_bytes=self._skills_agent_derived
+                and self._skills_baked,
+            )
+        except Exception as exc:
+            await self._end_if_main_stopped(exc)
+            raise
+        await self._end_if_main_stopped()
+        # Before any command of the task's or the agent's: a PID 1 of
+        # the sandbox user's that its processes could trace fails every
+        # trial's kill before grading, so the sandbox is refused now.
+        from benchflow._utils.config import normalize_sandbox_user
+        from benchflow.sandbox import pid1_ptrace
+
+        try:
+            self._host_ptrace_scope = await pid1_ptrace.check_at_start(
+                self._env, normalize_sandbox_user(self._config.sandbox_user)
+            )
+        except pid1_ptrace.Pid1TraceableError as refused:
+            # The refused trial records the scope that refused it.
+            self._host_ptrace_scope = refused.scope
+            raise
+        # Main's image is ready: the user the task's own harness runs the
+        # agent as, read on the host, said before anything of the agent's runs
+        # It changes nobody's user.
+        await self._note_agent_user()
         # Beside the sandbox's own setup, where this process mostly waits on
         # the sandbox; not beside its start, whose host work it would slow.
         self._prewarm_acp()
@@ -2690,12 +3218,15 @@ class Rollout:
         """
         if not self._needs_kept_freezer():
             return
+        from benchflow.task import keep_services
+
+        # The agent's uid is known only now, from the image.
+        keep_services.refuse_host_uid(self._task, self._env)
         cfg = self._config
         if cfg.primary_agent != "oracle":
             from benchflow.sandbox._compose import engine_freezer_unavailable
             from benchflow.sandbox.protocol import KeptServiceFreezerUnavailable
             from benchflow.sandbox.providers import is_known_provider
-            from benchflow.task import keep_services
 
             if cfg.planes is None or is_known_provider(cfg.environment):
                 refusal = keep_services.provider_refusal(
@@ -2714,7 +3245,29 @@ class Rollout:
             await self._planes.probe_kept_service_freezer(self._env)
 
     @_with_harness_cpus
+    @_with_verifier_setup_budget
+    async def _end_if_main_stopped(self, cause: BaseException | None = None) -> None:
+        """Raise :func:`~benchflow.rollout._setup.main_stopped_error` when
+        main stopped right after its release (item 6); *cause* is the
+        error a step met because of it."""
+        from benchflow.rollout._setup import main_stopped_error
+
+        error = await main_stopped_error(self._env)
+        if error is not None:
+            raise error from cause
+
     async def install_agent(self) -> None:
+        """Install the primary agent and set the sandbox up for it
+        (:meth:`_install_agent_steps`). A failure while main has stopped
+        (its image ENTRYPOINT exited right after its release) is that stop,
+        not the step's own."""
+        try:
+            await self._install_agent_steps()
+        except Exception as exc:
+            await self._end_if_main_stopped(exc)
+            raise
+
+    async def _install_agent_steps(self) -> None:
         """Install the primary agent binary, set up credentials, sandbox user, skills, lockdown.
 
         For heterogeneous scene-authored steps (different agents per role),
@@ -2742,6 +3295,9 @@ class Rollout:
             identity_switch.require_barrier(self._env)
             self._env.agent_identity_switch = switch
 
+        # The agent's uid rules before anything else of the trial runs in
+        # main (M1), after the task's own refusals here.
+        await self._arm_agent_uid_at_release()
         await prepare_capture_runtime(self)
 
         present = {"agent": False, "baseline": False}
@@ -2779,6 +3335,37 @@ class Rollout:
                 )
 
         async def verifier_baseline() -> None:
+            if _reward_provenance.assessed(cfg.integrity):
+                # Whether BenchFlow's walker can run is decided now, before the
+                # agent's turn: where it cannot, the trial is refused here,
+                # unscored, never a 0 after the turn (Q4).
+                from benchflow._utils.scoring import INTEGRITY_UNAVAILABLE_HEADER
+                from benchflow.rollout._grading_outcome import IntegrityUnavailableError
+                from benchflow.sandbox import _verifier_links
+
+                plan = getattr(self._env, "plan_bfx_upload", None)
+                if getattr(self._env, "bfx_delivery", None) is None and callable(plan):
+                    # Daytona native: no mount reaches it; the pinned bfx is
+                    # uploaded by root when the walks need it.
+                    await plan()
+                why = _verifier_links.walker_unavailable(self._env)
+                verifier_user = getattr(self._task.config.verifier, "user", None)
+                if (
+                    why is None
+                    and cfg.sandbox_user
+                    and verifier_user is not None
+                    and str(verifier_user) == str(cfg.sandbox_user)
+                ):
+                    why = (
+                        f"the task's verifier runs as the agent's own user "
+                        f"({verifier_user}), so its output folder cannot be kept "
+                        "from the agent's processes"
+                    )
+                # The oracle is exempt from provenance (the task's own
+                # solution, never the adversary): it runs where bfx cannot,
+                # as on main (Q4 backend table, F2b-DEVCYCLE.md §6).
+                if why is not None and cfg.primary_agent != "oracle":
+                    raise IntegrityUnavailableError(INTEGRITY_UNAVAILABLE_HEADER + why)
             # A branch snapshot already holds the pre-agent baseline, captured
             # before the parent's agent ran; re-capturing would record the
             # parent agent's changes as pre-agent.
@@ -2786,12 +3373,37 @@ class Rollout:
                 await self._planes.prepare_log_dirs(
                     self._env, sandbox_user=cfg.sandbox_user
                 )
+                # The source sandbox's record from before its turn: a link made
+                # before the snapshot is still the turn's.
+                from benchflow.sandbox import _verifier_links
+
+                _verifier_links.inherit_record(
+                    self._env, getattr(self, "_inherited_link_record", None)
+                )
+                _verifier_links.save_record(
+                    self._env, getattr(self, "_rollout_dir", None)
+                )
                 return
 
             async def seed_then_runtime() -> None:
                 await self._planes.seed_verifier_workspace(
                     self._env, workspace=self._agent_cwd, sandbox_user=cfg.sandbox_user
                 )
+                if _reward_provenance.assessed(cfg.integrity):
+                    # Root's record of every link, while no agent process has
+                    # run yet: a link new or changed since is the turn's
+                    # ((c)3).
+                    from benchflow.sandbox import _verifier_links
+
+                    # A branch child re-capturing its baseline keeps its
+                    # source's record (made before any agent ran).
+                    _verifier_links.inherit_record(
+                        self._env, getattr(self, "_inherited_link_record", None)
+                    )
+                    await _verifier_links.record_before_turn(self._env)
+                    _verifier_links.save_record(
+                        self._env, getattr(self, "_rollout_dir", None)
+                    )
                 # The verifier's plugins, from a root-only tree built while no
                 # agent process has run yet. Its probe reads the
                 # seeded copy, so it comes after the seed.
@@ -2820,18 +3432,25 @@ class Rollout:
                 with (
                     path_lock_record.recording_into(path_lock),
                     timing_spans.recording_into(self._timing),
+                    # A workspace the image lacks is left without a grant,
+                    # and result.json's warnings say so.
+                    _keeping_trial_warnings(self),
                 ):
                     script_cwd = await self._planes.setup_sandbox_user(
                         self._env,
                         cfg.sandbox_user,
                         workspace=self._agent_cwd,
                         agents=_role_agents(cfg),
-                        timeout_sec=cfg.sandbox_setup_timeout,
+                        timeout_sec=sandbox_user_setup_timeout_sec(
+                            run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+                        ),
                         guard_daemon=is_operator_script(cfg.primary_agent),
                     )
                 _write_path_lock_record(rollout_dir, path_lock)
                 if is_operator_script(cfg.primary_agent):
                     self._agent_cwd = script_cwd
+            else:
+                await self._lock_path_for_root_agent(rollout_dir)
             from benchflow.task.keep_services import prepare_identities, run_identity
 
             # The oracle's processes run as its own account, not
@@ -2861,6 +3480,7 @@ class Rollout:
                 )
             await self._planes.lockdown_paths(self._env, self._effective_locked)
             await _probe_integrity_access(self, "pre")
+            await self._check_test_sh()
             await mark_agent_phase_start(self)
             self._phase = "installed"
             return
@@ -2910,13 +3530,16 @@ class Rollout:
             with (
                 path_lock_record.recording_into(path_lock),
                 timing_spans.recording_into(self._timing),
+                _keeping_trial_warnings(self),
             ):
                 self._agent_cwd = await self._planes.setup_sandbox_user(
                     self._env,
                     cfg.sandbox_user,
                     workspace=self._agent_cwd,
                     agents=_role_agents(cfg),
-                    timeout_sec=cfg.sandbox_setup_timeout,
+                    timeout_sec=sandbox_user_setup_timeout_sec(
+                        run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+                    ),
                 )
             _write_path_lock_record(rollout_dir, path_lock)
             # After the install (it can leave them root-owned, #1183) and once
@@ -2927,6 +3550,8 @@ class Rollout:
                 cfg.sandbox_user,
                 locked_paths=self._effective_locked,
             )
+        else:
+            await self._lock_path_for_root_agent(rollout_dir)
         from benchflow.task.keep_services import prepare_identities
 
         await prepare_identities(self._env, self._task, cfg.sandbox_user)
@@ -2980,6 +3605,7 @@ class Rollout:
         # agent (the automatic one and a manually composed one alike), before
         # the agent phase's clock mark: files it writes are not the agent's.
         await _probe_integrity_access(self, "pre")
+        await self._check_test_sh()
         await mark_agent_phase_start(self)
 
         self._phase = "installed"
@@ -2995,6 +3621,36 @@ class Rollout:
         which has no ACP server); everything else connects over ACP. Resolution
         failures degrade to ACP (None) rather than raising."""
         return session_factory_entrypoint(agent_name, resolver=resolve_agent)
+
+    async def _lock_path_for_root_agent(self, rollout_dir: Path) -> None:
+        """Lock the image's PATH folders to root for a trial with no sandbox
+        user, as ``setup_sandbox_user`` does for an agent user's: the verifier
+        then judges them as on every other trial, so an image that leaves its
+        toolchain open (the official rust image's 0777 /usr/local/cargo/bin)
+        is graded, not refused. A root agent can open them again; hardening
+        then refuses test.sh's tools there (``verifier tools refused``).
+        Written to locked-system-path.json. Planes or a sandbox without the
+        step leave PATH as the image made it."""
+        lock = getattr(self._planes, "lock_system_path", None)
+        if (
+            lock is None
+            or getattr(self._env, "supports_system_shell", False) is not True
+        ):
+            return
+        cfg = self._config
+        path_lock: dict[str, Any] = {}
+        with (
+            path_lock_record.recording_into(path_lock),
+            _keeping_trial_warnings(self),
+        ):
+            await lock(
+                self._env,
+                workspace=self._agent_cwd,
+                timeout_sec=sandbox_user_setup_timeout_sec(
+                    run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+                ),
+            )
+        _write_path_lock_record(rollout_dir, path_lock)
 
     async def _record_harness_versions(self, agent: str) -> None:
         """Probe the installed harness versions before the agent starts and
@@ -3225,6 +3881,7 @@ class Rollout:
         included, or when the run opted out; otherwise the trial stops here,
         before the agent, with the record's reason.
         """
+        await self._cover_task_services(rollout_dir)
         plan = self._cloud_metadata
         if plan is None:
             return
@@ -3290,6 +3947,56 @@ class Rollout:
             return
         if record["state"] != "on" and not opt_out:
             raise cloud_metadata_refusal(str(record["state"]), str(record["why"]))
+
+    async def _cover_task_services(self, rollout_dir: Path | None) -> None:
+        """Every compose service of the trial but ``main``, covered from
+        BenchFlow's helper before the agent (or the oracle) starts: the cloud
+        metadata endpoints refused to every user there, and the agent's
+        network policy held in its namespace (benchflow.sandbox.service_cover).
+        service-network.json records each service's coverage and
+        proof; a service that cannot be covered stops the trial."""
+        from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+        from benchflow.sandbox.service_cover import (
+            SERVICE_NETWORK_RECORD,
+            cover_task_services,
+            sandbox_network_mode,
+        )
+
+        task = self._task
+        config = getattr(task, "config", None)
+        if config is None or self._env is None:
+            return
+        opt_out = getattr(config, "cloud_metadata_opt_out", "")
+        task_opts_out = isinstance(opt_out, str) and bool(opt_out)
+        run_opts_out = bool(getattr(self._config, "allow_cloud_metadata", False))
+        covered = vars(self).setdefault("_covered_services", {})
+        # Covered before release, while it still waited.
+        start_covered = getattr(self._env, "_start_covered_services", None)
+        if isinstance(start_covered, dict):
+            for key, record in start_covered.items():
+                covered.setdefault(key, record)
+        records = await cover_task_services(
+            self._env,
+            config,
+            mode=sandbox_network_mode(agent_network_sandbox_config(config)),
+            metadata=not (task_opts_out or run_opts_out),
+            opt_out=task_opts_out,
+            environment_dir=getattr(
+                getattr(task, "paths", None), "environment_dir", None
+            ),
+            covered=covered,
+            # main's own rule, for every user: only the task opts out of it.
+            main_metadata=not task_opts_out,
+        )
+        if records is None or rollout_dir is None:
+            # Covered either way (a service that cannot be covered raised
+            # above); only a rollout run with no trial folder has nowhere to
+            # write the record.
+            return
+        with contextlib.suppress(OSError):
+            (rollout_dir / SERVICE_NETWORK_RECORD).write_text(
+                json.dumps({"phase": "agent", "services": records}, indent=2) + "\n"
+            )
 
     def _record_cloud_metadata(
         self, rollout_dir: Path, record: dict[str, Any], opt_out: str
@@ -3443,18 +4150,12 @@ class Rollout:
                 json.dumps({**admission, "admitted": True}, indent=2) + "\n"
             )
 
-    async def connect(self) -> None:
-        """Open an ACP connection to the agent. Can be called multiple times."""
-        require_safe_branch_world(self)
+    @_with_verifier_setup_budget
+    async def _agent_egress_policy(self) -> Any:
+        """The primary agent's egress policy as its connection applies it
+        (native subscription transport, the allowlist's model endpoint, the
+        task's services): None for an open network or no-web alone."""
         cfg = self._config
-        await self._end_previous_connection((cfg.primary_agent, cfg.primary_model, ()))
-        # Probes and proxy setup can execute with the next login too. Mark
-        # this attempt pending before either, including failed admissions.
-        self._connection_needs_quiescence = True
-        self._agent_pkill_done = self._agent_quiesced = False
-        rollout_dir = self._require_rollout_dir()
-        (rollout_dir / "native-oauth-network.json").unlink(missing_ok=True)
-        t0 = datetime.now()
         egress_denylist = native_oauth_egress_policy(
             cfg.primary_agent,
             cfg.primary_model,
@@ -3468,9 +4169,110 @@ class Rollout:
         )
         # The task's services as they run now (a restored sandbox moves them).
         egress_denylist = await task_service_policy(self._env, egress_denylist)
+        return egress_denylist
+
+    def _agent_uid_start_hold(self) -> dict[str, Any] | None:
+        """M1: a model agent's uid rules before main's release,
+        asked of the sandbox's start (a Docker sandbox's inert bootstrap
+        puts them in, the sandbox user made first): under no-network and
+        denylist, whose uid rules the task alone decides. None for an
+        allowlist, whose rules name the task services' addresses, known once
+        they run (_arm_agent_uid_at_release puts them in right after
+        release), for scripted agents (every process held from release),
+        verifier-only rollouts, an open network, a sandbox its caller
+        started, and settings the launch refuses."""
+        cfg = self._config
+        if (
+            self._verifier_only
+            or self._env_externally_owned
+            or is_scripted_agent(cfg.primary_agent)
+        ):
+            return None
+        try:
+            policy = native_oauth_egress_policy(
+                cfg.primary_agent,
+                cfg.primary_model,
+                self._agent_env,
+                no_web=self._disallow_web_tools,
+            ) or allowlist_model_transport(
+                self._egress_denylist,
+                cfg.primary_agent,
+                cfg.primary_model,
+                self._agent_env,
+            )
+        except ValueError:
+            return None
+        no_web = bool(self._disallow_web_tools)
+        if getattr(policy, "allow_mode", False):
+            return None
+        if not no_web and (policy is None or not cfg.sandbox_user):
+            return None
+        return {
+            "user": cfg.sandbox_user,
+            "no_web": no_web,
+            "policy": policy,
+            "timeout_sec": sandbox_user_setup_timeout_sec(
+                run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+            ),
+        }
+
+    async def _arm_agent_uid_at_release(self) -> None:
+        """M1: a model agent's uid rules right after main's
+        release, before its install. The install (most of a cold window,
+        its chmod -R a+rX /opt/runtime among it), the sandbox user's setup
+        and the model proxy then run with the agent's uid already held, so
+        none of them widens the window in which a process of that uid from
+        main's release runs unheld. The sandbox user is made first where
+        the image lacks it. The rules are the launch's own, from the policy
+        its connection applies; the launch finds them in. Root runs the
+        install, which these rules do not hold. Settings the connection
+        refuses are left to it."""
+        cfg = self._config
+        arm = getattr(type(self._planes), "arm_agent_uid_before_its_proxy", None)
+        if (
+            not callable(arm)
+            or self._env is None
+            or is_scripted_agent(cfg.primary_agent)
+            # In before main's release (_agent_uid_start_hold).
+            or getattr(self._env, "_agent_uid_held_at_start", False) is True
+        ):
+            return
+        try:
+            policy = await self._agent_egress_policy()
+        except ValueError:
+            return
+        await arm(
+            self._planes,
+            self._env,
+            cfg.sandbox_user,
+            no_web=self._disallow_web_tools,
+            egress_denylist=policy,
+            create_user=bool(cfg.sandbox_user),
+            timeout_sec=sandbox_user_setup_timeout_sec(
+                run_sandbox_setup_timeout(cfg), self._task.config.sandbox
+            ),
+        )
+
+    async def connect(self) -> None:
+        """Open an ACP connection to the agent. Can be called multiple times."""
+        require_safe_branch_world(self)
+        cfg = self._config
+        key = (cfg.primary_agent, cfg.primary_model, ())
+        await self._end_previous_connection(key)
+        self._connection_key = key
+        # Probes and proxy setup can execute with the next login too. Mark
+        # this attempt pending before either, including failed admissions.
+        self._connection_needs_quiescence = True
+        self._agent_pkill_done = self._agent_quiesced = False
+        rollout_dir = self._require_rollout_dir()
+        (rollout_dir / "native-oauth-network.json").unlink(missing_ok=True)
+        t0 = datetime.now()
+        egress_denylist = await self._agent_egress_policy()
 
         previous_runtime = self._usage_runtime
         force_sandbox_local = self._disallow_web_tools or egress_denylist is not None
+        # The agent's uid rules went in right after main's release
+        # (_arm_agent_uid_at_release, M1); its launch finds them in.
         # A host proxy starts while the sandbox guards run (see
         # _guards_beside_proxy); they then check the env before its wiring.
         beside = self._guards_beside_proxy(
@@ -3546,11 +4348,13 @@ class Rollout:
         self._record_proxy_layer_use()
         if egress_denylist is not None:
             self._agent_env = denylist_agent_env(self._agent_env, egress_denylist)
+        self._agent_otel_export_sec = None
         if wants_agent_otel(self._agent_env) and await start_agent_otel(self._env):
             # The run asked the agent for OpenTelemetry and named no collector:
             # BenchFlow's loopback receiver takes it (sandbox/agent_otel.py).
             self._agent_env = agent_otel_env(self._agent_env)
             self._agent_otel = True
+            self._agent_otel_export_sec = export_interval_sec(self._agent_env)
         self._pin_credential_homes(cfg.primary_agent, self._agent_env)
         if not beside:
             sf_entrypoint = self._session_factory_entrypoint(cfg.primary_agent)
@@ -3683,9 +4487,10 @@ class Rollout:
             and isinstance(override, str)
             and override.strip().lower() not in ("", "auto", "unset")
         ):
-            # Claude Code applies its env's effort over the session's (the
-            # run card names the variable; run_checks compares it).
-            self._effort_applied = override.strip().lower()
+            # Claude Code applies its env's effort over the session's, so the
+            # session's word is not what runs, and the variable is the request,
+            # not evidence: the calls say what ran.
+            self._effort_applied = None
         route = getattr(getattr(self._usage_runtime, "server", None), "route", None)
         params = getattr(route, "litellm_params", None)
         pinned = params.get("reasoning_effort") if isinstance(params, Mapping) else None
@@ -3823,15 +4628,60 @@ class Rollout:
         if path not in self._credential_ledger:
             self._credential_ledger.append(path)
 
+    def _stops_turn_processes(self) -> bool:
+        """Whether a connection's end stops the sandbox user's processes:
+        before another connection always, at the end of the turn only in
+        strict. Off and audit keep them through grading (a service the
+        solution started is test.sh's) and stop them after it (the
+        lead's 11:25Z ruling)."""
+        from benchflow.integrity.constants import hardens_verifier
+
+        cfg = getattr(self, "_config", None)
+        return (
+            getattr(self, "_reconnecting", False) is True
+            or getattr(self, "_ending", False) is True
+            or hardens_verifier(getattr(cfg, "integrity", None))
+        )
+
     async def _end_previous_connection(self, key: tuple[Any, ...]) -> None:
         """Stop the previous role's agent, then remove every staged credential.
 
         This barrier precedes *all* credential consumers, not just upload.
         Pending process cleanup is independent of both the role key and the
         file ledger: an empty ledger or identical role is not proof of death.
+
+        A connection under another role, or with other staged logins, than
+        the one before it in this sandbox stops that one's processes first in
+        every integrity mode: a process it left could re-create its login, or
+        read the next one's (the lead's 18:40Z ruling). The same role
+        with the same logins (an ordinary multi-turn run) goes on in off and
+        audit, whose turn's end stops nothing (S2): its logins stay staged.
         """
         if self._connection_needs_quiescence:
-            await self.disconnect()
+            from benchflow.integrity.constants import hardens_verifier
+
+            if (
+                key == self._connection_key
+                and not self._muse_credentials_staged
+                and not hardens_verifier(getattr(self._config, "integrity", None))
+            ):
+                return
+            # Another role or other logins follow: the previous connection's
+            # processes stop in every integrity mode, then its logins go.
+            from benchflow._utils import kill_record
+
+            previous, logins, stopped = (
+                self._connection_key,
+                list(self._credential_ledger),
+                {},
+            )
+            self._reconnecting = True
+            try:
+                with kill_record.recording_into(stopped):
+                    await self.disconnect()
+            finally:
+                self._reconnecting = False
+            self._record_role_transition(previous, key, logins, stopped)
             if (
                 self._connection_needs_quiescence
                 and keep_services.trial_keep(self._task, self._config.sandbox_user)
@@ -3846,8 +4696,39 @@ class Rollout:
                 )
         await self._remove_ledger()
 
-    async def _remove_ledger(self) -> None:
-        """Remove every ledger entry; entries stay until removal is confirmed."""
+    def _record_role_transition(
+        self,
+        previous: tuple[Any, ...] | None,
+        key: tuple[Any, ...],
+        logins: list[str],
+        stopped: dict[str, Any],
+    ) -> None:
+        """One line of ``role-transitions.jsonl`` in the trial folder: which
+        connection ended for which, what its quiesce stopped and which of its
+        logins were removed (18:40Z). Agents and models only; a
+        role's env is never written."""
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        if not isinstance(rollout_dir, (str, Path)):
+            return
+        line = {
+            "at": datetime.now().isoformat(),
+            "from": list(previous[:2]) if previous else None,
+            "to": list(key[:2]),
+            "logins_differ": bool(previous) and previous[2:] != key[2:],
+            "user": self._config.sandbox_user,
+            "quiesced": bool(getattr(self, "_agent_quiesced", False)),
+            "stopped": stopped,
+            "logins_removed": logins if not self._credential_ledger else [],
+        }
+        try:
+            with open(Path(rollout_dir) / "role-transitions.jsonl", "a") as out:
+                out.write(json.dumps(line, default=str) + "\n")
+        except OSError as exc:
+            logger.warning("role transition not recorded: %s", exc)
+
+    async def _remove_ledger(self, *, keep_entries: bool = False) -> None:
+        """Remove every ledger entry; entries stay until removal is confirmed,
+        and with *keep_entries* (no quiesce has run yet) after it too."""
         if not self._credential_ledger:
             return
         try:
@@ -3860,9 +4741,27 @@ class Rollout:
                     "Muse credential cleanup failed; refusing another role or verifier"
                 ) from None
             raise
+        if keep_entries:
+            return
         self._credential_ledger = []
         self._muse_credentials_staged = False
 
+    def _may_await_agent_export(self) -> bool:
+        """Whether the agent may run on while its last export arrives.
+
+        Not once the host deadline stopped it (its task was cancelled with no
+        ACP cancel, so a wait would let it call tools past its budget), nor
+        while this task is being cancelled (the budget's stop, a caller's), nor
+        in a sandbox already stopped.
+        """
+        if self._env is None or getattr(self, "_agent_sandbox_stopped", False):
+            return False
+        if getattr(self, "_agent_deadline_reason", None) is not None:
+            return False
+        task = asyncio.current_task()
+        return task is None or not task.cancelling()
+
+    @_with_verifier_setup_budget
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
         if self._is_session_factory:
@@ -3871,6 +4770,9 @@ class Rollout:
             self._capture_partial_acp_trajectory()
         self._collect_native_acp_usage()
         if self._acp_client:
+            interval = self._agent_otel_export_sec
+            if interval is not None and self._may_await_agent_export():
+                await settle_agent_otel(self._env, interval)
             try:
                 await self._acp_client.close()
             except Exception as e:
@@ -3882,10 +4784,20 @@ class Rollout:
         sandbox_user = self._config.sandbox_user
         if (
             self._connection_needs_quiescence
+            and getattr(self._env, "_benchflow_quiesced_after_grading", False) is True
+        ):
+            # S2's kill after grading stopped this connection's processes.
+            self._connection_needs_quiescence = False
+            self._agent_quiesced = True
+        if (
+            self._connection_needs_quiescence
             and sandbox_user
             and (
                 self._muse_credentials_staged
-                or keep_services.trial_keep(self._task, sandbox_user) is None
+                or (
+                    keep_services.trial_keep(self._task, sandbox_user) is None
+                    and self._stops_turn_processes()
+                )
             )
         ):
             # Reuse K1's verified UID stop; do not clean while a writer can
@@ -3911,9 +4823,20 @@ class Rollout:
                     timeout_sec=10,
                 )
             self._agent_pkill_done = getattr(self, "_agent_quiesced", False)
+        # Off and audit's turn end stops nothing (S2): the login files go now,
+        # so test.sh never finds them, but a process the connection left can
+        # write one back, so the ledger keeps its entries until a quiesce has
+        # run and each later one removes them again: the next role's
+        # connection, the kill after grading, the trial's end (the
+        # lead's 18:40Z and 19:23Z rulings).
+        unquiesced = (
+            self._connection_needs_quiescence
+            and bool(sandbox_user)
+            and keep_services.trial_keep(self._task, sandbox_user) is None
+        )
         if self._env is not None:
             try:
-                await self._remove_ledger()
+                await self._remove_ledger(keep_entries=unquiesced)
             except Exception as e:
                 if self._muse_credentials_staged:
                     raise
@@ -4093,6 +5016,7 @@ class Rollout:
 
     # Phase 3c: EXECUTE
 
+    @_with_verifier_setup_budget
     async def execute(
         self, prompts: list[str] | None = None, *, node: RolloutNode | None = None
     ) -> tuple[list[dict], int]:
@@ -4145,6 +5069,10 @@ class Rollout:
             self._session.model_request_activity = server.model_request_activity
 
         turns_before = len(self._session_turns())
+        # The agent's session log, copied out while the turn runs: a sandbox
+        # lost before the turn reports keeps the calls already logged.
+        mirror = start_session_mirror(self)
+        mirror_at_end = True
         try:
             if self._is_session_factory:
                 (
@@ -4165,6 +5093,10 @@ class Rollout:
                     idle_timeout=idle_timeout,
                 )
         except AgentPromptTimeoutError as e:
+            # The turn ended without its end-of-turn usage report: teardown
+            # counts it from the agent's own logs (rollout._salvage).
+            self._usage_report_missing = True
+            self._turn_cut = "timeout"
             self._diagnostics.set(e.diagnostic)
             self._commit_acp_execution(
                 trajectory=e.trajectory,
@@ -4176,8 +5108,35 @@ class Rollout:
                 partial_trajectory=not e.terminal_trajectory_complete,
             )
             raise
+        except AgentTurnFailedError as e:
+            # The turn failed for a reason that is not the clock. Keep the
+            # steps it captured, marked partial; the lifecycle classifies the
+            # failure as the agent error it is. It ended without its
+            # end-of-turn usage report: teardown counts it from the agent's
+            # own logs.
+            self._usage_report_missing = True
+            self._commit_acp_execution(
+                trajectory=e.trajectory,
+                n_tool_calls=e.n_tool_calls,
+                prev_session_tools=prev_session_tools,
+                effective_prompts=e.executed_prompts or effective_prompts,
+                started_at=t0,
+                node=node,
+                partial_trajectory=True,
+            )
+            raise
+        except BaseException as exc:
+            # A lost sandbox, an agent error, a cancel: no end-of-turn report
+            # either.
+            self._usage_report_missing = True
+            self._turn_cut = _turn_cut_kind(exc)
+            # A cancel (Ctrl-C) does not wait for one more copy.
+            mirror_at_end = not isinstance(exc, asyncio.CancelledError)
+            raise
         finally:
             self._turn_stop_reasons.extend(self._session_turns()[turns_before:])
+            if mirror is not None:
+                await mirror.end_turn(sync=mirror_at_end)
 
         self._commit_acp_execution(
             trajectory=trajectory,
@@ -4260,6 +5219,29 @@ class Rollout:
 
         self._phase = "executed"
 
+    def _record_native_usage_slice(self, agent: str, delta: dict[str, int]) -> None:
+        """Add one end-of-turn delta to its model's slice (pricing).
+
+        Every report's input leaves the cache out (the native Codex harness
+        takes it out at the source, ``native_harness.codex.codex_usage``).
+        """
+        del agent  # every agent's report is in the same split
+        role = getattr(self, "_active_role", None)
+        model = (
+            getattr(role, "model", None)
+            if role is not None
+            else getattr(self._config, "model", None)
+        ) or ""
+        key = (model, not getattr(self, "_native_usage_proxy_covered", False))
+        held = self._native_usage_slices.setdefault(key, {})
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cached_read_tokens",
+            "cached_write_tokens",
+        ):
+            held[field] = held.get(field, 0) + int(delta.get(field) or 0)
+
     def _collect_native_acp_usage(self) -> None:
         """Accumulate ACP PromptResponse.usage deltas for native subscription runs.
 
@@ -4283,12 +5265,23 @@ class Rollout:
                 self._native_usage_agents.add(agent)
                 if not self._native_usage_proxy_covered:
                     self._has_unproxied_native_session = True
+        update = getattr(self._session, "_last_usage_update", None)
+        if isinstance(update, dict) and not own_route:
+            # The agent's last ACP usage_update: claude-agent-acp's carries
+            # Claude Code's running cost, the one figure a lost sandbox keeps
+            # for an ACP turn cut off before its report (rollout._salvage).
+            self._last_usage_update = dict(update)
         latest_fn = getattr(self._session, "latest_usage_totals", None)
         if not callable(latest_fn):
             return
         latest = latest_fn()
         if not latest:
             return
+        # A count the agent never reported stays None.
+        reported = getattr(self, "_native_usage_reported", None)
+        if reported is None:
+            reported = self._native_usage_reported = set()
+        reported.update(field for field, value in latest.items() if value is not None)
         delta = _native_acp_usage_delta(self._native_usage_checkpoint, latest)
         self._native_usage_checkpoint = dict(latest)
         if not any(delta.values()):
@@ -4298,6 +5291,8 @@ class Rollout:
                 self._agent_reported_usage_metrics, delta
             )
             return
+        if isinstance(getattr(self, "_native_usage_slices", None), dict):
+            self._record_native_usage_slice(agent, delta)
 
         metrics = dict(self._native_usage_metrics)
         for (
@@ -4320,6 +5315,12 @@ class Rollout:
         metrics["usage_source"] = USAGE_SOURCE_AGENT_NATIVE_ACP
         metrics["cost_usd"] = None
         metrics["price_source"] = None
+        for (
+            snapshot_field,
+            result_field,
+        ) in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.items():
+            if result_field != "total_tokens" and snapshot_field not in reported:
+                metrics[result_field] = None
         self._native_usage_metrics = metrics
         if not self._native_usage_proxy_covered:
             uncovered = dict(self._unproxied_native_usage_metrics)
@@ -4384,6 +5385,7 @@ class Rollout:
 
     # Phase 3d: BRANCH
 
+    @_with_verifier_setup_budget
     async def branch(
         self,
         n: int,
@@ -4468,9 +5470,13 @@ class Rollout:
 
     # Phase 4: VERIFY
 
+    @_with_verifier_setup_budget
     async def verify(self) -> dict | None:
         """Run the verifier and return rewards."""
         require_safe_branch_world(self)
+        # The agent's turn is over: root's execs into main start bounded,
+        # test.sh's launcher included (sandbox._bounded_exec).
+        end_agent_turn(getattr(self, "_env", None))
         # getattr: callers drive verify() on partially built stand-ins too.
         self._verify_calls = getattr(self, "_verify_calls", 0) + 1
         from benchflow.rollout._verifier_recovery import mark_solver_complete
@@ -4481,11 +5487,22 @@ class Rollout:
         # From the solver's completion to the rewards. Stand-ins built
         # without __init__ have no timing and none of the helpers, which is
         # why they are called through the class.
-        with timing_spans.span(
-            timing_spans.AGENT_STOP_TO_REWARD, into=getattr(self, "_timing", None)
+        with (
+            _keeping_judge_calls(self),
+            timing_spans.span(
+                timing_spans.AGENT_STOP_TO_REWARD, into=getattr(self, "_timing", None)
+            ),
         ):
+            # Before anything of the verifier runs.
+            await Rollout._stop_sandbox_proxies_before_verify(self)
+            await Rollout._snapshot_session_logs_before_verify(self)
             try:
-                return await Rollout._score_finished_solver(self)
+                # The trial's integrity mode decides what a reward outside
+                # the range becomes (audit/off: as written; strict: 0).
+                with out_of_range_reward_rule(
+                    getattr(getattr(self, "_config", None), "integrity", "off")
+                ):
+                    return await Rollout._score_finished_solver(self)
             except Exception as exc:
                 if verifier_infrastructure_failure(exc):
                     self._rewards = None
@@ -4607,8 +5624,10 @@ class Rollout:
                     self._planes,
                     sandbox_user=cfg.sandbox_user,
                     workspace=self._agent_cwd,
+                    integrity=cfg.integrity,
                     recovery_eligible=recovery_eligible,
                     kill_record=self._kill_record,
+                    agent=cfg.primary_agent,
                     # A branch child's own folder, not the parent root its
                     # paths keep (host writers follow _rollout_dir).
                     record_dir=self._require_rollout_dir(),
@@ -4713,7 +5732,9 @@ class Rollout:
 
         In order: the verifier sandbox starts (``prestart``); capture,
         artifact collection and the trajectory scrape run as before; the
-        trajectory the verifier reads is kept; the teardown steps that read
+        trajectory the verifier reads is kept; the agent sandbox's network
+        rules are proven again (a breach ends the trial there, unscored, with
+        nothing transferred); the teardown steps that read
         the agent's sandbox run (:meth:`_steps_before_agent_stop`) and the
         agent's sandbox stops; the verifier sandbox starts (``after_stop``);
         then the transfer is packed and the verifier runs. Any exception or
@@ -4740,6 +5761,12 @@ class Rollout:
             )
             await self._scrape_trajectory_if_missing()
             run.snapshot_trajectory(self._trajectory)
+            # What crosses is captured; the agent's sandbox still runs, so its
+            # rules are proven again now. On a breach nothing crosses:
+            # finish() ends the trial, and cleanup() releases the sandbox.
+            await run.reprove_agent_sandbox()
+            if run.agent_breach is not None:
+                return await run.finish()
             with timing_spans.span(timing_spans.AGENT_RELEASE, into=self._timing):
                 if await self._steps_before_agent_stop(defer_failures=True):
                     await self._stop_agent_sandbox_before_verify(run)
@@ -4831,6 +5858,7 @@ class Rollout:
             ):
                 env._sandbox = handle
 
+    @_with_verifier_setup_budget
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
         """Run the verifier without full hardening — for intermediate feedback.
 
@@ -4848,7 +5876,11 @@ class Rollout:
         through a file only root can read, never a command line.
         """
         services_kept = getattr(getattr(self, "_env", None), "services_kept", None)
-        with services_kept() if callable(services_kept) else contextlib.nullcontext():
+        integrity = getattr(getattr(self, "_config", None), "integrity", "off")
+        with (
+            services_kept() if callable(services_kept) else contextlib.nullcontext(),
+            out_of_range_reward_rule(integrity),
+        ):
             return await self._soft_verify()
 
     async def _soft_verify(self) -> tuple[dict | None, str | None, str | None]:
@@ -4864,6 +5896,12 @@ class Rollout:
         require_safe_branch_world(self)
         if self._muse_credentials_staged:
             await self.disconnect()
+        # Off and audit run test.sh as its authors wrote it, between rounds as
+        # at the end: nothing here may change what the scored verify
+        # later sees, so no hook purge, no /app and no BASH_ENV policy.
+        from benchflow.integrity.constants import hardens_verifier
+
+        faithful = not hardens_verifier(getattr(self._config, "integrity", None))
         self._rollout_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
         # Clean verifier output dir — chmod 777 so non-root verifier processes can write.
         # Keep /app present for task/verifier paths that still use the legacy
@@ -4882,27 +5920,28 @@ class Rollout:
                 user="root",
                 timeout_sec=10,
             )
-            await self._planes.ensure_legacy_app_dir(
-                self._env,
-                "Soft verifier setup failed: preparing /app",
-                user="root",
-                timeout_sec=10,
-            )
-            # Purge agent-injected conftest/sitecustomize/.pth without
-            # killing processes or restoring workspace.
-            # Honor per-task [verifier.hardening] opt-outs from task config.
-            # No timeout_sec here: the conftest purge walks the rootfs and can be
-            # slow on network-backed FS (Daytona), so its budget is owned by
-            # lockdown.cleanup_verifier_python_hooks (VERIFIER_SETUP_TIMEOUT_SEC),
-            # shared with the scoring path in harden_before_verify. The except
-            # below keeps the step fail-closed.
-            await self._planes.cleanup_verifier_python_hooks(
-                self._env,
-                getattr(self._task, "task_dir", None),
-                "Soft verifier setup failed: purging Python injection hooks",
-                workspace=self._agent_cwd,
-                user="root",
-            )
+            if not faithful:
+                await self._planes.ensure_legacy_app_dir(
+                    self._env,
+                    "Soft verifier setup failed: preparing /app",
+                    user="root",
+                    timeout_sec=10,
+                )
+                # Purge agent-injected conftest/sitecustomize/.pth without
+                # killing processes or restoring workspace.
+                # Honor per-task [verifier.hardening] opt-outs from task config.
+                # No timeout_sec here: the conftest purge walks the rootfs and can be
+                # slow on network-backed FS (Daytona), so its budget is owned by
+                # lockdown.cleanup_verifier_python_hooks (VERIFIER_SETUP_TIMEOUT_SEC),
+                # shared with the scoring path in harden_before_verify. The except
+                # below keeps the step fail-closed.
+                await self._planes.cleanup_verifier_python_hooks(
+                    self._env,
+                    getattr(self._task, "task_dir", None),
+                    "Soft verifier setup failed: purging Python injection hooks",
+                    workspace=self._agent_cwd,
+                    user="root",
+                )
         except Exception as e:
             # describe_exception for the same reason as the funnel below: an
             # argument-less exception stringifies to nothing (#1065).
@@ -4920,6 +5959,9 @@ class Rollout:
                 sandbox=self._env,
             )
             verifier.agent_processes_alive = True
+            if faithful:
+                with contextlib.suppress(AttributeError):
+                    self._env._benchflow_verifier_faithful = True
             # Hardening's BASH_ENV policy, as the scored path applies it; a
             # planes object without it gives none (b127 PY8-MAIN-26).
             resolve_bash_env = getattr(self._planes, "soft_verifier_bash_env", None)
@@ -4927,7 +5969,7 @@ class Rollout:
                 resolve_bash_env(
                     self._env, self._task, self._config.sandbox_user, self._agent_cwd
                 )
-                if callable(resolve_bash_env)
+                if callable(resolve_bash_env) and not faithful
                 else ""
             )
             if inspect.isawaitable(bash_env):
@@ -4969,6 +6011,7 @@ class Rollout:
 
     # Phase 5: CLEANUP
 
+    @_with_verifier_setup_budget
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment.
 
@@ -4976,16 +6019,26 @@ class Rollout:
         artifacts collected here, before the sandbox stops. Its seconds are
         the ``cleanup`` span.
         """
-        with timing_spans.span(timing_spans.CLEANUP, into=self._timing):
-            await self._cleanup_steps()
+        # Clean-up comes after the agent's turn (sandbox._bounded_exec).
+        end_agent_turn(getattr(self, "_env", None))
+        try:
+            with timing_spans.span(timing_spans.CLEANUP, into=self._timing):
+                await self._cleanup_steps()
+        finally:
+            close_session_log_snapshot(self)
 
     async def _cleanup_steps(self) -> None:
         # A trial that ended before its agent connected gives back the warm
         # proxy it asked for (_reserve_host_proxy).
         self._release_host_proxy()
+        await self._record_main_metadata_at_end()
         # Destroying an owned sandbox and releasing its lease never wait on the
         # steps before them (AG-R2-3): a disconnect that cannot remove a staged
         # Muse login raises, and that sandbox still holds the login.
+        # Where test.sh's outputs at its exit go back once the sandbox is gone
+        # and nothing in it can write to verifier/ any more.
+        holder = getattr(self, "_env", None)
+        paths = getattr(self, "_rollout_paths", None)
         try:
             await self._cleanup_before_teardown()
         finally:
@@ -4994,12 +6047,70 @@ class Rollout:
                 await self._discard_verifier_warmup()
             finally:
                 await self._teardown_sandbox()
+                from benchflow.task import verifier_outputs
+
+                verifier_outputs.put_back_and_record(
+                    getattr(paths, "rollout_dir", None), holder
+                )
+                # Nothing in the sandbox can make a link any more: none that
+                # leaves agent/ or artifacts/ stays in the trial (F37).
+                rollout_dir = getattr(paths, "rollout_dir", None)
+                if rollout_dir is not None:
+                    from benchflow.rollout._artifacts import drop_escaping_links
+
+                    try:
+                        drop_escaping_links(Path(rollout_dir))
+                    except Exception:
+                        logger.warning(
+                            "links left in the trial were not checked", exc_info=True
+                        )
+
+    async def _record_main_metadata_at_end(self) -> None:
+        """At every trial's end, errors and early ends included, before the
+        sandbox goes: what main's cloud metadata rules refused over the whole
+        trial (its processes, root's included), read from BenchFlow's helper,
+        into service-network.json as ``main_metadata_refused_at_end``.
+        Their own proofs make the baseline; anything above it tried the
+        metadata server. Never fails the cleanup."""
+        env = getattr(self, "_env", None)
+        rollout_dir = getattr(self, "_rollout_dir", None)
+        if env is None or rollout_dir is None:
+            return
+        from benchflow.sandbox.service_cover import SERVICE_NETWORK_RECORD
+        from benchflow.sandbox.verifier_network import main_metadata_refused
+
+        try:
+            refused = await main_metadata_refused(env)
+        except Exception as exc:
+            logger.debug("main's metadata counter not read at the end: %s", exc)
+            return
+        if refused is None:
+            return
+        path = Path(rollout_dir) / SERVICE_NETWORK_RECORD
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            data = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(data, dict):
+                return
+            data["main_metadata_refused_at_end"] = refused
+            path.write_text(json.dumps(data, indent=2) + "\n")
+
+    async def _disconnect_at_trial_end(self) -> None:
+        """The trial's last disconnect: grading is over or will not happen, so
+        a connection no quiesce has stopped yet (off and audit's turn end, a
+        trial that never graded) is stopped now and its logins removed, also
+        from a sandbox ``--keep-sandbox`` keeps (the lead's 19:23Z
+        ruling)."""
+        self._ending = True
+        try:
+            await self.disconnect()
+        finally:
+            self._ending = False
 
     async def _cleanup_before_teardown(self) -> None:
         self._capture_partial_acp_trajectory()
         disconnect_error: Exception | None = None
         try:
-            await self.disconnect()
+            await self._disconnect_at_trial_end()
         except Exception as exc:
             # Raised after teardown. Nothing more is read from this sandbox:
             # it may still hold the login the disconnect could not remove.
@@ -5016,6 +6127,10 @@ class Rollout:
             await self._teardown_usage_runtime()
             await self._teardown_egress()
             await self._teardown_finalize_usage()
+            # A count still missing a turn says so; then price what the
+            # host-side counts hold.
+            mark_incomplete_usage(self)
+            apply_list_price(self)
             raise disconnect_error
         self._enforce_required_usage_tracking()
         if self._proxy_reported_models:
@@ -5086,6 +6201,64 @@ class Rollout:
                     self._export_error = export_error
                 self._evolved_skills = None
 
+    async def _snapshot_session_logs_before_verify(self) -> None:
+        """The agent's session log and the native stream log, copied at the
+        end of the agent's turn, before hardening and test.sh: teardown counts
+        and prices from these copies (rollout._session_log.snapshot_session_logs).
+        Never raises."""
+        if getattr(self, "_rollout_paths", None) is None:
+            return
+        try:
+            await snapshot_session_logs(self)
+        except Exception as exc:
+            logger.warning("The agent's session log was not copied: %s", exc)
+
+    async def _stop_sandbox_proxies_before_verify(self) -> None:
+        """Stop each model proxy that runs in the agent's sandbox and import
+        its usage log, at the end of the agent's turn.
+
+        Hardening and the verifier come after: test.sh runs as root, with
+        code the agent wrote, and could stop the proxy before it flushed or
+        change its log while cleanup had yet to read it. The import is final
+        (the runtime is ``stopped``), so cleanup's stop does nothing more;
+        the rest of ``_teardown_usage_runtime`` reads only what is held here.
+        A proxy that cannot be stopped and read now is left to cleanup, as
+        before, and its count is marked incomplete. A host proxy is left as
+        it is. Never raises.
+        """
+        planes = getattr(self, "_planes", None)
+        if planes is None:
+            return
+        runtimes = (
+            *getattr(self, "_retired_usage_runtimes", ()),
+            getattr(self, "_usage_runtime", None),
+        )
+        for runtime in runtimes:
+            server = getattr(runtime, "server", None)
+            if (
+                runtime is None
+                or getattr(runtime, "stopped", False) is True
+                or getattr(server, "runs_in_sandbox", False) is not True
+            ):
+                continue
+            try:
+                # Cleanup stops it again if this stop cannot read its log
+                # while the sandbox still answers (retry_later).
+                await planes.stop_provider_runtime(runtime, retry_later=True)
+            except Exception as exc:
+                logger.warning(
+                    "The in-sandbox model proxy could not be stopped before the "
+                    "verifier; cleanup reads its log: %s",
+                    exc,
+                )
+                if server is not None and not isinstance(
+                    getattr(server, "usage_log_shortfall", None), str
+                ):
+                    server.usage_log_shortfall = (
+                        "it could not be stopped and read before the verifier ran "
+                        f"({describe_exception(exc)})"
+                    )
+
     async def _teardown_usage_runtime(self) -> None:
         usage_runtime = self._usage_runtime
         if usage_runtime is not None or self._retired_usage_runtimes:
@@ -5118,6 +6291,22 @@ class Rollout:
             if "agent_execution" in self._timing and "provider_wait" in self._timing:
                 self._timing["agent_without_provider_wait"] = max(
                     0.0, self._timing["agent_execution"] - self._timing["provider_wait"]
+                )
+            # An in-sandbox proxy whose imported log may miss calls.
+            #
+            shortfalls = [
+                shortfall
+                for runtime in self._usage_runtimes()
+                if isinstance(
+                    shortfall := getattr(
+                        getattr(runtime, "server", None), "usage_log_shortfall", None
+                    ),
+                    str,
+                )
+            ]
+            if shortfalls:
+                self._proxy_usage_incomplete_reason = INCOMPLETE_SANDBOX_PROXY.format(
+                    detail="; ".join(dict.fromkeys(shortfalls))
                 )
             usage_runtime = self._combined_usage_runtime()
             self._usage_metrics = self._planes.extract_usage(
@@ -5197,22 +6386,59 @@ class Rollout:
 
     async def _teardown_finalize_usage(self) -> None:
         self._finalize_usage_metrics()
+        # A native Claude Code turn that ended without its report: count it
+        # from the stream log BenchFlow keeps on the host (needs no sandbox).
+        salvage_from_stream_log(self)
 
     async def _teardown_price(self) -> None:
+        # What test.sh may have left in /logs/agent's session folders goes
+        # before teardown places its own copies there, the price's first
+        # .
+        await clear_session_log_folders_in_sandbox(self)
         # Unpriced Claude Code usage (a subscription): estimate its USD from
         # Claude Code's session log while the sandbox is still up.
         await price_from_session_log(self)
         # One record per model call, from the proxy or the agent's own log.
         await keep_session_logs(self)
+        # A log that could not be copied (a lost sandbox): the copy made
+        # while the turns ran.
+        place_session_mirror(self)
+        settle_session_log_folders(self)
+        # codex-acp's ACP usage is its last model call's, and a native Codex
+        # turn cut off reports nothing: count every call from the Codex log
+        # just copied.
+        await count_codex_tokens(self)
+        # A Claude Code turn over ACP cut off before its report: count it
+        # from the session log just copied.
+        salvage_from_session_log(self)
+        # A count still missing a turn, or taken from a copy that had not
+        # caught up, says so (usage_incomplete).
+        mark_incomplete_usage(self)
+        # A proxied call whose response carried no bill (an aborted OpenRouter
+        # stream): the provider's own record of it, by its generation id.
+        await resolve_provider_bills(self)
+        # Every trial with tokens and no cost: list prices.
+        apply_list_price(self)
         # Claude Code's compactions, while its session log is reachable.
         await count_compactions(self)
         if self._rollout_paths is not None:
             # Once per trial, off the event loop: a long run's proxy log is
             # tens of MB. result.json's agent_outcome reads the totals.
             try:
+                session_root = session_log_root(self)
                 await asyncio.to_thread(
-                    write_model_calls, Path(self._rollout_paths.rollout_dir)
+                    functools.partial(
+                        write_model_calls,
+                        Path(self._rollout_paths.rollout_dir),
+                        session_root=session_root,
+                    )
                 )
+                if getattr(self, "_trial_budget", None) is not None:
+                    # Read now, from the copy teardown holds.
+                    self._subagent_usage = subagent_usage(
+                        Path(self._rollout_paths.rollout_dir),
+                        session_root=session_root,
+                    )
             except Exception as exc:
                 logger.info("Could not write the trial's model calls: %s", exc)
 
@@ -5234,7 +6460,9 @@ class Rollout:
             self._verify_task = view
             if solve:
                 trajectory.extend(await self._solve_step(view, step.name))
+            self._step_under_way = "soft verify"
             rewards, output, error = await self.soft_verify()
+            self._step_under_way = None
             self._step_check_outputs.append(
                 _keep_round_output(self, index + 1, output, error)
             )
@@ -5254,6 +6482,7 @@ class Rollout:
                 if view.paths.uses_native_oracle_dir
                 else sandbox_paths.solution_dir
             )
+            self._step_under_way = "step set-up"
             await self._env.upload_dir(
                 view.paths.solution_dir,
                 str(target),
@@ -5264,6 +6493,7 @@ class Rollout:
                     reason="the task's own files (a step's solution)",
                 ),
             )
+            self._step_under_way = None
         trajectory, _agent = await _run_oracle(
             self._env,
             self._config.task_path,
@@ -5441,9 +6671,17 @@ class Rollout:
                 provider = dict(self._usage_metrics)
                 combined = dict(provider)
                 for field in _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT.values():
-                    combined[field] = _as_nonnegative_int(
-                        provider.get(field)
-                    ) + _as_nonnegative_int(native.get(field))
+                    parts = (provider.get(field), native.get(field))
+                    # Unknown in both parts stays unknown.
+                    combined[field] = (
+                        None
+                        if all(part is None for part in parts)
+                        else sum(_as_nonnegative_int(part) for part in parts)
+                    )
+                # The login's part has no 5-minute/1-hour split.
+                combined.update(
+                    n_cache_write_5m_tokens=None, n_cache_write_1h_tokens=None
+                )
                 combined["usage_details"] = {
                     **(provider.get("usage_details") or {}),
                     "provider_response": provider,
@@ -5452,7 +6690,17 @@ class Rollout:
                 # Provider spend covers only some roles; never present it as
                 # the complete cost of a run containing subscription usage,
                 # even if timeout/disconnect preceded its first usage report.
-                combined.update(cost_usd=None, price_source=None)
+                # Teardown's list price adds the login's share to it
+                # (rollout._cost.apply_list_price).
+                # The login's calls are not counted one by one: how many were
+                # priced at list price is unknown, not the proxied part's 0.
+                combined.update(
+                    cost_usd=None,
+                    price_source=None,
+                    cost_source=None,
+                    price_table_date=None,
+                    n_calls_cost_estimated=None,
+                )
                 self._usage_metrics = combined
                 self._mixed_usage_finalized = True
             return
@@ -5550,7 +6798,7 @@ class Rollout:
             agent_phase
             and not isinstance(e, IdleTimeoutError)
             and (
-                isinstance(e, AgentPromptTimeoutError)
+                isinstance(e, (AgentPromptTimeoutError, AgentDeadlineTimeoutError))
                 or "exceeded wall-clock budget" in detail
                 or not detail
             )
@@ -5558,8 +6806,12 @@ class Rollout:
         if ran_out_of_time:
             self._agent_ran_out_of_time = True
         # Judged on what the agent did, like a bare timeout. An idle timeout
-        # is left out: it is retried, an integration failure is not.
-        self._judge_timed_out_agent = ran_out_of_time and bool(detail)
+        # is too, unless a run's retry loop owns the attempt: the loop retries
+        # an idle timeout and never an integration failure, and judges the
+        # attempt it keeps (rollout._results.judge_kept_idle_timeout).
+        owned = getattr(getattr(self, "_config", None), "owned_by_retry_loop", False)
+        judge_idle = agent_phase and isinstance(e, IdleTimeoutError) and not owned
+        self._judge_timed_out_agent = (ran_out_of_time or judge_idle) and bool(detail)
         if not detail and self._started_at is not None:
             elapsed = (datetime.now() - self._started_at).total_seconds()
             detail = (
@@ -5568,6 +6820,29 @@ class Rollout:
             )
         self._error = detail or f"Agent timed out after {self._timeout}s"
         self._diagnostics.capture_idle(e)
+        if (
+            ran_out_of_time
+            and "exceeded wall-clock budget" in detail
+            and not self._diagnostics.get(AgentPromptTimeoutDiagnostic.field)
+        ):
+            # A prompt's wall-clock timeout whose prompt could not be drained
+            # (the native harness's cancelled turn) carries no diagnostic of
+            # its own; the trial still records that it timed out.
+            # Only that one: a host-deadline stop records its own, and is not
+            # the prompt budget's.
+            role = getattr(self, "_active_role", None)
+            budget = (
+                role.timeout_sec
+                if role and role.timeout_sec is not None
+                else self._timeout
+            )
+            self._diagnostics.set(
+                AgentPromptTimeoutDiagnostic(
+                    # Unknown is None, never 0.
+                    timeout_sec=float(budget) if budget else None,
+                    n_tool_calls=self._n_tool_calls,
+                )
+            )
         # Read with getattr: continue_run's Trial records its timeouts here too.
         server = getattr(getattr(self, "_usage_runtime", None), "server", None)
         stalled = getattr(type(server), "stalled_model_requests", None)
@@ -5601,6 +6876,214 @@ class Rollout:
             self._terminal_timeout = True
         logger.error(self._error)
 
+    #: The step under way, by the phase the lifecycle had reached, for a
+    #: timeout before the agent's turn ended. The turn itself is not here: a
+    #: model agent's has its own handler, and a scripted agent's own limit is
+    #: typed (the oracle's OracleTimeoutError) or comes back in its trajectory
+    #: (a script's ``timed_out``). Installed, with the turn not over, the step
+    #: is BenchFlow's own for that turn: a script's egress policy and
+    #: firewall, the oracle's workspace trust and network policy, a continued
+    #: run's model and replay proxies. The steps the phase does not tell
+    #: apart are named in ``_step_under_way``: a multi-step task's step
+    #: set-up (a step's solution upload) and soft verify (each step's check,
+    #: for the oracle and nop), and a script's tear-down after it ran.
+    _STEP_BEFORE_TURN_ENDS: ClassVar[dict[str, str]] = {
+        "created": "setup",
+        "setup": "start",
+        "started": "install",
+        "installed": "agent set-up",
+    }
+
+    def _step_now(self, *, turn_over: bool) -> str | None:
+        """The step under way: verify once the agent's turn is over, else
+        the one the lifecycle named or its phase stands for; None while the
+        agent takes its turn."""
+        if turn_over:
+            return "verify"
+        step = getattr(self, "_step_under_way", None)
+        if step is not None:
+            return step
+        phase = getattr(self, "_phase", None)
+        return (
+            self._STEP_BEFORE_TURN_ENDS.get(phase) if isinstance(phase, str) else None
+        )
+
+    def _step_that_timed_out(
+        self, e: TimeoutError, *, turn_over: bool = False
+    ) -> str | None:
+        """The step a timeout belongs to when it is not the agent's, else None.
+
+        Decided by what raised it and where the lifecycle stood, never by the
+        message: the agent's own timeouts are typed (its prompt budget, the
+        idle watchdog, the oracle's solve.sh), and once the agent's turn is
+        over (*turn_over*) only verify() is left, whichever phase the turn
+        left behind.
+        """
+        from benchflow.rollout._setup import OracleTimeoutError
+
+        if isinstance(
+            e, (AgentPromptTimeoutError, IdleTimeoutError, OracleTimeoutError)
+        ):
+            return None
+        return self._step_now(turn_over=turn_over)
+
+    def _record_phase_timeout(self, e: TimeoutError, step: str) -> None:
+        """A step that is not the agent's turn ran out of time: an
+        infrastructure failure of its own category (``phase_timeout``),
+        retried, and never the agent's timeout. It used to be recorded as
+        "Agent timed out after 0s elapsed in rollout (budget 0s)", category
+        ``timeout``: the agent's fault, not retried. ``phase_timeout_info``
+        records the step, the limit when the timeout carries one and the
+        trial's elapsed seconds."""
+        started = getattr(self, "_started_at", None)
+        elapsed = (
+            (datetime.now() - started).total_seconds() if started is not None else None
+        )
+        limit = getattr(e, "timeout_sec", None)
+        detail = str(e).strip()
+        when = (
+            f"after {elapsed:.0f}s of the trial"
+            if elapsed is not None
+            else "after an unknown time (the trial's clock had not started)"
+        )
+        self._error = f"{PHASE_TIMEOUT_HEADER} [{step}] {when}" + (
+            f": {detail}" if detail else ""
+        )
+        self._diagnostics.set(
+            PhaseTimeoutDiagnostic(
+                step=step,
+                timeout_sec=float(limit)
+                if isinstance(limit, (int, float)) and not isinstance(limit, bool)
+                else None,
+                elapsed_sec=round(elapsed, 1) if elapsed is not None else None,
+            )
+        )
+        logger.error(self._error)
+
+    def _record_lifecycle_timeout(self, e: TimeoutError, *, turn_over: bool) -> None:
+        """A timeout that reached the lifecycle's own handler, past the agent
+        turn's (run()'s, and continue_run's), when the turn recorded no ending
+        to keep (:meth:`_kept_turn_ending`): the step the timeout belongs to
+        is the infrastructure's (:meth:`_record_phase_timeout`), and a timeout
+        no step owns (the oracle's solve.sh) is the agent's.
+        """
+        step = self._step_that_timed_out(e, turn_over=turn_over)
+        if step is None:
+            self._record_agent_timeout(e, agent_phase=False)
+        else:
+            self._record_phase_timeout(e, step)
+
+    def _keeps_turn_ending(self) -> bool:
+        """Whether the agent's turn is over and recorded the trial's ending,
+        which nothing that fails after it may replace. A solver marked
+        complete is not here: its later failures are the ``[solver-preserved]``
+        verifier errors, whose verifier runs again alone."""
+        return getattr(self, "_turn_ended_trial", False) and not getattr(
+            self, "_solver_execution_complete", False
+        )
+
+    def _kept_turn_ending(self, e: BaseException, *, turn_over: bool) -> bool:
+        """Whether the ending the agent's turn recorded is kept over *e*, a
+        failure after it, which is then recorded beside it; False when the
+        turn recorded no ending, and the caller records *e* as before.
+
+        The rule, for every handler a failure after the turn reaches: the
+        trial comes out as it would have with nothing failing after the turn
+        (its time limit, the host deadline, the trial budget, a model refusal,
+        an output-cap ending, a script stopped at its limit, and the
+        zero-activity judgement of an agent timeout, which is part of that
+        ending): the same error, category, retry decision and reward handling,
+        so a failure after the turn never runs and pays for the agent again.
+        *e* is recorded beside it in ``post_turn_failure_info``
+        (:meth:`_record_post_turn_failure`) and decides nothing; the one
+        difference is that a verify step that itself failed recorded no
+        reward. Decided by the lifecycle's state, never by the message.
+        """
+        if not Rollout._keeps_turn_ending(self):
+            return False
+        Rollout._record_post_turn_failure(
+            self,
+            Rollout._step_now(self, turn_over=turn_over) or "verify",
+            _post_turn_failure_kind(e),
+            describe_exception(e),
+        )
+        return True
+
+    def _record_post_turn_failure(
+        self, step: str, kind: str, detail: str, *, stopping: bool = False
+    ) -> None:
+        """Record a step's failure after the agent's turn ended the trial
+        beside that ending, which keeps its error and category. The first such
+        failure is kept; a later one (cleanup after a failed verify) is only
+        logged. The zero-activity judgements of an agent timeout (#1071) are
+        the turn's and stay as it set them: the result judges the turn as it
+        would have with nothing failing after it. ``stopping``: the step
+        failed while the run was being stopped (Ctrl-C, SIGTERM), and the
+        stop is the trial's ending."""
+        from benchflow.rollout._results import _masked
+
+        if self._diagnostics.get(PostTurnFailureDiagnostic.field) is None:
+            self._diagnostics.set(
+                PostTurnFailureDiagnostic(
+                    step=step, kind=kind, detail=_masked(detail) or ""
+                )
+            )
+        if stopping:
+            logger.error(
+                f"The {step} step failed while the run was being stopped; "
+                f"the trial is recorded as interrupted: {detail}"
+            )
+            return
+        logger.error(
+            f"The {step} step failed after the agent's turn ended the trial; "
+            f"the trial keeps that ending: {detail}"
+        )
+
+    async def _verify_after_turn(self) -> bool:
+        """The trial's verify() once the agent's turn is over (run()'s and
+        continue_run's); True when the verify step failed after the turn had
+        ended the trial, and the trial stays unscored.
+
+        verify() records some failures of its own step as a verifier crash
+        instead of raising them (a connection lost while it probes or
+        captures the workspace, among them), and the verifier retry rule
+        (:func:`~benchflow.rollout._verifier_recovery.verifier_error_reruns_trial`)
+        would answer that crash with another attempt, agent and all. After an
+        ending the turn recorded, the crash is recorded beside that ending
+        instead, as a failure verify() raises is by the lifecycle's handlers
+        (:meth:`_kept_turn_ending`), and ``verifier_error`` is left in no
+        form the retry rule or a resume (its full-disk rerun among them)
+        acts on. A task whose verifier can be recovered keeps the crash as
+        its ``[solver-preserved]`` form, which only a verifier-only re-run
+        reads (in this run once cleanup finished, or ``bench eval score``):
+        the workspace the turn left can still be scored, never by running the
+        agent again. Any other task keeps it here alone.
+        """
+        from benchflow.rollout._verifier_recovery import (
+            PRESERVED_SOLVER,
+            recovery_ineligible_reason,
+            verifier_error_reruns_trial,
+        )
+
+        await self.verify()
+        if (
+            not Rollout._keeps_turn_ending(self)
+            or self._rewards is not None
+            or not verifier_error_reruns_trial(self._verifier_error, on_resume=True)
+        ):
+            return False
+        assert self._verifier_error is not None
+        Rollout._record_post_turn_failure(
+            self, "verify", "verifier_crash", self._verifier_error
+        )
+        self._verifier_error = (
+            f"{PRESERVED_SOLVER} {self._verifier_error}"
+            if recovery_ineligible_reason(self) is None
+            else None
+        )
+        return True
+
+    @_with_verifier_setup_budget
     async def run(self) -> RolloutResult:
         """Run the complete trial lifecycle under a host-side hard deadline.
 
@@ -5620,14 +7103,103 @@ class Rollout:
                             self._rollout_dir
                             if self._config.purpose == "task"
                             else None
-                        )
+                        ),
+                        usage=lambda: self._usage_metrics,
                     ),
                 ):
-                    return await self._run_with_scoring()
+                    try:
+                        return await self._run_with_scoring()
+                    except asyncio.CancelledError:
+                        # Ctrl-C, SIGTERM or a budget stop: cleanup counted
+                        # what the trial spent; keep it.
+                        # (getattr: callers drive run() with doubles too.)
+                        record = getattr(self, "_record_cancelled_attempt", None)
+                        if callable(record):
+                            record()
+                        raise
             finally:
                 # A task copy a collected sandbox's finalizer had to queue goes
                 # now, whoever runs the trial (Runtime.execute, branch, regrade).
                 remove_released()
+
+    def _record_cancelled_attempt(self) -> None:
+        """Write a stopped trial's result.json with what it spent.
+
+        A trial stopped before it finished (Ctrl-C, SIGTERM, a budget stop)
+        used to leave no result: the tokens and cost cleanup counted were
+        lost, and the job's summary said 0. Its result.json now keeps them,
+        unscored and marked ``interrupted`` (``_utils.result_paths``):
+        readers still see an interrupted trial, and a resume runs the task
+        again. Never raises over the cancellation.
+        """
+        from benchflow._utils.result_paths import INTERRUPTED_MARK
+        from benchflow.review.persistence import write_json_atomic
+
+        rollout_dir = self._rollout_dir
+        if (
+            self._config.purpose != "task"
+            or rollout_dir is None
+            or not self._rollout_name
+            or self._started_at is None
+            or (rollout_dir / "result.json").exists()
+            # A solver snapshot keeps the attempt (with its spend) for its
+            # review or scoring on resume, which must publish its result.
+            or (rollout_dir / "solver.json").exists()
+            or (rollout_dir / "solver-complete.json").exists()
+        ):
+            return
+        try:
+            # What cleanup's steps may not have reached: the host's own logs.
+            salvage_from_stream_log(self)
+            mark_incomplete_usage(self)
+            apply_list_price(self)
+            if self._error is None:
+                self._error = INTERRUPTED_ERROR
+            self._rewards = None
+            self._scoring = None
+            self._partial_trajectory = True
+            # The result alone: no results.jsonl or trainer records, which the
+            # job's exports would gather as a finished attempt.
+            staged = rollout_dir / "result-interrupted.json"
+            self._build_result(result_filename=staged.name)
+            data = json.loads(staged.read_text())
+            data[INTERRUPTED_MARK] = True
+            write_json_atomic(rollout_dir / "result.json", data)
+            staged.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Could not record the stopped trial's spend", exc_info=True)
+
+    def result_after_failure(self, exc: BaseException) -> RolloutResult | None:
+        """The result of a run that raised, written into its own folder.
+
+        A trial whose run raised (a lost sandbox whose teardown failed) used
+        to get a new trial folder with a minimal error result from the job,
+        leaving its own folder, with the usage it captured, without one. The trial keeps its folder and id: its error, its salvaged
+        tokens and cost. None when the trial has no folder yet.
+        """
+        rollout_dir = self._rollout_dir
+        if (
+            self._config.purpose != "task"
+            or rollout_dir is None
+            or not self._rollout_name
+            or self._started_at is None
+        ):
+            return None
+        path = rollout_dir / "result.json"
+        if path.is_file():
+            return RolloutResult.load(rollout_dir)
+        salvage_from_stream_log(self)
+        mark_incomplete_usage(self)
+        apply_list_price(self)
+        if self._error is None:
+            self._error = f"Unexpected: {describe_exception(exc)}"
+        self._rewards = None
+        self._scoring = None
+        self._partial_trajectory = True
+        with scoring_lock(rollout_dir):
+            result = read_admitted_result(self) or self._build_result()
+        self._completed_result = result
+        return result
 
     async def _run_with_scoring(self) -> RolloutResult:
         """Execute, clean up, and publish the attempt's scoring when complete.
@@ -5639,7 +7211,9 @@ class Rollout:
         A trip while the agent is still running stops only the agent and is
         reported as its timeout after verification (#1134); any other trip
         becomes a normal infra-retryable error result and the abandoned
-        attempt's cleanup is bounded too.
+        attempt's cleanup is bounded too, unless the agent's turn had already
+        recorded the trial's ending (other than that stop, whose grace the kill
+        ended), which keeps its error and category with the kill beside it.
         """
         started_at = datetime.now()
         result = await _deadline.enforce_hard_deadline(
@@ -5673,14 +7247,41 @@ class Rollout:
                     self._config.jobs_dir,
                 )
                 self._started_at = started_at
-            self._error = result.error
-            self._rewards = self._scoring = None
-            self._verifier_error = None
+            # After the agent's turn recorded the trial's ending (its time
+            # limit, the trial budget, ...), the kill is a later failure: the
+            # trial comes out as that ending would have (_kept_turn_ending),
+            # its zero-activity judgement included, the kill is recorded
+            # beside it, and a reward the verify step recorded is handled as
+            # without the kill. Otherwise the kill is the trial's ending. The
+            # deadline's own stop of the agent is such an ending too (the
+            # agent ran out of time): a kill past the grace that stop gave
+            # verification still ends the trial there (#1134), with the
+            # overrun recorded beside it.
+            kept = self._keeps_turn_ending()
+            if kept:
+                self._record_post_turn_failure(
+                    getattr(self, "_step_under_way", None) or "verify",
+                    "host_deadline",
+                    result.error or "host hard deadline",
+                )
+            else:
+                self._error = result.error
+                self._rewards = None
+                self._verifier_error = None
+                # The deadline typed this category: the zero-activity
+                # judgements of an agent timeout recorded before the kill
+                # (#1071) must not decide it. A kept ending keeps them: they
+                # are part of it.
+                self._bare_timeout = False
+                self._judge_timed_out_agent = False
+            self._scoring = None
             self._partial_trajectory = True
             self._rollout_name = self._rollout_name or self._rollout_dir.name
             self._started_at = self._started_at or started_at
             with scoring_lock(self._rollout_dir):
-                result = read_admitted_result(self) or self._build_result()
+                result = read_admitted_result(self) or self._build_result(
+                    error_category=None if kept else result.error_category
+                )
             self._completed_result = result
             return result
         return await self._finish_scoring(result)
@@ -5748,7 +7349,7 @@ class Rollout:
             # A finished attempt releases the lease itself; an interrupted
             # one keeps it for `bench eval score` resume.
             try:
-                with _keeping_trial_warnings(self):
+                with _keeping_trial_warnings(self), _keeping_judge_calls(self):
                     self._rewards, self._verifier_error = await recover_verifier(self)
             except Exception as exc:
                 self._rewards = None
@@ -5791,6 +7392,7 @@ class Rollout:
         if verdict is not None:
             result.integrity = verdict.as_dict()
 
+    @_with_verifier_setup_budget
     async def finalize(self) -> RolloutResult:
         """Finish a manually driven rollout, including required rubric review."""
         if self._completed_result is not None:
@@ -5816,6 +7418,7 @@ class Rollout:
         cfg = self._config
         agent_timed_out = False
         budget_stopped = False
+        turn_over = False
         pending_acp_error: AgentProtocolError | None = None
         if cfg.skill_mode == SKILL_MODE_SELF_GEN:
             raise ValueError(
@@ -5824,6 +7427,12 @@ class Rollout:
             )
         try:
             await self._setup_and_start()
+            # Every compose service is covered before anything runs in the
+            # sandbox, whatever runs: nop and the oracle too (RCI on
+            # c572eb0de). An agent's connect covers again only what is new.
+            # Covered whether or not the rollout has a trial folder (an SDK
+            # caller's run without setup's folder: the record is not written).
+            await self._cover_task_services(getattr(self, "_rollout_dir", None))
 
             if cfg.primary_agent == "nop":
                 # The empty control: nothing runs, the verifier scores the
@@ -5879,7 +7488,24 @@ class Rollout:
                     script_policy = await task_service_policy(
                         self._env, self._egress_denylist
                     )
-                    if script_policy is not None:
+                    every_process = getattr(self._env, "rules_by_helper", False) is True
+                    if script_policy is not None and every_process:
+                        # Every process of main, root's included, held to the
+                        # policy for the script's turn, as the oracle's is: the
+                        # proxy runs in its own container, its marked sockets
+                        # the only way out (S2). Out at hardening, under
+                        # the handover's hold.
+                        from benchflow.sandbox.oracle_egress import arm_oracle_egress
+
+                        armed = await arm_oracle_egress(
+                            self._env, script_policy, run_as=cfg.sandbox_user
+                        )
+                        self._env._benchflow_oracle_egress = (
+                            armed,
+                            self._require_rollout_dir(),
+                        )
+                        script_env = dict(armed.env)
+                    elif script_policy is not None:
                         await self._start_egress_denylist(script_policy)
                         script_env = denylist_agent_env({}, script_policy)
                     await self._planes.enforce_agent_egress_firewall(
@@ -5893,6 +7519,18 @@ class Rollout:
                         await self._planes.enforce_offline_uid_egress(
                             self._env, cfg.sandbox_user
                         )
+                        if every_process:
+                            # And every process of main, root's included
+                            # (S2): out at hardening, under the hold.
+                            from benchflow.sandbox.verifier_network import (
+                                arm_offline_agent_phase,
+                            )
+
+                            held = await arm_offline_agent_phase(self._env)
+                            with contextlib.suppress(OSError):
+                                (
+                                    self._require_rollout_dir() / "agent-network.json"
+                                ).write_text(json.dumps(held, sort_keys=True) + "\n")
                     await self._apply_cloud_metadata_block(self._require_rollout_dir())
                     self._trajectory, self._agent_name = await _run_script(
                         self._env,
@@ -5906,11 +7544,27 @@ class Rollout:
                         task=self._task,
                     )
                     self._agent_ran_out_of_time = self._trajectory[0]["timed_out"]
+                    # The script's turn is over; a script stopped at its
+                    # limit ended the trial. Its egress tear-down follows.
+                    self._turn_ended_trial = self._agent_ran_out_of_time
+                    self._step_under_way = "agent tear-down"
+                    if self._agent_ran_out_of_time:
+                        # result.json says the script ran to its time limit,
+                        # as it does for any other agent. The error stays
+                        # None: the workspace it left is graded as it stands.
+                        self._diagnostics.set(
+                            AgentPromptTimeoutDiagnostic(
+                                timeout_sec=float(self._timeout),
+                                terminal_event_recorded=True,
+                                terminal_trajectory_complete=True,
+                            )
+                        )
                 finally:
                     self._timing["agent_execution"] = (
                         datetime.now() - script_started
                     ).total_seconds()
                     await self._stop_active_egress()
+                self._step_under_way = None
                 from benchflow.rollout._verifier_recovery import mark_solver_complete
 
                 mark_solver_complete(self)
@@ -5972,17 +7626,28 @@ class Rollout:
                         self._error = str(e)
                         logger.error(self._error)
 
+            # The agent's turn is over: a timeout from here on is verify()'s.
+            turn_over = True
+            # Whether the turn recorded the trial's ending: nothing that fails
+            # from here on replaces it (_kept_turn_ending).
+            self._turn_ended_trial = (
+                self._error is not None or self._agent_ran_out_of_time
+            )
             if not cfg.skip_verify:
                 # The trial's own last verify(): a separate verifier may stop
                 # the agent's sandbox before its transfer (cleanup() follows).
                 self._release_agent_before_verify = True
                 try:
-                    await self.verify()
+                    verify_failed = await self._verify_after_turn()
                 finally:
                     self._release_agent_before_verify = False
                 self._apply_step_rewards()
+                # A verifier that ran and gave no reward scores a timed-out or
+                # budget-stopped agent's workspace 0; a verify step that failed
+                # leaves the trial unscored.
                 if (
                     (agent_timed_out or budget_stopped)
+                    and not verify_failed
                     and self._rewards is None
                     and self._verifier_error is None
                 ):
@@ -5990,45 +7655,55 @@ class Rollout:
                     self._verifier_error = None
                 self._record_taskmd_timed_out()
 
+        # A failure after the agent's turn recorded the trial's ending is kept
+        # beside that ending in every handler below (_kept_turn_ending): it
+        # never replaces the ending's error or category.
         except TimeoutError as e:
             if self._solver_execution_complete:
                 self._verifier_error = (
                     f"[solver-preserved] post-solver stage timed out: {e}"
                 )
-            else:
-                self._record_agent_timeout(e, agent_phase=False)
+            elif not self._kept_turn_ending(e, turn_over=turn_over):
+                self._record_lifecycle_timeout(e, turn_over=turn_over)
         except ConnectionError as e:
             if self._solver_execution_complete:
                 self._verifier_error = f"[solver-preserved] verifier crashed: {e}"
-            else:
+            elif not self._kept_turn_ending(e, turn_over=turn_over):
                 self._error = str(e)
                 self._diagnostics.capture_transport(e)
                 await self._probe_sandbox_health()
                 logger.error(f"Agent connection lost: {self._error}")
+        except IntegrityUnavailableError as e:
+            # Refused before the agent's turn (Q4): BenchFlow's own words.
+            if not self._kept_turn_ending(e, turn_over=turn_over):
+                self._error = str(e)
+                logger.error(self._error)
         except SandboxStartupFailure as e:
-            self._error = f"Sandbox startup failed: {e}"
-            self._diagnostics.set(e.diagnostic)
-            logger.error(self._error)
+            # A separate verifier's sandbox, after the turn, among them.
+            if not self._kept_turn_ending(e, turn_over=turn_over):
+                self._error = f"Sandbox startup failed: {e}"
+                self._diagnostics.set(e.diagnostic)
+                logger.error(self._error)
         except AgentModelNotOfferedError as e:
             # Already an agent-integration error text; keep it verbatim so
             # its category and the batch circuit breaker see the cause
             # (agent_model, or agent_effort for a model it offers at other
             # efforts).
-            self._error = str(e)
-            self._diagnostics.set(
-                IntegrationFailureDiagnostic(
-                    cause=e.cause,
-                    evidence=str(e).split(": ", 1)[-1],
-                    evidence_source=e.evidence_source,
+            if not self._kept_turn_ending(e, turn_over=turn_over):
+                self._error = str(e)
+                self._diagnostics.set(
+                    IntegrationFailureDiagnostic(
+                        cause=e.cause,
+                        evidence=str(e).split(": ", 1)[-1],
+                        evidence_source=e.evidence_source,
+                    )
                 )
-            )
-            logger.error(self._error)
+                logger.error(self._error)
         except AgentProtocolError as e:
             # Defer classification until after cleanup(): the provider 401/403
             # that distinguishes provider_auth from a generic retryable ACP
             # error lives in the usage-proxy trajectory, which Daytona's
             # SandboxUsageProxy only imports on stop() (#546/#564).
-            pending_acp_error = e
             # Set a provisional error so cleanup()'s
             # _enforce_required_usage_tracking guard early-returns instead of
             # logging a misleading "no provider token usage was captured"
@@ -6036,19 +7711,22 @@ class Rollout:
             # The post-cleanup block below still unconditionally refines
             # self._error to the provider_auth marker, so this is only a
             # placeholder during cleanup.
-            self._error = str(e)
-            if not isinstance(e, UsageLimitError):
-                # A usage limit is logged once, below, with its login.
-                logger.error(str(e))
+            if not self._kept_turn_ending(e, turn_over=turn_over):
+                pending_acp_error = e
+                self._error = str(e)
+                if not isinstance(e, UsageLimitError):
+                    # A usage limit is logged once, below, with its login.
+                    logger.error(str(e))
         except Exception as e:
             # describe_exception, not str(e): this is the funnel every
             # unclassified rollout failure lands in, and some SDK errors
             # stringify to a bare wrapper prefix with no detail behind it.
             # Persisting those raw leaves an artifact that names neither what
-            # failed nor that the detail was empty.
+            # failed nor that the detail was empty. ExecTimeoutError (a
+            # RuntimeError: Docker's exec past its time limit) lands here.
             if self._solver_execution_complete:
                 self._verifier_error = f"[solver-preserved] post-solver stage failed: {describe_exception(e)}"
-            else:
+            elif not self._kept_turn_ending(e, turn_over=turn_over):
                 self._error = describe_exception(e)
             if isinstance(e, UserError):
                 # Expected (a missing login, a task file that does not
@@ -6067,12 +7745,51 @@ class Rollout:
                 )
                 logger.debug("Run failed", exc_info=True)
         finally:
+            current = asyncio.current_task()
+            if current is None or not current.cancelling():
+                # A host deadline that kills the lifecycle from here on kills
+                # its cleanup (run()'s hard-deadline branch reads the step).
+                self._step_under_way = "cleanup"
             try:
                 await self.cleanup()
             except Exception as exc:
-                if not self._solver_execution_complete:
-                    raise
-                self._verifier_error = f"[solver-preserved] post-solver cleanup failed: {describe_exception(exc)}"
+                if self._solver_execution_complete:
+                    self._verifier_error = f"[solver-preserved] post-solver cleanup failed: {describe_exception(exc)}"
+                elif self._keeps_turn_ending():
+                    # The turn's ending stays the trial's, as for any failure
+                    # after it (_kept_turn_ending).
+                    self._record_post_turn_failure(
+                        "cleanup",
+                        _post_turn_failure_kind(exc),
+                        describe_exception(exc),
+                    )
+                elif current is not None and current.cancelling():
+                    # A stop in flight (Ctrl-C, SIGTERM, a budget stop) ends
+                    # the trial: it is recorded as interrupted, with the
+                    # cleanup's failure beside that ending, never in its place.
+                    self._record_post_turn_failure(
+                        "cleanup",
+                        _post_turn_failure_kind(exc),
+                        describe_exception(exc),
+                        stopping=True,
+                    )
+                elif self._error is None:
+                    # Nothing before it ended the trial: the cleanup's failure
+                    # does, an infrastructure failure, retried, and result.json
+                    # is written (it used to raise out of run() with none).
+                    # The reward the verify step recorded is withheld, as at
+                    # the hard deadline's kill: the attempt is not the trial's
+                    # result (verifier/ keeps the verifier's own files).
+                    self._error = f"{CLEANUP_FAILED_HEADER}: {describe_exception(exc)}"
+                    self._rewards = None
+                    logger.error(self._error)
+                else:
+                    # An error recorded before cleanup (setup, the agent's)
+                    # stays the trial's, with its category and retry decision.
+                    logger.error(
+                        f"Cleanup failed after the trial's error: "
+                        f"{describe_exception(exc)}"
+                    )
                 self._export_error = (
                     "Post-solver cleanup did not finalize telemetry/evidence"
                 )
@@ -6208,6 +7925,94 @@ class Rollout:
                     max(0.0, self._trial_clock_start - ready_at),
                 )
 
+    async def _check_test_sh(self) -> None:
+        """What test.sh needs, resolved as the verifier will run it, just
+        before the agent's turn: after BenchFlow's own setup (the agent's
+        install, the sandbox user, the PATH lock), before anything of the
+        agent's. A command test.sh can never run without refuses the
+        trial, unscored and never retried; one it merely names is a warning
+        in result.json that changes no score."""
+        from benchflow._utils.config import normalize_sandbox_user
+        from benchflow.task import test_sh_preflight
+
+        if self._from_branch_snapshot:
+            # The restored checkpoint is the source trial's sandbox after its
+            # agent ran: it is never judged. A tool the agent removed there
+            # stays the agent's failure. The verdict decided once, before the
+            # source's turn on the untouched image (or, for a checkpoint that
+            # recorded none, on a fresh sandbox of the image), is carried:
+            # refused or clean, with its warnings.
+            source = self._test_sh_preflight_inherited
+            if not isinstance(source, dict) or not source:
+                # Only a test.sh the check reads has a verdict to miss.
+                if test_sh_preflight.needs_verdict(self._task):
+                    raise test_sh_preflight.TestShPreflightUnavailable(
+                        f"{test_sh_preflight.UNAVAILABLE_HEAD}: its source trial "
+                        "recorded none (a checkpoint from before the check), and "
+                        "none could be decided on a fresh sandbox of the task's "
+                        "image; the restored sandbox, after its agent ran, is never "
+                        "judged. Run the task again to branch from a new checkpoint"
+                    )
+                self._test_sh_preflight = None
+                return
+            self._test_sh_preflight = test_sh_preflight.inherited(source)
+            refusal = test_sh_preflight.carried_refusal(self._test_sh_preflight)
+            if refusal is not None:
+                raise refusal
+            with _keeping_trial_warnings(self):
+                for warning in self._test_sh_preflight.get("warnings", ()):
+                    report_trial_warning(warning)
+            return
+        with _keeping_trial_warnings(self):
+            try:
+                record = await test_sh_preflight.check(
+                    self._env,
+                    self._task,
+                    sandbox_user=normalize_sandbox_user(self._config.sandbox_user),
+                    workspace=self._agent_cwd,
+                )
+            except test_sh_preflight.TestShPreflightRefused as refused:
+                # The refused trial keeps what refused it.
+                self._test_sh_preflight = refused.record
+                raise
+            self._test_sh_preflight = record
+            for warning in (record or {}).get("warnings", ()):
+                report_trial_warning(warning)
+
+    def _test_sh_preflight_result(self) -> dict[str, Any] | None:
+        """result.json's ``test_sh_preflight``, with the wrong-0 candidate:
+        a warned command that test-stdout.txt last reported not found in a
+        trial that scored 0 (names it, never changes the score)."""
+        record = self._test_sh_preflight
+        if not record or not record.get("missing"):
+            return record
+        from benchflow.task.test_sh_preflight import wrong_zero_candidate
+
+        rewards = self._rewards if isinstance(self._rewards, dict) else {}
+        stdout = None
+        path = getattr(self._rollout_paths, "test_stdout_path", None)
+        if path is not None:
+            # The sandbox could have made it a link, a FIFO or a device: through
+            # the held capability, a regular file only, its last 64 KiB
+            # (as _setup._verifier_missed_a_program reads it).
+            import stat as _stat
+
+            try:
+                with destination(path).open("rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    if _stat.S_ISREG(opened.st_mode):
+                        handle.seek(max(0, opened.st_size - 65536))
+                        stdout = handle.read(65536).decode(errors="replace")
+            except OSError:
+                stdout = None
+        try:
+            candidate = wrong_zero_candidate(record, rewards.get("reward"), stdout)
+        except Exception:
+            candidate = None
+        if candidate is None:
+            return record
+        return {**record, "wrong_zero_candidate": candidate}
+
     async def _install_agent_step(self) -> None:
         """install_agent(), unless the warm pool already ran it for this trial."""
         if getattr(self, "_prestart", None) is None:
@@ -6283,6 +8088,14 @@ class Rollout:
         :class:`TrialBudgetSpentError`. Any other cancellation, including one
         of the lifecycle itself, propagates.
         """
+        from benchflow.rollout import _reward_provenance
+
+        # A root agent in off or audit: said once, before its turn.
+        _reward_provenance.say_run_start(
+            self._config.primary_agent,
+            self._config.integrity,
+            self._config.sandbox_user,
+        )
         agent = asyncio.ensure_future(phase)
         self._agent_phase = agent
         watch = (
@@ -6301,7 +8114,7 @@ class Rollout:
                 raise TrialBudgetSpentError(self._trial_budget_stop) from None
             if reason is None:
                 raise
-            raise TimeoutError(reason) from None
+            raise AgentDeadlineTimeoutError(reason) from None
         finally:
             if watch is not None:
                 watch.cancel()
@@ -6342,14 +8155,15 @@ class Rollout:
                 return record
         return budget_refusal(self._trial_budget_refused)
 
-    async def _settle_live_capture(self) -> None:
+    async def _settle_live_capture(self, timeout: float | None = None) -> None:
         """Let the trial's proxies' live capture read their logs as they
-        stand now (``settle_live_capture``)."""
+        stand now (``settle_live_capture``), for at most ``timeout`` seconds
+        each (the proxy's own default when None)."""
         for runtime in self._usage_runtimes():
             server = getattr(runtime, "server", None)
             settle = getattr(server, "settle_live_capture", None)
             if callable(settle):
-                await settle()
+                await (settle() if timeout is None else settle(timeout=timeout))
 
     async def _settled_budget_refusal(self) -> dict[str, Any] | None:
         """:meth:`_trial_budget_refusal` once the live capture has read the
@@ -6358,7 +8172,10 @@ class Rollout:
         if self._trial_budget is None:
             return None
         if self._trial_budget_stop is None and self._trial_budget_refusal() is None:
-            await self._settle_live_capture()
+            # A capture behind the log under load can take more than the
+            # proxy's 5 s default to reach the refusal; an agent error read
+            # before it would be retried as the agent's own (an ACP error).
+            await self._settle_live_capture(timeout=_BUDGET_SETTLE_TIMEOUT_SEC)
         return self._trial_budget_stop or self._trial_budget_refusal()
 
     async def _model_refused_so_far(self) -> bool:
@@ -6430,6 +8247,7 @@ class Rollout:
         """
         await _run_user_loop_engine(self)
 
+    @_with_verifier_setup_budget
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role.
 
@@ -6443,7 +8261,10 @@ class Rollout:
             [(cfg.primary_agent, cfg.primary_model), (role.agent, role.model)],
             sandbox_user=cfg.sandbox_user,
         )
-        await self._end_previous_connection((role.agent, role.model, ()))
+        # The key the role's logins are staged under (_stage_credentials).
+        key = (role.agent, role.model, tuple(sorted((role.env or {}).items())))
+        await self._end_previous_connection(key)
+        self._connection_key = key
         self._connection_needs_quiescence = True
         self._agent_pkill_done = self._agent_quiesced = False
         rollout_dir = self._require_rollout_dir()
@@ -6467,10 +8288,15 @@ class Rollout:
             disallow_hosted_search=disallow_hosted_search,
         )
         agent_env = _apply_web_policy(
-            self._planes.resolve_agent_env(
+            with_route_effort(
                 role.agent,
                 role.model,
-                {**(cfg.agent_env or {}), **(role.env or {})},
+                role.reasoning_effort,
+                self._planes.resolve_agent_env(
+                    role.agent,
+                    role.model,
+                    {**(cfg.agent_env or {}), **(role.env or {})},
+                ),
             ),
             disallow=disallow_web_tools,
         )
@@ -6486,6 +8312,20 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         force_sandbox_local = disallow_web_tools or disallow_hosted_search
+        # The role's uid firewall before its model proxy starts.
+        arm_early = getattr(type(self._planes), "arm_agent_uid_before_its_proxy", None)
+        if (
+            callable(arm_early)
+            and self._env is not None
+            and not is_scripted_agent(role.agent)
+        ):
+            await arm_early(
+                self._planes,
+                self._env,
+                cfg.sandbox_user,
+                no_web=disallow_web_tools,
+                egress_denylist=egress_denylist,
+            )
         # A host proxy starts while the sandbox guards run (see
         # _guards_beside_proxy); they then check the env before its wiring.
         beside = self._guards_beside_proxy(
@@ -6563,10 +8403,12 @@ class Rollout:
         self._record_proxy_layer_use()
         if egress_denylist is not None:
             agent_env = denylist_agent_env(agent_env, egress_denylist)
+        self._agent_otel_export_sec = None
         if wants_agent_otel(agent_env) and await start_agent_otel(self._env):
             # As connect() does: the role's OpenTelemetry goes to the receiver.
             agent_env = agent_otel_env(agent_env)
             self._agent_otel = True
+            self._agent_otel_export_sec = export_interval_sec(agent_env)
 
         if role_agent_differs:
             if cfg.skip_agent_install:
@@ -6897,6 +8739,10 @@ class Rollout:
         priced = [t for t in trajectories if t.has_provider_usage]
         if priced and all(t.total_cost_usd is not None for t in priced):
             combined.metadata["cost_usd"] = sum(t.total_cost_usd or 0.0 for t in priced)
+        # Requests a proxy saw cut before their usage report.
+        cut = sum(int(t.metadata.get("requests_cut") or 0) for t in trajectories)
+        if cut:
+            combined.metadata["requests_cut"] = cut
         if any(t._tool_evidence is not None for t in trajectories):
             # A stopped proxy's exchanges keep no request bodies; its import
             # read their tool evidence, which merges as their exchanges would.
@@ -6967,6 +8813,7 @@ class Rollout:
             environment=self._config.environment,
             status=status,
             usage_source=usage_source,
+            usage_source_legacy=self._usage_metrics.get("usage_source_legacy"),
         )
 
     def _current_sandbox_id(self) -> str | None:
@@ -7116,7 +8963,10 @@ class Rollout:
         )
 
     def _build_result(
-        self, *, result_filename: str | None = "result.json"
+        self,
+        *,
+        result_filename: str | None = "result.json",
+        error_category: str | None = None,
     ) -> RolloutResult:
         rollout_dir = self._require_rollout_dir()
         # Provider telemetry is imported during cleanup; a pre-cleanup stage
@@ -7132,8 +8982,20 @@ class Rollout:
         # to the resolved base prompts when no execute() ran (e.g. setup
         # failure paths).
         prompts = self._executed_prompts or self._resolved_prompts
+        # What the run asked for, however it asked: the config
+        # already folded a model[effort] suffix or a CODEX_CONFIG effort in;
+        # Claude Code's own variable is the request where it applies.
+        effort = effort_request(
+            self._config.primary_agent,
+            self._config.primary_model,
+            self._config.primary_reasoning_effort,
+            self._config.agent_env,
+        )
         return _build_rollout_result(
             rollout_dir,
+            # An attempt the run's retry loop may still retry is sent when
+            # the run decides it (Evaluation._record_attempt_decision).
+            send_spans=not getattr(self._config, "owned_by_retry_loop", False),
             task_name=self._config.task_path.name,
             rollout_name=self._rollout_name or "",
             agent=script_label(self._config.primary_agent),
@@ -7142,6 +9004,7 @@ class Rollout:
             n_tool_calls=self._n_tool_calls,
             prompts=prompts,
             error=self._error,
+            error_category=error_category,
             verifier_error=self._verifier_error,
             export_error=self._export_error,
             trajectory=self._trajectory,
@@ -7151,7 +9014,10 @@ class Rollout:
             stop_reasons=self._turn_stop_reasons,
             compactions=getattr(self, "_compactions", None),
             harness_versions=self._harness_versions,
-            reasoning_effort=self._config.primary_reasoning_effort,
+            reasoning_effort=effort.effort,
+            effort_requested_from=effort_source(
+                self._config.reasoning_effort_source, effort.source
+            ),
             effort_applied=getattr(self, "_effort_applied", None),
             effort_route=getattr(self, "_effort_route", None),
             rewards=self._rewards,
@@ -7192,8 +9058,12 @@ class Rollout:
             branches=self._branch_summary(),
             verifier_isolation=self._verifier_isolation,
             cloud_metadata=self._cloud_metadata_result,
+            host_ptrace_scope=self._host_ptrace_scope,
+            agent_user=self._agent_user,
+            test_sh_preflight=self._test_sh_preflight_result(),
             warnings=getattr(self, "_warnings", None),
             trial_budget=self._trial_budget_block(),
+            judge_usage=judge_usage.usage_block(getattr(self, "_judge_calls", ())),
             **self._usage_metrics,
         )
 
@@ -7225,7 +9095,79 @@ class Rollout:
             "stopped_by": stop.get("budget"),
             "stopped_at": stop.get("used"),
             "refused_calls": max(len(self._trial_budget_refused), 1 if stop else 0),
+            # Read at teardown from the copy of the agent's log teardown held
+            # absent when teardown did not get that far.
+            **(
+                {"subagents": self._subagent_usage}
+                if hasattr(self, "_subagent_usage")
+                else {}
+            ),
         }
+
+    async def _agent_user_record(
+        self,
+        image_user: str | None = None,
+        configured_workdir: str | None = None,
+        default_pwd: str | None = None,
+    ) -> dict[str, Any] | None:
+        """result.json's ``agent_user`` (sandbox/agent_user.py): read off the
+        event loop, as the task's files may need a local ``docker image
+        inspect``."""
+        from benchflow.sandbox import agent_user
+
+        cfg = self._config
+        agent = getattr(cfg, "primary_agent", None)
+        try:
+            return await asyncio.to_thread(
+                agent_user.record,
+                cfg.task_path,
+                getattr(getattr(self, "_task", None), "config", None),
+                agent,
+                getattr(cfg, "sandbox_user", None),
+                image_user,
+                configured_workdir,
+                default_pwd,
+            )
+        except Exception as exc:
+            # A record never stops or changes a trial.
+            logger.debug("agent user record not made: %s", exc)
+            return self._agent_user
+
+    async def _note_agent_user(self) -> None:
+        """Record the task's harness user with main's image as started (its
+        ``USER``, by the backend's host-side read where it has one), and say
+        once per task when it differs from BenchFlow's."""
+        from benchflow.sandbox import agent_user
+
+        image_user = None
+        read = getattr(self._env, "task_image_user", None)
+        if callable(read):
+            try:
+                image_user = await read()
+            except Exception as exc:
+                logger.debug("task image USER not read: %s", exc)
+        # The workspace the agent user will be handed, from what the start
+        # probe already read (_resolve_agent_cwd decides from the same).
+        from benchflow.rollout._setup import _configured_task_workdir
+        from benchflow.sandbox._exec_merge import kept_default_identity
+
+        kept = kept_default_identity(self._env)
+        default_pwd = kept.pwd.strip() if kept is not None and kept.pwd else None
+        self._agent_user = await self._agent_user_record(
+            image_user,
+            _configured_task_workdir(getattr(self, "_task", None)),
+            default_pwd,
+        )
+        if self._agent_user is None:
+            return
+        agent = getattr(self._config, "primary_agent", None)
+        name = self._config.task_path.name
+        for text in (
+            agent_user.trial_line(name, self._agent_user, agent),
+            agent_user.tree_line(name, self._agent_user, agent),
+        ):
+            if text:
+                logger.warning(text, extra={"benchflow_show_live": True})
 
     def _branch_summary(self) -> dict[str, Any] | None:
         """result.json's ``branches`` block; None when the rollout never branched."""
@@ -7236,7 +9178,16 @@ class Rollout:
 
 #: How often a trial with a budget looks for the proxy's refusal record (the
 #: live capture itself reads the proxy's log once a second).
+# The error of a trial stopped before it finished (Ctrl-C, SIGTERM, the job's
+# budget); its result.json keeps what it spent.
+INTERRUPTED_ERROR = (
+    "Interrupted: the run was stopped (Ctrl-C, SIGTERM or the job's budget) "
+    "before the trial finished"
+)
 _TRIAL_BUDGET_POLL_SEC = 0.5
+# How long a budget stop waits for the proxy's live capture to read the
+# refusal it logged (a capture that has caught up returns at once).
+_BUDGET_SETTLE_TIMEOUT_SEC = 60.0
 
 
 def _credit_prestart_seconds(rollout: Rollout) -> None:

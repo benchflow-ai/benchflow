@@ -30,7 +30,8 @@ def _evaluation(tmp_path: Path) -> bf.Evaluation:
     )
     config = bf.EvaluationConfig(
         agent="claude-agent-acp",
-        model="claude-haiku-4-5",
+        # A model that takes an effort: Haiku 4.5 takes none, and is refused.
+        model="claude-sonnet-5",
         reasoning_effort="high",
         environment="daytona",
         concurrency=7,

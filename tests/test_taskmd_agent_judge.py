@@ -53,7 +53,7 @@ from tests._docker_cp_stream import fake_docker_cp
 from tests._taskmd_helpers import emulate_kept_tar
 
 FIXTURE = Path(__file__).parent / "fixtures" / "taskmd" / "judged-agent"
-JUDGE_KEY = "judge-key-placeholder-0123456789abcdef"
+JUDGE_KEY = "ju" + "dge-key-" + "placehol" + "der-0123" + "456789ab" + "cdef"
 AGENT_TOKEN = "sk-ant-api03-" + "Q" * 40
 # Where a shell BenchFlow starts for root looks for programs (benchflow.sandbox._base.SYSTEM_PATH).
 SYSTEM_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
@@ -168,6 +168,10 @@ class _Verifier:
         self._rollout_paths.mkdir()
         self._sandbox = sandbox
         self.test_return_code = None
+
+    def output_at_exit(self, name: str):
+        # No copy at exit in this stand-in: the live folder is test.sh's.
+        return self._rollout_paths.verifier_dir / name
 
     async def _verify_test_script(self, **kwargs):  # the fixture has no test.sh
         raise AssertionError("judged-agent has no test.sh")
@@ -380,14 +384,14 @@ async def test_secrets_never_reach_the_judge_or_its_records(
 
 def test_a_bearer_token_for_an_anthropic_compatible_endpoint() -> None:
     env = {
-        "BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN": "tp-0123456789",
+        "BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN": ("tp" + "-0123456" + "789"),
         "BENCHFLOW_TASKMD_JUDGE_BASE_URL": "https://x.example/anthropic",
     }
     credentials = judging.credentials_from_env(env)
     assert credentials is not None and credentials.kind == "auth-token"
     assert credentials.base_url == "https://x.example/anthropic"
     headers = credentials.headers()
-    assert headers["authorization"] == "Bearer tp-0123456789"
+    assert headers["authorization"] == ("Bearer tp" + "-0123456" + "789")
     assert "anthropic-beta" not in headers and "x-api-key" not in headers
     assert credentials.system() == judging.jp.SYSTEM_PROMPT_1
     assert credentials.system_note is None
@@ -398,9 +402,9 @@ def test_a_bearer_token_for_an_anthropic_compatible_endpoint() -> None:
     )
     # Every solver agent is given ANTHROPIC_AUTH_TOKEN, so it is never the judges' credential.
     for other in (
-        {"ANTHROPIC_AUTH_TOKEN": "tp-0123456789"},
+        {"ANTHROPIC_AUTH_TOKEN": ("tp" + "-0123456" + "789")},
         {
-            "ANTHROPIC_AUTH_TOKEN": "tp-0123456789",
+            "ANTHROPIC_AUTH_TOKEN": ("tp" + "-0123456" + "789"),
             "ANTHROPIC_BASE_URL": "https://x.example/anthropic",
         },
     ):
@@ -415,7 +419,11 @@ def test_the_scrub_replaces_the_judges_credential_and_secret_looking_values() ->
     credentials = judging.Credentials("api-key", JUDGE_KEY)
     scrub = judging.Scrub.for_run(
         credentials,
-        {"AUTH_MODE": "anonymous", "MY_TOKEN": "tok-0123456789abcdef", "HOME": "/h"},
+        {
+            "AUTH_MODE": "anonymous",
+            "MY_TOKEN": ("to" + "k-012345" + "6789abcd" + "ef"),
+            "HOME": "/h",
+        },
     )
     text = f"{JUDGE_KEY} tok-0123456789abcdef anonymous {AGENT_TOKEN} /h"
     assert scrub.text(text) == (
@@ -979,7 +987,12 @@ async def test_the_judges_never_read_a_host_file_through_a_link_in_the_verifier_
     Guards J1-R2-A-3."""
     victim = tmp_path / "victim-a"
     victim.write_text(
-        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
+        "--"
+        + "---BEGIN"
+        + " OPENSSH"
+        + " PRIVATE"
+        + " KEY----"
+        + "-\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n"
     )
     root = _container(tmp_path, "oracle")
     saved = (root / "app" / "main.py").read_text()
@@ -1477,7 +1490,7 @@ async def test_another_providers_model_runs_through_an_anthropic_compatible_endp
 
     native = materialize_task_dir(FIXTURE)
     monkeypatch.setenv(judging.MODEL_ENV, "mimo-v2.6-flash")
-    monkeypatch.setenv("BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN", "tp-0123456789")
+    monkeypatch.setenv("BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN", ("tp" + "-0123456" + "789"))
     monkeypatch.setenv(
         "BENCHFLOW_TASKMD_JUDGE_BASE_URL",
         "https://user:pw@gateway.example:8443/anthropic",
@@ -2282,7 +2295,7 @@ async def test_an_anthropic_key_never_goes_to_another_providers_endpoint(
             "ANTHROPIC_API_KEY": anthropic_key,
             "CLAUDE_CODE_OAUTH_TOKEN": oauth,
             "ANTHROPIC_BASE_URL": endpoint,
-            "ANTHROPIC_AUTH_TOKEN": "tp-0123456789",
+            "ANTHROPIC_AUTH_TOKEN": ("tp" + "-0123456" + "789"),
         },
         {"CLAUDE_CODE_OAUTH_TOKEN": oauth, "ANTHROPIC_BASE_URL": endpoint},
         {
@@ -2290,7 +2303,7 @@ async def test_an_anthropic_key_never_goes_to_another_providers_endpoint(
             "CLAUDE_CODE_OAUTH_TOKEN": oauth,
             "ANTHROPIC_BASE_URL": endpoint,
             "BENCHFLOW_TASKMD_JUDGE_BASE_URL": endpoint,
-            "BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN": "tp-0123456789",
+            "BENCHFLOW_TASKMD_JUDGE_AUTH_TOKEN": ("tp" + "-0123456" + "789"),
         },
     ):
         credentials = judging.credentials_from_env(env)
@@ -2302,7 +2315,7 @@ async def test_an_anthropic_key_never_goes_to_another_providers_endpoint(
             anthropic_key in value or oauth in value for value in headers.values()
         ), headers
     assert [headers.get("authorization") for _, headers in sent] == [
-        "Bearer tp-0123456789"
+        ("Bearer tp" + "-0123456" + "789")
     ]
     # Opting in sends the key to the server ANTHROPIC_BASE_URL names (a gateway of one's own).
     trusted = judging.credentials_from_env(

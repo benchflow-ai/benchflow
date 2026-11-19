@@ -282,6 +282,25 @@ async def test_changed_source_refuses_miss_and_never_retries_a_refusal(
         stage.remove()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root passes every permission check")
+def test_payload_below_a_search_only_ancestor_is_read_again(tmp_path, monkeypatch):
+    """The second pass over a captured payload pins the task's ancestors as
+    the copy does: search permission alone (benchflow#1237)."""
+    environment = task(tmp_path / "gate")
+    (tmp_path / "gate").chmod(0o311)
+    monkeypatch.setattr(staging.tempfile, "tempdir", str(tmp_path))
+    try:
+        stage = contexts.stage_daytona_environment(environment)
+        try:
+            assert stage.keys
+            with stage.source("environment/payload") as source:
+                assert source.read() == bytes(range(256)) * 513
+        finally:
+            stage.remove()
+    finally:
+        (tmp_path / "gate").chmod(0o755)
+
+
 def test_change_between_capture_and_source_hash_refuses(tmp_path, monkeypatch):
     """A second source pass must match its initial pinned read."""
     environment = task(tmp_path)
@@ -465,7 +484,10 @@ async def test_storage_error_retains_diagnostic_and_never_materializes(tmp_path)
     storage._file_exists_in_s3 = AsyncMock(side_effect=error)
     storage._upload_as_tar = AsyncMock()
     try:
-        with contexts.staged_contexts(stage), pytest.raises(RuntimeError) as caught:
+        with (
+            contexts.staged_contexts(stage),
+            pytest.raises(RuntimeError, match=r"^object lookup diagnostic$") as caught,
+        ):
             await storage.upload(
                 str(stage.environment_dir / "payload"), "org", "payload"
             )

@@ -462,16 +462,91 @@ def workspace_grant_command(workspace: str, owner: str) -> str:
     entry but the reserved ones is granted: the user may add and change its
     own files there, never rename a reserved folder. A loader folder stays
     root's with the files directly in it; its subfolders other than the
-    loader's own (``*-linux-*``) are granted (PT-C8-R9-4)."""
+    loader's own (``*-linux-*``) are granted (PT-C8-R9-4).
+
+    A provider daemon's folder directly in the workspace
+    (``SANDBOX_RUNTIME_STATE_PATHS``: Daytona's daemon keeps each exec's
+    script, output and exit code in ``.daytona`` in root's home) is reserved
+    too when the sandbox has it as a folder: it stays root's, without group
+    or other write. The daemon runs as root and still writes there; the
+    agent can put nothing there for test.sh to read while the review leaves
+    it out (#1232). The workspace's own mode is read first
+    (:func:`workspace_mode_probe`): the verifier hardening gives it back
+    before test.sh (:func:`restore_mode_command`)."""
+    from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS
+
     ws = "/" + workspace.strip("/")
-    q_ws = shlex.quote(ws)
-    q_owner = shlex.quote(f"{owner}:{owner}")
     reserved = _reserved_in(ws)
-    if not reserved:
-        return f"chown -R {q_owner} {q_ws}"
     if any("/" in r[len(ws.rstrip("/")) + 1 :] for r in reserved):
         raise ValueError(f"the workspace {ws} holds a reserved folder below its top")
-    skip = " ".join(f"! -path {shlex.quote(r)}" for r in reserved)
+    held = [ws.rstrip("/") + "/" + name for name in SANDBOX_RUNTIME_STATE_PATHS]
+    present = _daemon_folders_present(ws)
+    return (
+        f"if {present}; then {_grant_command(ws, owner, reserved, held)}; "
+        f"else {_grant_command(ws, owner, reserved, [])}; fi"
+    )
+
+
+def _daemon_folders_present(ws: str) -> str:
+    """sh test: a folder of ``SANDBOX_RUNTIME_STATE_PATHS`` is in *ws*."""
+    from benchflow.sandbox.protocol import SANDBOX_RUNTIME_STATE_PATHS
+
+    held = [ws.rstrip("/") + "/" + name for name in SANDBOX_RUNTIME_STATE_PATHS]
+    return " || ".join(
+        f"{{ [ -d {q} ] && [ ! -L {q} ]; }}" for q in map(shlex.quote, held)
+    )
+
+
+#: The sandbox attribute where ``setup_sandbox_user`` keeps, per workspace,
+#: the mode it had before a grant made it root's and sticky for a daemon
+#: folder in it; the first grant's mode, not a later grant's 1777.
+WORKSPACE_MODE_ATTR = "_benchflow_workspace_modes"
+_MODE_MARK = "benchflow-workspace-mode"
+
+
+def workspace_mode_probe(workspace: str) -> str:
+    """sh, run before the grant: prints the workspace's mode on a line of its
+    own when the grant will keep a daemon folder in it (and make it 1777).
+    The mode is the folder's: a workspace that is a link (``/ws`` to
+    ``/data``) is read through it, as the grant's chmod is, never as the
+    link's own 777."""
+    ws = "/" + workspace.strip("/")
+    return (
+        f"if {_daemon_folders_present(ws)}; then "
+        f"printf '{_MODE_MARK} %s\\n' \"$(stat -L -c %a {shlex.quote(ws)})\"; fi"
+    )
+
+
+def granted_mode(stdout: str) -> tuple[str, str | None]:
+    """*stdout* without the last line :func:`workspace_mode_probe` printed,
+    and the mode on it (None when it printed none)."""
+    head, _, last = stdout.rstrip("\n").rpartition("\n")
+    found = re.fullmatch(rf"{_MODE_MARK} ([0-7]{{1,4}})", last)
+    return (head + "\n", found.group(1)) if found else (stdout, None)
+
+
+def restore_mode_command(modes: dict[str, str]) -> str:
+    """sh, as root before test.sh: each workspace in *modes* gets its mode
+    back, sticky when group or others may write, so the daemon folder stays
+    in place. test.sh then sees the workspace as on a sandbox without one."""
+    parts = []
+    for ws, mode in sorted(modes.items()):
+        bits = int(mode, 8) & 0o7777
+        if bits & 0o022:
+            bits |= 0o1000
+        q = shlex.quote(ws)
+        parts.append(f"if [ -d {q} ] && [ ! -L {q} ]; then chmod {bits:o} {q}; fi")
+    return " && ".join(parts)
+
+
+def _grant_command(ws: str, owner: str, reserved: list[str], held: list[str]) -> str:
+    """:func:`workspace_grant_command`'s sh for *reserved* folders and the
+    daemon folders *held* (each kept root's when it is a folder)."""
+    q_ws = shlex.quote(ws)
+    q_owner = shlex.quote(f"{owner}:{owner}")
+    if not reserved and not held:
+        return f"chown -R {q_owner} {q_ws}"
+    skip = " ".join(f"! -path {shlex.quote(r)}" for r in (*reserved, *held))
     parts = [
         f"chown 0:0 {q_ws} && chmod 1777 {q_ws} && "
         f"find {q_ws} -mindepth 1 -maxdepth 1 {skip} -exec chown -R {q_owner} {{}} +"
@@ -485,6 +560,11 @@ def workspace_grant_command(workspace: str, owner: str) -> str:
             f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q} && "
             f"find {q} -mindepth 1 -maxdepth 1 -type d ! -name '*-linux-*' "
             f"-exec chown -R {q_owner} {{}} +; fi"
+        )
+    for folder in held:
+        q = shlex.quote(folder)
+        parts.append(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then chown 0:0 {q} && chmod go-w {q}; fi"
         )
     return " && ".join(parts)
 
@@ -865,6 +945,12 @@ def kit_prepare_command(
             'bf_guard_cap "$py" || break 2; done; '
             'for s in "$d"/pytest "$d"/py.test; do [ -f "$s" ] || continue; '
             'bf_guard_cap "$(bf_shebang_py "$s")" || break 2; done; '
+            "done; unset IFS; set +f",
+            # Each conda base's envs too, as above: test.sh activates one, and a
+            # venv tox builds from it reads the guard's copy from its standard
+            # library, where PYTHONPATH never reaches (SWT-bench's sphinx).
+            "  IFS=$bf_nl; set -f; for b in $bf_conda; do unset IFS; set +f; "
+            'for cpy in "$b"/envs/*/bin/python3; do bf_guard_cap "$cpy" || break 2; done; '
             "done; unset IFS; set +f",
             "  bf_wait $bf_cq $bf_gq || :",
             '  for f in $bf_cf; do [ ! -f "$f" ] || cat "$f" >> "$KIT/IMAGE_PYTHON_PATHS.jsonl" '

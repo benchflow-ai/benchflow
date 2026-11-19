@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils.result_metadata import final_metrics_from_agent_result
 from benchflow._utils.text import describe_exception
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
 from benchflow.continue_run.run_folder import (
@@ -46,6 +47,7 @@ from benchflow.contracts import AgentProtocolError, SandboxStartupFailure
 from benchflow.sandbox.providers import SANDBOX_MODEL_PROXY_PROVIDERS
 from benchflow.scenes import compile_scenes_to_steps
 from benchflow.trajectories.types import LLMExchange, redact_trajectory_text
+from benchflow.usage_tracking import result_usage_source
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +110,19 @@ class ContinuedUsageSummary:
     usage_source: str
 
     def as_agent_result_patch(self) -> dict[str, Any]:
+        # Nothing counted is unknown, not 0.
+        counted = self.usage_source != "unavailable"
         return {
-            "n_input_tokens": self.n_input_tokens,
-            "n_output_tokens": self.n_output_tokens,
-            "n_cache_read_tokens": self.n_cache_read_tokens,
-            "n_cache_creation_tokens": self.n_cache_creation_tokens,
-            "total_tokens": self.total_tokens,
-            "usage_source": self.usage_source,
+            "n_input_tokens": self.n_input_tokens if counted else None,
+            "n_output_tokens": self.n_output_tokens if counted else None,
+            "n_cache_read_tokens": self.n_cache_read_tokens if counted else None,
+            "n_cache_creation_tokens": self.n_cache_creation_tokens
+            if counted
+            else None,
+            "total_tokens": self.total_tokens if counted else None,
+            # vocabulary, with the earlier name beside it.
+            "usage_source": result_usage_source(self.usage_source),
+            "usage_source_legacy": self.usage_source,
             "usage_details": {
                 "source": "stitched_llm_trajectory",
                 "recorded_total_tokens": self.recorded_total_tokens,
@@ -219,9 +227,12 @@ def build_rollout_config(
             )
     overlay = recorded.get("config_override")
     if overlay is not None:
+        from benchflow._utils.config_override import recorded_overlay
+
         if not isinstance(overlay, dict) or not isinstance(overlay.get("patch"), dict):
             raise RunFolderError("cannot reconstruct config_override: missing patch")
-        settings["config_override"] = overlay["patch"]
+        # The record holds no secret-looking value; those are supplied again.
+        settings["config_override"] = recorded_overlay(overlay, what="continue")
     review = recorded.get("review")
     if review is not None:
         saved_reviewer = review.get("reviewer") if isinstance(review, dict) else None
@@ -516,7 +527,8 @@ def update_continued_metadata(
             "endpoint_kind": "sandbox"
             if environment in _SANDBOX_LOCAL_REPLAY_ENVIRONMENTS
             else "host",
-            "usage_source": usage.usage_source,
+            "usage_source": result_usage_source(usage.usage_source),
+            "usage_source_legacy": usage.usage_source,
         }
         config_path.write_text(json.dumps(config, indent=2) + "\n")
 
@@ -527,18 +539,14 @@ def update_continued_metadata(
     agent_result = result.setdefault("agent_result", {})
     if isinstance(agent_result, dict):
         agent_result.update(usage.as_agent_result_patch())
-    result["final_metrics"] = {
-        "total_prompt_tokens": usage.n_input_tokens,
-        "total_completion_tokens": usage.n_output_tokens,
-        "total_cached_tokens": usage.n_cache_read_tokens,
-        "total_cost_usd": agent_result.get("cost_usd")
-        if isinstance(agent_result, dict)
-        else None,
-    }
+    result["final_metrics"] = final_metrics_from_agent_result(
+        agent_result if isinstance(agent_result, dict) else {}
+    )
     usage_tracking = result.setdefault("usage_tracking", {})
     if isinstance(usage_tracking, dict):
         usage_tracking["requested"] = "required"
-        usage_tracking["usage_source"] = usage.usage_source
+        usage_tracking["usage_source"] = result_usage_source(usage.usage_source)
+        usage_tracking["usage_source_legacy"] = usage.usage_source
         usage_tracking["environment"] = environment
         usage_tracking["endpoint_kind"] = (
             "sandbox" if environment in _SANDBOX_LOCAL_REPLAY_ENVIRONMENTS else "host"
@@ -566,6 +574,35 @@ def _host_proxy_binding(environment: str) -> tuple[str, str]:
     endpoint = _agent_endpoint_for_environment(0, environment, bind)
     advertise = endpoint.agent_base_url.split("//", 1)[-1].rsplit(":", 1)[0]
     return bind, advertise
+
+
+async def _stop_continuation_proxies(
+    replay_proxy: SandboxReplayProxy | None,
+    provider_runtime: Any | None,
+    stop_provider_runtime: Callable[[Any], Awaitable[None]],
+) -> None:
+    """Stop the continuation's in-sandbox proxies and read the live suffix
+    and the LiteLLM log, before the verifier: its test.sh runs as root, with
+    code the agent wrote, and could stop them or change their logs.
+    A proxy that cannot be stopped here is stopped by the teardown, as
+    before. Never raises."""
+    for label, stop in (
+        ("sandbox replay proxy", replay_proxy.stop if replay_proxy else None),
+        (
+            "provider runtime",
+            (lambda: stop_provider_runtime(provider_runtime))
+            if provider_runtime is not None
+            else None,
+        ),
+    ):
+        if stop is None:
+            continue
+        try:
+            await stop()
+        except Exception as exc:
+            logger.warning(
+                "Continuation %s not stopped before the verifier: %s", label, exc
+            )
 
 
 async def _safe_sandbox_continuation_teardown(
@@ -764,6 +801,7 @@ async def _continue_run_with_sandbox_proxy(
     provider_runtime: Any | None = None
     pending_acp_error: AgentProtocolError | None = None
     agent_timed_out = False
+    turn_over = False
     rollout_dir: Path | None = None
     live_exchanges: list[LLMExchange] = []
     artifacts_written = False
@@ -837,34 +875,53 @@ async def _continue_run_with_sandbox_proxy(
             agent_timed_out = True
             rollout._record_agent_timeout(exc, agent_phase=True)
 
+        turn_over = True
+        # The rule run()'s own lifecycle follows: once the turn recorded the
+        # trial's ending (its time limit), nothing that fails after it
+        # replaces that ending (Rollout._kept_turn_ending). Called through
+        # the class, as verify() calls its helpers: stand-ins have none.
+        rollout._turn_ended_trial = rollout._error is not None or getattr(
+            rollout, "_agent_ran_out_of_time", False
+        )
         if not config.skip_verify:
-            await rollout.verify()
+            await _stop_continuation_proxies(
+                replay_proxy, provider_runtime, stop_provider_runtime
+            )
+            verify_failed = await Rollout._verify_after_turn(rollout)
             if (
                 agent_timed_out
+                and not verify_failed
                 and rollout._rewards is None
                 and rollout._verifier_error is None
             ):
                 rollout._rewards = {"reward": 0.0}
                 rollout._verifier_error = None
 
+    # Setup, install, the proxies this function starts and verify are not
+    # the agent's turn: the rules run()'s own lifecycle follows.
     except TimeoutError as exc:
-        rollout._record_agent_timeout(exc, agent_phase=False)
+        if not Rollout._kept_turn_ending(rollout, exc, turn_over=turn_over):
+            rollout._record_lifecycle_timeout(exc, turn_over=turn_over)
     except ConnectionError as exc:
-        rollout._error = str(exc)
-        rollout._diagnostics.capture_transport(exc)
-        await rollout._probe_sandbox_health()
-        logger.error("Agent connection lost: %s", rollout._error)
+        if not Rollout._kept_turn_ending(rollout, exc, turn_over=turn_over):
+            rollout._error = str(exc)
+            rollout._diagnostics.capture_transport(exc)
+            await rollout._probe_sandbox_health()
+            logger.error("Agent connection lost: %s", rollout._error)
     except SandboxStartupFailure as exc:
-        rollout._error = f"Sandbox startup failed: {exc}"
-        rollout._diagnostics.set(exc.diagnostic)
-        logger.error(rollout._error)
+        if not Rollout._kept_turn_ending(rollout, exc, turn_over=turn_over):
+            rollout._error = f"Sandbox startup failed: {exc}"
+            rollout._diagnostics.set(exc.diagnostic)
+            logger.error(rollout._error)
     except AgentProtocolError as exc:
-        pending_acp_error = exc
-        rollout._error = str(exc)
-        logger.error(str(exc))
+        if not Rollout._kept_turn_ending(rollout, exc, turn_over=turn_over):
+            pending_acp_error = exc
+            rollout._error = str(exc)
+            logger.error(str(exc))
     except Exception as exc:
-        rollout._error = str(exc)
-        logger.error("Run failed", exc_info=True)
+        if not Rollout._kept_turn_ending(rollout, exc, turn_over=turn_over):
+            rollout._error = str(exc)
+            logger.error("Run failed", exc_info=True)
     finally:
         await _safe_sandbox_continuation_teardown(
             rollout=rollout,

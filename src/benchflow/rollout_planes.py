@@ -63,6 +63,7 @@ from benchflow.sandbox.lockdown import (
     enforce_sandbox_uid_egress,
     ensure_legacy_app_dir,
     kill_switched_accounts,
+    lock_system_path,
     lockdown_paths,
     probe_kept_service_freezer,
     release_kept_services,
@@ -180,6 +181,13 @@ class DefaultRolloutPlanes:
             guard_daemon=guard_daemon,
         )
 
+    async def lock_system_path(
+        self, env: Any, *, workspace: str, timeout_sec: int = 120
+    ) -> None:
+        """The PATH lock ``setup_sandbox_user`` runs, for a trial with no
+        sandbox user (a root agent) and for the equivalence check."""
+        await lock_system_path(env, workspace, timeout_sec=timeout_sec)
+
     async def snapshot_build_config(self, env: Any, *, workspace: str) -> None:
         await _snapshot_build_config(env, workspace=workspace)
 
@@ -202,6 +210,14 @@ class DefaultRolloutPlanes:
     ) -> None:
         await _seed_verifier_workspace(
             env, workspace=workspace, sandbox_user=sandbox_user
+        )
+        # The image manifest, while no agent process exists yet; the host
+        # keeps its copy.
+        from benchflow.sandbox import _image_manifest
+        from benchflow.sandbox.lockdown import verifier_setup_timeout_sec
+
+        await _image_manifest.record(
+            env, "pre-agent", timeout_sec=verifier_setup_timeout_sec()
         )
 
     async def probe_snapshot_start(
@@ -239,6 +255,27 @@ class DefaultRolloutPlanes:
         self, env: Any, sandbox_user: str | None, agent_env: dict[str, str]
     ) -> None:
         await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
+
+    async def arm_agent_uid_before_its_proxy(
+        self,
+        env: Any,
+        sandbox_user: str | None,
+        *,
+        no_web: bool,
+        egress_denylist: Any = None,
+        create_user: bool = False,
+        timeout_sec: int = 120,
+    ) -> bool:
+        from benchflow.sandbox.lockdown import arm_agent_uid_before_its_proxy
+
+        return await arm_agent_uid_before_its_proxy(
+            env,
+            sandbox_user,
+            no_web=no_web,
+            egress_denylist=egress_denylist,
+            create_user=create_user,
+            timeout_sec=timeout_sec,
+        )
 
     async def enforce_offline_uid_egress(self, env: Any, sandbox_user: str) -> None:
         await enforce_sandbox_uid_egress(env, sandbox_user, refuse_dns=True)
@@ -284,8 +321,10 @@ class DefaultRolloutPlanes:
     def release_host_proxy(self, reservation: Any) -> None:
         release_host_proxy(reservation)
 
-    async def stop_provider_runtime(self, runtime: Any) -> None:
-        await stop_provider_runtime(runtime)
+    async def stop_provider_runtime(
+        self, runtime: Any, *, retry_later: bool = False
+    ) -> None:
+        await stop_provider_runtime(runtime, retry_later=retry_later)
 
     async def start_egress_denylist(
         self,

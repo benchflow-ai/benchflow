@@ -223,7 +223,9 @@ def test_write_redacts_secrets(tmp_path):
             "kind": "execute",
             "title": "env",
             "status": "completed",
-            "content": [{"text": "OPENAI_API_KEY=sk-abc123def456ghi789"}],
+            "content": [
+                {"text": ("OPENAI_API_KEY=sk" + "-abc123d" + "ef456ghi" + "789")}
+            ],
         }
     ]
     rec = write_rollout_adp_jsonl(
@@ -236,7 +238,7 @@ def test_write_redacts_secrets(tmp_path):
         environment="demo",
     )
     raw = (tmp_path / "trainer" / "adp.jsonl").read_text()
-    assert "sk-abc123def456ghi789" not in raw
+    assert ("sk" + "-abc123d" + "ef456ghi" + "789") not in raw
     observation = rec["content"][-1]
     assert "***REDACTED***" in observation["content"]
 

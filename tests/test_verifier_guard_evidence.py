@@ -51,7 +51,14 @@ class NoPytest(ScriptSandbox):
 async def test_a_test_sh_that_never_starts_pytest_is_scored(
     tmp_path, monkeypatch, reward
 ):
-    """Fails on 57d28d656: "no pytest of this run registered the guard"."""
+    """Fails on 57d28d656: "no pytest of this run registered the guard".
+
+    That rule refused every run without a marker. Since the lead's
+    13:57Z ruling ((g2)) only a test.sh that starts a pytest the guard
+    reaches needs one: this one does (``uvx ... pytest`` at a command
+    position), its pytest never started, and the 1 it wrote anyway is not a
+    pass. Its 0 stands. A test.sh that starts no pytest scores as written
+    (tests/test_guard_no_record.py)."""
 
     class Sandbox(NoPytest):
         pass
@@ -66,7 +73,7 @@ async def test_a_test_sh_that_never_starts_pytest_is_scored(
     # The guard was armed: the task's ctrf comes from the protected runtime.
     assert "_runtime_guard_" in env.get("PYTEST_ADDOPTS", ""), env
     assert error is None, error
-    assert rewards == {"reward": float(reward)}
+    assert rewards == {"reward": 0.0}
     assert list(layout.paths.verifier_dir.glob("_runtime_guard_*")) == []
 
 

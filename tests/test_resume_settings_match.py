@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -145,6 +146,7 @@ _CHANGED = {
     "timeout_multiplier": {"timeout_multiplier": 2.0},
     "agent_idle_timeout": {"agent_idle_timeout": 300},
     "sandbox_setup_timeout": {"sandbox_setup_timeout": 600},
+    "verifier_setup_timeout": {"verifier_setup_timeout": 900},
     "budget": {"budget": Budget(max_rollouts=50)},
     "trial_budget": {"trial_budget": TrialBudget(turns=20)},
     "agent_env": {"agent_env": {"MY_BASE_URL": "http://127.0.0.1:9"}},
@@ -890,6 +892,11 @@ def test_dataclass_fields_are_all_sorted_into_compared_or_not() -> None:
         "trial_number",
         "model_given",
         "agent_idle_timeout_given",
+        # Whether the run named its sandbox_setup_timeout; the value is
+        # compared.
+        "sandbox_setup_timeout_given",
+        # Where the effort was asked; the effort itself is compared.
+        "reasoning_effort_source",
         "integrity",
         "agent_defaulted",
         "fresh_install",
@@ -1353,7 +1360,8 @@ def test_the_redaction_helpers_take_a_number() -> None:
     )
 
     assert _should_compare_env_entry("MAX_THINKING_TOKENS", 32000)
-    assert not _should_record_env_entry("MAX_THINKING_TOKENS", 32000)
+    # A setting's name by the shared rule is recorded too (PR #145).
+    assert _should_record_env_entry("MAX_THINKING_TOKENS", 32000)
     assert _should_record_env_entry("MY_COUNT", 7)
     assert _should_record_env_entry("MY_FLAG", True)
     assert not _should_compare_env_entry("DB_PASSWORD", 123456)
@@ -1991,3 +1999,111 @@ def test_confirm7_unordered_mapping_controls(name) -> None:
     assert _inline_config_fingerprint(name, raw) == _inline_config_fingerprint(
         name, json.dumps(before, sort_keys=True, indent=2)
     )
+
+
+# ---, PR #145 (the lead's ruling of 2026-11-13): an env entry named --
+# like a setting is recorded and compared ---------------------------------------
+
+_GRAPH = "tuesday-made-up"  # a harmless-shaped value under a credential's name
+
+
+def test_an_agent_env_entry_named_like_a_setting_is_recorded_and_compared(
+    tmp_path,
+) -> None:
+    """MAX_OUTPUT_TOKENS (tokens beside max and output) was neither recorded
+    nor compared, so a resume at 8192 of a job run at 4096 mixed two runs.
+    It is recorded and compared; MS_GRAPH_TOKEN, GH_TOKEN and API_KEY are
+    still withheld, so rotating them resumes."""
+    env = {
+        "MAX_OUTPUT_TOKENS": "4096",
+        "MS_GRAPH_TOKEN": _GRAPH,
+        "GH_TOKEN": _GRAPH,
+        "API_KEY": _GRAPH,
+    }
+    old = _first_job(tmp_path, job_name="named", agent_env=env)
+    record = json.loads((old / "evaluation.json").read_text())["config"]
+    assert record["agent_env"] == {"MAX_OUTPUT_TOKENS": "4096"}
+    assert _GRAPH not in json.dumps(record)
+    rotated = {**env, "MS_GRAPH_TOKEN": "x1", "GH_TOKEN": "x2", "API_KEY": "x3"}
+    assert _check_resume_mismatch(old, _config(agent_env=rotated)) is None
+    more = _config(agent_env={**rotated, "MAX_OUTPUT_TOKENS": "8192"})
+    assert "agent_env MAX_OUTPUT_TOKENS changed" in _refusal(old, more)
+
+
+def test_a_trials_config_json_keeps_an_env_entry_named_like_a_setting(
+    tmp_path,
+) -> None:
+    from benchflow.rollout._results import _write_config
+    from benchflow.skill_policy import SKILL_MODE_NO_SKILL, resolve_task_skill_policy
+
+    _write_config(
+        tmp_path,
+        task_path=tmp_path / "task",
+        agent="test",
+        model=None,
+        environment="docker",
+        skill_policy=resolve_task_skill_policy(
+            task_path=tmp_path / "task",
+            skill_mode=SKILL_MODE_NO_SKILL,
+            runtime_skills_dir=None,
+            declared_sandbox_skills_dir=None,
+        ),
+        sandbox_user="agent",
+        context_root=None,
+        timeout=300,
+        started_at=datetime.datetime.now(),
+        agent_env={"MAX_OUTPUT_TOKENS": "8192", "MS_GRAPH_TOKEN": _GRAPH},
+    )
+    recorded = json.loads((tmp_path / "config.json").read_text())
+    assert recorded["agent_env"] == {"MAX_OUTPUT_TOKENS": "8192"}
+
+
+def test_a_key_shaped_value_under_a_setting_name_is_not_recorded() -> None:
+    from benchflow._utils.config_redaction import (
+        _should_compare_env_entry,
+        _should_record_env_entry,
+    )
+
+    shaped = "sk-ant-api03-" + "Q7w2E9r4T6y1U3i5" * 4  # made up
+    assert not _should_record_env_entry("MAX_OUTPUT_TOKENS", shaped)
+    assert not _should_compare_env_entry("MAX_OUTPUT_TOKENS", shaped)
+
+
+def test_an_older_record_without_a_settings_value_still_resumes(tmp_path) -> None:
+    """A job recorded before an entry named like a setting was recorded
+    lists its name only (agent_env_keys): unknown there, not changed."""
+    tasks_dir = _tasks(tmp_path)
+    config = _config(agent_env={"MAX_OUTPUT_TOKENS": "4096"})
+    job = Evaluation(tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", config=config)
+    job._write_evaluation_record()
+    path = job.job_dir / "evaluation.json"
+    record = json.loads(path.read_text())
+    assert record["config"]["agent_env_keys"] == ["MAX_OUTPUT_TOKENS"]
+    record["config"]["agent_env"] = {}
+    path.write_text(json.dumps(record))
+    assert _recorded_run_differs(job.job_dir, config, tasks_dir) is None
+
+
+def _recognized_settings() -> list[str]:
+    from benchflow._utils.config_redaction import _PLAIN_EXECUTION_ENV_NAMES
+
+    return sorted(_PLAIN_EXECUTION_ENV_NAMES)
+
+
+@pytest.mark.parametrize("name", _recognized_settings())
+def test_every_recognized_env_setting_is_still_compared(tmp_path, name) -> None:
+    """The recognized execution settings (AUTH_ENABLED among them, which the
+    shared rule calls a credential's name) are compared as before."""
+    tasks_dir = _tasks(tmp_path)
+    job = Evaluation(
+        tasks_dir=tasks_dir,
+        jobs_dir=tmp_path / "jobs",
+        config=_config(agent_env={name: "1"}),
+    )
+    job._write_evaluation_record()
+    same = _config(agent_env={name: "1"})
+    assert _recorded_run_differs(job.job_dir, same, tasks_dir) is None
+    differs = _recorded_run_differs(
+        job.job_dir, _config(agent_env={name: "2"}), tasks_dir
+    )
+    assert differs == f"agent_env {name} changed"

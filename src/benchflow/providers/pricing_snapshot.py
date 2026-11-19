@@ -30,6 +30,11 @@ mutable table at proxy startup.
 
 from __future__ import annotations
 
+from datetime import date
+
+#: The day every rate below was read (the price table's date in a result).
+SNAPSHOT_DATE = "2026-11-04"
+
 # Only exact vendor/model identities qualify. In particular, a private vLLM
 # deployment or a reseller of one of these models does not inherit vendor rates.
 _HAIKU_5_5_OVER_100K = {
@@ -98,6 +103,22 @@ VALID_THROUGH: dict[tuple[str, str], str] = {
     ("gemini", "gemini-3.8-flash"): "2026-12-31",
 }
 
+
+def rates_past_their_change(today: date) -> dict[tuple[str, str], str]:
+    """The entries whose announced change has come by ``today``, each with
+    its last valid day (:data:`VALID_THROUGH`).
+
+    The release gate asks with the day the release is cut
+    (``tools/check_price_snapshot.py``); the unit tests ask with
+    :data:`SNAPSHOT_DATE`, so no test depends on the clock.
+    """
+    return {
+        key: last_day
+        for key, last_day in VALID_THROUGH.items()
+        if today > date.fromisoformat(last_day)
+    }
+
+
 # An ``openai/`` or ``deepseek/`` upstream also names OpenAI-compatible
 # endpoints of other hosts, so those families are priced only on the
 # vendor's own routes.
@@ -124,3 +145,18 @@ def anthropic_prices(model: str) -> dict[str, float] | None:
     """The snapshot for a bare Claude model id (Claude Code's session logs)."""
     entry = PRICES.get(("anthropic", model))
     return dict(entry) if entry else None
+
+
+def bare_model_prices(model: str) -> dict[str, float] | None:
+    """The snapshot for a bare model id (``gpt-6-astra``, ``claude-opus-5-5``)
+    as an agent's own log or end-of-turn report names it.
+
+    Only for usage the vendor's own CLI reported on its own login (a Claude
+    or ChatGPT subscription): those calls went to the vendor, so its rates
+    apply. A proxied route is priced by :func:`model_prices`, which checks
+    the route's host.
+    """
+    for (_family, name), entry in PRICES.items():
+        if name == model:
+            return dict(entry)
+    return None

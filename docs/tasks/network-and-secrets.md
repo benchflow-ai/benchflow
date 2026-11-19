@@ -17,6 +17,22 @@ In 0.9.2, an `allowlist` names a task's own Compose services by their private ad
 
 The policy applies to the agent's own user while it works. The agent's install and start-up have the internet; the verifier, which runs as root after the agent stops, isn't filtered. A task whose policy its sandbox can't enforce is refused before it starts; it never runs with a weaker one.
 
+A service the task declares in the `environment.toml` at its root (`[[environment.services]]`, which BenchFlow starts in the main container) can't run beside a model agent under `denylist`, `allowlist` or the agent's own `no-network` (`agent.network_mode`). The policy holds only the agent's user; the service runs as root, outside it, and the agent reaches it on localhost, so such a trial is refused before it starts. Run the service as a Compose service on an internal network that `main` shares instead.
+
+Under `allowlist`, a task's own Compose services may sit only on internal networks: networks the compose file marks `internal: true`. A service on the default network, or on one merely named `internal` without `internal: true`, has a route out of the sandbox, and the run is refused before the agent starts, naming the service and its network. `main` may join such an internal network beside the default one:
+
+```yaml
+services:
+  main:
+    networks: [default, svc]
+  db:
+    image: postgres:16
+    networks: [svc]
+networks:
+  svc:
+    internal: true
+```
+
 We ran one probe script as the agent under three policies, on three copies of the half-life task (`t-public/`, `t-no-network/`, `t-denylist/`, each with its `network_mode` set). It tries two sites and lists any environment variable whose name looks like a key:
 
 ```bash

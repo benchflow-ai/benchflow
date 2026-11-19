@@ -51,6 +51,16 @@ def label():
             subprocess.run(["docker", *rm, *ids], capture_output=True)
 
 
+def _default_stop_signals() -> None:
+    """The run starts with SIGINT and SIGQUIT at their defaults, as a
+    shell's foreground job does. A suite started as a background job
+    (``nohup ... &``) has both ignored, the run inherited that, and Python
+    installs no Ctrl-C handler for an ignored SIGINT: the Ctrl-C case ran
+    on to its trial's timeout (see _pty_run in test_dx_a_container.py)."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+
+
 def _bench(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "benchflow.cli.main", *args],
@@ -100,6 +110,7 @@ def test_a_stopped_run_writes_its_partial_summary(tmp_path, label, signum, code,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        preexec_fn=_default_stop_signals,
     )
     try:
         deadline = time.monotonic() + 900

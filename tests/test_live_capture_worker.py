@@ -99,13 +99,14 @@ async def test_parse_and_request_event_capture_run_on_the_worker(tmp_path, monke
     process = await _manual_process(tmp_path)
     main_thread = threading.get_ident()
     threads = []
-    original = runtime.trajectory_from_litellm_callback_log
+    # Each line goes through the live capture's reader.
+    original = runtime._read_live_line
 
     def parse(*args, **kwargs):
         threads.append(threading.get_ident())
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(runtime, "trajectory_from_litellm_callback_log", parse)
+    monkeypatch.setattr(runtime, "_read_live_line", parse)
     await process._capture_live_records()
     assert threads and all(thread != main_thread for thread in threads)
 

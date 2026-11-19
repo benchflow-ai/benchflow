@@ -175,6 +175,40 @@ async def test_scrub_removes_credentials_and_put_back_restores_them():
     assert "fake-refresh-value" not in repr(stash)
 
 
+#: Credential files many tools read from a home, outside
+#: any one agent's folders. A ``~/.netrc`` the turn left stayed in a Docker
+#: snapshot and in every child restored from it.
+COMMON_CREDENTIAL_FILES = (
+    ".netrc",
+    ".git-credentials",
+    ".config/gh/hosts.yml",
+    ".docker/config.json",
+    ".npmrc",
+    ".pypirc",
+)
+
+
+@pytest.mark.parametrize("rel", COMMON_CREDENTIAL_FILES)
+@pytest.mark.parametrize("home", ["/home/agent", "/root"])
+async def test_a_common_credential_file_never_enters_a_snapshot(home, rel):
+    """a common credential file in any home is kept out of the snapshot
+    as an agent's own login file is, and put back to the live sandbox."""
+    owner = HOMES[home]
+    path = f"{home}/{rel}"
+    fs = FakeFs(
+        {
+            path: (b"machine example.invalid password EN797-SYNTHETIC", *owner, "600"),
+            "/root/notes.txt": (b"not a credential", "0", "0", "644"),
+        }
+    )
+    ops = FakeOps(fs)
+    stash = await scrub_credentials(ops)
+    assert [f.path for f in stash] == [path]
+    assert set(fs.files) == {"/root/notes.txt"}
+    await put_back_credentials(ops, stash)
+    assert fs.files[path][0].endswith(b"EN797-SYNTHETIC")
+
+
 async def test_nothing_under_an_agent_home_runs_as_root():
     fs = _fs()
     ops = FakeOps(fs)

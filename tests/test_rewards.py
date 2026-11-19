@@ -1,4 +1,4 @@
-"""Tests for the composable Rubric + RewardFunc protocol (ENG-49)."""
+"""Tests for the composable Rubric + RewardFunc protocol."""
 
 from __future__ import annotations
 

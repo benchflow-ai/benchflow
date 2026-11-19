@@ -40,6 +40,15 @@ async def test_live_bind_mounts_preserve_parent_and_archive_children(
     )
     # The containers below are made by hand under this exact project name.
     sandbox._compose_project = project
+    # The rollout folders' bind sources as Compose gets them
+    # (DockerSandboxEnvVars): a ReachablePath is not os.PathLike, and its
+    # str() is a diagnostic, never a path.
+    sources = sandbox._env_vars.to_env_dict(include_os_env=False)
+    variables = dict(
+        agent="HOST_AGENT_LOGS_PATH",
+        verifier="HOST_VERIFIER_LOGS_PATH",
+        artifacts="HOST_ARTIFACTS_PATH",
+    )
     images = []
     original_snapshot = sandbox.snapshot
 
@@ -82,10 +91,20 @@ async def test_live_bind_mounts_preserve_parent_and_archive_children(
             f"com.docker.compose.project={project}",
             "--label",
             "com.docker.compose.service=main",
+            # Compose's labels on its own service containers: its ps (and with
+            # it the bind proof, at start and after a restore) lists only those.
+            "--label",
+            "com.docker.compose.oneoff=False",
+            "--label",
+            "com.docker.compose.config-hash=dt2-hand-made",
         ]
         for root in roots:
-            command += ["--mount", f"type=bind,src={root},dst=/logs/{root.name}"]
+            source = sources[variables[root.name]]
+            command += ["--mount", f"type=bind,src={source},dst=/logs/{root.name}"]
         await sandbox._docker_cli([*command, "python:3.12-slim", "sleep", "infinity"])
+        # As start() does before any setup or agent code: pin the first-start
+        # bind proof that snapshot and restore check.
+        await sandbox._pin_or_verify_bind_targets()
         await checked("echo parent > /state")
         rollout = Rollout(
             RolloutConfig(

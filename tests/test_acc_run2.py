@@ -246,7 +246,12 @@ async def test_the_rules_hold_only_in_the_agents_own_sandbox(
 
     monkeypatch.setattr(lockdown, "_harden_steps", steps)
     await lockdown.harden_before_verify(
-        SimpleNamespace(), SimpleNamespace(), user, "/app", agent_paths=agent_paths
+        SimpleNamespace(),
+        SimpleNamespace(),
+        user,
+        "/app",
+        agent_paths=agent_paths,
+        integrity="strict",
     )
     assert seen == [expect]
     assert (lockdown._hook_agent_user.get(), lockdown._path_workspace.get()) == (

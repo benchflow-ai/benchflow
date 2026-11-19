@@ -25,6 +25,7 @@ from benchflow.sandbox.providers import (
     SANDBOX_PROVIDER_SET,
     SANDBOX_PROVIDERS,
     SINGLE_CONTAINER_PROVIDERS,
+    VERIFIER_ALLOWLIST_PROVIDERS,
     VERIFIER_SERVICE_PROVIDERS,
     providers_phrase,
 )
@@ -60,6 +61,10 @@ KEPT_SERVICES_ISSUE_PATH = "metadata.x-keep-services"
 #: Where the refusal of an identity-switch task on a backend without the
 #: container's no_new_privs is filed (K1-R15-2).
 IDENTITY_SWITCH_ISSUE_PATH = "metadata.x-agent-identity-switch"
+#: A service the task declares for BenchFlow to start in main
+#: (environment.toml's [[environment.services]]) beside a model agent under
+#: a restricted network policy.
+ENVIRONMENT_SERVICES_ISSUE_PATH = "environment.services"
 #: The one backend that runs a task asking for GPUs (sandbox.gpus or
 #: sandbox.gpu_types); every other backend refuses it below.
 GPU_SANDBOX = "modal"
@@ -301,6 +306,234 @@ def _append_verifier_image_issue(
         )
 
 
+#: The agent phase's network, as :data:`NETWORK_POLICY_REFUSALS` reads it.
+ALLOWLIST_POLICY = "allowlist"
+DENYLIST_POLICY = "denylist"
+#: A no-network task whose main keeps a network for its verifier, the
+#: agent's turn held offline by rules in main.
+OFFLINE_POLICY = "offline"
+#: no-network with an agent that launches (a model agent): main keeps a
+#: network for the agent's model calls, its uid held offline by rules.
+NO_NETWORK_AGENT_POLICY = "no-network, with a model agent"
+#: no-network with the oracle, nop or an operator script: main has no network.
+NO_NETWORK_SCRIPTED_POLICY = "no-network, with the oracle or a script"
+OPEN_POLICY = "open"
+#: A verifier in the agent's sandbox (shared) with a restricted network of
+#: its own, under an agent phase whose main has a network: its rules go in
+#: from main as well. Named in a refusal as "<mode>, the verifier's".
+SHARED_VERIFIER_POLICY = "a shared verifier's own"
+#: Per backend, the agent-phase network policies it cannot hold, refused
+#: before any sandbox, in the dry run as in the run (the lead's
+#: rulings of 2026-11-15). Daytona, native and Docker in Docker: its rules go
+#: in from main itself, where root holds NET_ADMIN. Modal: gVisor gives no
+#: iptables, so a main kept open for a model agent (or for the offline
+#: shape's verifier) starts open and only fails closed after its start-up
+#: services had the network (PROBE, 7 of 7 on rc). Its allowlist and
+#: denylist, which its capability table refuses too, are here as well, so
+#: they are refused before the model's credentials are read, as on Daytona
+#: (a key-less dry run named the missing login instead). On both,
+#: only a main with no network at all and an open one run. A backend with no
+#: row refuses nothing here.
+#: A shared verifier's own restricted network goes in from main too (RCI's
+#: B-1 on 476491c9d: a public task whose verifier is no-network passed on
+#: Daytona; on Modal it could only end "verifier network not held" after
+#: the agent's turn). A separate verifier sandbox takes its own network at
+#: creation and runs on both.
+_ALL_RESTRICTED = frozenset(
+    {
+        ALLOWLIST_POLICY,
+        DENYLIST_POLICY,
+        OFFLINE_POLICY,
+        NO_NETWORK_AGENT_POLICY,
+        SHARED_VERIFIER_POLICY,
+    }
+)
+NETWORK_POLICY_REFUSALS: Mapping[str, frozenset[str]] = {
+    "daytona": _ALL_RESTRICTED,
+    "modal": _ALL_RESTRICTED,
+}
+_RESTRICTED_REMEDY = (
+    "run restricted policies on Docker, or choose `open` explicitly (recorded as open)"
+)
+
+
+def agent_network_policy(config: TaskConfig, *, agent_launches: bool) -> str:
+    """The agent phase's network policy, one of the ``*_POLICY`` names."""
+    from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
+    from benchflow.sandbox.verifier_network import verifier_network_mode
+
+    folded = agent_network_sandbox_config(config)
+    mode = getattr(getattr(folded, "network_mode", None), "value", None) or str(
+        getattr(folded, "network_mode", "")
+    )
+    if mode == "allowlist":
+        return ALLOWLIST_POLICY
+    if mode == "denylist":
+        return DENYLIST_POLICY
+    offline = config.sandbox.allow_internet is False
+    if not offline and mode != "no-network":
+        return OPEN_POLICY
+    if agent_launches:
+        return NO_NETWORK_AGENT_POLICY
+    if offline and verifier_network_mode(config) != "no-network":
+        return OFFLINE_POLICY
+    return NO_NETWORK_SCRIPTED_POLICY
+
+
+def _backend_label(sandbox: str, task_dir: Path | None) -> str:
+    """The backend's name in a refusal: Daytona with a Compose file runs it
+    as Docker in Docker."""
+    environment_dir = task_dir / "environment" if task_dir is not None else None
+    if (
+        sandbox == "daytona"
+        and environment_dir is not None
+        and compose_definition_path(environment_dir) is not None
+    ):
+        return "Daytona (Docker in Docker)"
+    return sandbox.capitalize()
+
+
+def shared_verifier_network(config: TaskConfig) -> str | None:
+    """A shared verifier's own restricted network (``verifier.network_mode``,
+    else the sandbox's), or None: public, or a separate verifier sandbox."""
+    from benchflow.sandbox.verifier_network import verifier_network_mode
+    from benchflow.task.verifier_sandbox import separate_verifier_requested
+
+    if separate_verifier_requested(config):
+        return None
+    mode = verifier_network_mode(config)
+    return None if mode == "public" else mode
+
+
+def _shared_verifier_label(mode: str) -> str:
+    """A shared verifier's own network as a refusal names it."""
+    return f"{mode}, the verifier's"
+
+
+def network_policy_issue(
+    config: TaskConfig,
+    *,
+    sandbox: str,
+    agent_launches: bool,
+    task_dir: Path | None = None,
+) -> UnsupportedTaskFeature | None:
+    """The refusal :data:`NETWORK_POLICY_REFUSALS` gives this task's agent
+    phase on *sandbox*, or None."""
+    refused = NETWORK_POLICY_REFUSALS.get(sandbox, frozenset())
+    policy = agent_network_policy(config, agent_launches=agent_launches)
+    if policy not in refused:
+        # A main with no network at all (an offline sandbox, the oracle or a
+        # script) gives its shared verifier none either: nothing to hold. An
+        # online sandbox whose [agent] network is no-network still has one
+        # , whatever the agent phase's label.
+        verifier = shared_verifier_network(config)
+        if (
+            config.sandbox.allow_internet is False
+            or verifier is None
+            or SHARED_VERIFIER_POLICY not in refused
+        ):
+            return None
+        policy = _shared_verifier_label(verifier)
+    backend = _backend_label(sandbox, task_dir)
+    return UnsupportedTaskFeature(
+        path="sandbox.network_mode",
+        reason=(
+            f"the task's network policy ({policy}) is not held on {backend}: "
+            f"{_RESTRICTED_REMEDY}"
+        ),
+        sandbox=sandbox,
+    )
+
+
+#: The agent-phase policies whose firewall holds only the agent's uid.
+_AGENT_HELD_POLICIES = (ALLOWLIST_POLICY, DENYLIST_POLICY, NO_NETWORK_AGENT_POLICY)
+
+
+def _declared_manifest_path(task_dir: Path) -> Path | None:
+    """The task's environment manifest: the one task.md names
+    (``benchflow.environment.manifest``), else a sibling environment.toml."""
+    task_md = task_dir / "task.md"
+    if task_md.is_file():
+        try:
+            environment = TaskDocument.from_path(task_md).benchflow.get("environment")
+        except Exception:
+            environment = None
+        named = environment.get("manifest") if isinstance(environment, dict) else None
+        if isinstance(named, str) and named.strip():
+            path = Path(named)
+            path = path if path.is_absolute() else task_dir / path
+            return path if path.is_file() else None
+    path = task_dir / "environment.toml"
+    return path if path.is_file() else None
+
+
+def environment_services_issue(
+    config: TaskConfig,
+    *,
+    sandbox: str,
+    agent_launches: bool,
+    task_dir: Path | None = None,
+    manifest: object | None = None,
+) -> UnsupportedTaskFeature | None:
+    """Refuse, before any sandbox, a task that declares services for
+    BenchFlow to start in main (environment.toml's
+    ``[[environment.services]]``) when a model agent runs under a restricted
+    network policy: an allowlist, the denylist, or the agent's no-network in
+    an online sandbox (the lead's ruling). The policy holds only the
+    agent's uid. Such a service
+    runs as root outside it, and the agent reaches it on localhost: a
+    database the agent holds superuser on runs a program for it. The launch's
+    quiet-main check refuses such a service as a task process; this refuses
+    the trial before its turn, from the task, saying what to do. *manifest*:
+    the run's own environment manifest, else the task folder's
+    ``environment.toml``."""
+    if not agent_launches:
+        return None
+    policy = agent_network_policy(config, agent_launches=True)
+    if policy not in _AGENT_HELD_POLICIES or config.sandbox.allow_internet is False:
+        # An open policy holds nothing; a sandbox with no network at all
+        # gives the service none either, and the launch's check leaves it.
+        return None
+    if manifest is None and task_dir is not None:
+        path = _declared_manifest_path(Path(task_dir))
+        if path is not None:
+            from benchflow.environment.manifest import load_manifest
+
+            try:
+                manifest = load_manifest(path)
+            except Exception:
+                # A manifest that does not load fails the run where it is read.
+                return None
+    services = [
+        name
+        for name in (
+            getattr(service, "name", None)
+            for service in getattr(manifest, "services", None) or ()
+        )
+        if isinstance(name, str)
+    ]
+    if not services:
+        return None
+    named = ", ".join(f"'{name}'" for name in services)
+    one = len(services) == 1
+    return UnsupportedTaskFeature(
+        path=ENVIRONMENT_SERVICES_ISSUE_PATH,
+        reason=(
+            f"the task declares the service{'' if one else 's'} {named} in "
+            "environment.toml at the task's root ([[environment.services]]), "
+            "which BenchFlow "
+            "starts in main as root, outside the agent's network rules, and "
+            f"the agent's network policy is {policy}: the agent would reach "
+            f"{'it' if one else 'them'} on localhost, and through "
+            f"{'it' if one else 'them'} what the policy refuses. A declared "
+            "service cannot run beside a model agent under a restricted "
+            "network policy: run it as a compose service on an internal "
+            "network that main shares, or run the task with an open network"
+        ),
+        sandbox=sandbox,
+    )
+
+
 def raise_for_task_runtime_support(
     task: TaskDocument | TaskConfig,
     *,
@@ -423,14 +656,18 @@ def _append_config_issues(
         sandbox=sandbox,
     )
     if config.verifier.network_mode == NetworkMode.ALLOWLIST:
-        # The allowlist binds the sandbox user's uid; the verifier runs as
-        # root outside that firewall, so a verifier allowlist is not enforced.
-        _issue(
-            unsupported,
-            path="verifier.network_mode",
-            reason="verifier network allowlists are not enforced (the verifier runs outside the agent uid firewall)",
-            sandbox=sandbox,
-        )
+        if sandbox not in VERIFIER_ALLOWLIST_PROVIDERS:
+            # Hardening holds the verifier, root included, to its allowlist
+            # only where BenchFlow's every-process rules and marked egress
+            # proxy run; elsewhere the allowlist binds the agent's
+            # uid alone and the verifier runs as root outside it.
+            _issue(
+                unsupported,
+                path="verifier.network_mode",
+                reason=f"verifier network allowlists are not enforced on {sandbox} "
+                "(the verifier runs outside the agent uid firewall there)",
+                sandbox=sandbox,
+            )
     else:
         _append_network_issue(
             unsupported,

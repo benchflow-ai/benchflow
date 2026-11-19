@@ -29,7 +29,9 @@ def _task(root: Path, dirname: str) -> Path:
 @pytest.mark.parametrize("dirname", ["oracle", "solution"])
 async def test_start_uploads_no_solution_by_default(tmp_path, dirname):
     env = FakeUploadEnv()
-    await _start_env_and_upload(env, _task(tmp_path, dirname), {})
+    await _start_env_and_upload(
+        env, _task(tmp_path, dirname), {}, task=None, agent=None
+    )
     assert env.uploaded_dirs == []
     assert not [c for c in env.exec_calls if "/oracle" in c[0] or "/solution" in c[0]]
 
@@ -40,7 +42,9 @@ async def test_start_uploads_no_solution_by_default(tmp_path, dirname):
 async def test_start_uploads_the_solution_when_asked(tmp_path, dirname, target):
     env = FakeUploadEnv()
     task = _task(tmp_path, dirname)
-    await _start_env_and_upload(env, task, {}, upload_solution=True)
+    await _start_env_and_upload(
+        env, task, {}, task=None, agent=None, upload_solution=True
+    )
     assert env.uploaded_dirs == [(task / dirname, target)]
 
 

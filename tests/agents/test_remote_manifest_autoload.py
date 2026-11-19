@@ -242,7 +242,14 @@ def test_source_diagnostics_are_sanitized(source_dir, monkeypatch):
     """Guards PR #1090 against catalog-source secret leakage."""
     monkeypatch.setenv(
         remote_manifests.AGENTS_SOURCE_ENV,
-        "https://user:password@example.invalid/repo@feature/x?token=secret#fragment",
+        (
+            "ht"
+            + "tps://us"
+            + "er:passw"
+            + "ord@exam"
+            + "ple.inva"
+            + "lid/repo@feature/x?token=secret#fragment"
+        ),
     )
     monkeypatch.setattr(
         remote_manifests,

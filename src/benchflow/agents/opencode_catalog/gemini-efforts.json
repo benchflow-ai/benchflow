@@ -1,0 +1,191 @@
+{
+ "catalog_sha256": "2e3348072e7d698ba2c5d087f73719b12db0e8f2520a0db02381c9d5a2eda89e",
+ "how": "tools/opencode_catalog.py measure: over ACP, each level OpenCode lists set and prompted once, OPENCODE_MODELS_PATH the snapshot, the google provider and the live catalog fetch at a local stub (no model call) serving a different catalog",
+ "measured": "2026-11-14",
+ "models": {
+  "deep-research-max-preview-04-2026": {},
+  "deep-research-preview-04-2026": {},
+  "gemini-2.5-computer-use-preview-10-2025": {},
+  "gemini-2.5-flash": {
+   "budget": [
+    "high",
+    "max"
+   ]
+  },
+  "gemini-2.5-flash-image": null,
+  "gemini-2.5-flash-lite": {
+   "budget": [
+    "high",
+    "max"
+   ]
+  },
+  "gemini-2.5-flash-preview-tts": {},
+  "gemini-2.5-pro": {
+   "budget": [
+    "high",
+    "max"
+   ]
+  },
+  "gemini-2.5-pro-preview-tts": {},
+  "gemini-3-flash-preview": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3-pro-image": {
+   "sent": [
+    "low",
+    "high"
+   ]
+  },
+  "gemini-3.1-flash-image": {
+   "sent": [
+    "minimal",
+    "high"
+   ]
+  },
+  "gemini-3.1-flash-lite": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.1-flash-lite-image": {
+   "sent": [
+    "minimal",
+    "high"
+   ]
+  },
+  "gemini-3.1-flash-lite-preview": null,
+  "gemini-3.1-flash-live-preview": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.1-flash-tts-preview": {},
+  "gemini-3.1-pro-preview": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.1-pro-preview-customtools": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.5-flash": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.5-flash-lite": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.5-live-translate-preview": {},
+  "gemini-3.6-flash": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.7-flash": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-3.8-flash": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-4-argon": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-4-carbon": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-4-hydrogen": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ],
+   "unsent": [
+    "xhigh"
+   ]
+  },
+  "gemini-embedding-001": {},
+  "gemini-embedding-2": {},
+  "gemini-flash-latest": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-flash-lite-latest": {
+   "sent": [
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemini-pro-latest": {
+   "sent": [
+    "low",
+    "medium",
+    "high"
+   ]
+  },
+  "gemma-4-26b-a4b-it": {
+   "sent": [
+    "minimal",
+    "high"
+   ]
+  },
+  "gemma-4-31b-it": {
+   "sent": [
+    "minimal",
+    "high"
+   ]
+  },
+  "lyria-3-clip-preview": {},
+  "lyria-3-pro-preview": {}
+ },
+ "opencode": "1.19.5"
+}

@@ -28,6 +28,7 @@ from benchflow.agents.registry import (
 from benchflow.providers import litellm_runtime as runtime_mod
 from benchflow.providers.runtime import ensure_litellm_runtime
 from benchflow.rollout import Role, Rollout, RolloutConfig
+from tests.test_en374_login_by_contents import login_file_text
 from tests.test_sweep_credential_policy_matrix import SETTINGS
 from tests.test_sweep_launch_env_routes import HOST_CREDENTIALS
 
@@ -57,7 +58,7 @@ def host(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     login = tmp_path / ".claude/.credentials.json"
     login.parent.mkdir(parents=True)
-    login.write_text(json.dumps({"dummy": HOST_LOGIN}))
+    login.write_text(login_file_text(".credentials.json", HOST_LOGIN))
     register_agent(
         PROXY_FILE,
         "true",
@@ -204,6 +205,7 @@ def _rollout(
     passed,
     *,
     no_web: bool = False,
+    integrity: str = "strict",
 ):
     rollout = Rollout(
         RolloutConfig(
@@ -213,6 +215,9 @@ def _rollout(
             environment="docker",
             agent_env=dict(passed),
             skip_agent_install=True,
+            # The turn-end kill is strict's; a role change stops
+            # the previous connection in every mode (the lead's 18:40Z ruling).
+            integrity=integrity,
         )
     )
     rollout._rollout_dir = tmp_path
@@ -287,7 +292,9 @@ async def test_connection_stages_exactly_its_admitted_files(
         assert sandbox.files == {KEY_PATH: EXPLICIT}
         assert launched["OPENAI_API_KEY"] == EXPLICIT
     else:
-        assert sandbox.files == {CLAUDE_LOGIN: json.dumps({"dummy": HOST_LOGIN})}
+        assert sandbox.files == {
+            CLAUDE_LOGIN: login_file_text(".credentials.json", HOST_LOGIN)
+        }
 
 
 @pytest.mark.asyncio
@@ -450,14 +457,24 @@ async def test_c26_ordinary_disconnect_still_quiesces_before_the_next_role(
 
 
 @pytest.mark.asyncio
-async def test_c26_same_role_reconnect_quiesces_before_cleanup(tmp_path, monkeypatch):
-    """Guards 7516a36a: identical roles still must stop credential writers."""
+@pytest.mark.parametrize("integrity", ["strict", "audit", "off"])
+async def test_c26_same_role_reconnect_quiesces_before_cleanup(
+    tmp_path, monkeypatch, integrity
+):
+    """Guards 7516a36a: identical roles still must stop credential writers
+    where a turn's end stops them (strict). In off and audit the same role
+    with the same logins goes on: nothing is stopped and its logins stay
+    staged until a quiesce (the lead's 18:40Z ruling)."""
     sandbox = Sandbox(monkeypatch)
-    rollout = _rollout(tmp_path, sandbox, "oracle", None, {})
+    rollout = _rollout(tmp_path, sandbox, "oracle", None, {}, integrity=integrity)
     for _ in range(2):
         await rollout.connect_as(OPENHANDS_ROLE)
         await rollout.disconnect()
-    assert len([e for e in sandbox.events if e[0] == "quiesce"]) == 2
+    quiesces = len([e for e in sandbox.events if e[0] == "quiesce"])
+    assert quiesces == (2 if integrity == "strict" else 0)
+    if integrity != "strict":
+        # The turn's end removes the files but keeps the ledger's entries.
+        assert rollout._credential_ledger
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,11 @@ from benchflow.rollout import RolloutConfig
     ],
 )
 def test_single_role_roundtrip_preserves_execution(tmp_path, setting):
-    role = Role(name="agent", agent="openhands", model="test")
+    # openhands declares no ACP effort option, so an effort for it is refused
+    # before launch (R383C), as it is for opencode on a model without variants
+    # (R383D); Claude Code takes one.
+    agent = "claude-agent-acp" if setting == "reasoning_effort" else "openhands"
+    role = Role(name="agent", agent=agent, model="test")
     scene = Scene(roles=[role], turns=[Turn(role="agent")])
     if setting == "prompt":
         scene.turns[0].prompt = "Write 42 to /app/answer.txt"
@@ -43,7 +47,7 @@ def test_single_role_roundtrip_preserves_execution(tmp_path, setting):
             }[setting],
         )
     config = RolloutConfig(
-        task_path=tmp_path, agent="openhands", model="test", scenes=[scene]
+        task_path=tmp_path, agent=agent, model="test", scenes=[scene]
     )
     restored = RolloutConfig.from_dict(config.to_dict(include_agent_env=True))
     assert restored.effective_scenes == config.effective_scenes

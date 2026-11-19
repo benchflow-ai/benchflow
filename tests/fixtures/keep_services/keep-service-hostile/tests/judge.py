@@ -19,6 +19,7 @@ DENIED = [
     "read_tests_grading_check",
     "write_logs_verifier",
     "write_logs_verifier_via_descriptor_in_flight",
+    "write_logs_verifier_test_stdout_via_descriptor_in_flight",
     "write_logs_agent_via_descriptor_in_flight",
     "write_logs_artifacts_via_descriptor_in_flight",
     "write_logs_verifier_reward",

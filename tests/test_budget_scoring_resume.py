@@ -105,9 +105,13 @@ async def test_resumed_scoring_is_live_and_durable(
         with pytest.raises(asyncio.CancelledError):
             await running
     elif end == "budget-cancel":
-        # Exercise the real watcher (no manual cancellation by the test).
+        # Exercise the real watcher (no manual cancellation by the test). It
+        # ticks every 0.2 s; under CPU load the scoring it stops can take
+        # well over a second to wind down, and a 1 s wait then failed with
+        # the run finishing as the test cancelled it. 30 s still
+        # fails a watcher that never fires.
         try:
-            await asyncio.wait_for(asyncio.shield(running), 1)
+            await asyncio.wait_for(asyncio.shield(running), 30)
         except TimeoutError:
             running.cancel()
             with pytest.raises(asyncio.CancelledError):

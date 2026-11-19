@@ -382,7 +382,8 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
     )
 
     assert len(trajectory.exchanges) == 1
-    assert trajectory.total_input_tokens == 13
+    # Anthropic's input_tokens is the uncached input: the one split.
+    assert trajectory.total_input_tokens == 10
     assert trajectory.total_output_tokens == 3
     assert trajectory.total_cache_read_tokens == 2
     assert trajectory.total_cache_creation_tokens == 1
@@ -393,7 +394,7 @@ def test_litellm_callback_jsonl_imports_usage_and_cost():
         fallback_model="anthropic/claude-haiku-4-5-20251001",
     )
     assert usage["usage_source"] == "provider_response"
-    assert usage["n_input_tokens"] == 13
+    assert usage["n_input_tokens"] == 10
     assert usage["n_output_tokens"] == 3
     assert usage["total_tokens"] == 16
     assert usage["cost_usd"] == 0.00042
@@ -426,7 +427,8 @@ def test_normalized_gemini_cache_read_is_not_double_counted() -> None:
     )
     usage = extract_usage_from_trajectory(trajectory)
 
-    assert usage["n_input_tokens"] == 100
+    # prompt_tokens counts the cached 40; n_input_tokens is the rest.
+    assert usage["n_input_tokens"] == 60
     assert usage["n_cache_read_tokens"] == 40
     assert usage["n_output_tokens"] == 20
     assert usage["total_tokens"] == 120

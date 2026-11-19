@@ -108,6 +108,9 @@ class _Planes:
         class _V:
             execution_receipt = None
             before_test = None
+            # Reports its close as a real verifier does (F34: a close
+            # that did not report is a check that did not run).
+            outputs_closed = True
 
             async def verify(self):
                 hook = getattr(self, "before_test", None)

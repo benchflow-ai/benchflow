@@ -111,9 +111,20 @@ def test_dry_run_of_a_matrix_names_its_entries(tmp_path, monkeypatch) -> None:
     )
     assert result.exit_code == 0, result.output
     plan = _plan(result)
+    # Each entry's own effort and harness too, as the run settles them.
     assert plan["matrix"] == {
-        "ora": {"agent": "oracle", "model": None},
-        "noop": {"agent": "nop", "model": None},
+        "ora": {
+            "agent": "oracle",
+            "model": None,
+            "reasoning_effort": None,
+            "harness": "acp",
+        },
+        "noop": {
+            "agent": "nop",
+            "model": None,
+            "reasoning_effort": None,
+            "harness": "acp",
+        },
     }
     assert (plan["trials"], plan["rollouts"]) == (2, 4)
 
@@ -414,8 +425,9 @@ def test_bench_run_help_stays_short_and_help_all_lists_the_rest() -> None:
     assert "--allow-task-env" in full.output and "--config" in full.output
     # 0.10 shows the six flags the run card names (--trials, --integrity,
     # --accept-deviations, the two budget caps, --keep-sandbox), with help cut
-    # to a few lines each.
-    assert len(short.output.splitlines()) < 160
+    # to a few lines each; adds --sandbox-setup-timeout (159 lines
+    # before it); its --integrity help names the faithful default (+3).
+    assert len(short.output.splitlines()) < 168
 
 
 # --- p5-9: one --harness help ------------------------------------------------
@@ -1133,7 +1145,12 @@ def test_job_config_concurrency_and_timeout_follow_precedence(
 
 @pytest.mark.parametrize(
     "value",
-    ["AKIAIOSFODNN7EXAMPLE", "ABCDEFGHIJKLMNOPQRSTUV", "A1B2C3D4E5F6", "4519736280"],
+    [
+        ("AK" + "IAIOSFOD" + "NN7EXAMP" + "LE"),
+        "ABCDEFGHIJKLMNOPQRSTUV",
+        "A1B2C3D4E5F6",
+        "4519736280",
+    ],
 )
 def test_a_credential_shaped_allow_task_env_word_stays_hidden(value) -> None:
     """Guards review L-R2-3 at e31bf65a: an all-caps key typed under
@@ -1351,6 +1368,8 @@ def test_a_job_tasks_config_with_no_agent_runs_the_oracle(
     assert "No agent named" not in printed  # the default-agent warning
 
     # Naming an agent runs it, and says nothing about the oracle.
+    # The dry run resolves the agent's env as each trial does.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-not-a-key")
     named = _bench("run", "--config", config, "-a", "claude", "--dry-run")
     assert named.exit_code == 0, named.output
     assert _plan(named)["agent"] == "claude-agent-acp"

@@ -89,4 +89,12 @@ async def test_covered_or_absent_session_keeps_provider_total(
     rollout._usage_metrics = dict(provider)
     for _ in range(2):
         await rollout._cleanup_before_teardown()
-        assert rollout._usage_metrics == provider
+        # The provider's figures stay; only labels a known cost.
+        labelled = {
+            key: value
+            for key, value in rollout._usage_metrics.items()
+            if key not in ("cost_source", "price_table_date")
+        }
+        assert labelled == provider
+        if provider_cost is not None:
+            assert rollout._usage_metrics["cost_source"] == "list_price_estimate"

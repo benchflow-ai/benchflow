@@ -39,6 +39,19 @@ from tests._metadata_mock import MOCK_SH
 
 LABEL = "bf.test.mdprobe"
 MOCK_LABEL = "bf.test.mdprobe.mock"
+# main's healthcheck: the mock's 169.254.169.254 is in main's namespace. On
+# the internal network nothing else routes that address, so a block proof
+# made before the mock lands connects nowhere and is rightly unproven
+# (R4b-prime's -n 10 gate). BenchFlow's start runs this check after the
+# bootstrap releases main and before the block, so the trial waits for the
+# mock; a mock that never comes fails the start by name.
+MOCK_READY = {
+    "test": ["CMD-SHELL", "grep -q '169\\.254\\.169\\.254' /proc/net/fib_trie"],
+    "interval": "1s",
+    "timeout": "10s",
+    "retries": 3,
+    "start_period": "120s",
+}
 # CAP_NET_ADMIN and CAP_NET_RAW in /proc/<pid>/status's capability masks.
 NET_ADMIN, NET_RAW = 1 << 12, 1 << 13
 
@@ -169,7 +182,10 @@ def probe_image(tmp_path_factory):
         timeout=900,
     )
     if built.returncode != 0:
-        pytest.skip(f"cannot build the probe image: {built.stderr.strip()[-300:]}")
+        pytest.fail(
+            f"cannot build the probe image: {built.stderr.strip()[-300:]}",
+            pytrace=False,
+        )
     try:
         yield tag
     finally:
@@ -178,10 +194,12 @@ def probe_image(tmp_path_factory):
 
 class _Mock:
     """Starts the mock endpoints in main's namespace once main exists, and
-    records main's capability grants from ``docker inspect``."""
+    records main's capability grants from ``docker inspect``. ``delay``
+    starts it that many seconds late, as a loaded daemon can."""
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, *, delay: float = 0.0) -> None:
         self.run_id = run_id
+        self.delay = delay
         self.main = ""
         self.cap_add: list[str] = []
         self.cap_drop: list[str] = []
@@ -206,6 +224,8 @@ class _Mock:
                 subprocess.run(["docker", "rm", "--force", *left], capture_output=True)
 
     def _watch(self) -> None:
+        if self._stop.wait(self.delay):
+            return
         while not self._stop.is_set() and not self.main:
             found = subprocess.run(
                 [
@@ -296,7 +316,13 @@ def _task(
     (task / "environment" / "docker-compose.yaml").write_text(
         json.dumps(
             {
-                "services": {"main": {"image": image, "labels": {LABEL: run_id}}},
+                "services": {
+                    "main": {
+                        "image": image,
+                        "labels": {LABEL: run_id},
+                        "healthcheck": MOCK_READY,
+                    }
+                },
                 # No-web trials run the model proxy in main, which needs the
                 # network; their probe connects to nothing but the proxy on
                 # loopback and TEST-NET (192.0.2.1).
@@ -317,9 +343,11 @@ def _run(
     extra_toml: str = "",
     failing_helper: bool = False,
     no_web: bool = False,
+    mock_delay: float = 0.0,
 ) -> tuple[subprocess.CompletedProcess[str], dict, dict, str, _Mock]:
     """One trial of the stub agent through ``bench eval run``; its result,
-    cloud-metadata.json, the probe's output and what the mock saw."""
+    cloud-metadata.json, the probe's output and what the mock saw.
+    ``mock_delay`` starts the mock that many seconds late."""
     run_id = uuid.uuid4().hex[:12]
     task = _task(tmp_path, image, run_id, extra_toml, no_web=no_web)
     agents = tmp_path / "agents" / "bfprobe"
@@ -331,6 +359,10 @@ def _run(
         BENCHFLOW_AGENTS_DIR=str(agents.parent),
         BENCHFLOW_AGENTS_SOURCE=str(agents.parent),
         PYTHONUNBUFFERED="1",
+        # The suite skips the host readiness checks (Docker probe, Claude
+        # login file); this env is built from scratch, so keep that here.
+        # Under load the Docker probe can give up before any job exists.
+        BENCHFLOW_SKIP_PREFLIGHT="1",
     )
     if no_web:
         # The stub agent makes no model call; the restricted-web model check
@@ -377,7 +409,7 @@ def _run(
         "BENCHFLOW_PROVIDER_BASE_URL=http://127.0.0.1:9/v1",
         *flags,
     ]
-    with _Mock(run_id) as mock:
+    with _Mock(run_id, delay=mock_delay) as mock:
         done = subprocess.run(
             command,
             env=env,
@@ -395,6 +427,22 @@ def _run(
     probe_path = trial / "agent" / "probe.txt"
     probe = probe_path.read_text() if probe_path.exists() else ""
     return done, result, record, probe, mock
+
+
+def _why(done: subprocess.CompletedProcess[str], result: dict, record: dict) -> str:
+    """The whole block record, the trial's error and the CLI's last output,
+    as text: pytest cuts a dict message at 240 characters, which left
+    R4b-prime's 'unproven' record without its reason."""
+    return json.dumps(
+        {
+            "record": record,
+            "error": result.get("error"),
+            "error_category": result.get("error_category"),
+            "stderr": done.stderr[-2000:],
+        },
+        indent=1,
+        default=str,
+    )
 
 
 def _caps(probe: str, name: str) -> int:
@@ -490,16 +538,25 @@ def test_a_forced_helper_failure_refuses_the_start(tmp_path, probe_image):
     script, so root could remove any rule, and the block is not installed.
     The trial stops before the agent starts, with the reason and the
     opt-out in its error."""
-    done, result, record, probe, _mock = _run(
+    done, result, _record, probe, _mock = _run(
         tmp_path, probe_image, "--sandbox-user", "null", failing_helper=True
     )
     error = result.get("error") or ""
-    assert "sandbox startup refused" in error, (error, done.stderr[-2000:])
-    assert "cloud metadata endpoints open to it" in error, error
-    assert "--allow-cloud-metadata" in error, error
-    assert record["state"] == "not_installed", record
-    assert "forced helper build failure" in record["why"], record
-    assert result["cloud_metadata"] == {"state": "not_installed"}
+    assert error == (
+        "RuntimeError: sandbox startup refused: BenchFlow's helper image could not "
+        "be built (building the metadata firewall helper image failed: forced helper "
+        "build failure (test)), so no network rule of the trial's could go in from "
+        "outside main, and its processes would have the cloud metadata endpoints and "
+        "the network open to them; only the task's own opt-out "
+        "(allow_cloud_metadata = true in its [environment] table) on an open network "
+        "starts it without them"
+    ), (error, done.stderr[-2000:])
+    # main's own every-user rule goes in before main is released,
+    # from the same helper: its failure stops the start there, earlier than
+    # the agent's block, naming the only opt-out (the task's).
+    assert "cloud metadata endpoints" in error, error
+    assert "forced helper build failure" in error, error
+    assert "allow_cloud_metadata = true" in error, error
     launched = list((tmp_path / "jobs").rglob("agent/launched"))
     assert launched == [] and probe == "", (launched, probe)
 
@@ -519,9 +576,11 @@ def test_a_forced_helper_failure_refuses_the_start(tmp_path, probe_image):
 def test_an_explicit_opt_out_starts_the_agent_and_is_recorded(
     tmp_path, probe_image, flags, extra_toml, opt_out
 ):
-    """Only an explicit opt-out lets the agent start without the block: no
-    rule goes in (the mock endpoint answers), and the result says how the
-    run opted out. A root agent, so nothing but the opt-out lets it start."""
+    """Only an explicit opt-out lets the agent start without the block, and
+    the result says how the run opted out. A root agent, so nothing but the
+    opt-out lets it start. Since (the lead's 22:40Z ruling) main's own
+    every-user rule goes in from sandbox start and only the task opts out of
+    it: under the run's flag the endpoints stay refused."""
     done, result, record, probe, _mock = _run(
         tmp_path, probe_image, "--sandbox-user", "null", *flags, extra_toml=extra_toml
     )
@@ -529,7 +588,10 @@ def test_an_explicit_opt_out_starts_the_agent_and_is_recorded(
     assert record["state"] == "off", record
     assert record.get("opt_out") == opt_out, record
     assert result["cloud_metadata"] == {"state": "off", "opt_out": opt_out}
-    assert _connects(probe, "connect") == {"reached"}, probe
+    task_opts_out = "task" in opt_out
+    assert _connects(probe, "connect") == {"reached" if task_opts_out else "refused"}, (
+        probe
+    )
 
 
 # --- Images that cannot make the test connect (PERF-A round 4) ---------------
@@ -626,7 +688,10 @@ def alpine_images(tmp_path_factory):
                 timeout=900,
             )
             if built.returncode != 0:
-                pytest.skip(f"cannot build {kind}: {built.stderr.strip()[-300:]}")
+                pytest.fail(
+                    f"cannot build {kind}: {built.stderr.strip()[-300:]}",
+                    pytrace=False,
+                )
             tags[kind] = tag
         yield tags
     finally:
@@ -650,8 +715,8 @@ def test_an_image_without_timeout_starts_behind_a_block_the_helper_proves(
     done, result, record, probe, _mock = _run(
         tmp_path, alpine_images["bash-no-timeout"], *flags
     )
-    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-2000:])
-    assert record["state"] == "on", record
+    assert result.get("error") in (None, ""), _why(done, result, record)
+    assert record["state"] == "on", _why(done, result, record)
     assert record["rules_from"] == "helper", record
     assert record["test_connect_from"] == "helper", record
     assert (record["test_connect_ids"] == "0:0") is uid0, record
@@ -675,13 +740,29 @@ def test_an_image_without_bash_is_proven_and_stops_only_at_the_agents_launch(
     done, result, record, probe, _mock = _run(
         tmp_path, alpine_images["no-bash"], "--sandbox-user", "null"
     )
-    assert record["state"] == "on", record
+    assert record["state"] == "on", _why(done, result, record)
     assert record["test_connect_from"] == "helper", record
     assert record["test_connect_ids"] == "0:0", record
     assert result["cloud_metadata"] == {"state": "on"}
     assert "CloudMetadata" not in (result.get("error") or ""), result.get("error")
     assert result.get("error"), done.stderr[-2000:]
     assert probe == ""
+
+
+def test_a_late_mock_still_leaves_the_no_bash_block_proven(tmp_path, alpine_images):
+    """under R4b-prime's -n 10 gate the no-bash trial above came out
+    'unproven' ("root's connect to 169.254.169.254:80 was not refused by
+    the rule (failed)"): the mock's address arrived after the block's proof,
+    and on the internal network nothing else routes it. Started 30 s late,
+    the mock lost that race every time. main's healthcheck (MOCK_READY)
+    makes BenchFlow's start wait for it, so the proof still finds the rule."""
+    done, result, record, _probe, _mock = _run(
+        tmp_path, alpine_images["no-bash"], "--sandbox-user", "null", mock_delay=30
+    )
+    assert record["state"] == "on", _why(done, result, record)
+    assert record["test_connect_from"] == "helper", record
+    assert result["cloud_metadata"] == {"state": "on"}
+    assert "CloudMetadata" not in (result.get("error") or ""), result.get("error")
 
 
 # --- A uid-0 agent on a no-web task ---------------------------
@@ -721,12 +802,34 @@ out=/logs/agent/probe.txt
 """
 
 
+# The no-web stub agent connects to TEST-NET (192.0.2.1) as soon as it is
+# launched, before ACP's initialize: the uid firewall must already refuse it
+# (the firewall went in only after session/new, and this connect
+# left the sandbox unheld, timing out instead of being refused).
+NOWEB_ACP_SH = ACP_SH.replace(
+    "echo launched > /logs/agent/launched\n",
+    "echo launched > /logs/agent/launched\n"
+    'err=$(timeout 3 bash -c "exec 3<>/dev/tcp/192.0.2.1/80" 2>&1); rc=$?\n'
+    "case $rc in 0) s=reached;; 124) s=timeout;; *) case $err in"
+    " *[Rr]efused*) s=refused;; *[Uu]nreachable*) s=unreachable;;"
+    " *) s=failed;; esac;; esac\n"
+    'echo "launch $s" > /logs/agent/launch.txt\n',
+)
+assert NOWEB_ACP_SH != ACP_SH
+
+
+def _launch_connect(tmp_path: Path) -> str:
+    """What the stub agent's connect at its launch got."""
+    found = list((tmp_path / "jobs").rglob("agent/launch.txt"))
+    return found[0].read_text().strip() if found else "(no launch.txt)"
+
+
 @pytest.fixture(scope="module")
 def noweb_image(tmp_path_factory):
     """The task image with the stub agent and the no-web probe."""
     context = tmp_path_factory.mktemp("bfprobe-noweb")
     (context / "Dockerfile").write_text(DOCKERFILE)
-    (context / "acp.sh").write_text(ACP_SH)
+    (context / "acp.sh").write_text(NOWEB_ACP_SH)
     (context / "probe.sh").write_text(NOWEB_PROBE_SH)
     tag = f"bf-test-mdprobe-noweb:{uuid.uuid4().hex[:12]}"
     built = subprocess.run(
@@ -737,8 +840,9 @@ def noweb_image(tmp_path_factory):
         timeout=900,
     )
     if built.returncode != 0:
-        pytest.skip(
-            f"cannot build the no-web probe image: {built.stderr.strip()[-300:]}"
+        pytest.fail(
+            f"cannot build the no-web probe image: {built.stderr.strip()[-300:]}",
+            pytrace=False,
         )
     try:
         yield tag
@@ -765,6 +869,8 @@ def test_a_uid_0_agent_on_a_no_web_task_is_held_to_loopback(
         tmp_path, noweb_image, "--sandbox-user", user, no_web=True
     )
     assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    # Held from its launch, before ACP's initialize.
+    assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
     assert f"ids 0 {NO_WEB_ROOT_GID}" in probe, probe
     for name in ("CapBnd", "CapPrm", "CapEff"):
         assert not _caps(probe, name) & (NET_ADMIN | NET_RAW), (name, probe)
@@ -773,3 +879,17 @@ def test_a_uid_0_agent_on_a_no_web_task_is_held_to_loopback(
     flushes = [ln.split()[2] for ln in probe.splitlines() if ln.startswith("flush ")]
     assert flushes and all(rc != "0" for rc in flushes), probe
     assert _lines(probe, "after") == ["refused"], probe
+
+
+def test_a_no_web_agent_user_is_held_from_its_launch(tmp_path, noweb_image):
+    """a no-web task's agent that runs as the sandbox user is held
+    from the moment it starts. Its connect to TEST-NET at launch, before
+    ACP's initialize, is refused by the uid firewall. On bf844d299 the
+    firewall went in only after session/new, and that connect left the
+    sandbox (it timed out instead of being refused)."""
+    done, result, _record, probe, _mock = _run(
+        tmp_path, noweb_image, "--sandbox-user", "agent", no_web=True
+    )
+    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
+    assert _lines(probe, "outside") == ["refused"], probe

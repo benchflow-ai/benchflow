@@ -114,7 +114,15 @@ def test_protocol_relative_url_compatibility():
     [
         "synthetic-first\nsynthetic-second",
         "  synthetic-padded  ",
-        "...https://bob:synthetic-password@proxy.example/v1",
+        (
+            "...ht"
+            + "tps://bo"
+            + "b:synthe"
+            + "tic-pass"
+            + "word@pro"
+            + "xy.examp"
+            + "le/v1"
+        ),
     ],
 )
 def test_cli_errors_hints_and_logs_share_the_choke_point(
@@ -151,7 +159,15 @@ def test_cli_errors_hints_and_logs_share_the_choke_point(
 
 def test_unregistered_url_userinfo_reaches_every_cli_sink(monkeypatch, capsys):
     """87114550 C6: base-URL credentials need no credential-named variable."""
-    url = "...https://bob:synthetic-password@proxy.example/v1"
+    url = (
+        "...ht"
+        + "tps://bo"
+        + "b:synthe"
+        + "tic-pass"
+        + "word@pro"
+        + "xy.examp"
+        + "le/v1"
+    )
     print_hint("endpoint " + url)
     print_error("endpoint " + url, next_step="replace " + url)
     shown = "".join(capsys.readouterr())
@@ -174,7 +190,7 @@ def test_complete_subprocess_log_is_masked_before_publication(
         login.write_text(json.dumps({"access_token": secret}))
     script = (
         "import sys; "
-        f"text = {'ERROR ' + secret + ' ...https://bob:synthetic-password@proxy.example/v1'!r}; "
+        f"text = {'ERROR ' + secret + (' ...ht' + 'tps://bo' + 'b:synthe' + 'tic-pass' + 'word@pro' + 'xy.examp' + 'le/v1')!r}; "
         "[sys.stdout.write(char) for char in text]; sys.exit(1)"
     )
     monkeypatch.setattr(
@@ -203,7 +219,15 @@ def test_summary_file_masks_all_fields(monkeypatch, tmp_path):
         job.log_path,
         reason="ERROR "
         + secret
-        + " ...https://bob:synthetic-password@proxy.example/v1",
+        + (
+            " ...ht"
+            + "tps://bo"
+            + "b:synthe"
+            + "tic-pass"
+            + "word@pro"
+            + "xy.examp"
+            + "le/v1"
+        ),
     )
     path = doctor_smoke.write_summary(
         tmp_path, [outcome], sandbox="docker", started_at=datetime.now(UTC)
@@ -361,6 +385,12 @@ def test_user_visible_diagnostic_sinks_are_registered():
             "_run_cli": 3,
         },
         "cli/_shared.py": {
+            # A redacting sink: the listing's and bench eval metrics' tables
+            # (job labels, setting labels, cause keys, counts, figures and the
+            # unscored note), rendered plain, passed through
+            # _diagnostics.redact with _errors._secrets(), then written; never
+            # an env value.
+            "print_at_natural_width": 2,
             "print_hint": 1,
             "print_error": 1,
             "warn_deprecated": 1,
@@ -370,7 +400,9 @@ def test_user_visible_diagnostic_sinks_are_registered():
             # carried, rates and trial names; never an env value. Then each
             # failed check's next step, a fixed text (run_checks.NEXT_STEPS).
             "print_run_check_failures": 2,
-            "_report_eval_result": 12,
+            # The last of them: the budget's cost_cap_note, a fixed text and
+            # an attempt count (budget.BudgetGuard.summary).
+            "_report_eval_result": 13,
             # The scoring rule's line under the Score (benchflow.scoring): its
             # interval, task count, rule name, endings counted and warnings;
             # then the model refusals and budget stops beside it, counts only.

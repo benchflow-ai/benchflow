@@ -485,7 +485,9 @@ def _agent_task(dest: Path, mode: str, port: int) -> Path:
     )
     assert n == 1
     task_md.write_text(text)
-    return task
+    # A model agent under a restricted policy: the fake in a compose service
+    # of its own, never declared in main.
+    return h.fake_in_sidecar(task)
 
 
 def _bash_output(trial: Path) -> str:
@@ -516,13 +518,13 @@ def agent_probes(tmp_path_factory) -> dict[str, tuple[dict, list[str]]]:
             extra=["--concurrency", "2", "--retry-attempts", "0"],
         )
         # Both policies run the proxy in the sandbox, so its upstream is the
-        # sandbox's own fake provider on any backend.
+        # task's own fake provider, its compose service.
         args = [a for a in args]
         for i, value in enumerate(args):
             if value.startswith("ANTHROPIC_AUTH_TOKEN="):
                 args[i] = f"ANTHROPIC_API_KEY={h.DUMMY_KEY}"
             elif value.startswith("ANTHROPIC_BASE_URL="):
-                args[i] = f"BENCHFLOW_PROVIDER_BASE_URL={h.IN_SANDBOX_FAKE_URL}"
+                args[i] = f"BENCHFLOW_PROVIDER_BASE_URL={h.SIDECAR_FAKE_URL}"
         proc = subprocess.run(
             args,
             cwd=h.REPO_ROOT,
@@ -582,13 +584,24 @@ def script_metadata(tmp_path_factory) -> Path:
         "#!/bin/bash\n" + scripts["metadata-probe"][0]["input"]["command"] + "\n"
     )
 
+    import uuid
+
+    # Only this session's trial and only its own mock: two suites on one
+    # daemon run the same task name, and each watcher mocked the other's main
+    # (RCI on 39fb4e057, as for the deterministic watcher).
+    tasks = str(root / "tasks") + "/"
+
     def wanted(_cid: str, labels: dict[str, str]) -> bool:
-        return labels.get("com.docker.compose.service") == "main" and labels.get(
-            "com.docker.compose.project", ""
-        ).startswith(f"{METADATA_TASK}__")
+        return (
+            labels.get("com.docker.compose.service") == "main"
+            and labels.get("com.docker.compose.project", "").startswith(
+                f"{METADATA_TASK}__"
+            )
+            and tasks in labels.get("com.docker.compose.project.working_dir", "")
+        )
 
     jobs = root / "jobs"
-    with MockWatcher(wanted, "bf.test.gi-metadata-mock=1") as mock:
+    with MockWatcher(wanted, f"bf.test.gi-metadata-mock={uuid.uuid4().hex}") as mock:
         proc = subprocess.run(
             [
                 h.bench_executable(),

@@ -34,7 +34,10 @@ async def test_setup_syntax_error_names_shell_and_does_not_blame_modes(
         )
 
     monkeypatch.setattr(lockdown, "_read_exec", read)
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"(?s)could not run its protected-runtime setup script in this image's shell.*shell syntax error in BenchFlow's setup script",
+    ) as caught:
         await lockdown.prepare_runtime_tree(
             SimpleNamespace(supports_runtime_kit=True), phase="build"
         )

@@ -56,8 +56,9 @@ async def test_live_capture_keeps_the_heartbeat_schedulable(
     process = _process(tmp_path, log)
     output = tmp_path / "llm_trajectory.jsonl"
     await _arm_capture(process, output)
+    # Each line is parsed through the live capture's reader.
     target, name = (
-        (runtime, "trajectory_from_litellm_callback_log")
+        (runtime, "_read_live_line")
         if stage == "parse"
         else (LiveLLMTrajectoryWriter, "append")
     )

@@ -18,6 +18,7 @@ from typing import Any
 
 from benchflow.agents.errors import UsageLimitError
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
+from benchflow.integrity.constants import normalize_integrity_mode
 from benchflow.loop_strategies import LoopStrategySpec
 from benchflow.review.options import ReviewerConfig
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
@@ -59,6 +60,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         model=raw.get("model"),
         reviewer=ReviewerConfig.coerce(raw.get("reviewer")),
         reasoning_effort=raw.get("reasoning_effort"),
+        reasoning_effort_source=raw.get("reasoning_effort_source"),
         harness=raw.get("harness") or "acp",
         environment=raw.get("environment") or "docker",
         concurrency=int(raw.get("concurrency") or 1),
@@ -72,6 +74,8 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         sandbox_user=raw.get("sandbox_user", "agent"),
         sandbox_locked_paths=raw.get("sandbox_locked_paths"),
         sandbox_setup_timeout=int(raw.get("sandbox_setup_timeout") or 120),
+        sandbox_setup_timeout_given=raw.get("sandbox_setup_timeout_given"),
+        verifier_setup_timeout=raw.get("verifier_setup_timeout"),
         skip_agent_install=bool(raw.get("skip_agent_install", False)),
         agent_idle_timeout=raw.get("agent_idle_timeout"),
         agent_idle_timeout_given=raw.get("agent_idle_timeout_given"),
@@ -84,7 +88,7 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         keep_sandbox=str(raw.get("keep_sandbox") or "never"),
         fresh_install=bool(raw.get("fresh_install", False)),
         allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
-        integrity=raw.get("integrity") or "off",
+        integrity=normalize_integrity_mode(raw.get("integrity")),
         accept_deviations=raw.get("accept_deviations"),
         planned_trials=int(raw.get("planned_trials") or 1),
         trial_number=raw.get("trial_number"),
@@ -118,6 +122,23 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
     )
 
 
+def _usage(result) -> dict[str, Any]:
+    """The usage keys of the worker's own summary.json (its tokens, cost,
+    judge totals and every attempt's spend): the parent adds them up."""
+    from benchflow._utils.evaluation_results import USAGE_SUMMARY_KEYS
+
+    job_dir = getattr(result, "job_dir", None)
+    if job_dir is None:
+        return {}
+    try:
+        summary = json.loads((Path(job_dir) / "summary.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(summary, dict):
+        return {}
+    return {key: summary[key] for key in USAGE_SUMMARY_KEYS if key in summary}
+
+
 def _result_payload(result) -> dict[str, Any]:
     return {
         "job_name": result.job_name,
@@ -137,6 +158,7 @@ def _result_payload(result) -> dict[str, Any]:
         # The worker's run checks (benchflow.run_checks): the parent fails
         # the run when one failed.
         "run_checks": getattr(result, "run_checks", None),
+        "usage": _usage(result),
     }
 
 
@@ -168,6 +190,9 @@ async def run_worker(payload_path: Path) -> dict[str, Any]:
         # The parent `bench eval run` already made the pre-run checks.
         preflight=False,
     )
+    # What the tasks-root rule skipped of the job's listing, which this
+    # shard's own listing cannot see: its card and summary.json record it.
+    evaluation._job_tasks_root_skips = payload.get("tasks_root_skips")
     try:
         result = await evaluation.run()
         usage_limit = None

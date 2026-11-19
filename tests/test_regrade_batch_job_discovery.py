@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 
+from benchflow import load_job
+from benchflow._utils.attempt_decision import FINAL, RETRIED, record_decision
 from benchflow.eval_regrade import find_trials, resolve_task
 
 
@@ -66,5 +68,57 @@ def test_attempts_a_retry_replaced_are_not_listed_as_trials(tmp_path: Path):
     _trial(job, "db__b", "db", None, mtime=1001)
     scored = _trial(job, "db__c", "db", {"reward": 1.0}, mtime=1002)
     other = _trial(job, "git__d", "git", {"reward": 0.0}, mtime=1003)
+    (job / "evaluation.json").write_text(
+        json.dumps({"schema_version": 1, "tasks_dir": str(tmp_path / "tasks")})
+    )
 
     assert find_trials(job) == [scored, other]
+
+
+def test_every_sample_of_a_folder_that_is_no_job_is_listed(tmp_path: Path):
+    """Re-review of PR #139, 2026-11-13: ``bf.run`` calls sharing a job name
+    leave rollouts in a folder with no evaluation.json or summary.json, each
+    a sample of its own, and ``bf.load_job`` counts every one. Regrade's
+    rule for a job from before the attempt records dropped the unscored ones
+    as attempts a scored retry replaced."""
+    job = tmp_path / "jobs" / "shared"
+    _trial(job, "db__a", "db", None, mtime=1000)
+    _trial(job, "db__b", "db", None, mtime=1001)
+    _trial(job, "db__c", "db", {"reward": 1.0}, mtime=1002)
+    _trial(job, "git__d", "git", {"reward": 0.0}, mtime=1003)
+
+    listed = [t.name for t in find_trials(job)]
+
+    assert listed == ["db__a", "db__b", "db__c", "git__d"]
+    assert sorted(t.path.name for t in load_job(job).trials) == listed
+
+
+def test_the_runs_records_decide_in_a_folder_that_is_no_job(tmp_path: Path):
+    """Re-review of PR #139, 2026-11-13: a folder that has the run's attempt
+    records but no evaluation.json (trial folders copied out of their job)
+    still lists the attempt the run kept, never one it retried."""
+    job = tmp_path / "jobs" / "copied"
+    retried = _trial(job, "db__a", "db", {"reward": 1.0}, mtime=1000)
+    kept = _trial(job, "db__b", "db", None, mtime=1001)
+    record_decision(retried, RETRIED, task="db", attempt=1)
+    record_decision(kept, FINAL, task="db", attempt=2)
+
+    assert find_trials(job) == [kept]
+    assert [t.path for t in load_job(job).trials] == [kept]
+
+
+def test_regrade_and_load_job_read_a_copied_job_alike(tmp_path: Path):
+    """Re-review of PR #139, 2026-11-13: in a job folder copied without its
+    evaluation.json, a task whose attempts have no record (the run stopped
+    before it decided) is read by the rule for a job from before the
+    records, by regrade as by ``bf.load_job``: the scored attempt."""
+    job = tmp_path / "jobs" / "copied"
+    retried = _trial(job, "db__a", "db", {"reward": 1.0}, mtime=1000)
+    kept = _trial(job, "db__b", "db", None, mtime=1001)
+    record_decision(retried, RETRIED, task="db", attempt=1)
+    record_decision(kept, FINAL, task="db", attempt=2)
+    _trial(job, "git__c", "git", None, mtime=1002)
+    scored = _trial(job, "git__d", "git", {"reward": 0.0}, mtime=1003)
+
+    assert find_trials(job) == [kept, scored]
+    assert sorted(t.path for t in load_job(job).trials) == [kept, scored]

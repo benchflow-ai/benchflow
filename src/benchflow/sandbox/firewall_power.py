@@ -328,7 +328,9 @@ def firewall_rules_hold_agent(
     config = getattr(env, "task_env_config", None)
     if not holds and config is not None:
         try:
-            granted = compose_needs_net_admin(config)
+            granted = compose_needs_net_admin(config) and (
+                getattr(env, "rules_by_helper", False) is not True
+            )
         except AttributeError:
             granted = False
         if granted:
@@ -984,7 +986,7 @@ async def check_firewall_power(
                 "no process in the sandbox can hold NET_ADMIN (it is not in "
                 "root's bounding set), so nothing in the image can give the "
                 "agent the firewall",
-                holds=list(holds),
+                installing=list(holds),
                 seconds=round(_timing_spans.clock() - started, 3),
             ),
             None,
@@ -1007,7 +1009,7 @@ async def check_firewall_power(
             firewall_power_record(
                 "refused",
                 why,
-                holds=list(holds),
+                installing=list(holds),
                 seconds=round(_timing_spans.clock() - started, 3),
             ),
             f"sandbox startup refused: {why}. Repair the task's image or "
@@ -1072,7 +1074,7 @@ async def check_firewall_power(
                     or agent_failed
                     or "optional inventory tools or report unavailable"
                 ),
-                holds=list(holds),
+                installing=list(holds),
                 drop="setpriv" if kept else None,
                 found=_runnable(scanned, agent_out),
                 power=power.split(",") if power else [],
@@ -1169,7 +1171,7 @@ async def check_firewall_power(
                     f"the agent's commands {how}, so no file capability or "
                     "setuid program can give it NET_ADMIN or uid 0, the "
                     f"power to undo or go around {held_by}{what}",
-                    holds=list(holds),
+                    installing=list(holds),
                     drop="setpriv" if bounded else "nnp",
                     found=found,
                     agent_capabilities={
@@ -1224,7 +1226,7 @@ async def check_firewall_power(
             firewall_power_record(
                 "refused",
                 why + inventory,
-                holds=list(holds),
+                installing=list(holds),
                 drop=None,
                 no_drop=no_drop,
                 found=scanned[:_FOUND_LIMIT],
@@ -1256,7 +1258,10 @@ async def check_firewall_power(
     held = any(_has_net_admin(agent.get(k, "")) for k in ("prm", "eff", "amb"))
     checked = _caps_read(scan)
     extra: dict[str, Any] = {
-        "holds": list(holds),
+        # The rules about to hold the agent: this check runs before they go
+        # in, so the record says "installing", never "holds" (the
+        # lead's rule: "holds" only once they are installed and re-proven).
+        "installing": list(holds),
         "drop": None,
         "no_drop": no_drop,
         "found": found,

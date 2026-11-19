@@ -162,6 +162,21 @@ def write_via(index):
     return action
 
 
+def append_via(index, name):
+    """Open an existing file there for writing (R174-M1): on Docker the
+    host's test-stdout.txt keeps the host user's uid, which can be ours."""
+
+    def action():
+        if not in_flight:
+            raise OSError("no folder descriptor in flight")
+        fd = os.open(name, os.O_WRONLY | os.O_APPEND, dir_fd=in_flight[index])
+        os.write(fd, b"written by the kept service\n")
+        os.close(fd)
+        return f"appended to {name} in {FOLDERS[index]} through its descriptor"
+
+    return action
+
+
 def rewrite_held():
     if held is None:
         raise OSError("no descriptor held (hard link not possible here)")
@@ -176,6 +191,10 @@ def attack_once():
     for index, folder in enumerate(FOLDERS):
         name = folder.strip("/").replace("/", "_")
         attempt(f"write_{name}_via_descriptor_in_flight", write_via(index))
+    attempt(
+        "write_logs_verifier_test_stdout_via_descriptor_in_flight",
+        append_via(0, "test-stdout.txt"),
+    )
     attempt("read_tests_list", listdir("/tests"))
     attempt("read_tests_test_sh", read("/tests/test.sh"))
     attempt("read_tests_grading_check", read("/tests/grading_check.py"))

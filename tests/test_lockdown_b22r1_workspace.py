@@ -71,7 +71,11 @@ async def test_temporary_cleanup_preserves_only_workspace_mount_aliases(
         )
     else:
         await lockdown.harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace=str(workspace)
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace=str(workspace),
+            integrity="strict",
         )
     for path in (workspace, alias, nested):
         assert (path / "answer.py").read_text() == "correct\n"

@@ -41,6 +41,27 @@ _READS = {
 }
 
 
+def _host_takes_the_outputs_back() -> int:
+    """1 where the mounted /logs/verifier, root's while test.sh runs, goes to
+    the host user once test.sh has exited: a host user that is not
+    root, on Docker whose root is not that user. 0 as root, or on rootless
+    Docker, where container root writes as the host user already."""
+    if os.geteuid() == 0:
+        return 0
+    import subprocess
+
+    try:
+        options = subprocess.run(
+            ["docker", "info", "--format", "{{json .SecurityOptions}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        options = ""
+    return 0 if "rootless" in options else 1
+
+
 def _is_read(command: str) -> bool:
     from benchflow.sandbox._exec_receipt import unwrap_receipt_command
 
@@ -91,12 +112,15 @@ def _group(e: Exec) -> str:
     if "verifier-started-" not in command and (
         ("chmod +x" in command and "test.sh" in command)
         or "mkdir -p /run/runtime" in command
+        # The same two steps on bfx where it is delivered.
+        or ("/.bfx/bfx chmod" in command and "test.sh" in command)
+        or ("/.bfx/bfx mkdir" in command and '"path":"run/runtime"' in command)
     ):
         return "verifier_start"
     if command == "mkdir -p /":
         return "upload_root_mkdir"
     if e.caller in ("_publish_trajectory_for_verifier", "_publish_step") or (
-        e.caller == "upload_file" and "/logs/.runtime-publish-" in command
+        e.caller == "upload_file" and "logs/.runtime-publish-" in command
     ):
         return "publish"
     return "other"
@@ -189,12 +213,16 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
             "publish",
         )
     } == {
-        "start_probe": 1,
+        # The merged start probe, and the verifier user's uid read for the
+        # verifier output folder's close.
+        "start_probe": 2,
         "snapshot": 1,
         "seed": 1,
         "oracle": 2,
-        # The merged root reads, and PYTHONPATH on the task route (C8).
-        "environment_reads": 2,
+        # The merged root reads, and PYTHONPATH on the task route (C8), were
+        # the hardening's; audit, the default, runs none. 's
+        # test.sh preflight reads the image's PATH in every mode: one.
+        "environment_reads": 1,
         "verifier_start": 2,
         "upload_root_mkdir": 0,
         # The staged publish (V6): the stage with the defensive
@@ -231,20 +259,59 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
     # search-path inputs, read in their own receipt exec after the
     # preparation (_hook_cleanup.INPUTS_CMD). A checkout without the pinned
     # binaries keeps the clean-up inside the preparation: 45.
-    want = 46 if locate.available(platform.machine()) else 45
+    # 47 (46) with the oracle's sandbox-user setup
+    # reads the workspace (its physical path, and its mode when a daemon
+    # folder is in it) in a receipt exec, as an agent trial's setup does.
+    # 48 (47) with right after the sandbox starts, one root exec reads
+    # Yama's ptrace_scope, PID 1's uids and the sandbox user's uid
+    # (sandbox/pid1_ptrace.py), for the start refusal and the trial's record.
+    # 49 (48) with hardening reads main's routes and root makes its
+    # own test connect to 169.254.169.254 once the metadata rule covers root
+    # (the rule itself goes in from BenchFlow's helper, not through exec).
+    # 50 (49): root reads test.sh's launch record beside its start receipt,
+    # the runtime proof that it ran without NET_ADMIN, NET_RAW or SYS_PTRACE.
+    # 51 (50) with its re-proof: at the end of test.sh root connects,
+    # from inside the bounded launch, to the metadata server and TEST-NET,
+    # which the rules must refuse (benchflow.sandbox.policy_reproof; its
+    # iptables -C and counters run in BenchFlow's helper, not through exec).
+    # 52 (51) with both: its start probe (+1) and its four (+4) on 47 (46).
+    # 54 (53) with one root exec records the image manifest before
+    # the agent's turn, and one writes the host's copy back before hardening.
+    # 36 (53) with its faithful default: audit runs none of the
+    # verifier's hardening (the preparation, the reads, the PATH and kit
+    # checks, the guard; bfx's one extra exec was the hook clean-up's), the
+    # detector's walk adds one and the sandbox user's kill moves after grading.
+    # 38: the verifier output folder's close: uid read + chown,.
+    # +1: the workspace's git repositories trusted again before test.sh, for
+    # every agent in audit ((8/n)).
+    # +1 where the host user is not root on rootful Docker: the mounted
+    # output folder, root's while test.sh runs, goes to the host user once it
+    # has exited (GATE1N's wal-recovery-ordering).
+    back = _host_takes_the_outputs_back()
+    assert [e.caller for e in execs].count("_open_output_dir_to_host") == back
+    # +3 where bfx is not delivered: the shell's walks for the links, before
+    # the turn, before test.sh and after grading, in off and audit
+    # ((c)3); bfx's own route is no exec of the sandbox's.
+    # +3 with, in every mode: just before the oracle's turn, the test.sh
+    # preflight reads the image's PATH and probes test.sh's commands as the
+    # verifier user (two execs), and the uploaded tests are made root's
+    # (chown -R 0:0, RUSAGE): one more.
+    # +1 with the root exec after the copy at test.sh's exit that
+    # checks the sandbox stayed still and lets it go on (verifier_freeze).
+    assert [e.caller for e in execs].count("thaw_after_test") == 1
+    want = 43 + back + (0 if locate.available(platform.machine()) else 3)
     assert len(execs) == want, [(e.caller, e.command[:60]) for e in execs]
-    # The preparation still runs, once, as root.
+    # The preparation is strict's: none runs in audit.
     prep = [e for e in execs if "BENCHFLOW-PREP" in e.command]
-    assert len(prep) == 1 and prep[0].user == "root", [e.caller for e in prep]
+    assert prep == [], [e.caller for e in prep]
     # No redundant default-user pwd or uid read after the start probe.
     assert not [e for e in execs if e.command in ("pwd", "id -u") and e.user is None]
     # Each kept its user and budget: the merged start probe runs as the
-    # default user with pwd's 10 s; the reads and verifier start run as root.
+    # default user with pwd's 10 s; the verifier start runs as root.
     by_group = {_group(e): e for e in execs}
-    assert by_group["start_probe"].user is None
-    assert by_group["start_probe"].timeout_sec == 10
-    assert by_group["environment_reads"].user == "root"
-    assert by_group["environment_reads"].timeout_sec == 180
+    (probe,) = [e for e in execs if e.caller == "_prepare_log_dirs_after_up"]
+    assert probe.user is None
+    assert probe.timeout_sec == 10
     assert by_group["verifier_start"].user == "root"
     assert by_group["verifier_start"].timeout_sec == 10
     assert [e.timeout_sec for e in execs if _group(e) == "verifier_start"] == [60, 10]
@@ -416,3 +483,94 @@ async def test_the_record_counts_synchronous_execs(tmp_path, monkeypatch):
 
 async def _noop_stop(delete):
     await asyncio.sleep(0)
+
+
+@pytest.mark.deterministic
+async def test_the_hardened_verify_keeps_its_exec_count(monkeypatch, tmp_path):
+    """The same oracle trial with its verify hardened (``integrity="strict"``
+    on the shared sandbox, as strict's own path runs it in a separate one):
+    the hardened steps keep their exec count guarded beside the default's
+    (F2b's 13:20Z ask). The hardening's own steps are here, the
+    conftest sweep and the kill before grading among them."""
+    if not docker_available():
+        pytest.skip("needs a Docker daemon")
+    import benchflow.rollout as rollout_module
+    from benchflow.rollout import Rollout, RolloutConfig
+    from benchflow.sandbox.docker import DockerSandbox
+
+    execs: list[Exec] = []
+    original = DockerSandbox.exec
+
+    async def recording(
+        self,
+        command,
+        cwd=None,
+        env=None,
+        timeout_sec=None,
+        user=None,
+        service="main",
+        **kwargs,
+    ):
+        execs.append(Exec(command, user, timeout_sec, cwd, caller()))
+        return await original(
+            self,
+            command,
+            cwd=cwd,
+            env=env,
+            timeout_sec=timeout_sec,
+            user=user,
+            service=service,
+            **kwargs,
+        )
+
+    verify = rollout_module._verify_rollout
+
+    async def hardened(*args, **kwargs):
+        return await verify(*args, **{**kwargs, "integrity": "strict"})
+
+    monkeypatch.setattr(DockerSandbox, "exec", recording)
+    monkeypatch.setattr(rollout_module, "_verify_rollout", hardened)
+    task = tmp_path / "deterministic"
+    shutil.copytree(h.TEMPLATE_TASK, task)
+    result = await Rollout(
+        RolloutConfig(
+            task_path=task,
+            agent="oracle",
+            environment="docker",
+            jobs_dir=tmp_path / "jobs",
+            job_name="hardened-counts",
+            rollout_name="deterministic__hardened",
+        )
+    ).run()
+    _report(execs, "docker-oracle-deterministic-hardened")
+    assert result.error is None, result.error
+    assert result.rewards == {"reward": 1.0}
+    commands = [e.command for e in execs]
+    assert any("conftest.py" in c for c in commands)  # the sweep ran
+    assert any("each KILL" in c for c in commands)  # the kill before grading
+    # +1 on 54: strict's probe of the image's pytest configuration file
+    # (the lead's 13:57Z ruling). +1 where the host user is not root on
+    # rootful Docker: the mounted output folder, root's while test.sh runs,
+    # handed to the host user after it.
+    back = _host_takes_the_outputs_back()
+    handed = [
+        e
+        for e in execs
+        if e.caller == "_chown_to_host_user"
+        and e.command.rstrip().endswith(" /logs/verifier")
+    ]
+    assert len(handed) == back, [e.command for e in handed]
+    # +3 with the test.sh preflight's PATH read and probe, and the
+    # uploaded tests made root's (chown -R 0:0).
+    # +1 with bfx: the hardened verify runs the hook clean-up as one more root
+    # exec (`execute`, bfx's root Python); audit, the default, runs none, so the
+    # diet above has no bfx term. Measured as uid 1000, uid 1001 and root, with
+    # bfx built and without (`back` is 0 only for root).
+    # +1 without bfx: this trial's config is audit (only its verify is
+    # strict's), so the record of the links before the turn is taken, by the
+    # shell's walk where bfx is not delivered ((c)3).
+    bfx = locate.available(platform.machine())
+    hook, walk = (1, 0) if bfx else (0, 1)
+    assert len(execs) == 58 + back + hook + walk, [
+        (e.caller, e.command[:60]) for e in execs
+    ]

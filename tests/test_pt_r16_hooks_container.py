@@ -94,9 +94,20 @@ async def _clean(sandbox, workspace: str) -> None:
 
 
 def _build(tmp_path_factory, tag: str, dockerfile: str, uv: bool = False) -> str:
+    """Build *dockerfile* under a tag of its own and return that tag.
+
+    Each call adds 12 random hex digits to *tag*'s name: a module
+    fixture runs once per xdist worker that gets one of its tests, and once per
+    module that imports it, so a fixed tag was built by two workers at once and
+    Docker's containerd image store refused the second ("already exists").
+    The caller removes the image with ``_remove`` when its module is done.
+    A build that fails is an error, never a skip: a skip here hid the tests.
+    """
     if not _docker_ready():
         pytest.skip("docker daemon not running")
-    context = tmp_path_factory.mktemp(tag.split(":")[0])
+    name, _, version = tag.partition(":")
+    context = tmp_path_factory.mktemp(name)
+    tag = f"{name}-{uuid.uuid4().hex[:12]}:{version or 'test'}"
     if uv:
         found = shutil.which("uv")
         if found is None:
@@ -110,8 +121,12 @@ def _build(tmp_path_factory, tag: str, dockerfile: str, uv: bool = False) -> str
         timeout=900,
     )
     if built.returncode != 0:
-        pytest.skip(f"cannot build {tag}: {built.stderr[-300:]}")
+        pytest.fail(f"cannot build {tag}: {built.stderr[-300:]}", pytrace=False)
     return tag
+
+
+def _remove(tag: str) -> None:
+    subprocess.run(["docker", "rmi", "--force", tag], capture_output=True, timeout=120)
 
 
 # uv's documented Docker layout: `uv sync` into /app/.venv, the venv first on
@@ -145,17 +160,23 @@ VSITE = "/app/.venv/lib/python3.12/site-packages"
 
 @pytest.fixture(scope="module")
 def uv_src(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-r16-uv-src:test", UV_SRC, uv=True)
+    tag = _build(tmp_path_factory, "pt-r16-uv-src:test", UV_SRC, uv=True)
+    yield tag
+    _remove(tag)
 
 
 @pytest.fixture(scope="module")
 def uv_flat(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-r16-uv-flat:test", UV_FLAT, uv=True)
+    tag = _build(tmp_path_factory, "pt-r16-uv-flat:test", UV_FLAT, uv=True)
+    yield tag
+    _remove(tag)
 
 
 @pytest.fixture(scope="module")
 def debian(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-r16-debian:test", DEBIAN)
+    tag = _build(tmp_path_factory, "pt-r16-debian:test", DEBIAN)
+    yield tag
+    _remove(tag)
 
 
 def _pths(name: str) -> list[str]:
@@ -418,7 +439,9 @@ RUN useradd -m -u 1000 agent && mkdir /app && chown 1000 /app
 
 @pytest.fixture(scope="module")
 def pythonpath_app(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-r16-pythonpath-app:test", PYTHONPATH_APP)
+    tag = _build(tmp_path_factory, "pt-r16-pythonpath-app:test", PYTHONPATH_APP)
+    yield tag
+    _remove(tag)
 
 
 @pytest.mark.asyncio

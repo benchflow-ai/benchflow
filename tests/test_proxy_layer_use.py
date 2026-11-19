@@ -269,7 +269,9 @@ class TestDiskShortfall:
     async def test_the_install_stops_before_uv_runs(self, tmp_path, monkeypatch):
         box = _with_df(_Box(tmp_path))
         venv = _point_proxy_install_at(box, monkeypatch)
-        with pytest.raises(RuntimeError) as raised:
+        with pytest.raises(
+            RuntimeError, match=r"the model proxy's install needs about 600 MB free"
+        ) as raised:
             await runtime_mod._ensure_sandbox_litellm(
                 _LocalShellSandbox(box, FAKE_DF_FREE_KB=str(215 * 1024)),
                 venv_dir=str(venv),
@@ -290,7 +292,10 @@ class TestDiskShortfall:
                     )
                 return await super().exec(command, timeout_sec, user)
 
-        with pytest.raises(RuntimeError) as raised:
+        with pytest.raises(
+            RuntimeError,
+            match=r"the sandbox ran out of disk installing the model proxy",
+        ) as raised:
             await runtime_mod._ensure_sandbox_litellm(
                 Full(), venv_dir="/tmp/victim-a/venv", requirements_path="/tmp/r.txt"
             )

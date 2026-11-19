@@ -1214,6 +1214,8 @@ class TestSoftVerify:
     @pytest.mark.asyncio
     async def test_soft_verify_runs_cleanup_cmd(self):
         trial = _make_user_trial(PassthroughUser())
+        # Soft verify cleans up and pins only in strict.
+        trial._config.integrity = "strict"
 
         mock_result = type("VR", (), {"rewards": {"reward": 0.0}})()
 

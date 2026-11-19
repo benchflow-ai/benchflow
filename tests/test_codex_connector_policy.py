@@ -143,17 +143,28 @@ async def test_malformed_config_aborts_before_execution(tmp_path, raw):
 
 
 @pytest.mark.parametrize(
-    "responses",
+    ("responses", "refusal"),
     [
-        [response("0")],
-        admission(native="0.149.0"),
-        [*admission(), response(code=1)],
-        [*admission(), INSTALLED, response("apps stable true")],
+        ([response("0")], r"^Disabled Codex Apps requires a verified non-root UID\."),
+        (
+            admission(native="0.149.0"),
+            r"^Codex Apps policy requires verified native Codex \^0\.159\.1",
+        ),
+        (
+            [*admission(), response(code=1)],
+            r"^Codex Apps managed requirements installation failed\.",
+        ),
+        (
+            [*admission(), INSTALLED, response("apps stable true")],
+            r"^Codex Apps managed requirements conflict or enforcement probe failed\.",
+        ),
     ],
 )
-async def test_failed_enforcement_does_not_publish_success(tmp_path, responses):
+async def test_failed_enforcement_does_not_publish_success(
+    tmp_path, responses, refusal
+):
     env = SimpleNamespace(exec=AsyncMock(side_effect=responses))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=refusal):
         await enforce_codex_apps_policy(env, **args(tmp_path))
     assert not (tmp_path / "codex_apps_policy.json").exists()
 
@@ -178,7 +189,10 @@ async def test_refusal_names_the_inherit_escape_hatch(tmp_path, overrides, respo
     """Guards this fix for the Apps-off default for scored Codex tasks (GH #1107): every Apps admission refusal
     names the documented opt-out, not just the failed check."""
     env = SimpleNamespace(exec=AsyncMock(side_effect=responses))
-    with pytest.raises(RuntimeError) as refused:
+    with pytest.raises(
+        RuntimeError,
+        match=r"To run with account Codex Apps left as configured, pass --codex-apps-policy inherit \(config: codex_apps_policy: inherit\)\.$",
+    ) as refused:
         await enforce_codex_apps_policy(env, **{**args(tmp_path), **overrides})
     assert "--codex-apps-policy inherit" in str(refused.value)
     assert "codex_apps_policy: inherit" in str(refused.value)
@@ -195,7 +209,9 @@ async def test_inherit_does_not_loosen_or_probe_existing_policy(tmp_path):
 async def test_failed_reconnect_removes_stale_receipt(tmp_path):
     (tmp_path / "codex_apps_policy.json").write_text('{"effective_apps":false}')
     env = SimpleNamespace(exec=AsyncMock(side_effect=[response("0")]))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError, match=r"Disabled Codex Apps requires a verified non-root UID"
+    ):
         await enforce_codex_apps_policy(env, **args(tmp_path))
     assert not (tmp_path / "codex_apps_policy.json").exists()
 

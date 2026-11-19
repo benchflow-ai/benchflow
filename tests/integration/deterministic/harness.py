@@ -51,6 +51,23 @@ TEMPLATE_TASK = HERE / "task"
 FAKE_LLM_DIR = TEMPLATE_TASK / "environment" / "fake_llm"
 GOLDEN_DIR = HERE / "golden"
 IN_SANDBOX_FAKE_URL = "http://127.0.0.1:8911"
+#: The fake as a compose service of its own (fake_in_sidecar), on an internal
+#: network main shares: what BenchFlow's in-sandbox proxy reaches when a model
+#: agent runs under a restricted policy, where a declared service in main is
+#: refused before the turn.
+SIDECAR_FAKE_URL = "http://fake-llm:8911"
+SIDECAR_COMPOSE = """\
+services:
+  main:
+    networks: [default, fakenet]
+  fake-llm:
+    build: .
+    command: ["python3", "/opt/fake_llm/fake_llm.py", "--host", "0.0.0.0", "--port", "8911", "--log", "/tmp/fake_llm.jsonl"]
+    networks: [fakenet]
+networks:
+  fakenet:
+    internal: true
+"""
 
 AGENT = "claude-agent-acp"
 MODEL = "claude-haiku-4-5"
@@ -149,25 +166,52 @@ def _load_fake_llm_module():
     return module
 
 
+def docker_bridge_host() -> str:
+    """The host's address on Docker's default bridge: a container's way to the
+    host, for BenchFlow's in-sandbox proxy (root, which the agent's network
+    rules do not hold) to reach a fake provider on the host."""
+    import subprocess
+
+    done = subprocess.run(
+        [
+            "docker",
+            "network",
+            "inspect",
+            "bridge",
+            "-f",
+            "{{(index .IPAM.Config 0).Gateway}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    return done.stdout.strip()
+
+
 @contextmanager
 def host_fake_llm(
-    log_path: Path | None = None, wire_log_path: Path | None = None
+    log_path: Path | None = None,
+    wire_log_path: Path | None = None,
+    *,
+    host: str = "127.0.0.1",
 ) -> Iterator[str]:
     """Run the fake provider on the host; yield its base URL.
 
     ``wire_log_path`` keeps every request body as the provider received it,
-    after the proxy.
+    after the proxy. ``host``: the address it listens on
+    (:func:`docker_bridge_host` for a proxy in a container).
     """
     fake = _load_fake_llm_module()
     fake._Handler.scripts = json.loads((FAKE_LLM_DIR / "scripts.json").read_text())
     fake._Handler.log_path = log_path
     fake._Handler.wire_log_path = wire_log_path
-    server = ThreadingHTTPServer(("127.0.0.1", 0), fake._Handler)
+    server = ThreadingHTTPServer((host, 0), fake._Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield f"http://{host}:{server.server_address[1]}"
     finally:
         server.shutdown()
         server.server_close()
@@ -203,6 +247,163 @@ class TaskVariant:
     # metadata.x-allow-cloud-metadata: true, the opt-out from refusing the
     # cloud metadata endpoints under the open network.
     allow_cloud_metadata: bool = False
+    # test.sh first probes the mocked cloud metadata endpoints as root
+    # (ROOT_PROBE_TEST_SH), then scores as the template does.
+    root_probe: bool = False
+    # test.sh first kills the in-sandbox model proxy and rewrites its usage
+    # log, as root (TAMPER_PROXY_TEST_SH), then scores as the
+    # template does.
+    tamper_proxy: bool = False
+    # test.sh first rewrites every token count in the agent's Claude Code
+    # session logs to 1, as root (TAMPER_SESSION_LOG_TEST_SH), then
+    # scores as the template does.
+    tamper_session_log: bool = False
+    # test.sh first plants a session log in /logs/agent/<this folder>
+    # (claude-sessions or codex-sessions), as root (plant_session_log_test_sh),
+    # then scores as the template does.
+    plant_sessions: str | None = None
+    # The fake provider in a compose service of its own (fake_in_sidecar),
+    # for a model agent under a restricted policy; an allowlist variant
+    # always has it, unless the fake is on the host instead.
+    fake_in_sidecar: bool = False
+    # No fake in the task at all (drop_manifest): the run's fake is on the
+    # host (docker_bridge_host), and the task stays a single image.
+    fake_on_host: bool = False
+    # With fake_on_host: keep the task's environment, a manifest that
+    # declares no service (no_declared_services), so it still provisions.
+    keep_environment: bool = False
+
+
+# Root in the verifier phase, as code the agent left could do: kill
+# each in-sandbox model proxy and rewrite its usage log to 1 prompt token a
+# call, then score as the template does. It writes what it
+# found to /logs/verifier/tamper.txt.
+TAMPER_PROXY_TEST_SH = r"""#!/bin/bash
+n=0
+for pid in /opt/runtime/proxy/*/litellm.pid; do
+  [ -s "$pid" ] && kill -9 "$(cat "$pid")" 2>/dev/null && n=$((n+1))
+done
+m=0
+for log in /opt/runtime/proxy/*/callback.jsonl; do
+  [ -f "$log" ] || continue
+  sed -i 's/"prompt_tokens":[0-9]*/"prompt_tokens":1/g' "$log" && m=$((m+1))
+done
+echo "killed=$n rewrote=$m" > /logs/verifier/tamper.txt
+REWARD=0
+if [ -f /app/hello.txt ] && [ "$(tr -d '\n' < /app/hello.txt)" = "Hello, world!" ]; then
+    REWARD=1
+fi
+echo "$REWARD" > /logs/verifier/reward.txt
+"""
+
+
+# Root in the verifier phase, as code the agent left could do:
+# rewrite every token count in the agent's Claude Code session logs to 1 and
+# its cost-state figures to $0.000001, then score as the template does. It writes how many logs it rewrote to
+# /logs/verifier/tamper.txt.
+TAMPER_SESSION_LOG_TEST_SH = r"""#!/bin/bash
+n=0
+for log in /root/.claude/projects/*/*.jsonl /home/*/.claude/projects/*/*.jsonl; do
+  [ -f "$log" ] || continue
+  sed -i -E -e 's/("(input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens|inputTokens|outputTokens)": ?)[0-9]+/\11/g' \
+    -e 's/("(totalCostUSD|costUSD)": ?)[0-9.eE+-]+/\10.000001/g' "$log" && n=$((n+1))
+done
+echo "rewrote=$n" > /logs/verifier/tamper.txt
+REWARD=0
+if [ -f /app/hello.txt ] && [ "$(tr -d '\n' < /app/hello.txt)" = "Hello, world!" ]; then
+    REWARD=1
+fi
+echo "$REWARD" > /logs/verifier/reward.txt
+"""
+
+
+# What the planted log holds: three compactions and five one-token calls
+# in Claude Code's format, and one one-token count in Codex's.
+PLANTED_SESSION_LOG = "".join(
+    line + "\n"
+    for line in [
+        '{"type":"system","subtype":"compact_boundary",'
+        '"compactMetadata":{"trigger":"auto","preTokens":150000}}'
+    ]
+    * 3
+    + [
+        f'{{"type":"assistant","requestId":"req_planted{n}","message":'
+        f'{{"id":"msg_planted{n}","model":"{MODEL}","usage":'
+        '{"input_tokens":1,"output_tokens":1}}}'
+        for n in range(5)
+    ]
+    + [
+        '{"type":"event_msg","payload":{"type":"token_count","info":'
+        '{"total_token_usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2},'
+        '"last_token_usage":{"input_tokens":1,"cached_input_tokens":0,'
+        '"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":2}}}}'
+    ]
+)
+
+
+def plant_session_log_test_sh(folder: str) -> str:
+    """test.sh that, as root, plants PLANTED_SESSION_LOG at
+    /logs/agent/<folder>/-app/planted.jsonl (/logs/agent is the trial's
+    agent/), then scores as the template does. It writes
+    ``planted=<files>`` to /logs/verifier/plant.txt."""
+    return (
+        "#!/bin/bash\n"
+        f"d=/logs/agent/{folder}/-app\n"
+        'mkdir -p "$d"\n'
+        "cat > \"$d/planted.jsonl\" <<'JSONL'\n"
+        f"{PLANTED_SESSION_LOG}"
+        "JSONL\n"
+        'echo "planted=$(ls "$d" | wc -l)" > /logs/verifier/plant.txt\n'
+        "REWARD=0\n"
+        "if [ -f /app/hello.txt ] && [ \"$(tr -d '\\n' < /app/hello.txt)\" = "
+        '"Hello, world!" ]; then\n'
+        "    REWARD=1\n"
+        "fi\n"
+        'echo "$REWARD" > /logs/verifier/reward.txt\n'
+    )
+
+
+def fake_in_sidecar(task: Path) -> Path:
+    """Move a task's fake provider out of main: no declared
+    ``[[environment.services]]`` (environment.toml), and a compose service of
+    its own, built from the same image, on an internal network main shares,
+    at :data:`SIDECAR_FAKE_URL`. A service declared in main beside a model
+    agent under a restricted policy is refused before the turn."""
+    drop_manifest(task)
+    (task / "environment" / "docker-compose.yaml").write_text(SIDECAR_COMPOSE)
+    return task
+
+
+def no_declared_services(task: Path) -> Path:
+    """Keep the task's environment manifest, without the fake as a service of
+    its own: ``owns_lifecycle = true`` and no ``[[environment.services]]``.
+    The environment still provisions; nothing is declared in main."""
+    manifest = task / "environment.toml"
+    text = manifest.read_text()
+    head, sep, _ = text.partition("[[environment.services]]")
+    assert sep, "template environment.toml must declare the fake as a service"
+    head, n = re.subn(
+        r"(?m)^owns_lifecycle\s*=\s*false$", "owns_lifecycle = true", head
+    )
+    assert n == 1, "template environment.toml must set owns_lifecycle = false"
+    manifest.write_text(head.rstrip() + "\n")
+    return task
+
+
+def drop_manifest(task: Path) -> Path:
+    """A task without its declared fake: no environment.toml, and no
+    ``benchflow.environment.manifest`` in task.md."""
+    (task / "environment.toml").unlink()
+    task_md = task / "task.md"
+    text, n = re.subn(
+        r"(?m)^benchflow:\n  environment:\n    manifest: environment.toml\n",
+        "",
+        task_md.read_text(),
+    )
+    assert n == 1, "template task.md must name its manifest"
+    task_md.write_text(text)
+    return task
 
 
 def materialize_task(variant: TaskVariant, dest_root: Path) -> Path:
@@ -235,11 +436,65 @@ def materialize_task(variant: TaskVariant, dest_root: Path) -> Path:
         )
         assert n == 1, "template task.md must have a metadata section"
     task_md.write_text(text)
+    if variant.fake_on_host:
+        if variant.keep_environment:
+            no_declared_services(dest)
+        else:
+            drop_manifest(dest)
+    elif variant.fake_in_sidecar or variant.allowed_hosts:
+        fake_in_sidecar(dest)
     if variant.broken_verifier:
         test_sh = dest / "tests" / "test.sh"
         test_sh.write_text(VERIFIER_ERROR_TEST_SH)
         test_sh.chmod(0o755)
+    if variant.root_probe:
+        test_sh = dest / "tests" / "test.sh"
+        test_sh.write_text(root_probe_test_sh())
+        test_sh.chmod(0o755)
+    if variant.tamper_proxy:
+        test_sh = dest / "tests" / "test.sh"
+        test_sh.write_text(TAMPER_PROXY_TEST_SH)
+        test_sh.chmod(0o755)
+    if variant.tamper_session_log:
+        test_sh = dest / "tests" / "test.sh"
+        test_sh.write_text(TAMPER_SESSION_LOG_TEST_SH)
+        test_sh.chmod(0o755)
+    if variant.plant_sessions:
+        test_sh = dest / "tests" / "test.sh"
+        test_sh.write_text(plant_session_log_test_sh(variant.plant_sessions))
+        test_sh.chmod(0o755)
     return dest
+
+
+def root_probe_test_sh() -> str:
+    """test.sh that, as root, connects to each mocked IPv4 cloud metadata
+    endpoint on port 80 and on port 53 (DNS, which the rules leave open) and
+    closes the connection (never a request), writing ``root-probe <address>
+    <port> <refused|reached|timeout|unreachable|failed>`` lines to
+    /logs/verifier/root-probe.txt; an endpoint that is not a local address of
+    main's namespace (no mock) is never connected to (``root-probe <address>
+    - not-mocked``). Then it scores as the template does."""
+    from benchflow.sandbox.cloud_metadata import CLOUD_METADATA_V4
+
+    return (
+        "#!/bin/bash\n"
+        'local_addr() { awk -v a="$1" \'$1 == "|--" && $2 == a {f = 1; next} '
+        "f && /host LOCAL/ {print a; exit} {f = 0}' /proc/net/fib_trie; }\n"
+        f"for a in {' '.join(CLOUD_METADATA_V4)}; do\n"
+        '  if [ -z "$(local_addr "$a")" ]; then echo "root-probe $a - not-mocked"; continue; fi\n'
+        "  for p in 80 53; do\n"
+        '    e=$(timeout 3 bash -c "exec 3<>/dev/tcp/$a/$p" 2>&1); r=$?\n'
+        "    case $r in 0) s=reached;; 124) s=timeout;; *) case $e in "
+        "*[Rr]efused*) s=refused;; *[Uu]nreachable*) s=unreachable;; *) s=failed;; "
+        "esac;; esac\n"
+        '    echo "root-probe $a $p $s"\n'
+        "  done\n"
+        "done > /logs/verifier/root-probe.txt 2>&1\n"
+        "REWARD=0\n"
+        "if [ -f /app/hello.txt ] && "
+        '[ "$(tr -d \'\\n\' < /app/hello.txt)" = "Hello, world!" ]; then REWARD=1; fi\n'
+        'echo "$REWARD" > /logs/verifier/reward.txt\n'
+    )
 
 
 def marker(script: str) -> str:
@@ -337,8 +592,12 @@ def route_env(route: str, sandbox: str, host_fake_url: str | None) -> dict[str, 
     if route in CODEX_ROUTES:
         # The proxy's upstream is the fake's Responses API (openai/ routes
         # append /responses to the base URL).
-        in_sandbox = route == "codex-in-sandbox" or proxy_runs_in_sandbox(sandbox)
-        base = IN_SANDBOX_FAKE_URL if in_sandbox else host_fake_url
+        if route == "codex-in-sandbox":
+            # Its jobs are allowlisted: the fake is their compose service.
+            base = SIDECAR_FAKE_URL
+        else:
+            in_sandbox = proxy_runs_in_sandbox(sandbox)
+            base = IN_SANDBOX_FAKE_URL if in_sandbox else host_fake_url
         assert base, "a host LiteLLM proxy needs the host fake provider URL"
         return {
             "OPENAI_API_KEY": DUMMY_KEY,

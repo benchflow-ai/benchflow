@@ -162,12 +162,21 @@ async def test_same_inode_number_on_different_device_is_not_an_alias(
     assert judge(tools, captured)[0] == [str(tools)]
 
 
+CAPTURE_REFUSAL = {
+    True: r"^Verifier hardening failed: missing pre-agent PATH inspector; recreate this sandbox with a fresh baseline$",
+    False: r"^Verifier hardening failed: incomplete workspace mountinfo$",
+}
+
+
 @pytest.mark.parametrize("missing", [True, False])
 async def test_missing_or_partial_capture_fails_closed_before_live_tools(missing):
     from types import SimpleNamespace
 
+    from tests._receipt_fakes import receipt_aware
+
     calls = []
 
+    @receipt_aware
     async def execute(command, **kwargs):
         calls.append(command)
         return ExecResult(stdout="", return_code=0)
@@ -175,7 +184,7 @@ async def test_missing_or_partial_capture_fails_closed_before_live_tools(missing
     env = SimpleNamespace(exec=execute)
     if not missing:
         env._benchflow_path_inspectors = {"main": "/etc/missing-protected-inspector"}
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=CAPTURE_REFUSAL[missing]):
         await lockdown._path_exclusions_before_freeze(env, ("/app",))
     if missing:
         assert calls == []

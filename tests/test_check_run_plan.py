@@ -116,10 +116,6 @@ def _run_refusal(
     [
         # Multi-step tasks now run; a step's artifacts are still refused.
         ('[[steps]]\nname = "first"\nartifacts = ["/app/x"]\n', "steps[0].artifacts:"),
-        (
-            '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["example.invalid"]\n',
-            "verifier.network_mode:",
-        ),
     ],
 )
 def test_runtime_refusal_is_verbatim_without_a_backend_flag(
@@ -132,6 +128,17 @@ def test_runtime_refusal_is_verbatim_without_a_backend_flag(
     result = CliRunner().invoke(app, [*command, str(task)])
     assert result.exit_code == 1, result.output
     assert reason in result.stderr
+
+
+def test_a_verifier_allowlist_is_admitted_on_docker(tmp_path):
+    """on Docker hardening holds the verifier, root included, to its
+    allowlist (every-process rules, a marked egress proxy), so the launch no
+    longer refuses it there; other sandboxes still do (runtime_capabilities)."""
+    task = _task(
+        tmp_path / "vallow",
+        '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["example.invalid"]\n',
+    )
+    assert _run_refusal(task, tmp_path) is None
 
 
 def test_judge_launch_refusal_is_verbatim(tmp_path):
@@ -160,7 +167,7 @@ def test_proxy_extra_refusal_is_verbatim(tmp_path, monkeypatch):
 def test_native_login_does_not_validate_unused_proxy_extras(tmp_path, monkeypatch):
     """Guards D3 against validating proxy extras before the auth route is resolved."""
     task = _task(tmp_path / "native-login")
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "dummy-native-login")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-dummy-native-login")
     monkeypatch.setenv("BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS", "litellm==1.80.0")
     model = "anthropic/claude-haiku-4-5"
     assert (
@@ -168,7 +175,7 @@ def test_native_login_does_not_validate_unused_proxy_extras(tmp_path, monkeypatc
             task,
             tmp_path,
             model=model,
-            resolved_env={"ANTHROPIC_AUTH_TOKEN": "dummy-native-login"},
+            resolved_env={"ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-dummy-native-login"},
         )
         is None
     )

@@ -72,6 +72,7 @@ from benchflow.sandbox.lockdown import (
     build_root_no_web_launch,
     enforce_agent_egress_firewall,
     no_web_root_agent,
+    refuse_task_processes_before_launch,
 )
 from benchflow.sandbox.process._base import _timeout_sec_from_env
 from benchflow.trajectories._capture import _capture_session_trajectory
@@ -250,6 +251,9 @@ def _codex_session_model_id(
         return model
 
     requested_name = _codex_model_name(model)
+    # A model id's own [effort] is a request too: rc3 dropped it here
+    # and ran gpt-6-astra[ultra] at medium, gpt-6.1-sol[ultra] at low.
+    reasoning_effort = reasoning_effort or _codex_reasoning_effort(model) or None
     current_model = state.get("currentModelId")
     if (
         isinstance(current_model, str)
@@ -300,7 +304,19 @@ def _codex_session_model_id(
         raise AgentEffortNotOfferedError(
             "codex-acp", requested_name, reasoning_effort, offered_efforts
         )
-    for effort in ("medium", "high", "low", "minimal", "none"):
+    # Nothing asked: Codex's own default for the model (its pinned catalog),
+    # as the native CLI would run it, then BenchFlow's levels from medium.
+    from benchflow._utils.config import EFFORT_LEVELS
+    from benchflow.agents.codex_models import CODEX_MODEL_EFFORTS
+
+    default = CODEX_MODEL_EFFORTS.get(requested_name, (None, ()))[0]
+    middle = EFFORT_LEVELS.index("medium")
+    order = (
+        default,
+        *EFFORT_LEVELS[middle:],
+        *reversed(EFFORT_LEVELS[:middle]),
+    )
+    for effort in order:
         for candidate in candidates:
             if _codex_reasoning_effort(candidate) == effort:
                 return candidate
@@ -690,6 +706,12 @@ async def _configure_acp_session(
     agent_cfg = AGENTS.get(agent)
     effort_configured = False
     applied: str | None = None
+    if agent == "codex-acp" and not reasoning_effort:
+        # A model[effort] suffix or CODEX_CONFIG's model_reasoning_effort asks
+        # too; the session selects that variant, never another one.
+        from benchflow.effort_request import effort_request
+
+        reasoning_effort = effort_request(agent, model, None, agent_env).launch
 
     if model and _model_selection_owned_by_env(
         agent,
@@ -697,9 +719,9 @@ async def _configure_acp_session(
         agent_env,
         launch_config_owns_model=launch_config_owns_model,
     ):
+        # The launch config carries the effort; the session says nothing of
+        # it, so applied stays unknown (never the request echoed).
         effort_configured = bool(reasoning_effort and launch_config_owns_model)
-        if effort_configured:
-            applied = reasoning_effort
         logger.info(
             f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
         )
@@ -708,9 +730,6 @@ async def _configure_acp_session(
         acp_model_id = _select_acp_model_id(
             acp_model_input, agent, session, reasoning_effort
         )
-        if agent == "codex-acp":
-            applied = _codex_reasoning_effort(acp_model_id) or None
-        effort_configured = bool(reasoning_effort and applied == reasoning_effort)
         model_option_id = _resolve_acp_model_option_id(agent_cfg, session)
         model_env = (
             _model_left_to_env(
@@ -757,6 +776,13 @@ async def _configure_acp_session(
             logger.info(
                 f"Skipping ACP model configuration for {agent} — launch/env config owns model selection"
             )
+        if agent == "codex-acp":
+            # The model[effort] id the session took: codex-acp lists one per
+            # level it offers and set_model refuses any other, but answers
+            # with no current model to read back. What each call ran at is
+            # Codex's own turn_context (effort.sent), the check on this.
+            applied = _codex_reasoning_effort(acp_model_id) or None
+        effort_configured = bool(reasoning_effort and applied == reasoning_effort)
 
     effort_config_id = getattr(agent_cfg, "acp_effort_config_id", "") or (
         "effort" if "effort" in _session_config_option_ids(session) else None
@@ -788,8 +814,10 @@ async def _configure_acp_session(
     if isinstance(answer, dict) and "configOptions" in answer:
         # The options the agent answered with (the client keeps them on the
         # session): what it set, on its own scale.
-        return _config_option_current(session, effort_config_id) or reasoning_effort
-    return reasoning_effort
+        return _config_option_current(session, effort_config_id)
+    # The agent said nothing of what it set: unknown, never the request
+    # echoed back. The calls say what ran.
+    return None
 
 
 async def connect_acp(
@@ -889,6 +917,15 @@ async def connect_acp(
         # uid firewall matches, and it cannot change the rules.
         agent_launch = build_root_no_web_launch(agent_launch)
         logger.info("Agent runs as root under the no-web policy (restricted launch)")
+
+    # R1: main is quiet before the agent's process starts, under a
+    # policy whose firewall holds only the agent.
+    await refuse_task_processes_before_launch(env, agent_env)
+    # The agent's uid firewall (no-web, denylist) goes in before its process
+    # starts, as the native harness's does: from its first instruction the
+    # agent reaches only what the policy allows, and a firewall that cannot
+    # go in means the agent never starts.
+    await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
 
     acp_client: ACPClient | None = None
     session: object | None = None
@@ -1012,7 +1049,6 @@ async def connect_acp(
             reasoning_effort=reasoning_effort,
             launch_config_owns_model=launch_config_owns_model,
         )
-        await enforce_agent_egress_firewall(env, sandbox_user, agent_env)
     except Exception:
         with contextlib.suppress(Exception):
             await acp_client.close()

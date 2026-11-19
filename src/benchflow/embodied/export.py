@@ -304,19 +304,29 @@ def verdict_evidence(rollout_dir: str | Path) -> dict:
 
 
 def export_job(job_dir: str | Path, out_dir: str | Path) -> dict:
-    """Collect every trial's embodied export of a job into ``out_dir/steps.jsonl`` and ``out_dir/episodes.jsonl``."""
+    """Collect every trial's embodied export of a job into ``out_dir/steps.jsonl`` and ``out_dir/episodes.jsonl``.
+
+    A trial is one attempt per task in an Evaluation job, the one the run kept (``bf.load_job``'s rule): an attempt
+    the run retried, or one a later attempt replaced, is no episode of the dataset."""
+    from benchflow.trajectories.training_signal import replaced_attempts
+
     job_dir, out_dir = Path(job_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     n_eps = n_steps = 0
+    results: list[tuple[Path, dict | None]] = []
+    for rj in sorted(job_dir.glob("*/result.json")):
+        try:
+            res = json.loads(rj.read_text())
+        except json.JSONDecodeError:
+            res = None
+        results.append((rj.parent, res if isinstance(res, dict) else None))
+    replaced = replaced_attempts(results)
     with (
         open(out_dir / "steps.jsonl", "w") as fs,
         open(out_dir / "episodes.jsonl", "w") as fe,
     ):
-        for rj in sorted(job_dir.glob("*/result.json")):
-            trial = rj.parent
-            try:
-                res = json.loads(rj.read_text())
-            except json.JSONDecodeError:
+        for trial, res in results:
+            if res is None or trial in replaced:
                 continue
             summary = write_rollout_embodied(
                 trial,

@@ -7,6 +7,7 @@ import pytest
 from benchflow.agents import env as auth
 from benchflow.agents.launch_env import agent_launch_env, credential_policy
 from benchflow.errors import MissingCredentialError
+from tests.test_en374_login_by_contents import login_file_text
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +17,7 @@ def isolated_logins(monkeypatch, tmp_path):
     monkeypatch.setattr(auth, "load_dotenv_env", lambda: {})
     monkeypatch.setattr(auth, "login_path", lambda name: tmp_path / Path(name).name)
     for name in ("auth.json", ".credentials.json"):
-        (tmp_path / name).write_text('{"dummy": true}')
+        (tmp_path / name).write_text(login_file_text(name, "dummy"))
     return tmp_path
 
 
@@ -104,7 +105,7 @@ def test_nonempty_api_key_precedes_host_login(agent, model, key, filename):
 def test_bearer_precedes_oauth_at_same_priority(monkeypatch, explicit):
     """Guards ac3bedaa1: documented bearer precedence must survive launch filtering."""
     inputs = {
-        "ANTHROPIC_AUTH_TOKEN": "dummy-bearer",
+        "ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-dummy-bearer",
         "CLAUDE_CODE_OAUTH_TOKEN": "dummy-oauth",
     }
     if not explicit:
@@ -114,13 +115,16 @@ def test_bearer_precedes_oauth_at_same_priority(monkeypatch, explicit):
         "claude-agent-acp", "claude-sonnet-4-6", inputs if explicit else {}
     )
     launch = agent_launch_env("claude-agent-acp", "claude-sonnet-4-6", resolved)
-    assert launch.get("ANTHROPIC_AUTH_TOKEN") == "dummy-bearer"
+    assert launch.get("ANTHROPIC_AUTH_TOKEN") == "sk-ant-oat01-dummy-bearer"
     assert not launch.get("CLAUDE_CODE_OAUTH_TOKEN")
 
 
 def test_explicit_oauth_precedes_inherited_bearer(monkeypatch):
     """Guards ac3bedaa1: caller-selected login still outranks inherited credentials."""
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "dummy-inherited-bearer")
+    monkeypatch.setenv(
+        "ANTHROPIC_AUTH_TOKEN",
+        ("sk" + "-ant-oat" + "01-dummy" + "-inherit" + "ed-beare" + "r"),
+    )
     resolved = auth.resolve_agent_env(
         "claude-agent-acp",
         "claude-sonnet-4-6",
@@ -139,7 +143,7 @@ def test_explicit_oauth_precedes_inherited_bearer(monkeypatch):
 def test_native_bearer_retains_explicit_provider_endpoint(native_url):
     """Guards ac3bedaa1: native routing maps a supplied URL without inventing a key."""
     inputs = {
-        "ANTHROPIC_AUTH_TOKEN": "dummy-bearer",
+        "ANTHROPIC_AUTH_TOKEN": "sk-ant-oat01-dummy-bearer",
         "BENCHFLOW_PROVIDER_BASE_URL": "https://generic.invalid",
     }
     if native_url:

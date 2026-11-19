@@ -81,12 +81,13 @@ def _not_counted(base: Path, ids: list[str]) -> dict[str, NotCounted]:
     The catalog counts the trials ``bf.load_job`` (and so ``bench eval
     metrics`` and summary.json) counts: a run with no result.json is still
     going or was killed (``Job.interrupted``), a reviewer run is not a trial,
-    and in an Evaluation job folder the attempts of a retried task are one
-    trial, its final attempt (``jobs._final_attempts``). Without this a
+    and in an Evaluation job folder (or a copy of one that kept the run's
+    attempt records) the attempts of a retried task are one trial, its final
+    attempt (``jobs._final_attempts``). Without this a
     superseded errored attempt, or a run still going, counted as a failed run
     in a group's pass rate.
     """
-    from benchflow._utils.result_paths import holds_attempts
+    from benchflow._utils.attempt_decision import groups_attempts
     from benchflow.jobs import _final_attempts, load_trial
 
     reasons: dict[str, NotCounted] = {}
@@ -103,7 +104,7 @@ def _not_counted(base: Path, ids: list[str]) -> dict[str, NotCounted]:
             reasons[rid] = "reviewer"
             continue
         if d.parent not in folders:
-            folders[d.parent] = holds_attempts(d.parent)
+            folders[d.parent] = groups_attempts(d.parent)
         if not folders[d.parent]:
             continue  # independent samples (bf.run_batch, bf.run): all count
         try:

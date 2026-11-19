@@ -119,7 +119,7 @@ def test_remembered_redaction_equals_a_fresh_one(monkeypatch):
         "Authorization: Bearer abcdefghijklmnopqrstuvwx",
         '{"x-api-key": "prefixless-secret-value-1234567890"}',
         "AWS_SECRET_ACCESS_KEY=" + "A" * 40,
-        "https://user:hunter2hunter2@example.com/x",
+        ("ht" + "tps://us" + "er:hunte" + "r2hunter" + "2@exampl" + "e.com/x"),
     ]
     with types.trial_redaction_memo():
         fresh = [types.redact_trajectory_text_with_categories(s) for s in samples]

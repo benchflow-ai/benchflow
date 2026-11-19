@@ -15,6 +15,9 @@ from tests.e2e import harness as h
 GUID = re.compile(r"canary GUID ([0-9a-f-]{36})")
 
 
+# Gated with the tier: e2e_out does not ask for the backend when only
+# BENCHFLOW_E2E_REMOTE_DOCKER_HOST is set.
+@pytest.mark.usefixtures("sandbox")
 def test_init_writes_canaries_and_check_warns_without_one(
     tmp_path: Path, ledger: h.Ledger
 ):

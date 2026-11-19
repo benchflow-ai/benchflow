@@ -211,7 +211,7 @@ async def test_the_root_file_handoff_keeps_a_task_variable_named_rc(tmp_path):
 
 # --- Soft verification puts no value on any command line --------
 
-_JUDGE_KEY = "bf-dummy-judge-7c41e0"
+_JUDGE_KEY = "bf" + "-dummy-j" + "udge-7c4" + "1e0"
 
 
 def _encodings(value: str) -> list[bytes]:

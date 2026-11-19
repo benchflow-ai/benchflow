@@ -43,6 +43,7 @@ from tests.test_pt_r16_hooks_container import (
     SLIM,
     VSITE,
     _build,
+    _remove,
 )
 from tests.test_pt_r16_hooks_container import debian as debian
 from tests.test_pt_r16_hooks_container import uv_flat as uv_flat
@@ -404,7 +405,9 @@ async def test_usr_local_workspace_matches_today():
 
 @pytest.fixture(scope="module")
 def pythonpath_app(tmp_path_factory):
-    return _build(tmp_path_factory, "pt-r16-pythonpath-app:test", PYTHONPATH_APP)
+    tag = _build(tmp_path_factory, "pt-r16-pythonpath-app:test", PYTHONPATH_APP)
+    yield tag
+    _remove(tag)
 
 
 @pytest.mark.asyncio
@@ -993,6 +996,7 @@ async def test_the_scoring_path_wirings_match_today(tmp_path, wiring, seed):
                 tasks[sandbox._main_container],
                 "agent",
                 workspace="/app",
+                integrity="strict",
             )
             return "ok"
         except RuntimeError as exc:

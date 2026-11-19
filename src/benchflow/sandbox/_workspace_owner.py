@@ -7,6 +7,17 @@ it follows no link, resolves no long path and holds one descriptor at any
 depth. Mounts are entered, as chown -R does. Each change is its own checked
 syscall: the first that fails stops the walk and fails the step.
 
+An entry that is gone when it is settled or entered (another process removed
+it after its folder was listed: the Daytona daemon's finished session folders
+under /root/.daytona/sessions) has nothing left to change and is skipped, as
+find skips one. A name gone is also what a rename away looks like, so the
+tree is then walked again: an entry moved into a folder already walked is
+settled by the next walk, and a step whose every walk (WALKS) loses an entry
+fails. The walks are paced (PAUSE, doubled before each further one: 7.5 s in
+all) so that a burst of removals can end before the next. A name that holds
+another entry when it is looked at again, a folder that moved while it was
+walked and a link in a folder's place still fail it.
+
 freeze: every entry becomes root's, except a regular file with more than one
 name, which keeps its owner and mode. A regular file whose chown is denied
 is replaced by a root-owned copy; other failed changes still stop the walk.
@@ -23,10 +34,13 @@ This script also runs on older image Pythons; keep it annotation-free.
 import os
 import stat
 import sys
+import time
 
 UID = GID = 0  # the owner the workspace goes to
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 NEW = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+WALKS = 5  # walks of the tree that may each lose an entry before the step fails
+PAUSE = 0.5  # seconds before the second walk, doubled before each later one
 
 
 def same(a, b):
@@ -121,36 +135,83 @@ def close(name, entry):
     return stat.S_ISDIR(after.st_mode)
 
 
-def scan(settle):
-    """Settle the current folder's entries; return its subfolders."""
+def gone(name, error):
+    """Whether *error* is the listed entry *name* no longer being there: it
+    names that entry, and nothing holds the name now."""
+    if not isinstance(error, FileNotFoundError) or error.filename not in (
+        name,
+        os.path.join(".", name),  # a DirEntry's own path
+    ):
+        return False
+    try:
+        os.lstat(name)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def scan(settle, lost):
+    """Settle the current folder's entries; return its subfolders. One gone
+    is counted in *lost* (a list of one count)."""
     with os.scandir(".") as it:
         entries = list(it)
-    return [e.name for e in entries if settle(e.name, e)]
+    subs = []
+    for e in entries:
+        try:
+            if settle(e.name, e):
+                subs.append(e.name)
+        except FileNotFoundError as error:
+            if not gone(e.name, error):
+                raise
+            lost[0] += 1
+    return subs
 
 
 def walk(workspace, settle):
+    """Settle every entry of the tree; return how many were gone."""
+    lost = [0]
     os.chdir(workspace)
     settle(".", None)
-    stack = [(os.lstat("."), scan(settle))]
+    stack = [(os.lstat("."), scan(settle, lost))]
     while stack:
         subs = stack[-1][1]
         if subs:
-            fd = os.open(subs.pop(), DIR)
+            name = subs.pop()
+            try:
+                fd = os.open(name, DIR)
+            except FileNotFoundError as error:
+                if not gone(name, error):
+                    raise
+                lost[0] += 1
+                continue
             try:
                 os.fchdir(fd)
             finally:
                 os.close(fd)
-            stack.append((os.lstat("."), scan(settle)))
+            stack.append((os.lstat("."), scan(settle, lost)))
             continue
         stack.pop()
         if stack:
             os.chdir("..")
             if not same(os.lstat("."), stack[-1][0]):
                 raise OSError("a folder moved during the step")
+    return lost[0]
+
+
+def settle_tree(workspace, settle):
+    """Walk the tree until a walk loses no entry, at most WALKS times."""
+    pause = PAUSE
+    for number in range(WALKS):
+        if number:
+            time.sleep(pause)
+            pause *= 2
+        if not walk(workspace, settle):
+            return
+    raise OSError(f"entries vanished during each of {WALKS} walks")
 
 
 if __name__ == "__main__":
     try:
-        walk(sys.argv[2], {"freeze": freeze, "close": close}[sys.argv[1]])
+        settle_tree(sys.argv[2], {"freeze": freeze, "close": close}[sys.argv[1]])
     except OSError as e:
         sys.exit(f"workspace {sys.argv[1]}: {e}")

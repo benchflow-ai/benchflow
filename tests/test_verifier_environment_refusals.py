@@ -44,7 +44,7 @@ from tests.test_verifier_trusted_path import _rollout_paths
 BASE = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 DOCKERFILE = r"""
 FROM BASE
-RUN apk add --no-cache acl \
+RUN apk add --no-cache acl setpriv \
  && mkdir -p /opt/probe/bin /opt/tools/bin /opt/vendor /app /testbed /testbed_verify /tests /logs/verifier \
  && chmod 777 /opt/probe/bin \
  && printf '#!/bin/sh\necho image-tool\n' > /opt/tools/bin/tool \
@@ -226,7 +226,17 @@ def _write(box, path, content):
 @pytest.mark.asyncio
 async def test_trust_probes_never_execute_image_path_stubs(box):
     """Forged ls/cat and outer sh never run."""
-    for tool in ("sh", "base64", "ls", "cat", "id", "readlink", "getfacl"):
+    for tool in (
+        "sh",
+        "base64",
+        "ls",
+        "cat",
+        "cp",
+        "chmod",
+        "id",
+        "readlink",
+        "getfacl",
+    ):
         body = f'#!/bin/sh\nprintf "{tool}\\n" >> /tmp/probe-used\n'
         if tool == "ls":
             body += (
@@ -235,11 +245,18 @@ async def test_trust_probes_never_execute_image_path_stubs(box):
                 "exit 0;; esac\n"
             )
         if tool == "cat":
-            body += 'case "$1" in /testbed/pytest.ini) set -- /testbed_verify/pytest.ini;; esac\n'
+            body += (
+                'case "$1" in /.runtime_build_snapshot/pytest.ini) '
+                "set -- /testbed/pytest.ini;; esac\n"
+            )
         body += f'exec /bin/{tool} "$@"\n'
         _write(box, f"/opt/probe/bin/{tool}", body)
-    _sh(box, "chmod 755 /opt/probe/bin/*; chmod 700 /testbed_verify")
-    _write(box, "/testbed_verify/pytest.ini", "[pytest]\naddopts = -q\n")
+    _sh(
+        box,
+        "chmod 755 /opt/probe/bin/*; "
+        "mkdir -p /.runtime_build_snapshot && chmod 700 /.runtime_build_snapshot",
+    )
+    _write(box, "/.runtime_build_snapshot/pytest.ini", "[pytest]\naddopts = -q\n")
     _write(
         box,
         "/testbed/pytest.ini",
@@ -250,7 +267,10 @@ async def test_trust_probes_never_execute_image_path_stubs(box):
     ini = await _image_pytest_ini(box.env, "/testbed")
 
     assert "/opt/probe/bin" not in path.split(":")
-    assert ini is None
+    # The image's file, read and copied by the system's tools: a forged cat
+    # would have handed over the agent's.
+    assert ini is not None and ini.addopts is None
+    assert _sh(box, f"cat {ini.path}") == "[pytest]\naddopts = -q\n"
     assert _sh(box, "test ! -e /tmp/probe-used; echo clean").strip() == "clean"
 
 
@@ -258,10 +278,10 @@ async def test_trust_probes_never_execute_image_path_stubs(box):
 async def test_image_addopts_argument_files_are_an_explicit_error(box):
     """Guards the fix at 39a8ed41, even with a byte-identical ini."""
     ini = "[pytest]\naddopts = @args\n"
-    _write(box, "/testbed_verify/pytest.ini", ini)
+    _sh(box, "mkdir -p /.runtime_build_snapshot && chmod 700 /.runtime_build_snapshot")
+    _write(box, "/.runtime_build_snapshot/pytest.ini", ini)
     _write(box, "/testbed/pytest.ini", ini)
     _write(box, "/testbed/args", "--deselect=tests/test_answer.py::test_required\n")
-    _sh(box, "chmod 700 /testbed_verify")
 
     with pytest.raises(
         RuntimeError, match=r"verifier refused pytest argument files .*@file"
@@ -521,7 +541,9 @@ async def test_hardening_never_runs_image_path_programs_as_root(box, tmp_path):
 
     failure = None
     try:
-        await harden_before_verify(box.env, task, "agent", workspace="/app")
+        await harden_before_verify(
+            box.env, task, "agent", workspace="/app", integrity="strict"
+        )
     except RuntimeError as exc:  # a planted program can also break hardening
         failure = exc
 
@@ -777,9 +799,10 @@ async def test_an_optional_probe_of_a_refused_program_keeps_full_marks(
     else:
         assert rewards is None
         assert error is not None and "cargo (in /opt/probe/bin)" in error
-    assert record["refused_programs_run"] == [
-        {"program": "cargo", "folder": "/opt/probe/bin"}
-    ]
+    # Since an optional program gets no refusal stub: the probe finds
+    # nothing to run, and its folder is still left out.
+    assert record["refused_programs_run"] == []
+    assert "/opt/probe/bin" in [d["folder"] for d in record["dropped"]]
 
 
 @pytest.mark.asyncio

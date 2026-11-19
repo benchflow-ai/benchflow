@@ -207,7 +207,13 @@ class TestHardenSequence:
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
         with patch("benchflow.task.Verifier", return_value=mock_v):
             await sdk._verify(
-                env, task, tp, {}, sandbox_user="agent", workspace="/testbed"
+                env,
+                task,
+                tp,
+                {},
+                sandbox_user="agent",
+                workspace="/testbed",
+                integrity="strict",
             )
 
         cmds = [c.args[0] for c in env.exec.call_args_list]
@@ -253,7 +259,7 @@ class TestHardenSequence:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
         with patch("benchflow.task.Verifier", return_value=mock_v):
-            await sdk._verify(env, task, tp, {}, sandbox_user=None)
+            await sdk._verify(env, task, tp, {}, sandbox_user=None, integrity="strict")
 
         cmds = [c.args[0] for c in env.exec.call_args_list]
         assert all("pkill" not in c for c in cmds)
@@ -272,7 +278,7 @@ class TestHardenSequence:
         mock_v = MagicMock()
         mock_v.verify = AsyncMock(return_value=MagicMock(rewards={"reward": 1.0}))
         with patch("benchflow.task.Verifier", return_value=mock_v):
-            await sdk._verify(env, task, tp, {})
+            await sdk._verify(env, task, tp, {}, integrity="strict")
         injected = task.config.verifier.env
         assert injected["PATH"] == VERIFIER_ENV["PATH"]
         assert injected["MY_VAR"] == "hello"
@@ -293,7 +299,9 @@ class TestVerifierDirWipe:
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, integrity="strict"
+        )
 
         match = next(
             (
@@ -333,7 +341,7 @@ class TestVerifierDirWipe:
 
         env = _make_env()
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/app"
+            env, _make_task(), sandbox_user=None, workspace="/app", integrity="strict"
         )
 
         assert VERIFIER_SETUP_TIMEOUT_SEC >= 180
@@ -391,7 +399,11 @@ class TestVerifierDirWipe:
 
         env = _make_env(side_effect)
         await harden_before_verify(
-            env, _make_task(), sandbox_user="agent", workspace="/app"
+            env,
+            _make_task(),
+            sandbox_user="agent",
+            workspace="/app",
+            integrity="strict",
         )
 
         token = lockdown._root_python.set("/usr/bin/python3")
@@ -422,7 +434,11 @@ class TestVerifierDirWipe:
         env = _make_env(side_effect)
         with pytest.raises(RuntimeError, match="freezing workspace ownership"):
             await harden_before_verify(
-                env, _make_task(), sandbox_user=None, workspace="/app"
+                env,
+                _make_task(),
+                sandbox_user=None,
+                workspace="/app",
+                integrity="strict",
             )
 
     @pytest.mark.asyncio
@@ -441,7 +457,9 @@ class TestVerifierDirWipe:
         env = _make_env(side_effect=side_effect)
 
         with pytest.raises(RuntimeError, match="Device or resource busy"):
-            await harden_before_verify(env, _make_task(), sandbox_user=None)
+            await harden_before_verify(
+                env, _make_task(), sandbox_user=None, integrity="strict"
+            )
 
     def test_cleanup_cmd_no_maxdepth(self):
         """CLEANUP_CMD must not limit find depth so deeply nested conftest.py is caught."""
@@ -482,7 +500,9 @@ class TestVerifierDirWipe:
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, integrity="strict"
+        )
 
         cleanup = next(
             (c for c in env.exec.call_args_list if "conftest.py" in c.args[0]),
@@ -500,7 +520,9 @@ class TestVerifierDirWipe:
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, integrity="strict"
+        )
 
         reclaim = next(
             (c for c in env.exec.call_args_list if "/.cache/" in c.args[0]),
@@ -530,7 +552,11 @@ class TestVerifierDirWipe:
 
         env = _make_env()
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace=workspace
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace=workspace,
+            integrity="strict",
         )
 
         reclaim = next(
@@ -755,6 +781,7 @@ class TestBuildConfigSnapshot:
             sandbox_user=None,
             workspace="/testbed",
             restore_workspace=True,
+            integrity="strict",
         )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
@@ -790,6 +817,7 @@ class TestBuildConfigSnapshot:
             sandbox_user=None,
             workspace="/testbed",
             restore_workspace=True,
+            integrity="strict",
         )
 
         chown_call = next(
@@ -824,7 +852,9 @@ class TestBuildConfigSnapshot:
         from benchflow.sandbox.lockdown import harden_before_verify
 
         env = _make_env()
-        await harden_before_verify(env, _make_task(), sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, _make_task(), sandbox_user=None, workspace=None, integrity="strict"
+        )
 
         assert not any(
             "chown -h root:root" in c.args[0] for c in env.exec.call_args_list
@@ -848,6 +878,7 @@ class TestBuildConfigSnapshot:
             sandbox_user=None,
             workspace="/testbed",
             restore_workspace=True,
+            integrity="strict",
         )
 
         restore_call = next(
@@ -895,7 +926,11 @@ class TestBuildConfigSnapshot:
 
         env = _make_env()
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/testbed"
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace="/testbed",
+            integrity="strict",
         )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
@@ -945,6 +980,7 @@ class TestVerifierUserHarden:
             sandbox_user=None,
             workspace="/testbed",
             restore_workspace=True,
+            integrity="strict",
         )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
@@ -972,6 +1008,7 @@ class TestVerifierUserHarden:
             task,
             sandbox_user=None,
             workspace="/testbed",
+            integrity="strict",
         )
 
         calls = [c.args[0] for c in env.exec.call_args_list]
@@ -1007,7 +1044,7 @@ class TestVerifierEnv:
             "PIP_CONFIG_FILE",
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_COUNT",
-            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(6)),
+            *(f"GIT_CONFIG_{kind}_{i}" for kind in ("KEY", "VALUE") for i in range(5)),
             "PIP_BREAK_SYSTEM_PACKAGES",
             "HOME",
             "PYTHONBREAKPOINT",
@@ -1035,7 +1072,9 @@ class TestVerifierEnv:
         }
         assert git["core.hooksPath"] == "/dev/null"
         assert git["core.fsmonitor"] == "false"
-        assert git["diff.external"] == ""
+        # never pinned (an empty value made git diff run ""); the
+        # freeze's purge removes an external diff the agent named.
+        assert "diff.external" not in git
         assert VERIFIER_ENV["PYTHONDONTWRITEBYTECODE"] == "1"
         assert (
             VERIFIER_ENV["PATH"]
@@ -1080,7 +1119,7 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=side_effect)
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None)
+        await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "-p benchmark" not in addopts
@@ -1105,7 +1144,7 @@ class TestVerifierEnv:
         env = _make_env(side_effect=side_effect)
         task = _make_task()
         with pytest.raises(RuntimeError, match="pytest plugin trust discovery"):
-            await harden_before_verify(env, task, sandbox_user=None)
+            await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
     @pytest.mark.asyncio
     async def test_pythonless_image_hardening_fallbacks_are_quiet(self, caplog):
@@ -1144,7 +1183,9 @@ class TestVerifierEnv:
         task = _make_task()
 
         caplog.set_level(logging.WARNING)
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None, integrity="strict"
+        )
 
         messages = [record.message for record in caplog.records]
         assert not any("task.toml fallback" in message for message in messages)
@@ -1241,7 +1282,10 @@ class TestVerifierEnv:
 
         task = _make_task()
         await harden_before_verify(
-            _make_env(side_effect=side_effect), task, sandbox_user=None
+            _make_env(side_effect=side_effect),
+            task,
+            sandbox_user=None,
+            integrity="strict",
         )
 
         assert task.config.verifier.env["PATH"] == (
@@ -1271,7 +1315,9 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=side_effect)
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user="agent", workspace="/app", integrity="strict"
+        )
 
         injected = task.config.verifier.env
         guard = injected["PYTHONPATH"].split(":")[0]
@@ -1307,7 +1353,9 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=side_effect)
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user="agent", workspace="/app", integrity="strict"
+        )
 
         discovery = next(
             inner_command(call.args[0])
@@ -1340,7 +1388,10 @@ class TestVerifierEnv:
         task = _make_task()
         task.config.verifier.env = {"PATH": "/custom/bin", "MY_VAR": "hello"}
         await harden_before_verify(
-            _make_env(side_effect=side_effect), task, sandbox_user="agent"
+            _make_env(side_effect=side_effect),
+            task,
+            sandbox_user="agent",
+            integrity="strict",
         )
 
         assert task.config.verifier.env["PATH"] == (
@@ -1362,7 +1413,9 @@ class TestVerifierEnv:
         task = _make_task()
         # Simulate a hostile or misconfigured task env that tries to re-enable autoload.
         task.config.verifier.env = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "0"}
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None, integrity="strict"
+        )
 
         assert task.config.verifier.env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1", (
             "task env must not be able to override PYTEST_DISABLE_PLUGIN_AUTOLOAD"
@@ -1376,7 +1429,9 @@ class TestVerifierEnv:
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
         task.config.verifier.pytest_plugins = ["ctrf", "myplug"]
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None, integrity="strict"
+        )
 
         final_env = task.config.verifier.env
         addopts = final_env.get("PYTEST_ADDOPTS", "")
@@ -1427,7 +1482,9 @@ class TestVerifierEnv:
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         task = _make_task()
         task.config.verifier.pytest_plugins = []
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None, integrity="strict"
+        )
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
             workspace=None,
@@ -1451,7 +1508,7 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.config.verifier.env = None
-        await harden_before_verify(env, task, sandbox_user=None)
+        await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
             workspace=None,
@@ -1473,7 +1530,9 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.paths.uses_native_verifier_dir = True
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root", integrity="strict"
+        )
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--confcutdir=/verifier" in addopts
@@ -1494,7 +1553,7 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/testbed"}
-        await harden_before_verify(env, task, sandbox_user=None)
+        await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
         assert task.config.verifier.env["PYTEST_ADDOPTS"] == _build_pytest_addopts(
             workspace=None,
@@ -1511,7 +1570,7 @@ class TestVerifierEnv:
         task = _make_task()
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil"}
         task.config.verifier.pytest_plugins = ["ctrf"]
-        await harden_before_verify(env, task, sandbox_user=None)
+        await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert VERIFIER_ENV["PYTEST_ADDOPTS"] in addopts
@@ -1536,7 +1595,9 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.task_dir = tmp_path
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "-p ctrf" not in addopts
@@ -1561,7 +1622,9 @@ class TestVerifierEnv:
         task = _make_task()
         task.task_dir = tmp_path
         task.paths.uses_native_verifier_dir = True
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert any(
@@ -1582,7 +1645,9 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.task_dir = tmp_path
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "-p ctrf" not in addopts
@@ -1598,7 +1663,9 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.paths.uses_native_verifier_dir = True
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
 
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--confcutdir=/verifier" in addopts
@@ -1611,7 +1678,9 @@ class TestVerifierEnv:
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root", integrity="strict"
+        )
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/root" in addopts
         assert "--rootdir=/app" not in addopts
@@ -1623,7 +1692,9 @@ class TestVerifierEnv:
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None, workspace=None)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=None, integrity="strict"
+        )
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/app" in addopts
 
@@ -1635,7 +1706,9 @@ class TestVerifierEnv:
 
         env = _make_env()
         task = _make_task()
-        await harden_before_verify(env, task, sandbox_user=None, workspace=workspace)
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace=workspace, integrity="strict"
+        )
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert f"--rootdir={workspace}" in addopts
 
@@ -1702,7 +1775,9 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
         task.config.verifier.env = {"PYTEST_ADDOPTS": "--rootdir=/evil -p evil"}
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root", integrity="strict"
+        )
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/root" in addopts
         assert "--rootdir=/evil" not in addopts
@@ -1716,10 +1791,14 @@ class TestVerifierEnv:
         env = _make_env()
         task = _make_task()
 
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
         assert "--rootdir=/app" in task.config.verifier.env["PYTEST_ADDOPTS"]
 
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/root")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/root", integrity="strict"
+        )
         addopts = task.config.verifier.env["PYTEST_ADDOPTS"]
         assert "--rootdir=/root" in addopts
         assert "--rootdir=/app" not in addopts
@@ -1747,7 +1826,11 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/testbed"
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace="/testbed",
+            integrity="strict",
         )
 
         symlink_purge = next(
@@ -1790,7 +1873,11 @@ class TestVerifierEnv:
 
         env = _make_env(side_effect=_manifest_env(_blank_manifest()))
         await harden_before_verify(
-            env, _make_task(), sandbox_user=None, workspace="/testbed"
+            env,
+            _make_task(),
+            sandbox_user=None,
+            workspace="/testbed",
+            integrity="strict",
         )
 
         purge_call = next(
@@ -1844,7 +1931,7 @@ class TestVerifierEnv:
             "DJANGO_SETTINGS_MODULE": "evil.settings",
             "CELERY_CONFIG_MODULE": "evil.celeryconfig",
         }
-        await harden_before_verify(env, task, sandbox_user=None)
+        await harden_before_verify(env, task, sandbox_user=None, integrity="strict")
 
         result = task.config.verifier.env
         assert result["PYTHONBREAKPOINT"] == "0"

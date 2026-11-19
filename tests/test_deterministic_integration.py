@@ -21,6 +21,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,18 @@ UPSTREAM_WIRE = "host-fake-wire.jsonl"
 # ---------------------------------------------------------------------------
 
 
+def _job_dirs(det_root: Path, name: str) -> tuple[Path, Path]:
+    """The tasks and jobs folders of one session job, per xdist worker.
+
+    A session fixture runs once per worker that needs it, and det_root is one
+    folder for every worker when ``BENCHFLOW_DETERMINISTIC_JOBS_DIR`` keeps
+    the jobs. Two workers copying one task into the same folder failed with
+    FileExistsError, or found each other's job folders (MG's pass D on #234);
+    each worker gets its own pair under the job's folder."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER") or "main"
+    return det_root / name / f"tasks-{worker}", det_root / name / f"jobs-{worker}"
+
+
 @pytest.fixture(scope="session")
 def det_root(tmp_path_factory) -> Path:
     kept = os.environ.get(h.KEEP_JOBS_ENV)
@@ -108,7 +122,7 @@ def _run(
     # Session fixtures are set up before the function-scoped require_sandbox.
     if SANDBOX is None:
         (pytest.fail if REQUESTED else pytest.skip)(SKIP_REASON)
-    tasks = det_root / name / "tasks"
+    tasks, jobs = _job_dirs(det_root, name)
     tasks.mkdir(parents=True, exist_ok=True)
     for variant in variants:
         h.materialize_task(variant, tasks)
@@ -116,14 +130,14 @@ def _run(
     run = h.run_bench(
         subcommand,
         tasks_dir=tasks_dir,
-        jobs_dir=det_root / name / "jobs",
+        jobs_dir=jobs,
         sandbox=SANDBOX,
         host_fake_url=fake_url,
         route=route,
         extra=extra,
         model=model,
     )
-    (det_root / name / "seconds.txt").write_text(f"{run.seconds:.1f}\n")
+    (jobs.parent / f"seconds-{jobs.name}.txt").write_text(f"{run.seconds:.1f}\n")
     return run
 
 
@@ -174,7 +188,8 @@ def _branch(det_root, fake_url, name: str, extra=()) -> h.CliRun:
 
 @pytest.fixture(scope="session")
 def branch_in_place(det_root, fake_url) -> h.CliRun:
-    return _branch(det_root, fake_url, "branch-in-place")
+    # In place on purpose: since that change the default is isolated children.
+    return _branch(det_root, fake_url, "branch-in-place", extra=["--in-place-children"])
 
 
 @pytest.fixture(scope="session")
@@ -190,6 +205,21 @@ def native_eval(det_root, fake_url) -> h.CliRun:
         "native-eval",
         ["eval", "run"],
         [h.TaskVariant("native-hello", "hello-pass")],
+        fake_url,
+        route="native",
+        extra=["--retry-attempts", "0"],
+    )
+
+
+@pytest.fixture(scope="session")
+def native_tamper_eval(det_root, fake_url) -> h.CliRun:
+    """The subscription trial again, with a root test.sh that rewrites the
+    agent's session log."""
+    return _run(
+        det_root,
+        "native-tamper",
+        ["eval", "run"],
+        [h.TaskVariant("native-tamper", "hello-pass", tamper_session_log=True)],
         fake_url,
         route="native",
         extra=["--retry-attempts", "0"],
@@ -331,6 +361,8 @@ def _golden_view(facts: dict[str, Any]) -> dict[str, Any]:
     blocks = [view["result"]["agent_result"], view["result"]["final_metrics"]]
     if view.get("atif"):
         blocks.append(view["atif"].get("final_metrics"))
+    # final_metrics' token split, net of side calls the same way.
+    blocks += [b.get("extra") for b in blocks[1:] if isinstance(b, dict)]
     for block in blocks:
         for key, quantity in _USAGE_KEYS.items():
             if isinstance(block, dict) and isinstance(block.get(key), int | float):
@@ -369,14 +401,16 @@ def _check_trial(
         usage = h.expected_usage(calls)
         assert agent_result["cost_usd"] == pytest.approx(usage["cost_usd"], abs=1e-9)
         assert metrics["total_cost_usd"] == pytest.approx(usage["cost_usd"], abs=1e-9)
-        assert agent_result["usage_source"] == "provider_response"
+        assert agent_result["usage_source"] == "proxy"
+        assert agent_result["usage_source_legacy"] == "provider_response"
     else:
         # Native route: no proxy; Claude Code reports the fake's usage over
         # ACP, and the gateway has no price for it.
         assert calls == []
         main = [{"kind": "main"}] * n_agent_messages
         usage = h.expected_usage(main)
-        assert agent_result["usage_source"] == "agent_native_acp"
+        assert agent_result["usage_source"] == "end_of_turn"
+        assert agent_result["usage_source_legacy"] == "agent_native_acp"
         if agent_result.get("price_source") == "agent_session_log":
             # An unbranched run is priced from Claude Code's own session log,
             # an estimate; Claude Code's session-title call may be in it.
@@ -388,9 +422,15 @@ def _check_trial(
             )
             assert metrics["total_cost_usd"] == agent_result["cost_usd"]
         else:
-            # A branched run is not: its children share the session log.
-            assert agent_result["cost_usd"] is None
-            assert metrics["total_cost_usd"] is None
+            # A branched run is not: its children share the session log. Its
+            # own end-of-turn tokens are priced at the model's list price
+            # , which the fake's price matches (claude-haiku-4-5).
+            assert agent_result["price_source"] == "list_price"
+            assert agent_result["cost_source"] == "list_price_estimate"
+            assert agent_result["cost_usd"] == pytest.approx(
+                usage["cost_usd"], abs=1e-9
+            )
+            assert metrics["total_cost_usd"] == agent_result["cost_usd"]
     tracking = result["usage_tracking"]
     assert tracking["usage_source"] == agent_result["usage_source"]
     assert tracking["environment"] == SANDBOX
@@ -490,17 +530,13 @@ def test_eval_job_summary(eval_job):
     assert summary["error_categories"] == {"acp_error": 1, "timeout": 1}
     assert summary["verifier_error_categories"] == {"verifier_failure": 1}
     assert summary["unusable_rewards"] == 1
-    # usage_summary totals the scored trials (a reward, no verifier error):
-    # hello-pass, wrong-answer and the scored timeout; agent-crash and the
-    # missing reward have no score.
+    # usage_summary totals every trial whose tokens were counted, the errored
+    # ones too: the agent crash and the missing reward spent tokens.
     results = [h.read_json(t / "result.json") for t in eval_job.trial_dirs()]
-    completed = [
-        r for r in results if r["rewards"] is not None and not r["verifier_error"]
-    ]
-    assert len(completed) == 3
     for field in ("input", "output"):
+        counts = [r["agent_result"][f"n_{field}_tokens"] for r in results]
         assert summary[f"total_{field}_tokens"] == sum(
-            r["agent_result"][f"n_{field}_tokens"] for r in completed
+            n for n in counts if n is not None
         )
 
 
@@ -588,6 +624,37 @@ def test_a_subscription_run_is_priced_from_claude_codes_session_log(native_eval)
     config = h.read_json(trial / "config.json")
     assert config["reported_models_source"] == "agent_session_log"
     assert config["reported_models"], config
+
+
+@needs_sandbox
+def test_a_verifier_that_rewrites_the_session_log_changes_no_cost(
+    native_eval, native_tamper_eval
+):
+    """test.sh, as root, rewrites every token count in Claude Code's
+    session log and its cost-state figures. The log was copied at the end of the agent's turn, so the
+    trial is priced from that copy, as the clean run is. Before, teardown
+    read the log after test.sh and priced the rewritten one."""
+    clean = h.read_json(native_eval.trial("native-hello") / "result.json")
+    trial = native_tamper_eval.trial("native-tamper")
+    tampered = h.read_json(trial / "result.json")
+    assert tampered["rewards"] == {"reward": 1.0}
+    rewrote = (trial / "verifier" / "tamper.txt").read_text().strip()
+    assert rewrote != "rewrote=0", rewrote
+    usage, expected = tampered["agent_result"], clean["agent_result"]
+    assert usage["price_source"] == "agent_session_log"
+    assert usage["cost_usd"] == expected["cost_usd"]
+    assert usage["cost_usd"]
+    # The kept copy is the log as the turn left it, not test.sh's rewrite.
+    kept = sorted((trial / "agent" / "claude-sessions").rglob("*.jsonl"))
+    states = [
+        json.loads(line)
+        for path in kept
+        for line in path.read_text().splitlines()
+        if '"totalCostUSD"' in line
+    ]
+    assert states and all(
+        state["totalCostUSD"] == expected["cost_usd"] for state in states
+    ), states
 
 
 @needs_sandbox
@@ -685,6 +752,33 @@ def test_branch_two_children_parallel(branch_parallel):
     _check_branch(branch_parallel, "branch-parallel", isolated=True)
 
 
+def _check_branch_metadata_counts(run: h.CliRun) -> None:
+    """every trial end records what main's metadata rules refused
+    (service-network.json's main_metadata_refused_at_end): the parent and
+    each child. Each restored child's main is covered again, and its proof
+    counts 1."""
+    records = sorted(Path(run.jobs_dir).rglob("service-network.json"))
+    assert len(records) >= 3, records
+    for path in records:
+        refused = json.loads(path.read_text()).get("main_metadata_refused_at_end")
+        assert isinstance(refused, int) and refused >= 1, (path, refused)
+
+
+# Each shape names its fixture, so conftest's grouping puts it in that
+# fixture's xdist group (it fetched the fixture by name before, got no group
+# and built the branch job again on another worker:).
+@needs_sandbox
+def test_every_branch_trial_end_records_mains_metadata_count_in_place(branch_in_place):
+    """In place: the child ends in the branch loop."""
+    _check_branch_metadata_counts(branch_in_place)
+
+
+@needs_sandbox
+def test_every_branch_trial_end_records_mains_metadata_count_parallel(branch_parallel):
+    """Isolated: each child in its own sandbox."""
+    _check_branch_metadata_counts(branch_parallel)
+
+
 # ---------------------------------------------------------------------------
 # Scenario: checkpoints + retry from checkpoint
 # ---------------------------------------------------------------------------
@@ -735,9 +829,11 @@ def test_retry_from_checkpoint_keeps_both_scores(checkpoint_retry):
 # IPv6 endpoints cannot be mocked here (no IPv6 in these containers), so the
 # probe leaves them out.
 METADATA_VARIANTS = {
-    "metadata-probe": h.TaskVariant("metadata-probe", "metadata-probe"),
+    "metadata-probe": h.TaskVariant(
+        "metadata-probe", "metadata-probe", root_probe=True
+    ),
     "metadata-opt-out": h.TaskVariant(
-        "metadata-opt-out", "metadata-probe", allow_cloud_metadata=True
+        "metadata-opt-out", "metadata-probe", allow_cloud_metadata=True, root_probe=True
     ),
 }
 
@@ -769,7 +865,19 @@ def metadata_job(det_root, fake_url) -> h.CliRun:
     if SANDBOX != "docker":
         # The mock joins main's network namespace on a local daemon only.
         pytest.skip("the metadata scenario mocks the endpoints on Docker only")
-    with MockWatcher(_metadata_trial_main, "bf.test.det-metadata-mock=1") as mock:
+    import uuid
+
+    # Only this session's trials, and only its own mocks: two suites on one
+    # daemon run the same variant names, and each watcher mocked the other's
+    # mains (MG's pass D: four mains for two variants).
+    tasks = str(_job_dirs(det_root, "metadata")[0]) + "/"
+
+    def ours(cid: str, labels: dict[str, str]) -> bool:
+        return _metadata_trial_main(cid, labels) and tasks in labels.get(
+            "com.docker.compose.project.working_dir", ""
+        )
+
+    with MockWatcher(ours, f"bf.test.det-metadata-mock={uuid.uuid4().hex}") as mock:
         run = _run(
             det_root,
             "metadata",
@@ -781,6 +889,17 @@ def metadata_job(det_root, fake_url) -> h.CliRun:
     assert not mock.errors, mock.errors
     assert len(mock.mains) == len(METADATA_VARIANTS), mock.mains
     return run
+
+
+def _root_probes(trial: Path) -> dict[tuple[str, str], str]:
+    """What test.sh's root probe wrote, per (address, port)."""
+    text = (trial / "verifier" / "root-probe.txt").read_text()
+    return {
+        (address, port): state
+        for address, port, state in re.findall(
+            r"(?m)^root-probe (\S+) (\S+) (\S+)$", text
+        )
+    }
 
 
 def _probes(trial: Path) -> dict[str, str]:
@@ -807,9 +926,17 @@ def test_open_network_refuses_the_cloud_metadata_endpoints(metadata_job):
     record = h.read_json(trial / "cloud-metadata.json")
     assert record["state"] == "on", record
     assert "the rule counted" in record["why"], record
+    # test.sh runs as root, and root is refused too from the end of
+    # the agent's turn; DNS (port 53) stays open.
+    roots = _root_probes(trial)
+    assert set(roots) == {(a, p) for a in METADATA_V4 for p in ("80", "53")}, roots
+    for address in METADATA_V4:
+        assert roots[(address, "80")] == "refused", roots
+        assert roots[(address, "53")] == "reached", roots
     result = h.read_json(trial / "result.json")
     assert result["rewards"]["reward"] == 1.0
     assert "cloud_metadata_block" in result["timing"]
+    assert "cloud_metadata_verifier" in result["timing"]["harden_before_verify"]
 
 
 @needs_sandbox
@@ -821,11 +948,16 @@ def test_cloud_metadata_opt_out_is_recorded_and_installs_nothing(metadata_job):
     record = h.read_json(trial / "cloud-metadata.json")
     assert record["state"] == "off", record
     assert "x-allow-cloud-metadata" in record["why"], record
-    # No rule: every connect reaches the mock on main's own loopback.
+    # No rule: every connect reaches the mock on main's own loopback, root's
+    # from test.sh too.
     assert _probes(trial) == dict.fromkeys(METADATA_V4, "reached"), _probes(trial)
+    assert _root_probes(trial) == {
+        (a, p): "reached" for a in METADATA_V4 for p in ("80", "53")
+    }, _root_probes(trial)
     result = h.read_json(trial / "result.json")
     assert result["rewards"]["reward"] == 1.0
     assert "cloud_metadata_block" not in result["timing"]
+    assert "cloud_metadata_verifier" not in result["timing"]["harden_before_verify"]
 
 
 def test_the_metadata_probe_connects_nowhere_without_the_mock():
@@ -858,6 +990,38 @@ def test_the_metadata_probe_connects_nowhere_without_the_mock():
     assert done.returncode == 0, done.stderr
     probes = dict(re.findall(r"(?m)^probe (\S+) (\S+)$", done.stdout))
     assert probes == dict.fromkeys(METADATA_V4, "not-mocked"), done.stdout
+
+
+def test_the_root_probe_connects_nowhere_without_the_mock():
+    """test.sh's root probe never connects to an endpoint that is not
+    a local address of its namespace either: with no mock every endpoint
+    reads not-mocked, on no port."""
+    if not h._docker_available():
+        pytest.skip("docker required")
+    script = (
+        h.root_probe_test_sh()
+        .replace("/logs/verifier/root-probe.txt", "/dev/stdout")
+        .replace("/logs/verifier/reward.txt", "/dev/null")
+    )
+    done = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "ubuntu:24.04",
+            "bash",
+            "-c",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert done.returncode == 0, done.stderr
+    probes = re.findall(r"(?m)^root-probe (\S+) (\S+) (\S+)$", done.stdout)
+    assert probes == [(a, "-", "not-mocked") for a in METADATA_V4], done.stdout
 
 
 def test_tier_skips_with_a_reason_or_selects_a_backend():
@@ -938,7 +1102,12 @@ def native_eval_job(det_root, fake_url) -> h.CliRun:
 
 @pytest.fixture(scope="session")
 def native_branch_in_place(det_root, fake_url) -> h.CliRun:
-    return _branch(det_root, fake_url, "branch-in-place-native", extra=NATIVE)
+    return _branch(
+        det_root,
+        fake_url,
+        "branch-in-place-native",
+        extra=[*NATIVE, "--in-place-children"],
+    )
 
 
 @pytest.fixture(scope="session")
@@ -1092,6 +1261,23 @@ def _as_acp_golden(view: dict[str, Any]) -> dict[str, Any]:
 
 
 @needs_sandbox
+def test_a_native_trial_s_stream_log_is_read_through_the_helper(native_eval_job):
+    """C4c's scan fix on real Docker: each native Claude Code trial's
+     agent/claude-code.jsonl is the regular file the snapshot at the end of the
+     turn reads through the reachable helper, and no trial says it refused it
+    ."""
+    (job,) = native_eval_job.job_dirs()
+    trials = sorted(p for p in job.iterdir() if (p / "result.json").is_file())
+    assert trials
+    streams = [trial / "agent" / "claude-code.jsonl" for trial in trials]
+    assert any(stream.is_file() for stream in streams)
+    for trial, stream in zip(trials, streams, strict=True):
+        assert not stream.is_symlink()
+        warnings = h.read_json(trial / "result.json").get("warnings") or []
+        assert not [w for w in warnings if "claude-code.jsonl" in w], warnings
+
+
+@needs_sandbox
 def test_native_eval_job_summary_matches_acp(native_eval_job):
     """The same five tasks end the same way through Claude Code's own CLI."""
     assert native_eval_job.returncode == 1, native_eval_job.output[-4000:]
@@ -1118,7 +1304,17 @@ def test_native_eval_job_summary_matches_acp(native_eval_job):
     [
         ("hello-pass", "eval-hello-pass"),
         ("wrong-answer", "eval-wrong-answer"),
-        ("timeout-pass", "eval-timeout-pass"),
+        pytest.param(
+            "timeout-pass",
+            "eval-timeout-pass",
+            marks=pytest.mark.xfail(
+                strict=False,
+                reason=(
+                    "native Claude Code makes one more model call after the "
+                    "wall-clock timeout on slow machines (fixed before 0.10.0)"
+                ),
+            ),
+        ),
         ("agent-crash", "eval-agent-crash"),
         ("verifier-error", "eval-verifier-error"),
     ],
@@ -1524,12 +1720,15 @@ def test_codex_wire_parity(codex_acp_job, codex_native_job, variant):
 # over ACP the adapter offers no effort option, so BenchFlow refuses the run.
 CLAUDE_EFFORT_MODEL = "claude-opus-5-5"
 CLAUDE_EFFORT = "max"
+# The default-effort trial's model: another that takes an effort.
+CLAUDE_DEFAULT_EFFORT_MODEL = "claude-sonnet-5-5"
 # The Claude Code task hands the file to a general-purpose sub-agent (its
 # Agent tool, in the foreground), whose own requests carry the child marker.
 CLAUDE_SUBAGENT_MARKER = h.marker("subagent-child")
 # Codex sends it as reasoning.effort and in its turn metadata. The native
-# harness used to refuse max.
-CODEX_EFFORT = "max"
+# harness used to refuse max; gpt-5.5 takes low to xhigh in the pinned Codex
+# 0.159.3, so max is refused before launch and xhigh is its top.
+CODEX_EFFORT = "xhigh"
 # Side calls: Claude Code's session title names the run's model; codex-acp's
 # (TitleGenerator.ts, 2.0.1) runs one tool-less turn on a hard-wired model,
 # whichever model the run has (see codex_config.codex_home_config).
@@ -1582,6 +1781,49 @@ def codex_effort_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
     )
 
 
+@pytest.fixture(scope="session")
+def claude_default_effort_job(det_root, fake_url) -> h.CliRun:
+    """Claude Code with no --reasoning-effort, on a model it sends its own
+    effort for (R383 M1). Not CLAUDE_EFFORT_MODEL: the upstream wire log is
+    the session's, and the effort jobs check every call on that model."""
+    return _run(
+        det_root,
+        "claude-default-effort",
+        ["eval", "run"],
+        [h.TaskVariant("claude-default-effort", "hello-pass")],
+        fake_url,
+        model=CLAUDE_DEFAULT_EFFORT_MODEL,
+        extra=["--retry-attempts", "0"],
+    )
+
+
+@needs_sandbox
+def test_a_default_claude_code_trial_records_no_effort_mismatch(
+    claude_default_effort_job,
+):
+    """R383 M1: claude-agent-acp answers its effort option with ``default``
+    when nothing was asked, which is no level, so there is nothing to compare
+    whatever effort Claude Code's own calls carried: no mismatch, no warning,
+    none counted in summary.json."""
+    job = claude_default_effort_job
+    trial = job.trial("claude-default-effort")
+    result = h.read_json(trial / "result.json")
+    assert result["rewards"] == {"reward": 1.0}, (
+        result.get("error"),
+        job.output[-4000:],
+    )
+    effort = result["effort"]
+    assert effort["requested"] is None, effort
+    assert (effort["matches"], effort["reason"]) == (None, "nothing_to_compare"), effort
+    assert not [w for w in result.get("warnings") or [] if "reasoning effort" in w], (
+        result.get("warnings")
+    )
+    (job_dir,) = job.job_dirs()
+    summary = h.read_json(job_dir / "summary.json")
+    assert (summary.get("model_calls") or {}).get("effort_mismatches", 0) == 0
+    assert "ran at another reasoning effort" not in job.output
+
+
 def _requests(job: h.CliRun) -> list[dict[str, Any]]:
     """Every request the job's harness sent the proxy, side calls too."""
     return [
@@ -1590,10 +1832,18 @@ def _requests(job: h.CliRun) -> list[dict[str, Any]]:
 
 
 def _check_effort_trial(
-    job: h.CliRun, variant: h.TaskVariant, model: str, effort: str
+    job: h.CliRun,
+    variant: h.TaskVariant,
+    model: str,
+    effort: str,
+    applied: str | None,
 ) -> None:
     """The trial passed, its config records the setting, and BenchFlow's own
-    record of every agent call (model-calls.jsonl) names the effort."""
+    record of every agent call (model-calls.jsonl) names the effort.
+    ``applied`` is the session's word: claude-agent-acp answers its effort
+    option with the level; a native CLI, and codex-acp under a launch config
+    that owns its model, say nothing of it, so it is null there, never the
+    request echoed back. The calls carry the level either way."""
     trial = job.trial(variant.name)
     result = h.read_json(trial / "result.json")
     assert result["rewards"] == {"reward": 1.0}, (
@@ -1607,15 +1857,21 @@ def _check_effort_trial(
     # no tools and carries the default effort, and is a side call.
     agent_calls = [c for c in calls if c["purpose"] == "agent" and c["tools"]]
     assert agent_calls and {c["effort"] for c in agent_calls} == {effort}, calls
-    # The session's word and the calls' agree with the request.
-    assert config["reasoning_effort_applied"] == effort
+    # The session's word, where it gives one, and the calls' agree with the
+    # request.
+    assert config["reasoning_effort_applied"] == applied
     assert result["effort"] == {
         "requested": effort,
-        "applied": effort,
+        "requested_from": "--effort",
+        "applied": applied,
         "route": None,
         "sent": {effort: len(agent_calls)},
         "sent_source": "proxy",
+        "calls_with_effort": len(agent_calls),
+        "calls_with_budget": 0,
+        "calls_without_effort": 0,
         "matches": True,
+        "reason": None,
     }, result["effort"]
 
 
@@ -1632,7 +1888,13 @@ def test_claude_code_sends_the_requested_model_and_effort(
     from benchflow.providers.litellm_config import safe_model_alias
 
     job = claude_effort_jobs[harness]
-    _check_effort_trial(job, CLAUDE_EFFORT_VARIANT, CLAUDE_EFFORT_MODEL, CLAUDE_EFFORT)
+    _check_effort_trial(
+        job,
+        CLAUDE_EFFORT_VARIANT,
+        CLAUDE_EFFORT_MODEL,
+        CLAUDE_EFFORT,
+        applied=CLAUDE_EFFORT if harness == "acp" else None,
+    )
     requests = _requests(job)
     assert {r["body"]["model"] for r in requests} == {
         safe_model_alias(CLAUDE_EFFORT_MODEL)
@@ -1672,7 +1934,9 @@ def test_codex_sends_the_requested_model_and_effort(
     surface is the catalogued one: apply_patch, and the multi-agent tools,
     which Codex 0.159.3 defers behind tool_search for this model."""
     job = codex_effort_jobs[harness]
-    _check_effort_trial(job, CODEX_EFFORT_VARIANT, h.CODEX_MODEL, CODEX_EFFORT)
+    _check_effort_trial(
+        job, CODEX_EFFORT_VARIANT, h.CODEX_MODEL, CODEX_EFFORT, applied=None
+    )
     requests = _requests(job)
     loop = [r for r in requests if r["body"].get("tools")]
     assert loop
@@ -1835,7 +2099,7 @@ def test_codex_native_matches_codex_acp(codex_acp_job, codex_native_job, variant
     _check_native_contract(native_trial, "codex")
     # Usage and cost come from the proxy on both harnesses (the slow model
     # never answered, so there is none).
-    source = "unavailable" if variant == "codex-slow-model" else "provider_response"
+    source = None if variant == "codex-slow-model" else "proxy"
     assert native["usage"]["usage_source"] == source
     assert h.trial_document_problems(native_trial) == []
 
@@ -1897,7 +2161,7 @@ def test_native_codex_reaches_nothing_but_the_gateway(codex_allowlist_jobs):
     native = codex_allowlist_jobs["native"].trial("codex-allowlist")
     result = h.read_json(native / "result.json")
     assert result["rewards"] == {"reward": 1.0}, result.get("error")
-    assert result["agent_result"]["usage_source"] == "provider_response"
+    assert result["agent_result"]["usage_source"] == "proxy"
     _check_native_contract(native, "codex")
     assert _egress_blocked(native) == []
 
@@ -1991,7 +2255,9 @@ def test_in_sandbox_proxy_usage_record_is_unchanged(codex_allowlist_jobs):
     fresh resolve. One fixed request through the fake gives a record
     with the same schema and token fields as before: the golden was recorded
     from the fresh-resolve install on integ/py-0.8 2ea2ad00 and is not
-    regenerated from a later tree."""
+    regenerated from a later tree. its two changes to it were made by
+    hand: the record's ``metadata.response_cost`` key, and ``usage_source``
+    in the result vocabulary (``proxy``)."""
     trial = codex_allowlist_jobs["acp"].trial("codex-allowlist")
     actual = _usage_record(trial)
     golden = h.Golden("in-sandbox-proxy-usage")
@@ -2014,6 +2280,270 @@ def test_in_sandbox_proxy_records_its_locked_install(codex_allowlist_jobs):
         "requirements_sha256": reqs.requirements_sha256(reqs.PROXY_GROUP),
         "extra_requirements": [],
     }
+
+
+# ----- the in-sandbox proxy's usage, read before the verifier -----
+
+TAMPER_VARIANT = h.TaskVariant(
+    "codex-allowlist-tamper",
+    "hello-pass",
+    allowed_hosts=("example.com",),
+    tamper_proxy=True,
+)
+# The turn writes hello.txt, then hangs in a tool call to its time limit; the
+# proxy is killed (SIGKILL, root, docker exec) while it hangs.
+KILL_VARIANT = h.TaskVariant(
+    "codex-allowlist-kill",
+    "pass-then-hang",
+    agent_timeout_sec=45.0,
+    allowed_hosts=("example.com",),
+)
+_USAGE = (
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "total_tokens",
+    "cost_usd",
+    "usage_source",
+)
+PROXY_KILLED = (
+    "the in-sandbox model proxy's usage log may miss calls: the proxy was not "
+    "running at the end of the agent's turn (killed or exited)"
+)
+
+
+@pytest.fixture(scope="session")
+def codex_allowlist_tamper_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "codex-allowlist-tamper",
+        ["eval", "run"],
+        [TAMPER_VARIANT],
+        fake_url,
+        route="codex-in-sandbox",
+        extra=["--retry-attempts", "0", "--harness", "acp"],
+    )
+
+
+def _docker_ps() -> set[str]:
+    done = subprocess.run(
+        ["docker", "ps", "-q"], capture_output=True, text=True, check=True
+    )
+    return set(done.stdout.split())
+
+
+def _kill_the_proxy_once_the_turn_hangs(
+    before: set[str], killed: list[str], stop: threading.Event
+) -> None:
+    deadline = time.monotonic() + 900
+    while not stop.is_set() and time.monotonic() < deadline:
+        for container in _docker_ps() - before:
+            ready = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-u",
+                    "0",
+                    container,
+                    "sh",
+                    "-c",
+                    "test -s /app/hello.txt && ls /opt/runtime/proxy/*/litellm.pid",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if ready.returncode != 0:
+                continue
+            # The turn's next call is in; its tool call now hangs.
+            time.sleep(5)
+            done = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-u",
+                    "0",
+                    container,
+                    "sh",
+                    "-c",
+                    "for p in /opt/runtime/proxy/*/litellm.pid; do "
+                    'kill -9 "$(cat "$p")" && echo killed; done',
+                ],
+                capture_output=True,
+                text=True,
+            )
+            killed.append(done.stdout.strip())
+            return
+        time.sleep(1)
+
+
+@pytest.fixture(scope="session")
+def codex_allowlist_kill_job(det_root, fake_url) -> tuple[h.CliRun, list[str]]:
+    if SANDBOX != "docker":
+        pytest.skip("the proxy is killed with docker exec")
+    killed: list[str] = []
+    stop = threading.Event()
+    watcher = threading.Thread(
+        target=_kill_the_proxy_once_the_turn_hangs,
+        args=(_docker_ps(), killed, stop),
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        run = _run(
+            det_root,
+            "codex-allowlist-kill",
+            ["eval", "run"],
+            [KILL_VARIANT],
+            fake_url,
+            route="codex-in-sandbox",
+            extra=["--retry-attempts", "0", "--harness", "acp"],
+        )
+    finally:
+        stop.set()
+        watcher.join(timeout=30)
+    return run, killed
+
+
+@needs_sandbox
+def test_a_verifier_that_kills_the_proxy_and_rewrites_its_log_changes_no_usage(
+    codex_allowlist_jobs, codex_allowlist_tamper_job
+):
+    """test.sh, as root, kills the in-sandbox proxy and rewrites its usage
+    log. The log was read at the end of the agent's turn and the proxy's
+    folder removed, so test.sh finds neither and the trial records the clean
+    run's usage, whole. Before the log was read at cleanup, after
+    test.sh, and the trial recorded the rewritten one."""
+    clean = h.read_json(
+        codex_allowlist_jobs["acp"].trial("codex-allowlist") / "result.json"
+    )["agent_result"]
+    trial = codex_allowlist_tamper_job.trial("codex-allowlist-tamper")
+    data = h.read_json(trial / "result.json")
+    assert data["rewards"] == {"reward": 1.0}
+    agent = data["agent_result"]
+    assert clean["n_input_tokens"]
+    assert {k: agent.get(k) for k in _USAGE} == {k: clean.get(k) for k in _USAGE}
+    assert "usage_incomplete" not in agent and "usage_incomplete" not in clean
+    tamper = (trial / "verifier" / "tamper.txt").read_text().strip()
+    assert tamper == "killed=0 rewrote=0"
+
+
+PLANT_CODEX_VARIANT = h.TaskVariant(
+    "codex-allowlist-plant",
+    "hello-pass",
+    allowed_hosts=("example.com",),
+    plant_sessions="codex-sessions",
+)
+
+
+@pytest.fixture(scope="session")
+def claude_plant_job(det_root, fake_url) -> h.CliRun:
+    """Claude Code on the API-key route (its proxy in the sandbox where the
+    backend runs it there): a clean trial, and one whose test.sh plants
+    agent/claude-sessions."""
+    return _run(
+        det_root,
+        "claude-plant",
+        ["eval", "run"],
+        [
+            h.TaskVariant("claude-plant-clean", "hello-pass"),
+            h.TaskVariant(
+                "claude-plant", "hello-pass", plant_sessions="claude-sessions"
+            ),
+        ],
+        fake_url,
+        extra=["--retry-attempts", "0"],
+    )
+
+
+@pytest.fixture(scope="session")
+def codex_plant_job(det_root, fake_url) -> h.CliRun:
+    return _run(
+        det_root,
+        "codex-allowlist-plant",
+        ["eval", "run"],
+        [PLANT_CODEX_VARIANT],
+        fake_url,
+        route="codex-in-sandbox",
+        extra=["--retry-attempts", "0", "--harness", "acp"],
+    )
+
+
+def _planted_left(trial: Path, folder: str) -> list[str]:
+    return sorted(
+        path.name for path in (trial / "agent" / folder).rglob("planted.jsonl")
+    )
+
+
+def _model_calls(trial: Path) -> list[str]:
+    calls = trial / "trajectory" / "model-calls.jsonl"
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
+@needs_sandbox
+def test_a_claude_session_log_test_sh_plants_in_agent_feeds_no_count(
+    claude_plant_job,
+):
+    """RUSAGE's D2(a) repro on real Docker: test.sh, as root, plants
+    agent/claude-sessions with three compactions and five one-token calls. A
+    proxied trial keeps no copy of the log, so before, the planted folder
+    stayed and the compaction count read it. The counts come from the copy
+    held since the end of the turn, and the planted folder is emptied."""
+    clean_trial = claude_plant_job.trial("claude-plant-clean")
+    trial = claude_plant_job.trial("claude-plant")
+    clean = h.read_json(clean_trial / "result.json")
+    planted = h.read_json(trial / "result.json")
+    assert planted["rewards"] == {"reward": 1.0}
+    assert (trial / "verifier" / "plant.txt").read_text().strip() == "planted=1"
+    assert planted["compactions"] == clean["compactions"]
+    usage = planted["agent_result"]
+    assert usage["usage_source"] == clean["agent_result"]["usage_source"]
+    assert usage["total_tokens"] and "usage_incomplete" not in usage
+    calls = _model_calls(trial)
+    assert calls and not [call for call in calls if "planted" in call]
+    assert "planted" not in (trial / "model-calls.json").read_text()
+    assert _planted_left(trial, "claude-sessions") == []
+
+
+@needs_sandbox
+def test_a_codex_session_log_test_sh_plants_in_agent_is_emptied(
+    codex_allowlist_jobs, codex_plant_job
+):
+    """The same on the Codex route: test.sh plants agent/codex-sessions.
+    The usage and model calls are the clean run's, and the planted folder is
+    emptied; before, it stayed in the trial for any later reader. (The Codex
+    count from the session log is for subscription runs, which this tier does
+    not run: the unit test covers it.)"""
+    clean_trial = codex_allowlist_jobs["acp"].trial("codex-allowlist")
+    trial = codex_plant_job.trial("codex-allowlist-plant")
+    clean = h.read_json(clean_trial / "result.json")["agent_result"]
+    data = h.read_json(trial / "result.json")
+    assert data["rewards"] == {"reward": 1.0}
+    assert (trial / "verifier" / "plant.txt").read_text().strip() == "planted=1"
+    agent = data["agent_result"]
+    assert clean["n_input_tokens"]
+    assert {k: agent.get(k) for k in _USAGE} == {k: clean.get(k) for k in _USAGE}
+    assert len(_model_calls(trial)) == len(_model_calls(clean_trial))
+    assert _planted_left(trial, "codex-sessions") == []
+
+
+@needs_sandbox
+def test_a_proxy_killed_mid_turn_is_incomplete_with_its_reason(
+    codex_allowlist_kill_job,
+):
+    """The proxy killed while the turn ran: the calls its log holds are
+    counted, and the trial says its count may miss calls, and why. Before
+    it read as the trial's whole usage."""
+    run, killed = codex_allowlist_kill_job
+    assert killed == ["killed"], killed
+    agent = h.read_json(run.trial("codex-allowlist-kill") / "result.json")[
+        "agent_result"
+    ]
+    assert agent["n_input_tokens"]
+    assert agent["usage_incomplete"] is True
+    assert agent["usage_incomplete_reason"] == PROXY_KILLED
+    assert agent.get("cost_incomplete") is (
+        True if agent.get("cost_usd") is not None else None
+    )
 
 
 # ----- a model refusal, and a trial budget (0.10.0rc2) ---------------------

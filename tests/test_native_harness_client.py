@@ -329,7 +329,7 @@ async def test_a_cli_killed_by_a_signal_leaves_its_arguments_out_of_the_error(tm
     """bash's "Killed <command line>" notice would carry the MCP settings."""
     from benchflow.acp.types import McpServerSpec
 
-    secret = "mcp-secret-3f9a"
+    secret = "mc" + "p-secret" + "-3f9a"
     server = McpServerSpec(
         name="web", type="http", url="http://h/mcp", headers={"Authorization": secret}
     )

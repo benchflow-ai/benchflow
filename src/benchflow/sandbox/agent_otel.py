@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import shlex
 import tempfile
 from collections.abc import Mapping
@@ -147,6 +148,79 @@ async def _start(env: Any) -> None:
                 -400:
             ]
             raise RuntimeError(f"receiver {what} failed: {detail.strip()}")
+    # BenchFlow's own, on the host's record: R1.
+    from benchflow.sandbox.lockdown import note_own_process
+
+    await note_own_process(env, pid_file=_PID)
+
+
+# BenchFlow's own export interval for Claude Code (agent_otel_env).
+_DEFAULT_EXPORT_SEC = 2.0
+# The most the stop waits for the last export, whatever the interval: the
+# wait runs inside the agent's phase, before the teardown's own bounds.
+SETTLE_CAP_SEC = 10.0
+_SETTLE_TICK_SEC = 0.25
+
+
+def export_interval_sec(agent_env: Mapping[str, str]) -> float:
+    """The agent's logs export interval: ``OTEL_LOGS_EXPORT_INTERVAL`` (ms)."""
+    try:
+        ms = float(agent_env.get("OTEL_LOGS_EXPORT_INTERVAL") or 0)
+    except ValueError:
+        ms = 0.0
+    return ms / 1000 if math.isfinite(ms) and ms > 0 else _DEFAULT_EXPORT_SEC
+
+
+def settle_bounds(interval_sec: float) -> tuple[float, float]:
+    """(quiet, cap): stop once the receiver's file has not grown for *quiet*
+    seconds, or after *cap*: one interval and a margin, at most 2 x interval
+    + 1 s, never more than :data:`SETTLE_CAP_SEC`."""
+    cap = min(2 * interval_sec + 1, SETTLE_CAP_SEC)
+    return min(interval_sec + 0.5, cap), cap
+
+
+def _settle_command(quiet_sec: float, cap_sec: float) -> str:
+    need = math.ceil(quiet_sec / _SETTLE_TICK_SEC)
+    limit = math.ceil(cap_sec / _SETTLE_TICK_SEC)
+    size = f"$(wc -c 2>/dev/null < {shlex.quote(RECEIVED)} || echo 0)"
+    return (
+        f"last={size}; quiet=0; n=0; "
+        f'while [ "$n" -lt {limit} ] && [ "$quiet" -lt {need} ]; do '
+        f"sleep {_SETTLE_TICK_SEC}; n=$((n + 1)); now={size}; "
+        'if [ "$now" = "$last" ]; then quiet=$((quiet + 1)); '
+        "else quiet=0; last=$now; fi; done; "
+        f'[ "$quiet" -ge {need} ]'
+    )
+
+
+async def settle_agent_otel(env: Any, interval_sec: float) -> bool:
+    """Wait for the agent's last export before it is stopped; whether it came.
+
+    The agent sends what it logged with its next export, up to one interval
+    later (Claude Code's ``claude_code.api_request`` events, 2 s here), so an
+    agent stopped right after its turn lost its last batch: the session's last
+    model call was in no event, as a harness that reads these events reported. One root exec waits
+    until the receiver's file has not grown for :func:`settle_bounds`' quiet
+    time, at most its cap; never raises.
+    """
+    quiet, cap = settle_bounds(interval_sec)
+    try:
+        result = await exec_raw(
+            env.exec,
+            _settle_command(quiet, cap),
+            user="root",
+            timeout_sec=math.ceil(cap) + 5,
+        )
+    except Exception as exc:
+        logger.warning("The agent's last OpenTelemetry export was not awaited: %s", exc)
+        return False
+    if getattr(result, "return_code", 1) != 0:
+        logger.warning(
+            "The agent's OpenTelemetry was still arriving after %.1fs; stopping it",
+            cap,
+        )
+        return False
+    return True
 
 
 async def stop_agent_otel(env: Any, rollout_dir: Any) -> None:

@@ -22,6 +22,32 @@ SANDBOX_SETUP = "sandbox_setup"
 KEPT_SERVICE_FREEZER = "kept_service_freezer"
 RUNTIME_SEALING = "runtime_sealing"
 GUARD_TIMEOUT = "guard_timeout"
+#: A step of the trial that is not the agent's turn (setup, sandbox start,
+#: agent install, BenchFlow's set-up for the turn, a multi-step task's step
+#: set-up and soft verify, a script's tear-down, verify) ran out of time.
+#: Once the agent's turn ended the trial (its time limit, the host deadline,
+#: the trial budget, a model refusal, an output-cap ending), any later
+#: failure keeps that ending and is recorded in post_turn_failure_info. The
+#: rollout writes the error with PHASE_TIMEOUT_HEADER and the step in
+#: brackets. It is the infrastructure's and is retried like INFRA_ERROR;
+#: TIMED_OUT stays the agent's own time limit.
+PHASE_TIMEOUT = "phase_timeout"
+PHASE_TIMEOUT_HEADER = "trial step timed out"
+#: The rollout's cleanup failed when nothing before it had ended the trial:
+#: the error opens with this, and it is an INFRA_ERROR, retried.
+CLEANUP_FAILED_HEADER = "trial cleanup failed"
+# BenchFlow's helper container could not add the agent's uid rules to
+# main's namespace (verifier_network.install_from_helper; on a loaded host
+# its script may never report, "status none"): the sandbox's setup, not the
+# agent's turn, which never started (SANDBOX_SETUP, #283): retried, and once
+# the retries are spent unscored with the helper's reason. Read
+# head-anchored, after the error's class and the firewall's header, before
+# every other marker, so an agent's own words quoting it cannot claim it and
+# the helper's reason after it ("install failed", "timed out") cannot move it.
+_HELPER_RULES_FAILED_HEADER = (
+    "benchflow's helper could not add the rules to main's namespace (status "
+)
+_EGRESS_FIREWALL_HEADER = "failed to enforce sandbox-user egress firewall: "
 INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
 PROVIDER_AUTH = "provider_auth"
 # A provider rate-limit/quota failure that surfaced as a *raised*
@@ -68,6 +94,13 @@ USAGE_LIMIT = "usage_limit"
 # (crates/benchflow-run/src/record.rs, ``category()``). Unscored, never
 # retried: another attempt refuses the same way.
 UNSUPPORTED_TASK_FEATURE = "unsupported_task_feature"
+# A task on BenchFlow's in-package refusal list (benchflow.task.refused_tasks):
+# its reference solution fails under one of BenchFlow's always-on
+# protections, so it is refused before the turn for every agent. Unscored,
+# never retried: another attempt is refused the same way.
+TASK_REFUSED = "task_refused"
+TASK_REFUSED_HEADER = "task refused before the turn: "
+_TASK_REFUSED_CLASS = "taskrefusederror: "
 # UnsupportedTaskFeatureError's header. The recorded error is
 # describe_exception(e), "UnsupportedTaskFeatureError: Task uses ...", or the
 # bare message: the header opens the error either way. Anywhere else it is
@@ -101,6 +134,12 @@ _IMAGE_BUILD_CLASS = "imagebuilderror: "
 # never retried; `bench check` names it (DF-p4-upgrader-8). Read from the
 # recorded error's class, which opens it (describe_exception).
 TASK_CONFIG = "task_config"
+# A ``script:`` agent on a built-in backend without the operator-script runner
+# (benchflow.agents.scripts.ScriptBackendError): the run's setting, refused
+# before any sandbox. Unscored, never retried: another attempt is refused the
+# same way. Read from the recorded error's class, which opens it.
+SCRIPT_BACKEND = "script_backend"
+_SCRIPT_BACKEND_CLASS = "scriptbackenderror: "
 _TASK_CONFIG_CLASSES = (
     "taskconfigkeyerror: ",
     "taskdocumentparseerror: ",
@@ -170,6 +209,52 @@ VERIFIER_DEP_INSTALL = "verifier_dep_install"
 # scores 0 (rollout/_setup.py), the raw number kept in result.json's
 # reward_out_of_range_info.
 VERIFIER_REWARD_OUT_OF_RANGE = "reward_out_of_range"
+# test.sh failed after the verifier's network policy refused it packets
+# (benchflow.sandbox.verifier_network): unscored, out of the mean,
+# never retried (another attempt meets the same policy). Read head-anchored:
+# BenchFlow's own words, never test.sh's.
+VERIFIER_NETWORK_REFUSED = "verifier_network_refused"
+_VERIFIER_NETWORK_REFUSED_HEAD = "verifier network refused: "
+# test.sh did not start held (no launch record, or NET_ADMIN/NET_RAW at its
+# launch): unscored, BenchFlow's refusal, not the solution's verdict.
+VERIFIER_LAUNCH_REFUSED = "verifier_launch_refused"
+_VERIFIER_LAUNCH_REFUSED_HEAD = "verifier launch refused: "
+# The verifier's PATH leaves out a folder of the image's (one a user other
+# than root could write, or a relative entry) that the task's required_tools
+# contract does not cover, so test.sh did not run: unscored, BenchFlow's
+# refusal, never retried (task/verifier_errors.VerifierToolsRefusedError).
+VERIFIER_TOOLS_REFUSED = "verifier_tools_refused"
+_VERIFIER_TOOLS_REFUSED_HEAD = "verifier tools refused: "
+# The verifier's network could not be held (its rules not added or not
+# proven), so test.sh did not run, never open instead: unscored, BenchFlow's
+# refusal, never retried.
+VERIFIER_NETWORK_UNHELD = "verifier_network_unheld"
+_VERIFIER_NETWORK_UNHELD_HEAD = "verifier network not held: "
+# BenchFlow's network rules for the trial were gone, or their counters went
+# back, when proven again at the end of the agent's turn or of test.sh
+# (benchflow.sandbox.policy_reproof): unscored, 0 in the every-trial
+# mean, never retried, and the job is flagged. Read head-anchored.
+NETWORK_POLICY_BREACHED = "network_policy_breached"
+_NETWORK_POLICY_BREACHED_HEAD = "network policy breached: "
+# The rules could not be proven again (the helper's check did not run), and
+# nothing showed a breach: an infrastructure failure, unscored with its
+# reason, never charged to the agent as a breach. Read head-anchored.
+_NETWORK_POLICY_UNPROVEN_HEAD = "network policy not proven: "
+
+
+def is_network_policy_breach(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* is the ending "network policy breached"."""
+    return isinstance(verifier_error, str) and verifier_error.startswith(
+        _NETWORK_POLICY_BREACHED_HEAD
+    )
+
+
+def is_verifier_network_refusal(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* is the ending "verifier network refused"."""
+    return isinstance(verifier_error, str) and verifier_error.startswith(
+        _VERIFIER_NETWORK_REFUSED_HEAD
+    )
+
 
 # Catalogs for fixed-schema exports; reuse the classifier constants rather
 # than admitting arbitrary saved text as a category.
@@ -198,12 +283,63 @@ def is_unusable_reward(verifier_error: str | None) -> bool:
     )
 
 
+# The check before the test command (task/verifier_core.py): the
+# verifier's user cannot write the file its output goes to, so test.sh never
+# ran. BenchFlow's own failure (on Docker it makes that file on the host, as
+# the host's user, before the command), never the task's: verifier setup,
+# infrastructure, unscored. Matched at the start only, after the rollout's
+# own wrapper, like the guard's errors: no text the agent chose comes first.
+VERIFIER_OUTPUT_UNWRITABLE = "the verifier's user cannot write its output file "
+_OUTPUT_UNWRITABLE_RE = re.compile(
+    r"^(?:\[solver-preserved\] )?verifier crashed: (?:[A-Za-z_][\w.]*: )?"
+    r"Verifier setup failed: " + re.escape(VERIFIER_OUTPUT_UNWRITABLE)
+)
+
+
+def is_output_unwritable(verifier_error: str | None) -> bool:
+    """Whether *verifier_error* is 's: test.sh never ran because the
+    verifier's user could not write its output file."""
+    return isinstance(verifier_error, str) and bool(
+        _OUTPUT_UNWRITABLE_RE.match(verifier_error)
+    )
+
+
 def grading_timed_out(row: Mapping[str, Any]) -> bool:
     """Whether a result row scored 0 because its tests ran past the verifier's
     time limit (a scored ``verifier_timeout_info``): the agent's slow code, or
     a slow grading machine, so reports name it apart from a wrong answer."""
     info = row.get("verifier_timeout_info")
     return isinstance(info, Mapping) and info.get("scored") is True
+
+
+#: A non-root agent's attempt whose reward test.sh wrote, where a check of the
+#: reward's provenance did not complete or its action did not take effect
+#: while BenchFlow's walker could run: reward 0, counted, with the reason in
+#: the trial's warning (``provenance_incomplete``). Never retried: the attempt
+#: is scored. The category of the row, never a verifier error.
+PROVENANCE_INCOMPLETE = "provenance_incomplete"
+PROVENANCE_INCOMPLETE_ZERO = VERIFIER_SCORED_ZERO + "provenance incomplete: "
+
+
+#: A check of the reward's provenance BenchFlow could not make at all: bfx
+#: cannot run in the sandbox (refused before the turn), or the sandbox has no
+#: record of its links from before the turn. BenchFlow's gap, never the
+#: agent's: unscored, never retried, never a 0.
+INTEGRITY_UNAVAILABLE = "integrity_unavailable"
+INTEGRITY_UNAVAILABLE_HEADER = "integrity checks unavailable before the turn: "
+INTEGRITY_UNAVAILABLE_VERIFIER = "integrity checks unavailable: "
+
+
+def provenance_incomplete(row: Mapping[str, Any]) -> bool:
+    """Whether a result row scored 0 because a check of its reward's
+    provenance did not complete (:data:`PROVENANCE_INCOMPLETE`)."""
+    if row.get("verifier_error"):
+        return False
+    warnings = row.get("warnings")
+    return isinstance(warnings, list) and any(
+        isinstance(w, str) and w.startswith(PROVENANCE_INCOMPLETE_ZERO)
+        for w in warnings
+    )
 
 
 def verifier_scored_zero(row: Mapping[str, Any]) -> bool:
@@ -225,6 +361,7 @@ ERROR_CATEGORIES = frozenset(
         KEPT_SERVICE_FREEZER,
         RUNTIME_SEALING,
         GUARD_TIMEOUT,
+        PHASE_TIMEOUT,
         INVALID_PROVIDER_RESPONSE,
         PROVIDER_AUTH,
         PROVIDER_RATE_LIMIT,
@@ -235,14 +372,69 @@ ERROR_CATEGORIES = frozenset(
         AGENT_INTEGRATION,
         USAGE_LIMIT,
         UNSUPPORTED_TASK_FEATURE,
+        TASK_REFUSED,
+        INTEGRITY_UNAVAILABLE,
         IMAGE_BUILD,
         REGISTRY_AUTH,
         TASK_CONFIG,
+        SCRIPT_BACKEND,
         DISK_FULL,
         TRIAL_BUDGET,
         OTHER_ERROR,
     }
 )
+#: For each of ERROR_CATEGORIES, whether a trial keeps its verifier's reward
+#: when that category is the ending its agent's turn recorded (True), or is
+#: unscored under it whatever the verifier gave (False). A resume reads it for
+#: a trial whose later step failed after that ending
+#: (:func:`benchflow._utils.result_paths.kept_ending_is_final`), so it decides
+#: as for the same trial with nothing failing after the turn. Every category
+#: is listed: tests/test_phase_timeout.py fails on one left out, and checks
+#: the endings a turn records against what the rollout writes for them.
+ENDING_KEEPS_REWARD: dict[str, bool] = {
+    # The rollout grades the workspace the turn left: the agent's time limit
+    # (the host deadline's stop and a script at its limit among them), the
+    # idle watchdog, the trial budget, a model refusal and an output-cap
+    # ending (the only ACP errors a turn records as its ending), and an
+    # agent-phase timeout whose text names no cause.
+    TIMED_OUT: True,
+    IDLE_TIMEOUT: True,
+    TRIAL_BUDGET: True,
+    ACP_ERROR: True,
+    OTHER_ERROR: True,
+    # The rollout withholds the reward of a turn that ended this way
+    # (``Rollout._build_result``): an agent that did nothing or ran on another
+    # agent's tools, a provider error or stall, a zero-signal ending.
+    AGENT_INTEGRATION: False,
+    API_ERROR: False,
+    SUSPECTED_API_ERROR: False,
+    # Reporting categories: a resume reads the category the error gets
+    # without them (retry_category), as retry does. These entries are for one
+    # with no error to read.
+    KEPT_SERVICE_FREEZER: False,
+    RUNTIME_SEALING: False,
+    GUARD_TIMEOUT: False,
+    INVALID_PROVIDER_RESPONSE: False,
+    # Never an ending the turn records: each ends the trial before the turn,
+    # raises out of it or replaces no ending, and leaves no reward.
+    INSTALL_FAILED: False,
+    PIPE_CLOSED: False,
+    INFRA_ERROR: False,
+    SANDBOX_SETUP: False,
+    PHASE_TIMEOUT: False,
+    PROVIDER_AUTH: False,
+    PROVIDER_RATE_LIMIT: False,
+    PROVIDER_REJECTED: False,
+    USAGE_LIMIT: False,
+    UNSUPPORTED_TASK_FEATURE: False,
+    TASK_REFUSED: False,
+    INTEGRITY_UNAVAILABLE: False,
+    IMAGE_BUILD: False,
+    REGISTRY_AUTH: False,
+    TASK_CONFIG: False,
+    SCRIPT_BACKEND: False,
+    DISK_FULL: False,
+}
 VERIFIER_ERROR_CATEGORIES = frozenset(
     {
         VERIFIER_FAILED,
@@ -250,6 +442,11 @@ VERIFIER_ERROR_CATEGORIES = frozenset(
         VERIFIER_TIMEOUT,
         VERIFIER_DEP_INSTALL,
         VERIFIER_REWARD_OUT_OF_RANGE,
+        VERIFIER_NETWORK_REFUSED,
+        VERIFIER_LAUNCH_REFUSED,
+        VERIFIER_TOOLS_REFUSED,
+        VERIFIER_NETWORK_UNHELD,
+        NETWORK_POLICY_BREACHED,
         VERIFIER_OTHER,
         DISK_FULL,
         INFRA_ERROR,  # automatic scoring infrastructure errors
@@ -394,6 +591,10 @@ def retry_category(error: str | None, category: str | None) -> str | None:
 
 def _classify_error(error: str) -> str | None:
     lower = error.lower()
+    # First: main stopped right after its release (rollout._setup); the
+    # output it quotes may hold any other marker.
+    if _MAIN_STOPPED in lower:
+        return SANDBOX_SETUP
     # First of all: a runtime refusal lists each feature with a free-text
     # reason ("... timed out", "install failed" can appear there), and none
     # of the markers below may claim it.
@@ -401,17 +602,36 @@ def _classify_error(error: str) -> str | None:
     head = head.removeprefix(_UNSUPPORTED_TASK_FEATURE_CLASS)
     if head.startswith(_UNSUPPORTED_TASK_FEATURE_MARKER):
         return UNSUPPORTED_TASK_FEATURE
+    if head.removeprefix(_TASK_REFUSED_CLASS).startswith(TASK_REFUSED_HEADER):
+        return TASK_REFUSED
+    if head.removeprefix("integrityunavailableerror: ").startswith(
+        INTEGRITY_UNAVAILABLE_HEADER
+    ):
+        return INTEGRITY_UNAVAILABLE
     if head.startswith(_DISK_FULL_HEADS) or head.startswith(DISK_FULL_MARKER):
         return DISK_FULL
     if head.removeprefix(_TRIAL_BUDGET_CLASS).startswith(_TRIAL_BUDGET_HEADER):
         return TRIAL_BUDGET
     if head.startswith(_TASK_CONFIG_CLASSES):
         return TASK_CONFIG
+    if (
+        head.removeprefix("runtimeerror: ")
+        .removeprefix(_EGRESS_FIREWALL_HEADER)
+        .startswith(_HELPER_RULES_FAILED_HEADER)
+    ):
+        return SANDBOX_SETUP
+    if head.startswith(_SCRIPT_BACKEND_CLASS):
+        return SCRIPT_BACKEND
     built = lower.lstrip().removeprefix("sandbox startup failed: ")
     if built.removeprefix(_REGISTRY_AUTH_CLASS).startswith(REGISTRY_AUTH_HEADER):
         return REGISTRY_AUTH
     if built.removeprefix(_IMAGE_BUILD_CLASS).startswith(IMAGE_BUILD_HEADER):
         return IMAGE_BUILD
+    # Its detail may quote any other marker ("timed out" among them).
+    if lower.startswith(PHASE_TIMEOUT_HEADER):
+        return PHASE_TIMEOUT
+    if lower.startswith(CLEANUP_FAILED_HEADER):
+        return INFRA_ERROR
     # First: the evidence quoted after it may contain any other marker.
     if lower.startswith("agent integration failure"):
         return AGENT_INTEGRATION
@@ -445,6 +665,7 @@ def _classify_error(error: str) -> str | None:
     if (
         "acp error" in lower
         or "native harness error" in lower
+        or "session-factory agent error" in lower
         or "was rejected as invalid" in lower
     ):
         if any(m in lower for m in _PROVIDER_AUTH_MARKERS):
@@ -459,6 +680,9 @@ def _classify_error(error: str) -> str | None:
     if (
         "sandbox startup" in lower
         or "sandbox creation" in lower
+        # The agent's egress firewall could not go in, so the agent was
+        # never started: the sandbox's setup, not the agent's turn.
+        or "failed to enforce sandbox-user egress firewall" in lower
         or _looks_like_docker_registry_metadata_error(lower)
     ):
         return SANDBOX_SETUP
@@ -477,8 +701,21 @@ def _classify_error(error: str) -> str | None:
 # source as a cache-key checksum miss ending in '"<path>": not found'. And a
 # Docker daemon that is not running (rollout/_setup.py names it) is still not
 # running seconds later.
+#: rollout._setup.MAIN_STOPPED_HEADER, lower case.
+_MAIN_STOPPED = "sandbox startup failed: main stopped right after its release"
+
 _UNRECOVERABLE_STARTUP_RES = (
+    # main's image ENTRYPOINT exited right after its release
+    # (rollout._setup.main_stopped_error): the image does it again.
+    re.compile(re.escape(_MAIN_STOPPED)),
     re.compile(r"path does not exist: "),
+    # test.sh needs a command the verifier's PATH does not have, read before
+    # the agent's turn from the task and its image (task/test_sh_preflight).
+    re.compile(r"sandbox startup refused: test\.sh needs `"),
+    # A branch child with no preflight verdict to carry (task/test_sh_preflight).
+    re.compile(
+        r"sandbox startup refused: no test\.sh preflight verdict for this branch child"
+    ),
     # The image cannot keep the agent from Daytona's root daemon.
     re.compile(
         r"agent user could not be kept away from daytona.s root toolbox daemon: (?:the image has no iptables and no package manager|the image has ipv6 but no ip6tables)"
@@ -495,6 +732,36 @@ _UNRECOVERABLE_STARTUP_RES = (
         r"benchflow's own python could not be had to disarm them \((?:the image's "
         r"machine \([^)]*\) or c library \([^)]*\) has no build|the image has no "
         r"tar to unpack)"
+    ),
+    # its start refusals, decided by the task's files and the run's
+    # settings, which another attempt meets again: a
+    # network policy with a way around it on a compose service, a compose
+    # power without the opt-out, main sharing the host's network through
+    # another service, and an override that would leave main holding
+    # NET_ADMIN. A helper that failed to build or a netns probe that could not
+    # be read stays retryable.
+    re.compile(
+        r"sandbox startup refused: the task's network policy \([^)]*\) holds every "
+        r"service"
+    ),
+    re.compile(
+        r"sandbox startup refused: the task's compose (?:file gives main|service "
+        r"'[^']*' holds) "
+    ),
+    re.compile(
+        r"sandbox startup refused: main joins the network namespace of service "
+    ),
+    re.compile(
+        r"sandbox startup refused: the task's network policy \([^)]*\) needs "
+        r"benchflow's helper container to add main's rules from outside it; "
+        r"(?:benchflow_metadata_helper=0|benchflow_metadata_main_net_admin=1) "
+    ),
+    # The compose preflight's host-access refusals (task.compose_env): the
+    # task's files ask for this machine, and only an operator's opt-in (on a
+    # cloud VM, two) changes that.
+    re.compile(r"a task's compose files may reach only files in the task's folder"),
+    re.compile(
+        r"is set, but this machine is a cloud vm \(its metadata server answers\)"
     ),
     # An allowlist task's compose services have a route out of the sandbox
     # (egress_denylist.TaskServiceEgressError): the task's compose file says so.
@@ -516,6 +783,26 @@ _UNRECOVERABLE_STARTUP_RES = (
     ),
     re.compile(
         r"sandbox startup refused: the restricted agent launch could not be verified: "
+    ),
+    # A sandbox its caller started before the run named its agent, whose
+    # main's image ENTRYPOINT ran outside the task's network policy:
+    # the same sandbox refuses again.
+    re.compile(
+        r"sandbox startup refused: this sandbox was started before the run named "
+        r"its agent"
+    ),
+    # R1: main was not quiet when a model agent was about to start
+    # under the task's network policy (task processes still ran there), or
+    # its processes could not be read; the task's image does the same again.
+    re.compile(
+        r"sandbox startup refused: main must be quiet when a model agent starts "
+        r"under the task's network policy"
+    ),
+    # PID 1 of the task's image is the sandbox user's on a host whose Yama
+    # lets the user's processes trace it (sandbox/pid1_ptrace.py).
+    re.compile(
+        r"sandbox startup refused: pid 1 of the task's image runs as the sandbox "
+        r"user '[^']*', and this host's kernel"
     ),
     re.compile(r'failed to calculate checksum of ref \S+ "[^"]+": not found'),
     # The Daytona API rejected the key at create (sandbox/daytona_start).
@@ -586,6 +873,15 @@ def _looks_like_docker_registry_metadata_error(error: str) -> bool:
         or "failed to do request: head" in error
         or "deadlineexceeded" in error
     )
+
+
+# How the rollout records the plugin guard's verdict that a file it refused
+# is not the image's ((g2); ``rollout/_setup.py``): a 0 that names it.
+# Matched at the start.
+PLUGIN_GUARD_REJECTED = "plugin guard rejected: "
+# ... and the pristine re-judgment's finding that the guard rejects or fails
+# on the image's own files too (R): not the agent's, so not scored.
+PLUGIN_GUARD_UNSCORED = "plugin guard unscored: "
 
 
 # How the rollout records a PluginGuardLoadError (``rollout/_setup.py``: the
@@ -664,13 +960,40 @@ def is_guard_refusal(verifier_error: str | None) -> bool:
     return message is not None and _GUARD_REFUSAL_RE.match(message) is not None
 
 
+def reward_less_verdict(verifier_error: str | None) -> str | None:
+    """The one answer, for a trial whose verifier left no reward, to whether it
+    counts: ``"refused"`` is a failure in every score (the plugin guard
+    refused, or the final verify left no usable reward file: evidence the
+    agent or the task controls); ``"unscored"`` is any other verifier error
+    (BenchFlow's or its sandbox's own failure, its unwritable output
+    among them), out of ``score_excl_errors``; None with no verifier error.
+    summary.json's counts, ``benchflow.score.v1``, the job's metrics, the CLI
+    line and ``bench explain`` all take it from here, so none can disagree.
+    """
+    if not verifier_error:
+        return None
+    if is_guard_refusal(verifier_error) or is_unusable_reward(verifier_error):
+        return "refused"
+    return "unscored"
+
+
+def refusal_kind(verifier_error: str | None) -> str | None:
+    """Which refusal a refused verifier error is (:func:`reward_less_verdict`):
+    ``"guard"`` (the plugin guard refused) or ``"unusable"`` (no usable
+    reward file); None when it is not refused. summary.json's two counts
+    split the refusals by it."""
+    if reward_less_verdict(verifier_error) != "refused":
+        return None
+    return "guard" if is_guard_refusal(verifier_error) else "unusable"
+
+
 def count_unusable_rewards(results: Iterable[Mapping[str, Any]]) -> int:
     """Verifier-errored trials whose final verify left no usable reward
     (:data:`NO_USABLE_REWARD`), counted like :func:`count_guard_refusals`."""
     return sum(
         1
         for r in results
-        if is_unusable_reward(r.get("verifier_error"))
+        if refusal_kind(r.get("verifier_error")) == "unusable"
         and classify_score_outcome(r) == "verifier_errored"
     )
 
@@ -685,7 +1008,7 @@ def count_guard_refusals(results: Iterable[Mapping[str, Any]]) -> int:
     return sum(
         1
         for r in results
-        if is_guard_refusal(r.get("verifier_error"))
+        if refusal_kind(r.get("verifier_error")) == "guard"
         and classify_score_outcome(r) == "verifier_errored"
     )
 
@@ -694,10 +1017,43 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     """Classify a verifier error string, or None if no error."""
     if not verifier_error:
         return None
-    if is_unusable_reward(verifier_error):
-        # BenchFlow's own wording; the reason after it names files, not text
-        # the agent chose. Never infrastructure, so never retried.
+    # A recovery-eligible task keeps its solver's work under the same ending,
+    # tagged (rollout._verifier_recovery.PRESERVED_SOLVER): the category is
+    # the ending's either way.
+    ending = verifier_error.removeprefix("[solver-preserved] ")
+    if ending.startswith(INTEGRITY_UNAVAILABLE_VERIFIER):
+        # BenchFlow could not check the reward's provenance. Never retried.
+        return INTEGRITY_UNAVAILABLE
+    if ending.startswith(_NETWORK_POLICY_BREACHED_HEAD):
+        # BenchFlow's own words: its rules no longer held. Never retried.
+        return NETWORK_POLICY_BREACHED
+    if ending.startswith(_NETWORK_POLICY_UNPROVEN_HEAD):
+        # BenchFlow could not check its rules again: its infrastructure.
+        return VERIFIER_INFRA
+    if ending.startswith(_VERIFIER_NETWORK_REFUSED_HEAD):
+        return VERIFIER_NETWORK_REFUSED
+    if ending.startswith(_VERIFIER_LAUNCH_REFUSED_HEAD):
+        # BenchFlow refused to run test.sh unheld: deterministic, not retried.
+        return VERIFIER_LAUNCH_REFUSED
+    if ending.startswith(_VERIFIER_TOOLS_REFUSED_HEAD):
+        # Hardening refused test.sh's tools: decided by the image and the
+        # task, so deterministic and never retried, and never a crash.
+        return VERIFIER_TOOLS_REFUSED
+    if ending.startswith(_VERIFIER_NETWORK_UNHELD_HEAD):
+        # The verifier's network could not be held, so test.sh did not run.
+        return VERIFIER_NETWORK_UNHELD
+    if reward_less_verdict(verifier_error) == "refused":
+        # A plugin guard refusal or no usable reward file (BenchFlow's own
+        # wording; the reason after it names files, not text the agent
+        # chose): the verifier's failure, never infrastructure, never retried.
         return VERIFIER_FAILED
+    if ending.startswith((PLUGIN_GUARD_REJECTED, PLUGIN_GUARD_UNSCORED)):
+        # The guard's verdicts, its record's or the pristine image's: never
+        # infrastructure, never retried ((g2)).
+        return VERIFIER_FAILED
+    if is_output_unwritable(verifier_error):
+        # BenchFlow's file, not the task's verifier.
+        return VERIFIER_INFRA
     if plugin_guard_error_message(verifier_error) is not None:
         # The guard decided, deterministically, from what the sandbox holds:
         # never infrastructure, whatever words a refused path contains.
@@ -1059,6 +1415,17 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         # Unscored trials the plugin guard refused: failures in the
         # error-excluding score and the mean reward.
         "guard_refusals": refused,
+        # Trials that ended "verifier network refused": unscored, 0 in
+        # mean_reward; any of them flags the job (the run card says so).
+        "verifier_network_refusals": sum(
+            1 for row in rows if is_verifier_network_refusal(row.get("verifier_error"))
+        ),
+        # Trials that ended "network policy breached": BenchFlow's
+        # network rules no longer held; unscored, 0 in mean_reward, and any of
+        # them flags the job (the run card says so).
+        "network_policy_breaches": sum(
+            1 for row in rows if is_network_policy_breach(row.get("verifier_error"))
+        ),
         # Verifier-errored trials whose final verify left no usable reward:
         # failures in the same two figures.
         "unusable_rewards": unusable,
@@ -1114,3 +1481,73 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         # every-trial mean then counts an error above those rewards.
         "mean_reward_caveat": mean_reward_caveat(rows),
     }
+
+
+def unscored_note(unscored: int, scored_only: float | None) -> str:
+    """What a headline score does with the trials BenchFlow did not score,
+    for the same line as the number: ``counts 2 unscored trials as 0;
+    scored only: 50.0%``. The score (``benchflow.score.v1``) counts every
+    trial, an unscored one as 0, and is not to be read or copied without
+    this; "" when every trial was scored, so the line stays the plain
+    number. *scored_only* is the score over the scored trials
+    (``score_excl_errors``), None when there is none."""
+    if unscored <= 0:
+        return ""
+    trials = "trial" if unscored == 1 else "trials"
+    only = f"{scored_only:.1%}" if scored_only is not None else "none scored"
+    return f"counts {unscored} unscored {trials} as 0; scored only: {only}"
+
+
+def result_unscored_note(result: Any) -> str:
+    """:func:`unscored_note` for an evaluation's result (an
+    ``EvaluationResult``, or any object with its counts). A trial with an
+    error or a verifier error is unscored; a refusal (the plugin guard's, a
+    verifier that left no usable reward) stays in the scored-only figure as
+    a failure, as in summary.json's ``score_excl_errors``."""
+
+    def count(name: str) -> int:
+        value = getattr(result, name, 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    total = count("total")
+    unscored = (
+        count("errored")
+        + count("verifier_errored")
+        - count("guard_refused")
+        - count("unusable_rewards")
+    )
+    unscored = max(0, min(unscored, total))
+    counted = total - unscored
+    return unscored_note(unscored, count("passed") / counted if counted else None)
+
+
+def summary_unscored_note(summary: Mapping[str, Any]) -> str:
+    """:func:`unscored_note` for a summary.json: the trials left out of
+    ``score_excl_errors``' n (the scoring rule's own counts when the
+    summary carries them, else its scored trials and the refusals it counts
+    as failed), and that figure."""
+
+    def count(data: Mapping[str, Any], name: str) -> int:
+        value = data.get(name)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    rule = summary.get("scoring")
+    if isinstance(rule, Mapping) and "n" in rule and "n_excl_errors" in rule:
+        total, counted = count(rule, "n"), count(rule, "n_excl_errors")
+    else:
+        # Without the failed count it can't tell a failed trial from an
+        # unscored one: say nothing rather than call failures unscored.
+        if not all(
+            isinstance(summary.get(name), int)
+            and not isinstance(summary.get(name), bool)
+            for name in ("total", "passed", "failed")
+        ):
+            return ""
+        total = count(summary, "total")
+        counted = sum(
+            count(summary, name)
+            for name in ("passed", "failed", "guard_refusals", "unusable_rewards")
+        )
+    return unscored_note(
+        total - counted, count(summary, "passed") / counted if counted else None
+    )

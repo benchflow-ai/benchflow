@@ -43,9 +43,11 @@ def test_check_acceptance_survives_real_auth_resolution(
 ):
     """Guards 795cb12c: every native token spelling must survive runtime setup."""
     if source == "host":
-        monkeypatch.setenv(token, "dummy-native-login")
+        monkeypatch.setenv(token, "sk-ant-oat01-dummy-native-login")
     else:
-        (tmp_path / "dummy.env").write_text(f"{token}=dummy-native-login\n")
+        (tmp_path / "dummy.env").write_text(
+            f"{token}=sk-ant-oat01-dummy-native-login\n"
+        )
     task = _task(tmp_path / "task", "[sandbox]\nallow_internet=false\n")
     checked = CliRunner().invoke(
         app, [*command, str(task), "--agent", agent, "--model", model]
@@ -54,7 +56,7 @@ def test_check_acceptance_survives_real_auth_resolution(
     actual = resolve_agent_env("claude-agent-acp", model, {})
     policy = native_oauth_egress_policy("claude-agent-acp", model, actual, no_web=True)
     assert policy is not None and policy.native_claude_model_only
-    assert actual[token] == "dummy-native-login"
+    assert actual[token] == "sk-ant-oat01-dummy-native-login"
     assert "BENCHFLOW_PROVIDER_API_KEY" not in actual
     assert "BENCHFLOW_PROVIDER_BASE_URL" not in actual
 
@@ -73,7 +75,7 @@ def test_explicit_native_alias_keeps_backend_plan(
         else '[sandbox]\nnetwork_mode="allowlist"\nallowed_hosts=["example.invalid"]\n'
     )
     task = _task(tmp_path / "task", config)
-    overlay = {token: "dummy-native-login"}
+    overlay = {token: "sk-ant-oat01-dummy-native-login"}
     actual = resolve_agent_env("claude-agent-acp", model, overlay)
     assert uses_native_subscription_auth("claude-agent-acp", model, actual)
     assert "BENCHFLOW_PROVIDER_API_KEY" not in actual
@@ -106,7 +108,9 @@ def test_explicit_native_alias_keeps_backend_plan(
 def test_runtime_setup_reaches_allocation_with_native_alias(tmp_path, token, model):
     """Guards 795cb12c: real auth resolution and setup agree before allocation."""
     task = _task(tmp_path / "task", "[sandbox]\nallow_internet=false\n")
-    actual = resolve_agent_env("claude-agent-acp", model, {token: "dummy-native-login"})
+    actual = resolve_agent_env(
+        "claude-agent-acp", model, {token: "sk-ant-oat01-dummy-native-login"}
+    )
     assert _run_refusal(task, tmp_path, model=model, resolved_env=actual) is None
 
 
@@ -140,7 +144,9 @@ def test_explicit_conflicts_are_still_refused(model, token):
         ("ANTHROPIC_BASE_URL", "https://proxy.example.invalid"),
     ):
         actual = resolve_agent_env(
-            "claude-agent-acp", model, {token: "dummy-native-login", key: value}
+            "claude-agent-acp",
+            model,
+            {token: "sk-ant-oat01-dummy-native-login", key: value},
         )
         assert actual[key] == value
         if key == "BENCHFLOW_PROVIDER_API_KEY":
@@ -165,7 +171,10 @@ def test_api_key_still_selects_provider_route(model, token):
     actual = resolve_agent_env(
         "claude-agent-acp",
         model,
-        {token: "dummy-native-login", "ANTHROPIC_API_KEY": "dummy-api-key"},
+        {
+            token: "sk-ant-oat01-dummy-native-login",
+            "ANTHROPIC_API_KEY": "dummy-api-key",
+        },
     )
     assert not uses_native_subscription_auth("claude-agent-acp", model, actual)
     assert actual["BENCHFLOW_PROVIDER_API_KEY"]

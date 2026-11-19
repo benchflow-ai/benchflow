@@ -2,7 +2,7 @@
 ``bf.load_job`` / ``bf.load_trial`` / ``bf.compare``.
 
 Both call the Python functions directly; ``--json`` prints the versioned
-documents of ``benchflow.job_export`` (docs/train/formats.md#schema-versions), the
+documents of ``benchflow.job_export`` (docs/train/export.md#schema-versions), the
 same bytes ``Job.to_json()`` / ``Comparison.to_json()`` produce. Warnings go
 to stderr so ``--json`` output stays machine-readable.
 """
@@ -80,9 +80,12 @@ def _rate(d, *, controls_counted: bool = False) -> str:
     # Every attempted run counted first (an unscored one as a fail), then the
     # scored runs only, each with its n. ``controls_counted``: the trials are
     # control runs and are the count (a job of only control runs).
+    from benchflow._utils.scoring import unscored_note
     from benchflow.scoring import no_score_text
 
     pa, pr = d.pass_rate_attempted, d.pass_rate_scored
+    # Beside the attempted figure, what it does with unscored runs.
+    note = unscored_note(d.attempted - d.scored, pr)
     controls = (
         ", only control runs, so they are counted"
         if controls_counted
@@ -92,7 +95,7 @@ def _rate(d, *, controls_counted: bool = False) -> str:
     # run's own Outcomes line uses (scoring.no_score_text).
     return (
         f"{d.passed}/{d.attempted} attempted passed"
-        + (f" ({pa:.0%})" if pa is not None else "")
+        + (f" ({pa:.0%}{'; ' + note if note else ''})" if pa is not None else "")
         + f", {d.passed}/{d.scored} scored passed"
         + (f" ({pr:.0%})" if pr is not None else "")
         + ", "
@@ -137,7 +140,8 @@ def _print_scoring(job: Any) -> None:
         figures = rows[0].score()
         console.print(
             f"  Score by {figures.rule}: {figures.score or 0.0:.1%} ({figures.passed} "
-            f"of {figures.n} trials; {escape(figures.interval_text())}), "
+            f"of {figures.n} trials{figures.note_part()}; "
+            f"{escape(figures.interval_text())}), "
             f"{figures.n_tasks} task{'' if figures.n_tasks == 1 else 's'}",
             highlight=False,
             soft_wrap=True,
@@ -168,6 +172,43 @@ def _print_scoring(job: Any) -> None:
         highlight=False,
         soft_wrap=True,
     )
+
+
+def cost_cell(result: Any) -> str:
+    """A trial's cost for a table: "~" when it is no provider's bill (tokens
+    at list prices, or the agent's own figure), "+" when its count missed
+    some calls (``usage_incomplete``), so it is a floor."""
+    if result.cost_usd is None:
+        return ""
+    estimate = "~" if result.cost_source != "provider" else ""
+    floor = "+" if result.usage_incomplete else ""
+    return f"{estimate}${result.cost_usd:.4f}{floor}"
+
+
+def cost_notes(trials: Any, *, priced: bool) -> list[str]:
+    """What a table's "~" and "+" mean, for the trials that carry them."""
+    notes: list[str] = []
+    if priced and any(
+        t.result.cost_usd is not None and t.result.cost_source != "provider"
+        for t in trials
+    ):
+        notes.append(
+            "~ an estimate (tokens at list prices, or the agent's own figure), "
+            "not a provider's bill"
+        )
+    partial = [t for t in trials if t.result.usage_incomplete]
+    if partial:
+        from benchflow._utils.result_metadata import floor_note
+
+        reasons = sorted(
+            {t.result.usage_incomplete_reason or "no reason recorded" for t in partial}
+        )
+        costed = sum(1 for t in partial if t.result.cost_usd is not None)
+        notes.append(
+            f"{'+ ' if priced else ''}{len(partial)} trial(s) counted only some of "
+            f"their calls, so {floor_note(len(partial), costed)}: " + "; ".join(reasons)
+        )
+    return notes
 
 
 def unfinished_line(job: Any, where: str) -> str | None:
@@ -390,18 +431,14 @@ def register_eval_results(eval_app: typer.Typer) -> None:
                 escape(trial.result.model or ""),
             ]
             if priced:
-                # "~": an estimate from the agent's own session log.
-                estimate = trial.result.price_source == "agent_session_log"
-                cells.append(
-                    ""
-                    if trial.cost_usd is None
-                    else f"{'~' if estimate else ''}${trial.cost_usd:.4f}"
-                )
+                cells.append(cost_cell(trial.result))
             if broken:
                 failure = trial.integration_failure
                 cells.append(escape(str(failure.get("cause"))) if failure else "")
             table.add_row(*cells)
         console.print(table)
+        for note in cost_notes(job.trials, priced=priced):
+            console.print(escape(note), highlight=False, soft_wrap=True)
         if out is not None:
             _emit(job.to_json(include_verifier=verifier), out)
 
@@ -576,6 +613,7 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         runs them again.
         """
         from benchflow.agents.errors import UsageLimitError
+        from benchflow.agents.scripts import ScriptBackendError
         from benchflow.cli._errors import expected_error_parts
         from benchflow.cli._shared import (
             RUN_FAILED_NEXT,
@@ -619,8 +657,13 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         except (RuntimeError, ValueError) as exc:
             message, hint = expected_error_parts(exc)
             print_error(message, next_step=hint or RUN_FAILED_NEXT)
-            # 2 for trials that ran with other settings: nothing ran.
-            code = exc.exit_code if isinstance(exc, ResumeMismatchError) else 1
+            # 2 for trials that ran with other settings, or a script: agent
+            # on a backend without its runner: nothing ran.
+            code = (
+                exc.exit_code
+                if isinstance(exc, (ResumeMismatchError, ScriptBackendError))
+                else 1
+            )
             raise typer.Exit(code) from None
         _report_eval_result(result, Path(job_dir))
         _exit_if_evaluation_had_errors(result)

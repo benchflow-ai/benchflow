@@ -33,6 +33,10 @@ from benchflow._utils.scoring import (
     classify_verifier_error,
 )
 from benchflow.contracts import default_rollout_planes
+from benchflow.rewards.validation import (
+    REWARD_OUT_OF_RANGE,
+    is_out_of_range_reward,
+)
 from benchflow.rollout import (
     Rollout,
     RolloutConfig,
@@ -277,7 +281,10 @@ async def _run_single_case(
             environment_manifest=None,
         )
         try:
-            await _start_env_and_upload(env, task_dir, timing)
+            # No agent: nothing of BenchFlow's in main needs the network (the
+            # case's own command, then the verifier), so main is held from
+            # release as for nop.
+            await _start_env_and_upload(env, task_dir, timing, task=task, agent="nop")
             agent_cwd = await _resolve_agent_cwd(env, task)
             await _upload_workspace(
                 env,
@@ -315,8 +322,7 @@ async def _run_single_case(
             )
             if verifier_error is not None:
                 return _verifier_error_result(verifier_error)
-            reward = _scalar_reward(rewards)
-            return LiveAcceptanceRunResult(reward=reward, error=None)
+            return _reward_result(rewards)
         except Exception as exc:
             return LiveAcceptanceRunResult(reward=None, error=str(exc))
         finally:
@@ -379,7 +385,20 @@ async def _run_oracle_case(
         return LiveAcceptanceRunResult(reward=None, error=result.error)
     if result.verifier_error is not None:
         return _verifier_error_result(result.verifier_error)
-    return LiveAcceptanceRunResult(reward=_scalar_reward(result.rewards), error=None)
+    return _reward_result(result.rewards)
+
+
+def _reward_result(rewards: Mapping[str, Any] | None) -> LiveAcceptanceRunResult:
+    """A live check takes a reward in 0-1 only: one outside it, recorded as
+    test.sh wrote it, leaves the run unscored with that reason instead of
+    reading as no reward."""
+    if isinstance(rewards, Mapping) and is_out_of_range_reward(rewards.get("reward")):
+        return _verifier_error_result(
+            f"{REWARD_OUT_OF_RANGE} reward = {rewards['reward']!r} is outside "
+            "[0.0, 1.0]; live acceptance takes a reward in 0-1 only, so "
+            "this run is unscored"
+        )
+    return LiveAcceptanceRunResult(reward=_scalar_reward(rewards), error=None)
 
 
 def _verifier_error_result(error: str) -> LiveAcceptanceRunResult:

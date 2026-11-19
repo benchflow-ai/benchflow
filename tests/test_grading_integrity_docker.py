@@ -6,7 +6,7 @@ installer's env script, a login shell, curl, wget, python3 and pytest up to
 three ways), and scores 1 whenever anything the agent left behind ran while it
 graded. Every planted file is inert: when run, it only creates one marker in
 ``/tmp/gi-canary``, which the grader empties before its first step. The agent
-is a script (``script:``) that writes a wrong answer, plants one class of
+is a script (``script:``, under ``--integrity strict``) that writes a wrong answer, plants one class of
 files, and runs each plant once itself to show it is live. The oracle runs the
 same tasks as the control. Each class runs with the verifier in the agent's
 sandbox and in its own sandbox (``verifier.sandbox_mode: separate``).
@@ -379,7 +379,7 @@ def _trials(jobs: Path, output: str) -> dict[str, Path]:
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory) -> dict[str, dict[str, Path]]:
-    """One job of the planting agent (audited), one of the oracle."""
+    """One job of the planting agent, one of the oracle, both strict."""
     if SANDBOX != "docker":
         pytest.skip(SKIP_REASON if SANDBOX is None else "Docker only")
     keep = os.environ.get("BENCHFLOW_GI_KEEP")
@@ -392,14 +392,35 @@ def runs(tmp_path_factory) -> dict[str, dict[str, Path]]:
     plant = root / "plant.sh"
     plant.write_text(PLANT_SH)
     plant.chmod(0o755)
+    # Strict, both jobs: the hardened grader these tests check is strict's alone since
+    # the faithful default (the lead, 09:58Z; S2 12:36Z): audit runs
+    # test.sh as written beside the agent's processes. What audit keeps, the
+    # reward's provenance, is tests/test_reward_provenance_docker.py's.
     planted = _run(
-        tasks, root / "jobs-plant", f"script:{plant}", "--integrity", "audit"
+        tasks, root / "jobs-plant", f"script:{plant}", "--integrity", "strict"
     )
-    oracle = _run(tasks, root / "jobs-oracle", "oracle")
+    oracle = _run(tasks, root / "jobs-oracle", "oracle", "--integrity", "strict")
+    # Audit, for the host-side detector (R330D, 20:47Z): audit runs test.sh as
+    # written, and its record of these plants is integrity/verifier-inputs.json.
+    audited = _run(
+        tasks, root / "jobs-audit", f"script:{plant}", "--integrity", "audit"
+    )
     return {
         "plant": _trials(root / "jobs-plant", planted),
         "oracle": _trials(root / "jobs-oracle", oracle),
+        "audit": _trials(root / "jobs-audit", audited),
     }
+
+
+# What the detector flags in audit, by vector (the pass-D table).
+DETECTOR_FLAGS = {
+    "shadow": (
+        "/app/conftest.py",
+        "/app/sitecustomize.py",
+        "/app/tests/conftest.py",
+        "/app/usercustomize.py",
+    ),
+}
 
 
 def _result(trial: Path) -> dict:
@@ -539,3 +560,20 @@ def test_the_audit_finds_no_planted_file_reached_the_reward(runs):
             claim["reason"],
         )
         assert claim["reward_effect"] == "none", (name, claim)
+
+
+def _flagged(trial: Path) -> tuple[str, set[str]]:
+    record = json.loads((trial / "integrity" / "verifier-inputs.json").read_text())
+    return record["status"], {str(f.get("path")) for f in record.get("flags") or ()}
+
+
+@pytest.mark.parametrize(("vector", "planted"), DETECTOR_FLAGS.items())
+def test_audit_names_the_plant_in_the_detector_record(runs, vector, planted):
+    """Audit grades test.sh as written (the faithful default 09:58Z; S2): the
+    host-side detector's record flags the plant by path, shared and
+    separate. The other vectors' plants are not flagged today (status
+    checked, no flags), a named gap in the pass-D table."""
+    for name in (vector, f"{vector}-sep"):
+        status, paths = _flagged(runs["audit"][name])
+        assert status == "flagged", (name, status)
+        assert set(planted) <= paths, (name, sorted(paths))

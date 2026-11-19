@@ -2,7 +2,8 @@
 retried transport errors only: one 502 or 503 from Daytona's gateway while a
 verifier ran crashed it ("verifier crashed: Failed to get session command",
 2026-10-07). The status and logs polls of a running command are idempotent
-reads; they now retry a 5xx for a bounded time, and a 4xx still fails at once.
+reads; they now retry a 5xx for a bounded time, and a 4xx other than 408 and
+429 (a timeout and a rate limit, retried as before) still fails at once.
 Newer SDKs' transport timeout class (DaytonaConnectionTimeoutError, 0.201+)
 is a transient error too.
 """
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchflow.diagnostics import TransientSandboxTransportError
 from benchflow.sandbox import daytona as daytona_module
 from benchflow.sandbox.daytona import DaytonaSandbox
 
@@ -34,10 +36,20 @@ class DaytonaProcessExecutionTimeoutError(DaytonaError):
     pass
 
 
+class DaytonaTimeoutError(DaytonaError):
+    """SDK 0.207's class for HTTP 408 (and 504)."""
+
+
+class DaytonaRateLimitError(DaytonaError):
+    """SDK 0.207's class for HTTP 429."""
+
+
 for _cls in (
     DaytonaError,
     DaytonaConnectionTimeoutError,
     DaytonaProcessExecutionTimeoutError,
+    DaytonaTimeoutError,
+    DaytonaRateLimitError,
 ):
     _cls.__module__ = "daytona.common.errors"
 
@@ -100,13 +112,77 @@ async def test_a_logs_poll_survives_a_gateway_page_without_a_status(waits):
     assert process.log_calls == 3
 
 
-async def test_server_errors_are_retried_for_a_bounded_time(waits):
-    error = DaytonaError("Failed to get session command: 503", 503)
+@pytest.mark.parametrize(
+    "error",
+    [
+        DaytonaError("Failed to get session command: 503", 503),
+        DaytonaConnectionTimeoutError(""),
+    ],
+    ids=["5xx", "transport"],
+)
+async def test_poll_errors_are_retried_for_about_three_minutes(waits, error):
+    """FP patch 37: waits of 1 s doubling to 60 s, until they add up to
+    BENCHFLOW_DAYTONA_POLL_RETRY_SEC (180 s); then the error is raised."""
     process = _Process(status_errors=[error] * 50)
-    with pytest.raises(DaytonaError):
+    with pytest.raises((DaytonaError, TransientSandboxTransportError)):
         await _sandbox(process)._poll_response("s", "c", timeout_sec=600)
-    assert process.status_calls == daytona_module._DAYTONA_POLL_SERVER_RETRY_ATTEMPTS
-    assert 60 <= sum(waits) <= 120
+    assert waits == [1, 2, 4, 8, 16, 32, 60, 60]
+    assert process.status_calls == 9
+
+
+async def test_a_transport_blip_longer_than_a_few_seconds_is_survived(waits):
+    """FP patch 37: five timed-out status requests in a row (about 31 s of
+    waits) no longer crash the poll after its third attempt."""
+    process = _Process(status_errors=[DaytonaConnectionTimeoutError("")] * 5)
+    result = await _sandbox(process)._poll_response("s", "c", timeout_sec=600)
+    assert (result.return_code, result.stdout) == (0, "out")
+    assert process.status_calls == 6
+
+
+@pytest.mark.parametrize(("value", "calls"), [("10", 5), ("0", 1), ("soon", 9)])
+async def test_the_retry_budget_is_set_by_the_environment(
+    waits, monkeypatch, value, calls
+):
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_POLL_RETRY_SEC", value)
+    process = _Process(status_errors=[DaytonaConnectionTimeoutError("")] * 50)
+    with pytest.raises(TransientSandboxTransportError):
+        await _sandbox(process)._poll_response("s", "c", timeout_sec=600)
+    assert process.status_calls == calls
+
+
+@pytest.mark.parametrize(
+    "value", ["inf", "Infinity", "1e999", "-inf", "nan", "-1", "-0.5"]
+)
+def test_a_budget_that_is_not_a_finite_count_of_seconds_is_refused(monkeypatch, value):
+    """a review N2: ``inf`` was taken as is, and the polls then retried a
+    dead API for ever. It and a negative value give the 180 s default."""
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_POLL_RETRY_SEC", value)
+    assert daytona_module.daytona_poll_retry_sec() == 180.0
+
+
+async def test_an_infinite_budget_still_gives_up(waits, monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_DAYTONA_POLL_RETRY_SEC", "inf")
+    process = _Process(status_errors=[DaytonaConnectionTimeoutError("")] * 50)
+    with pytest.raises(TransientSandboxTransportError):
+        await _sandbox(process)._poll_response("s", "c", timeout_sec=600)
+    assert process.status_calls == 9
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        DaytonaTimeoutError("Request Timeout", 408),
+        DaytonaRateLimitError("Too Many Requests", 429),
+    ],
+    ids=["408", "429"],
+)
+async def test_a_timeout_or_rate_limit_4xx_is_retried(waits, error):
+    """The docstring and the release note say so (a review N2): of the
+    4xx, 408 and 429 are asked again, as before."""
+    process = _Process(status_errors=[error] * 3)
+    result = await _sandbox(process)._poll_response("s", "c", timeout_sec=600)
+    assert result.return_code == 0
+    assert process.status_calls == 4
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 409])

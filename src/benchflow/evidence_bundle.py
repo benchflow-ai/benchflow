@@ -155,8 +155,12 @@ def build_bundle(source: Path, out: Path, *, workspace: bool = True) -> BundleRe
     """Write the evidence bundle of *source* (a job folder or one trial folder)
     to *out* and return what it holds."""
     from benchflow import __version__
+    from benchflow._utils.raw_evidence import raw_evidence_refusal
 
     source = Path(source)
+    refusal = raw_evidence_refusal(source)
+    if refusal is not None:
+        raise BundleError(refusal)
     if not source.is_dir():
         raise BundleError(f"{source} is not a folder")
     trials = _trial_folders(source)

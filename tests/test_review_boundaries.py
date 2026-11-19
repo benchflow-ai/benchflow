@@ -145,6 +145,9 @@ class TestUntrustedTaskPath:
         assert "untrusted" in (reason or "")
 
     def test_path_escaping_the_root_is_refused(self, tmp_path):
+        """The recorded path is looked up in the root by its name only. The
+        note gives the tasks-root rule's refusal, where this guard
+        gave its own "does not resolve to a directory inside --tasks-root"."""
         from benchflow.review.runner import _source_task_dir
 
         secret = tmp_path / "victim"
@@ -154,7 +157,9 @@ class TestUntrustedTaskPath:
         rollout = self._rollout(tmp_path, str(secret))
         resolved, reason = _source_task_dir(rollout, tasks_root=root)
         assert resolved is None
-        assert "tasks-root" in (reason or "")
+        assert reason == (
+            f"task evidence skipped: {root.resolve()} has no folder victim"
+        )
 
     def test_traversal_in_recorded_path_is_refused(self, tmp_path):
         from benchflow.review.runner import _source_task_dir
@@ -672,3 +677,319 @@ class TestSealedAgentCoreUploads:
 
         assert not path.startswith(SEAL_DIR + "/")
         self._assert_unrecoverable(commands, b"tok-abc-123")
+
+
+_SOLVER = {
+    "task_name": "t",
+    "task_digest": "d1",
+    "rewards": {"reward": 1.0},
+    "verifier_error": None,
+}
+
+
+class TestReReviewHidesTheVerdict:
+    """A re-review's evidence copy held the verdict of record: a scored
+    result.json, the score exports and a regrade's outputs. In a reported
+    rollout, 28 of 30 reviewers of one panel opened result.json."""
+
+    def scored(self, tmp_path: Path) -> Path:
+        rollout = make_rollout(tmp_path)
+        (rollout / "solver.json").write_text(json.dumps(_SOLVER))
+        scored = {
+            **_SOLVER,
+            "rewards": {"reward": 0.0},
+            "scoring": {"status": "complete", "rubric_reward": 0.3},
+        }
+        (rollout / "result.json").write_text(json.dumps(scored))
+        (rollout / "rewards.jsonl").write_text('{"reward": 0.0}\n')
+        (rollout / "results.jsonl").write_text('{"reward": 0.0}\n')
+        (rollout / "trainer").mkdir()
+        (rollout / "trainer" / "sample.json").write_text('{"reward": 0.0}')
+        (rollout / "regrade.json").write_text('{"latest": "r1"}')
+        (rollout / "regrade" / "r1").mkdir(parents=True)
+        (rollout / "regrade" / "r1" / "regrade.json").write_text('{"new": 0.0}')
+        (rollout / "result.json.pre-score").write_text(json.dumps(scored))
+        # The agent's own folder of that name, below the root, is evidence.
+        (rollout / "artifacts" / "trainer").mkdir(parents=True)
+        (rollout / "artifacts" / "trainer" / "notes.txt").write_text("mine")
+        return rollout
+
+    def test_a_scored_rollout_is_copied_as_before_its_review(self, tmp_path):
+        rollout = self.scored(tmp_path)
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+
+        trial = dest / "evidence" / "trial"
+        assert json.loads((trial / "result.json").read_text()) == _SOLVER
+        for name in (
+            "rewards.jsonl",
+            "results.jsonl",
+            "trainer",
+            "regrade",
+            "regrade.json",
+            "result.json.pre-score",
+        ):
+            assert not (trial / name).exists(), name
+        assert (trial / "artifacts" / "trainer" / "notes.txt").read_text() == "mine"
+        assert (trial / "solver.json").is_file()
+        assert not (trial / "result.json").stat().st_mode & 0o222
+
+    def test_the_admitted_verifier_revision_is_the_record(self, tmp_path):
+        rollout = self.scored(tmp_path)
+        recovery = rollout / "verifier-recovery" / "a1"
+        recovery.mkdir(parents=True)
+        (recovery / "recovery.json").write_text(
+            json.dumps(
+                {"task_digest": "d1", "status": "complete", "rewards": {"reward": 0.5}}
+            )
+        )
+        (rollout / "verification.json").write_text(
+            json.dumps({"attempt": "verifier-recovery/a1"})
+        )
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+
+        record = json.loads((dest / "evidence" / "trial" / "result.json").read_text())
+        assert record["rewards"] == {"reward": 0.5} and "scoring" not in record
+
+    def test_a_linked_solver_record_brings_no_host_file_in(self, tmp_path):
+        rollout = self.scored(tmp_path)
+        secret = tmp_path / "host-login.json"
+        secret.write_text(json.dumps({"rewards": None, "token": "HOST-ONLY"}))
+        (rollout / "solver.json").unlink()
+        (rollout / "solver.json").symlink_to(secret)
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+
+        trial = dest / "evidence" / "trial"
+        assert "HOST-ONLY" not in (trial / "result.json").read_text()
+        assert "scoring" not in json.loads((trial / "result.json").read_text())
+
+    def test_a_first_review_copies_the_rollout_as_it_is(self, tmp_path):
+        rollout = make_rollout(tmp_path)
+        (rollout / "rewards.jsonl").write_text('{"reward": 0.0}\n')
+        (rollout / "trainer").mkdir()
+        (rollout / "trainer" / "sample.json").write_text("{}")
+
+        dest, _ = assemble_review_task(rollout, None, RUBRIC, tmp_path / "w")
+
+        trial = dest / "evidence" / "trial"
+        for name in ("result.json", "rewards.jsonl", "trainer/sample.json"):
+            assert (trial / name).read_bytes() == (rollout / name).read_bytes()
+
+
+def _tree(root: Path) -> dict[str, object]:
+    """Every path below *root* with its mode, and each file's sha256."""
+    import hashlib
+    import stat
+
+    out: dict[str, object] = {}
+    for item in sorted(root.rglob("*")):
+        info = item.lstat()
+        key = str(item.relative_to(root))
+        if item.is_file() and not item.is_symlink():
+            digest = hashlib.sha256(item.read_bytes()).hexdigest()
+            out[key] = (digest, stat.S_IMODE(info.st_mode))
+        else:
+            out[key] = stat.S_IMODE(info.st_mode)
+    return out
+
+
+# Records other tools keep beside a scored result.json, each carrying the
+# verdict: a re-score's flip, publication history, an earlier review's state,
+# a regrade summary, a verifier replay, and backups named ``<record>.pre-<x>``.
+_VERDICT_RECORDS = {
+    "rpass.json": '{"flip": "pass->fail"}',
+    "publication_history/v1.json": '{"passed": false}',
+    "reviews.pre-posthoc/old/judge.json": '{"passed": false}',
+    "regrade-summary.json": '{"original_score": 0.0}',
+    "verifier_replay/reward.txt": "0\n",
+    "verifier.pre-replay/reward.txt": "1\n",
+    "solver.json.pre-rescore": '{"rewards": {"reward": 0.0}}',
+    "result.json.pre-tests-failed": '{"scoring": {"passed": false}}',
+}
+
+
+# A scored record: the verifier said 1.0, the review's verdict is 0.0.
+_SCORED = {
+    **_SOLVER,
+    "rewards": {"reward": 0.0, "verifier_reward": 1.0, "rubric_reward": 0.4},
+    "scoring": {"status": "complete", "passed": False},
+}
+
+
+class TestReReviewCopiesOnlyTheRolloutLayout:
+    """When the rollout holds a verdict, the copy is an allow-list of the
+    rollout layout; what it leaves out is named beside it, never shown."""
+
+    def scored(self, tmp_path: Path, *, solver: bool = True) -> Path:
+        rollout = make_rollout(tmp_path)
+        if solver:
+            (rollout / "solver.json").write_text(json.dumps(_SOLVER))
+        (rollout / "result.json").write_text(json.dumps(_SCORED))
+        (rollout / "rewards.jsonl").write_text('{"reward": 0.0}\n')
+        (rollout / "results.jsonl").write_text('{"reward": 0.0, "passed": false}\n')
+        (rollout / "trainer").mkdir()
+        (rollout / "trainer" / "verifiers.jsonl").write_text('{"reward": 0.0}\n')
+        return rollout
+
+    @staticmethod
+    def review(tmp_path: Path, rollout: Path, name: str = "w"):
+        dest, uploads = assemble_review_task(rollout, None, RUBRIC, tmp_path / name)
+        evidence = dest / "evidence"
+        record_path = evidence / "trial-left-out.json"
+        record = json.loads(record_path.read_text()) if record_path.exists() else None
+        return evidence / "trial", record, uploads
+
+    @pytest.mark.parametrize("planted", sorted(_VERDICT_RECORDS))
+    def test_a_verdict_record_beside_the_result_is_left_out_and_named(
+        self, tmp_path, planted
+    ):
+        rollout = self.scored(tmp_path)
+        target = rollout / planted
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_VERDICT_RECORDS[planted])
+        top = Path(planted).parts[0]
+
+        trial, record, uploads = self.review(tmp_path, rollout)
+
+        assert not (trial / top).exists()
+        assert top in record["left_out"]
+        assert record["count"] == len(record["left_out"])
+        assert uploads[str(trial.parent / "trial-left-out.json")] == (
+            "/evidence/trial-left-out.json"
+        )
+
+    def test_all_of_them_at_once_and_an_unknown_name(self, tmp_path):
+        rollout = self.scored(tmp_path)
+        for rel, body in _VERDICT_RECORDS.items():
+            (rollout / rel).parent.mkdir(parents=True, exist_ok=True)
+            (rollout / rel).write_text(body)
+        # A name no writer is known to use: left out too, and named.
+        (rollout / "zz-new-tool-output.json").write_text('{"verdict": "VERDICT-BODY"}')
+        (rollout / "verifier").mkdir()
+        (rollout / "verifier" / "reward.txt").write_text("1\n")
+
+        trial, record, _ = self.review(tmp_path, rollout)
+
+        assert sorted(p.name for p in trial.iterdir()) == [
+            "config.json",
+            "result.json",
+            "solver.json",
+            "trajectory",
+            "verifier",
+        ]
+        expected = sorted(
+            {Path(rel).parts[0] for rel in _VERDICT_RECORDS}
+            | {"rewards.jsonl", "results.jsonl", "trainer", "zz-new-tool-output.json"}
+        )
+        assert record["left_out"] == expected
+        assert record["count"] == len(expected)
+        assert "VERDICT-BODY" not in json.dumps(record)
+        assert json.loads((trial / "result.json").read_text()) == _SOLVER
+        seen = [
+            str(p.relative_to(trial))
+            for p in trial.rglob("*")
+            if p.is_file()
+            and ('"reward": 0.0' in p.read_text() or "scoring" in p.read_text())
+        ]
+        assert seen == []
+
+    def test_the_layout_names_are_copied(self, tmp_path):
+        from benchflow.review import wrapper
+
+        rollout = self.scored(tmp_path)
+        kept = sorted(
+            wrapper._REVIEW_LAYOUT
+            - {"result.json"}
+            - {name for name in wrapper._REVIEW_LAYOUT if (rollout / name).exists()}
+        )
+        for name in kept:
+            target = rollout / name
+            if "." in name:
+                target.write_text("{}")
+            else:
+                target.mkdir()
+                (target / "inside.txt").write_text("x")
+
+        trial, record, _ = self.review(tmp_path, rollout)
+
+        assert {p.name for p in trial.iterdir()} == set(wrapper._REVIEW_LAYOUT)
+        assert record["left_out"] == ["results.jsonl", "rewards.jsonl", "trainer"]
+
+    @pytest.mark.parametrize("solver", ["absent", "linked"])
+    def test_without_a_solver_record_only_the_verifiers_reward_is_kept(
+        self, tmp_path, solver
+    ):
+        """BenchFlow up to 0.7.7 wrote no solver.json, and the copy drops a
+        linked one: the record falls back to result.json, whose scored reward
+        and rubric score are the verdict's."""
+        rollout = self.scored(tmp_path, solver=solver == "linked")
+        if solver == "linked":
+            elsewhere = tmp_path / "elsewhere-solver.json"
+            elsewhere.write_text(json.dumps(_SOLVER))
+            (rollout / "solver.json").unlink()
+            (rollout / "solver.json").symlink_to(elsewhere)
+
+        trial, record, _ = self.review(tmp_path, rollout)
+
+        result = json.loads((trial / "result.json").read_text())
+        assert result == {
+            "task_name": "t",
+            "task_digest": "d1",
+            "rewards": {"reward": 1.0},
+            "verifier_error": None,
+        }
+        assert "rubric_reward" not in (trial / "result.json").read_text()
+        assert ("solver.json" in record["left_out"]) is (solver == "linked")
+
+    def test_without_a_verifier_reward_no_reward_is_kept(self, tmp_path):
+        rollout = self.scored(tmp_path, solver=False)
+        scored = {**_SCORED, "rewards": {"reward": 0.0, "rubric_reward": 0.4}}
+        (rollout / "result.json").write_text(json.dumps(scored))
+
+        trial, _, _ = self.review(tmp_path, rollout)
+
+        result = json.loads((trial / "result.json").read_text())
+        assert "rewards" not in result and "scoring" not in result
+
+    @pytest.mark.parametrize("where", ["inside", "outside"])
+    @pytest.mark.parametrize("solver", [True, False])
+    def test_a_linked_result_counts_as_a_held_verdict(self, tmp_path, where, solver):
+        rollout = self.scored(tmp_path, solver=solver)
+        target = (rollout if where == "inside" else tmp_path) / "scored-record.json"
+        target.write_text(json.dumps(_SCORED))
+        (rollout / "result.json").unlink()
+        (rollout / "result.json").symlink_to(target)
+
+        trial, record, _ = self.review(tmp_path, rollout)
+
+        for name in ("rewards.jsonl", "results.jsonl", "trainer", "scored-record.json"):
+            assert not (trial / name).exists(), name
+        result = json.loads((trial / "result.json").read_text())
+        assert result == (_SOLVER if solver else {})
+        assert {"rewards.jsonl", "results.jsonl", "trainer"} <= set(record["left_out"])
+
+    def test_a_rollout_without_a_verdict_is_copied_byte_for_byte(self, tmp_path):
+        from benchflow.review.wrapper import copy_evidence
+
+        rollout = make_rollout(tmp_path)
+        (rollout / "solver.json").write_text(json.dumps(_SOLVER))
+        (rollout / "rewards.jsonl").write_text('{"reward": 0.0}\n')
+        (rollout / "trainer").mkdir()
+        (rollout / "trainer" / "sample.json").write_text("{}")
+        (rollout / "trajectory" / "acp_trajectory.jsonl").write_text("{}\n")
+        for rel, body in _VERDICT_RECORDS.items():
+            (rollout / rel).parent.mkdir(parents=True, exist_ok=True)
+            (rollout / rel).write_text(body)
+        (rollout / "zz-new-tool-output.json").write_text("{}")
+        (rollout / "trainer" / "sample.json").chmod(0o600)
+
+        trial, record, uploads = self.review(tmp_path, rollout)
+
+        reference = tmp_path / "reference"
+        copy_evidence(rollout, reference, extra_excludes=("evidence",))
+        assert _tree(trial) == _tree(reference)
+        assert len(_tree(trial)) == len(list(reference.rglob("*")))
+        assert record is None
+        assert set(uploads.values()) == {"/evidence/trial"}

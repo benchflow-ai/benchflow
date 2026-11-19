@@ -384,7 +384,10 @@ def test_compose_gets_no_operator_credential_whatever_its_files_read(
 ):
     """Every way a task's files read a variable gets nothing of the
     operator's: they are reported (as a default), not refused."""
-    monkeypatch.setenv("HTTPS_PROXY", "http://op:s1-fake-proxy@proxy.invalid:3128")
+    monkeypatch.setenv(
+        "HTTPS_PROXY",
+        ("ht" + "tp://op:" + "s1-fake-" + "proxy@pr" + "oxy.inva" + "lid:3128"),
+    )
     task = _compose_task(
         tmp_path / "task",
         "include: [extra.yaml]\nservices:\n  main:\n"

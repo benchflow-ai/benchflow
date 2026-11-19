@@ -99,7 +99,8 @@ def test_direct_endpoint_card_names_missing_capture(tmp_path):
     )
     card = build_run_card(job, job._get_task_dirs())
     assert card["agent"]["direct_endpoint"] is True
-    assert "no proxy call capture or cost accounting" in "\n".join(
+    # Its tokens are the agent's own count, priced at list prices.
+    assert "no proxy call capture, cost at list prices" in "\n".join(
         card_lines(card, tmp_path)
     )
     assert "test-token" not in str(card)

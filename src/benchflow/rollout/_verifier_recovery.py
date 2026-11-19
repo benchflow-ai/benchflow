@@ -20,17 +20,23 @@ from typing import Any
 
 from benchflow._root_python import root_python_command
 from benchflow._types import Scene
-from benchflow._utils.config_override import apply_config_override
+from benchflow._utils.config_override import (
+    apply_config_override,
+    recorded_overlay,
+)
 from benchflow._utils.reachable_write import ReachablePath, replace_verifier_root
 from benchflow._utils.scoring import (
+    DISK_FULL,
     VERIFIER_INFRA,
     VERIFIER_TIMEOUT,
     classify_verifier_error,
+    is_output_unwritable,
     plugin_guard_error_message,
 )
 from benchflow._utils.task_authoring import task_digest
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import recording_trial_warnings
+from benchflow._verifier_setup import recorded_verifier_setup_timeout
 from benchflow.agents.registry import is_scripted_agent
 from benchflow.contracts import default_rollout_planes
 from benchflow.diagnostics import RewardOutOfRangeDiagnostic
@@ -48,6 +54,8 @@ from benchflow.review.persistence import (
     scoring_lock,
     write_json_atomic,
 )
+from benchflow.rewards import judge_usage
+from benchflow.rewards.validation import out_of_range_reward_rule
 from benchflow.rollout._recovery_submission import (
     admitted_submission,
     restore_submission,
@@ -67,6 +75,10 @@ from benchflow.sandbox.egress_denylist import (
 )
 from benchflow.sandbox.recovery_network import prepare_recovery_network
 from benchflow.task import Task
+from benchflow.task.config import (
+    run_sandbox_setup_timeout,
+    sandbox_user_setup_timeout_sec,
+)
 from benchflow.task.verifier_errors import (
     VerifierInfrastructureError,
     verifier_failure_reason,
@@ -369,7 +381,8 @@ def needs_verifier_recovery(error: str | None) -> bool:
     agent's preserved workspace, never a second agent attempt. A recovery
     that timed out again opens with the preserved-solver prefix and is final.
     """
-    if not error:
+    if not error or is_output_unwritable(error):
+        # its check: the same file meets the same verifier user again.
         return False
     if error.startswith(
         (
@@ -382,6 +395,29 @@ def needs_verifier_recovery(error: str | None) -> bool:
     if category == VERIFIER_TIMEOUT:
         return not error.startswith(PRESERVED_SOLVER)
     return category == VERIFIER_INFRA
+
+
+def verifier_error_reruns_trial(
+    verifier_error: str | None, *, on_resume: bool = False
+) -> bool:
+    """Whether the verifier retry rule runs the whole trial again, agent and
+    all, for this verifier error (``RetryConfig.should_retry_verifier_error``
+    when verifier retries are on): the verifier's infrastructure failed. With
+    *on_resume*, whether a resume does (``reruns_verifier_error_on_resume``):
+    a full disk too. Never a preserved solver's error, whose verifier runs
+    again alone (:func:`needs_verifier_recovery`), nor a pytest plugin guard's
+    refusal, which is decided by what the agent left."""
+    if (
+        not verifier_error
+        or PRESERVED_SOLVER in verifier_error
+        or plugin_guard_error_message(verifier_error) is not None
+        # its check is decided by the task's verifier user and the host's
+        # file: another attempt, agent and all, meets it again.
+        or is_output_unwritable(verifier_error)
+    ):
+        return False
+    category = classify_verifier_error(verifier_error)
+    return category == VERIFIER_INFRA or (on_resume and category == DISK_FULL)
 
 
 @dataclass
@@ -408,11 +444,13 @@ async def recover_verifier(
     # the original solver, including when resume reconstructs that runtime.
     if solver_agent is None:
         solver_agent = rollout._config.primary_agent
-    attempt = asyncio.create_task(
-        _recover_verifier(
-            rollout, admission, publish_reply=not is_scripted_agent(solver_agent)
+    # The attempt's task copies the integrity mode's reward rule now.
+    with out_of_range_reward_rule(getattr(rollout._config, "integrity", "off")):
+        attempt = asyncio.create_task(
+            _recover_verifier(
+                rollout, admission, publish_reply=not is_scripted_agent(solver_agent)
+            )
         )
-    )
     try:
         done, _ = await asyncio.wait({attempt}, timeout=budget)
     except asyncio.CancelledError:
@@ -550,6 +588,14 @@ async def _recover_verifier(
         await ensure_evidence_python(
             child._env, timeout_sec=cfg.sandbox_setup_timeout, allow_install=False
         )
+        from benchflow.rollout import _reward_provenance
+
+        if _reward_provenance.assessed(cfg.integrity):
+            # The fresh sandbox's links, before the solver's workspace arrives:
+            # only the links it brings are judged.
+            from benchflow.sandbox import _verifier_links
+
+            await _verifier_links.record_before_turn(child._env)
         transfer = admit(child._env, "main", IngressKind.RECOVERY_TRANSFER)
         if submission_files:
             await child.install_agent()
@@ -600,7 +646,9 @@ async def _recover_verifier(
                     child._env,
                     cfg.sandbox_user,
                     workspace=str(workspace),
-                    timeout_sec=cfg.sandbox_setup_timeout,
+                    timeout_sec=sandbox_user_setup_timeout_sec(
+                        run_sandbox_setup_timeout(cfg), child._task.config.sandbox
+                    ),
                     guard_daemon=False,
                 )
         recovery_sandbox = agent_network_sandbox_config(child._task.config)
@@ -612,7 +660,7 @@ async def _recover_verifier(
             ReachablePath.rollout(attempt, "agent"),
             publish_reply=publish_reply,
         )
-        with recording_trial_warnings() as warnings:
+        with recording_trial_warnings() as warnings, judge_usage.recording() as judged:
             try:
                 rewards, error, diagnostic = await _verify_rollout(
                     child._env,
@@ -622,11 +670,19 @@ async def _recover_verifier(
                     rollout._planes,
                     sandbox_user=cfg.sandbox_user,
                     workspace=str(workspace),
+                    integrity=cfg.integrity,
                     recovery_eligible=True,
+                    # The trial's agent: the links it left in the workspace go
+                    # before test.sh, and the reward waits on the check, as in
+                    # the trial's own verify.
+                    agent=cfg.primary_agent,
                 )
             finally:
                 if warnings:
                     record["warnings"] = list(warnings)
+                # The recovery's LLM judge calls: a re-score (`bench eval
+                # score`) publishes them with the solver's.
+                record["judge_usage"] = judge_usage.usage_block(judged)
                 kept = vars(rollout).setdefault("_warnings", [])
                 kept.extend(w for w in warnings if w not in kept)
         # Keep the raw out-of-range number the recovery verifier wrote, as
@@ -721,6 +777,18 @@ def _publish_verifier_dir(root: Path, attempt: Path) -> None:
 def verification_source(root: Path) -> dict:
     """Read immutable solver evidence plus its latest admitted verifier revision."""
     source = json.loads((root / "solver.json").read_text())
+    # Every recovery's judge spend beside the first verification's: an
+    # earlier recovery that failed, or one interrupted before it published a
+    # verdict (no pointer then), still paid for its judge.
+    for attempt in sorted((root / "verifier-recovery").glob("*/recovery.json")):
+        try:
+            earlier = json.loads(attempt.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(earlier, dict) and earlier.get("judge_usage") is not None:
+            source["judge_usage"] = judge_usage.combine(
+                source.get("judge_usage"), earlier["judge_usage"]
+            )
     pointer = root / "verification.json"
     if not pointer.is_file():
         return source
@@ -805,9 +873,13 @@ async def resume_verification(root: Path, task_path: Path) -> dict:
         sandbox_user=config.get("sandbox_user", "agent"),
         sandbox_locked_paths=config.get("sandbox_locked_paths"),
         sandbox_setup_timeout=config.get("sandbox_setup_timeout", 120),
+        sandbox_setup_timeout_given=config.get("sandbox_setup_timeout_given"),
+        verifier_setup_timeout=recorded_verifier_setup_timeout(config),
         context_root=config.get("context_root"),
         base_image_override=config.get("base_image_override"),
-        config_override=(config.get("config_override") or {}).get("patch"),
+        config_override=recorded_overlay(
+            config.get("config_override"), what="recovering this trial's grade"
+        ),
     )
     task = Task(task_path)
     task.config = apply_config_override(task.config, cfg.config_override)

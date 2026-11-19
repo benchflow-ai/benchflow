@@ -28,15 +28,22 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from benchflow._utils.evaluation_results import _masked
 from benchflow._utils.reachable_write import ReachablePath
 from benchflow._utils.result_metadata import (
     final_metrics_from_agent_result,
     trajectory_summary_from_events,
 )
 from benchflow._utils.reward_events import build_rewards_jsonl_events
+from benchflow.build_info import benchflow_build
 from benchflow.diagnostics import RolloutDiagnostics
 from benchflow.rewards.validation import is_valid_reward_number
-from benchflow.trajectories.types import redact_acp_trajectory_jsonl
+from benchflow.trajectories.types import (
+    is_secret_field,
+    redact_acp_trajectory_jsonl,
+    redact_trajectory_obj,
+    redact_trajectory_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +473,49 @@ def read_v1_traces(path: Path) -> V1Traces:
     )
 
 
+def hosted_list_price(model: str | None, v1: V1Traces) -> dict[str, Any]:
+    """A hosted run's cost: its tokens (verifiers v1's count of its model
+    calls) at list prices, by the pricing step every trial's tokens go
+    through (:func:`benchflow._utils.pricing.price_slices`), labelled
+    ``list_price_estimate`` with the price table's date. v1 reports no cache
+    split, so every input token is priced as uncached input, which is the
+    most it can be where the provider cached. Empty when the model has no
+    list price: the cost stays unknown."""
+    from benchflow._utils.pricing import TokenSlice, price_slices
+    from benchflow.rollout._cost import LIST_PRICE_SOURCE
+    from benchflow.usage_tracking import COST_SOURCE_LIST_PRICE
+
+    if not model:
+        return {}
+    priced = price_slices(
+        [
+            TokenSlice(
+                model=model,
+                input=v1.input_tokens or 0,
+                output=v1.output_tokens or 0,
+            )
+        ]
+    )
+    if priced is None:
+        logger.info("No list price for the hosted run's model %s", model)
+        return {}
+    return {
+        "cost_usd": priced.usd,
+        "cost_source": COST_SOURCE_LIST_PRICE,
+        "price_source": LIST_PRICE_SOURCE,
+        "price_table_date": priced.table_date,
+        "usage_details": {
+            "cost_estimate": {
+                "source": "benchflow-list-price",
+                "method": "usage-at-list-price",
+                "models": priced.models,
+                "tables": priced.tables,
+                "cache": "not reported: every input token priced as uncached",
+            }
+        },
+    }
+
+
 def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     """Run a hosted environment using a controlled local Verifiers install."""
     if config.source_env.provider != "primeintellect":
@@ -494,7 +544,10 @@ def run_hosted_env(config: HostedEnvRunConfig) -> HostedEnvRunResult:
     run_id = f"{timestamp}__pid-{os.getpid()}__{uuid4().hex[:8]}"
     run_dir = jobs_dir / "hosted-env" / f"{safe_name}__{run_id}"
     venv_dir = run_dir / ".venv"
-    output_dir = run_dir / "vf-results"
+    # vf-eval's own output is raw (completions, the resolved config with every
+    # env arg and the base URL): it goes under hosted_env/ with the logs,
+    # which stays on this machine (benchflow._utils.raw_evidence).
+    output_dir = run_dir / "hosted_env" / "vf-results"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     install_cmd = [
@@ -722,7 +775,9 @@ def _write_run_artifacts(
     ``prompts.json``) match the schema produced by
     ``benchflow.rollout._build_rollout_result`` so downstream tools treat
     hosted runs as equivalent to native rollouts. Raw vf-eval evidence
-    (stdout, stderr, hosted-env metadata) stays under ``hosted_env/``.
+    (stdout, stderr, hosted-env metadata) stays under ``hosted_env/``, which
+    no upload, bundle or export takes; the metadata's error text, env args and
+    command are masked as ``result.json``'s are.
     """
     (result.run_dir / "trajectory").mkdir(parents=True, exist_ok=True)
     ReachablePath.rollout(result.run_dir, "agent").mkdir(parents=True, exist_ok=True)
@@ -732,6 +787,9 @@ def _write_run_artifacts(
     )
     hosted_dir = result.run_dir / "hosted_env"
     hosted_dir.mkdir(parents=True, exist_ok=True)
+    # The env args and the command as every record keeps them: secrets masked.
+    env_args = _masked_env_args(config.env_args)
+    command = _masked_command(result.command, config.env_args, env_args)
 
     # Hosted-env-specific evidence (forensics, debugging).
     (hosted_dir / "stdout.log").write_text(result.stdout)
@@ -745,13 +803,14 @@ def _write_run_artifacts(
         "agent": config.agent or None,
         "model": result.model,
         "normalized_model": result.normalized_model,
-        "env_args": config.env_args,
+        "env_args": env_args,
         "returncode": result.returncode,
         "rewards": {"reward": result.reward} if result.reward is not None else None,
         "total_tool_calls": result.total_tool_calls,
-        "verifiers_error": result.verifiers_error,
-        "error": result.error,
-        "command": result.command,
+        # The same error text result.json masks below.
+        "verifiers_error": _masked(result.verifiers_error),
+        "error": _masked(result.error),
+        "command": command,
         "install_command": install_cmd,
         "output_dir": str(output_dir),
         "vf_eval_cli": result.vf_eval_cli,
@@ -785,21 +844,45 @@ def _write_run_artifacts(
     source_provenance = _hosted_source_provenance(
         result.source_env,
         runner=config.runner,
-        env_args=config.env_args,
+        env_args=env_args,
     )
     v1 = result.v1
+    from benchflow.agents.registry import is_scripted_agent
+    from benchflow.usage_tracking import NO_MODEL_CALL
+
+    # An oracle (or another control) made no model call: its tokens are not
+    # 0 but nothing to count, said with a reason.
+    no_model_call = bool(config.agent and is_scripted_agent(config.agent)) or not (
+        result.normalized_model or result.model
+    )
+    counted = bool(v1) and not no_model_call and v1.total_tokens is not None
     agent_result = {
         "n_tool_calls": result.total_tool_calls or 0,
         "n_prompts": len(prompts),
-        "n_input_tokens": v1.input_tokens if v1 else None,
-        "n_output_tokens": v1.output_tokens if v1 else None,
+        "n_input_tokens": v1.input_tokens if v1 and not no_model_call else None,
+        "n_output_tokens": v1.output_tokens if v1 and not no_model_call else None,
         "n_cache_read_tokens": None,
+        "n_cache_write_tokens": None,
+        "n_cache_write_5m_tokens": None,
+        "n_cache_write_1h_tokens": None,
         "n_cache_creation_tokens": None,
-        "total_tokens": v1.total_tokens if v1 else None,
+        "total_tokens": v1.total_tokens if v1 and not no_model_call else None,
+        "no_usage_reason": NO_MODEL_CALL if no_model_call else None,
         "cost_usd": None,
-        "usage_source": "unavailable",
+        # verifiers v1's own count of the run's model calls, which BenchFlow
+        # did not meter: the runner's report, kept out of metered totals as
+        # an agent that routes its own calls is (agent-reported).
+        "usage_source": "end_of_turn" if counted else None,
+        "cost_source": None,
+        "price_table_date": None,
         "price_source": None,
+        "usage_source_legacy": "agent-reported" if counted else "unavailable",
     }
+    if counted:
+        assert v1 is not None
+        agent_result.update(
+            hosted_list_price(result.normalized_model or result.model, v1)
+        )
 
     (result.run_dir / "trajectory" / "acp_trajectory.jsonl").write_text(
         redact_acp_trajectory_jsonl(trajectory) + ("\n" if trajectory else "")
@@ -811,6 +894,7 @@ def _write_run_artifacts(
         "rewards": rewards,
         "agent": config.agent or None,
         "agent_name": "verifiers",
+        "benchflow_build": benchflow_build(),
         "model": result.normalized_model or result.model or None,
         "n_tool_calls": result.total_tool_calls or 0,
         "n_prompts": len(prompts),
@@ -824,9 +908,11 @@ def _write_run_artifacts(
         # Surface aborts/parse-misses in the top-level error so the score view
         # classifies them as 'errored' (not a clean run). With reward now None
         # for those cases, this matches native errored-rollout semantics.
-        "error": result.error,
+        # Masked as a native trial's result.json masks them: the text is a
+        # provider's error or vf-eval's last line, which can quote a key.
+        "error": _masked(result.error),
         "error_category": None,
-        "verifier_error": result.verifiers_error,
+        "verifier_error": _masked(result.verifiers_error),
         "verifier_error_category": None,
         # Empty diagnostic slots — keyed by the canonical registry so
         # adding a new diagnostic doesn't require touching hosted_env
@@ -871,14 +957,61 @@ def _write_run_artifacts(
             "rollouts_per_example": config.rollouts_per_example,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
-            "sampling_args": config.sampling_args,
-            "env_args": config.env_args,
+            "sampling_args": redact_trajectory_obj(config.sampling_args),
+            "env_args": env_args,
         },
     }
     (result.run_dir / "config.json").write_text(json.dumps(config_payload, indent=2))
 
     if rewards:
         _write_hosted_rewards_jsonl(result.run_dir, rewards, finished_at)
+
+
+def _masked_env_args(env_args: dict[str, Any]) -> dict[str, Any]:
+    """*env_args* as a trajectory file keeps them (``redact_trajectory_obj``:
+    a PIN-like integer under a credential's name masked, a flag or a count
+    kept), and a string under a secret's name masked whole
+    (``is_secret_field``, the export redactor's own check)."""
+    masked = redact_trajectory_obj(env_args)
+    return {
+        key: "***REDACTED***"
+        if isinstance(value, str) and is_secret_field(key, value)
+        else masked[key]
+        for key, value in env_args.items()
+    }
+
+
+def _masked_command(
+    command: list[str], env_args: dict[str, Any], masked_args: dict[str, Any]
+) -> list[str]:
+    """The vf-eval command with each word through the text redactor. The env
+    args in it (``--env-args JSON``; v1's ``--env.taskset.<key> VALUE``) are
+    written as *masked_args* has them, and the value of any other option
+    named for a secret is masked whole."""
+    by_option = {f"--env.taskset.{key.replace('_', '-')}": key for key in env_args}
+    as_json = json.dumps(env_args, sort_keys=True)
+    masked: list[str] = []
+    next_word: str | None = None
+    for word in command:
+        if next_word is not None:
+            masked.append(next_word)
+            next_word = None
+            continue
+        if word == as_json and masked and masked[-1] == "--env-args":
+            masked.append(json.dumps(masked_args, sort_keys=True))
+            continue
+        if word in by_option:
+            masked.append(word)
+            next_word = _cli_value(masked_args[by_option[word]])
+            continue
+        option, separator, _value = word.partition("=")
+        name = option.lstrip("-").rsplit(".", 1)[-1]
+        if word.startswith("-") and name and is_secret_field(name):
+            masked.append(f"{option}=***REDACTED***" if separator else word)
+            next_word = None if separator else "***REDACTED***"
+            continue
+        masked.append(redact_trajectory_text(word))
+    return masked
 
 
 def _hosted_source_provenance(

@@ -240,6 +240,24 @@ def render_task_md(frontmatter: dict[str, Any] | str, instruction: str) -> str:
     return f"---\n{rendered_frontmatter}---\n\n## prompt\n\n{body}\n"
 
 
+#: ``benchflow.converted_from`` in a task.md that ``bench import`` wrote from a
+#: task.toml, and its value.
+CONVERTED_FROM_KEY = "converted_from"
+CONVERTED_FROM_TASK_TOML = "task.toml"
+
+
+def converted_from_task_toml(task: Any) -> bool:
+    """Whether *task* is a task.md that ``bench import`` converted from a
+    task.toml (its ``benchflow.converted_from`` mark); False for a task.toml
+    task itself, a task.md written as one, or a stand-in without a document."""
+    document = getattr(task, "document", None)
+    benchflow = getattr(document, "benchflow", None)
+    return (
+        isinstance(benchflow, dict)
+        and benchflow.get(CONVERTED_FROM_KEY) == CONVERTED_FROM_TASK_TOML
+    )
+
+
 def render_task_md_from_legacy(task_dir: str | Path) -> str:
     """Render a legacy ``task.toml`` + ``instruction.md`` task as ``task.md``.
 
@@ -260,14 +278,18 @@ def render_task_md_from_legacy(task_dir: str | Path) -> str:
         "schema_version": imported.config.schema_version,
         **declared,
     }
+    # The mark that this task.md came from a task.toml: such a task is graded
+    # as its source was, where the two formats differ (a separate verifier
+    # built from the verifier folder's Dockerfile, its /solution paths;
+    # A task.md written as one never has it.
+    benchflow: dict[str, Any] = {CONVERTED_FROM_KEY: CONVERTED_FROM_TASK_TOML}
     if imported.report.extra:
-        frontmatter_data["benchflow"] = {
-            "compat": {
-                "source": imported.report.source,
-                "extra_paths": list(imported.report.extra_paths),
-                "extra": imported.report.extra,
-            }
+        benchflow["compat"] = {
+            "source": imported.report.source,
+            "extra_paths": list(imported.report.extra_paths),
+            "extra": imported.report.extra,
         }
+    frontmatter_data["benchflow"] = benchflow
     return render_task_md(frontmatter_data, instruction_path.read_text())
 
 

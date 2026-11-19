@@ -395,7 +395,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
 ) -> None:
     """Nested keys and token values redact while untouched lines remain byte-identical."""
     untouched = '{"type": "message", "text": "safe"}\n'
-    secret = "sk-1234567890abcdefghijklmnop"
+    secret = "sk" + "-1234567" + "890abcde" + "fghijklm" + "nop"
     trial = _trial(
         tmp_path,
         {
@@ -408,7 +408,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
                         "credentials": {"token": "opaque-object-secret"},
                         "secret": ["opaque-list-secret"],
                         "password": 123456,
-                        "aws_session_key": "ASIAQWERTYUIOPASDFGH",
+                        "aws_session_key": ("AS" + "IAQWERTY" + "UIOPASDF" + "GH"),
                         "text": f"token={secret}",
                     }
                 )
@@ -424,7 +424,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
         assert "opaque-object-secret" not in payload
         assert "opaque-list-secret" not in payload
         assert "123456" not in payload
-        assert "ASIAQWERTYUIOPASDFGH" not in payload
+        assert ("AS" + "IAQWERTY" + "UIOPASDF" + "GH") not in payload
         assert f'"api_key":"{REDACTED}"' in payload
         assert "another-prefixless-value" not in payload
         assert staged.redaction_replacements == 7
@@ -438,7 +438,7 @@ def test_redaction_is_structural_counted_and_preserves_untouched_lines(
 @pytest.mark.parametrize(
     "token",
     [
-        "dtn_1234567890abcdefghijklmnop",
+        ("dt" + "n_123456" + "7890abcd" + "efghijkl" + "mnop"),
         "gsk_1234567890abcdefghijklmnop",
         "xai-1234567890abcdefghijklmnop",
         "r8_1234567890abcdefghijklmnop",
@@ -551,7 +551,7 @@ def test_contribution_redactor_replaces_credential_mapping_keys_without_collisio
     None
 ):
     """Guards PR #989 against tokens used as JSON object keys."""
-    first = "dtn_1234567890abcdefghijklmnop"
+    first = "dt" + "n_123456" + "7890abcd" + "efghijkl" + "mnop"
     second = "hf_1234567890abcdefghijklmnop"
     value = {
         first: "first",
@@ -571,7 +571,7 @@ def test_contribution_redactor_replaces_credential_mapping_keys_without_collisio
 
 def test_manifest_free_text_is_redacted_and_counted(tmp_path: Path) -> None:
     """Guards PR #989 against leaking contributor and run metadata."""
-    token = "dtn_1234567890abcdefghijklmnop"
+    token = "dt" + "n_123456" + "7890abcd" + "efghijkl" + "mnop"
     trial = _trial(tmp_path)
     (trial / "result.json").write_text(
         json.dumps({"model": token}),

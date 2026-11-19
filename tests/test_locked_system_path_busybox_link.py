@@ -4,7 +4,17 @@ import stat
 
 import pytest
 
-from tests.test_locked_system_path import _path_lock_command, _run_as_root_in_sh
+from tests.test_locked_system_path import (
+    _path_lock_command,
+    _run_as_root_in_sh,
+    outside_home,
+)
+
+
+@pytest.fixture
+def tmp_path(tmp_path):
+    """Outside every home folder, which the lock leaves alone."""
+    yield from outside_home(tmp_path)
 
 
 @pytest.mark.asyncio

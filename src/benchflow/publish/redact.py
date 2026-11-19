@@ -8,69 +8,32 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
+from benchflow._utils.credential_names import placeholder_key
 from benchflow.trajectories.types import (
+    _BACKSLASH_UNIT,
+    _WS,
     REDACTION_CATEGORY_API_KEY,
     REDACTION_CATEGORY_BEARER_TOKEN,
     REDACTION_CATEGORY_CREDENTIAL_FIELD,
     REDACTION_CATEGORY_PASSWORD,
     REDACTION_CATEGORY_PRIVATE_KEY,
     REDACTION_CATEGORY_URL_CREDENTIAL,
+    REDACTION_CATEGORY_VIEW_BACKSTOP,
+    REDACTION_CATEGORY_VIEW_BUDGET,
+    _at_key_start,
+    _one_view_budget,
+    _snake_name,
+    is_secret_field,
+    is_secret_number,
     redact_trajectory_text_with_categories,
+    redact_trajectory_text_with_view_flags,
+    view_flags,
 )
 
 REDACTED = "<XXX-benchflow-key-values-XXX>"
 _CANONICAL_REDACTED = "***REDACTED***"
 _LEGACY_REDACTED_VALUES = frozenset({"[REDACTED]", _CANONICAL_REDACTED})
 _MAX_REDACTION_PASSES = 16
-
-DENYLISTED_KEYS = frozenset(
-    {
-        "authorization",
-        "proxy_authorization",
-        "x_api_key",
-        "api_key",
-        "apikey",
-        "cookie",
-        "credentials",
-        "private_key",
-        "set_cookie",
-        "x_goog_api_key",
-        "aws_bearer_token_bedrock",
-        "aws_secret_access_key",
-        "access_token",
-        "access_key",
-        "account_key",
-        "credential",
-        "refresh_token",
-        "client_secret",
-        "encryption_key",
-        "password",
-        "passwd",
-        "secret",
-        "secret_key",
-        "token",
-    }
-)
-SENSITIVE_KEY_SUFFIXES = (
-    "api_key",
-    "token",
-    "secret",
-    "password",
-    "passwd",
-    "access_key",
-    "secret_key",
-    "account_key",
-    "private_key",
-    "encryption_key",
-    "credential",
-    "credentials",
-)
-SEPARATED_SENSITIVE_KEY_SUFFIXES = tuple(
-    f"_{suffix}" for suffix in SENSITIVE_KEY_SUFFIXES
-)
-COMPACT_SENSITIVE_KEY_SUFFIXES = tuple(
-    suffix.replace("_", "") for suffix in SENSITIVE_KEY_SUFFIXES
-)
 
 
 class RedactionPattern(NamedTuple):
@@ -80,13 +43,20 @@ class RedactionPattern(NamedTuple):
 
 
 VALUE_PATTERNS = (
-    # Google AI Studio's newer token format is not covered by the canonical
-    # trajectory redactor yet.
+    # Google AI Studio's newer token format, as the canonical trajectory
+    # redactor masks it too, where a key may start (the same _at_key_start), so `FAQ.`
+    # followed by a long word stays.
     RedactionPattern(
-        re.compile(r"AQ\.[0-9A-Za-z_-]{20,}"), REDACTED, REDACTION_CATEGORY_API_KEY
+        re.compile(_at_key_start(r"AQ\.") + r"[0-9A-Za-z_-]{20,}"),
+        REDACTED,
+        REDACTION_CATEGORY_API_KEY,
     ),
     RedactionPattern(
-        re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
+        # A backslash in the token is part of it, as _SECVAL reads it.
+        re.compile(
+            rf"Bearer{_WS}+(?:[A-Za-z0-9._~+/=-]|{_BACKSLASH_UNIT}){{16,}}",
+            re.IGNORECASE,
+        ),
         f"Bearer {REDACTED}",
         REDACTION_CATEGORY_BEARER_TOKEN,
     ),
@@ -103,6 +73,8 @@ REDACTION_CATEGORY_LABELS: tuple[tuple[str, str], ...] = (
     (REDACTION_CATEGORY_PASSWORD, "passwords"),
     (REDACTION_CATEGORY_URL_CREDENTIAL, "URL credentials"),
     (REDACTION_CATEGORY_CREDENTIAL_FIELD, "credential-bearing field values"),
+    (REDACTION_CATEGORY_VIEW_BUDGET, "lines masked whole (view work budget)"),
+    (REDACTION_CATEGORY_VIEW_BACKSTOP, "lines masked whole (wall-clock backstop)"),
 )
 
 
@@ -133,6 +105,7 @@ def format_redaction_breakdown(counts: Mapping[str, int]) -> str:
     return ", ".join(parts)
 
 
+@_one_view_budget
 def redact_value(
     value: Any,
     *,
@@ -145,7 +118,20 @@ def redact_value(
     per-category counter (see ``REDACTION_CATEGORY_LABELS``); the counter's
     total always equals the returned replacement count.
     """
-    if field_name is not None and _is_sensitive_key(field_name):
+    if field_name is not None and _scalars(value):
+        # A number, a boolean or null (or a list of them) decides as in
+        # trajectory files: only a PIN-like integer under a credential's name
+        # is masked (is_secret_number), each one in a list.
+        items = value if isinstance(value, list) else [value]
+        masked = [is_secret_number(field_name, item) for item in items]
+        if categories is not None and any(masked):
+            categories[_field_category(field_name)] += sum(masked)
+        clean = [
+            REDACTED if hit else item for hit, item in zip(masked, items, strict=True)
+        ]
+        return (clean if isinstance(value, list) else clean[0]), sum(masked)
+
+    if field_name is not None and _is_sensitive_key(field_name, value):
         if _is_redacted_value(value):
             return value, 0
         if categories is not None:
@@ -174,10 +160,10 @@ def redact_value(
                 _, key_replacements = _redact_text(key, categories=categories)
                 if key_replacements:
                     secret_key_index += 1
-                    clean_key = f"***REDACTED_KEY_{secret_key_index}***"
+                    clean_key = placeholder_key(secret_key_index)
                     while clean_key in original_keys or clean_key in redacted:
                         secret_key_index += 1
-                        clean_key = f"***REDACTED_KEY_{secret_key_index}***"
+                        clean_key = placeholder_key(secret_key_index)
                     replacements += key_replacements
             clean, count = redact_value(
                 item,
@@ -204,6 +190,7 @@ def redact_value(
     return _redact_text(value, categories=categories)
 
 
+@_one_view_budget
 def redact_value_to_stability(
     value: Any, *, categories: Counter[str] | None = None
 ) -> tuple[Any, int]:
@@ -225,7 +212,15 @@ def _redact_text(
     # Protect our public-upload marker with that value during the scan so a second
     # client/server pass is idempotent even inside text such as ``API_KEY=...``.
     protected = value.replace(REDACTED, _CANONICAL_REDACTED)
-    redacted_text, text_categories = redact_trajectory_text_with_categories(protected)
+    own = view_flags(protected, _VIEW_ROWS)
+    if own is None:
+        redacted_text, text_categories = redact_trajectory_text_with_categories(
+            protected
+        )
+    else:
+        redacted_text, text_categories = redact_trajectory_text_with_view_flags(
+            protected, own
+        )
     replacements = sum(text_categories.values())
     if categories is not None:
         categories.update(text_categories)
@@ -241,6 +236,35 @@ def _redact_text(
     redacted_text = cli_redacted
     replacements += cli_replacements
     return redacted_text, replacements
+
+
+# publish is the layer that leaves our
+# hands, so its own rules (VALUE_PATTERNS and the command-line options, one
+# option and its value at a time) read the decoded views the trajectory
+# patterns read (view_flags): what they mask there is masked too, after the
+# main pass and by the same position map (redact_trajectory_text_with_view_flags;
+# the main pass reads the text as written), so `%62earer <token>` and
+# `--api%2Dkey <v>` are masked as `bearer <token>` and `--api-key <v>` are. An
+# option starts a word, as the shell splits it.
+_CLI_OPTION = re.compile(r"(?<!\S)--[^\s=]++(?:=\S*+|[ \t]++\S++)?+")
+
+
+def _cli_option_value(match: re.Match[str]) -> str:
+    return _redact_unsplit_cli_text(match[0])[0]
+
+
+# The rules as the views read them: VALUE_PATTERNS' Bearer row keeps its
+# scheme and spacing as written (`bearer%20`, `Bearer+`), so the view masks only
+# the value, as the row does in plain text.
+_VIEW_ROWS = (
+    VALUE_PATTERNS[0],
+    (
+        re.compile(rf"(Bearer{_WS}+)[A-Za-z0-9._~+/=-]{{16,}}", re.IGNORECASE),
+        rf"\g<1>{REDACTED}",
+        REDACTION_CATEGORY_BEARER_TOKEN,
+    ),
+    (_CLI_OPTION, _cli_option_value, REDACTION_CATEGORY_CREDENTIAL_FIELD),
+)
 
 
 def _redact_cli_text(
@@ -398,16 +422,21 @@ def _field_category(field_name: str) -> str:
     return REDACTION_CATEGORY_CREDENTIAL_FIELD
 
 
-def _is_sensitive_key(field_name: str) -> bool:
-    normalized = _normalize_key(field_name)
-    return (
-        normalized in DENYLISTED_KEYS
-        or normalized.endswith(SEPARATED_SENSITIVE_KEY_SUFFIXES)
-        or normalized.replace("_", "").endswith(COMPACT_SENSITIVE_KEY_SUFFIXES)
-    )
+def _scalars(value: Any) -> bool:
+    """A number, a boolean or null, or a non-empty list of only those."""
+    if isinstance(value, list):
+        return bool(value) and all(_scalar(item) for item in value)
+    return _scalar(value)
+
+
+def _scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (bool, int, float))
+
+
+def _is_sensitive_key(field_name: str, value: Any = None) -> bool:
+    """The trajectory redactor's secret names (``is_secret_field``)."""
+    return is_secret_field(field_name, value)
 
 
 def _normalize_key(field_name: str) -> str:
-    normalized = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", field_name)
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
-    return re.sub(r"[^a-z0-9]+", "_", normalized.casefold()).strip("_")
+    return _snake_name(field_name)

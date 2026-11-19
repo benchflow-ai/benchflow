@@ -55,6 +55,14 @@ _BODIES: dict[str, str] = {
         "non-root agent: it is older than 28, rootless or remaps user "
         "namespaces. No agent code ran; the trial has no score."
     ),
+    "kept_service_freezer:host_uid": (
+        "The task keeps services, the sandbox mounts the trial's folders from "
+        "the host (local Docker), and the image's agent user has the uid "
+        "BenchFlow runs as. While the kept services run, grading closes the "
+        "verifier's folder to that uid, which closes it to BenchFlow too, so "
+        "a reward BenchFlow writes there would be lost. No agent code ran; "
+        "the trial has no score."
+    ),
     "kept_service_freezer:probe": (
         "The task's kept services are frozen in a cgroup between the agent's "
         "turn and verification, and the freezer check inside this sandbox "
@@ -70,6 +78,18 @@ _BODIES: dict[str, str] = {
         "The setup guard did not finish or return its report. The trial has "
         "no score. Check the setup evidence before retrying; this is not an "
         "agent task failure."
+    ),
+    "phase_timeout": (
+        "A step of the trial that is not the agent's turn ran out of time: "
+        "setting the sandbox up, starting it, installing the agent, "
+        "BenchFlow's own set-up for the agent's turn (its network policy, "
+        "firewall or model proxy), a multi-step task's step set-up or soft "
+        "verify, a script's tear-down after it ran, or the verify step after "
+        "the turn. The agent did not run out of its time limit. The trial has "
+        "no score and is retried like any infrastructure failure. A step that "
+        "fails after the agent's turn had ended the trial is not this: that "
+        "ending stays, and post_turn_failure_info in result.json names the "
+        "step."
     ),
     "invalid_provider_response": (
         "The proxy observed an upstream HTTP 5xx with an invalid JSON body. "
@@ -102,15 +122,19 @@ _BODIES: dict[str, str] = {
         "fails whenever the network does."
     ),
     "reward_out_of_range": (
-        "The verifier ran and wrote a reward, but the number is outside the "
-        "range the task declares (0 to 1 unless task.toml's [verifier] "
-        "reward_range says otherwise), so it is not used: the trial scores 0, "
-        "a failure in the primary metrics (mean reward and pass@k) and in the "
-        "scored-only ones alike, and stays in every denominator, with a "
-        "'Verifier scored 0:' warning. "
-        "reward_out_of_range_info in result.json keeps the raw value. Every "
-        "run of the task fails the same way until the verifier or the "
-        "declared range is fixed."
+        "The verifier ran and wrote a number outside the range the task "
+        "declares (0 to 1 unless task.toml's [verifier] reward_range says "
+        "otherwise). Under integrity audit and off, a reward field outside it "
+        "is recorded as test.sh wrote it, with a note in "
+        "reward_out_of_range_info and in summary.json's rewards_outside_range, "
+        "and gets no category; this one is set when the number is one the "
+        "reward would be made from (no reward field), and that trial is "
+        "unscored. Under integrity strict the trial scores 0, a failure in the "
+        "primary metrics (mean reward and pass@k) and in the scored-only ones "
+        "alike, and stays in every denominator, with a 'Verifier scored 0:' "
+        "warning. reward_out_of_range_info in result.json keeps the raw "
+        "value. Every run of the task ends the same way until the verifier or "
+        "the declared range is fixed."
     ),
     "registry_auth": (
         "Docker could not pull the task's base image because the registry "
@@ -192,6 +216,16 @@ _BODIES: dict[str, str] = {
         "write that the agent left there, or changed, after it started. The "
         "trial counts as a failure. The trial's verifier/ folder names the "
         "plugin and why."
+    ),
+    "verifier_output_unwritable": (
+        "test.sh never ran: its verifier runs as a user other than root that "
+        "cannot write the file its output goes to. On Docker BenchFlow makes "
+        "that file on the host, as the host's user, before the test command, "
+        "and the verifier's user is the image's own USER when the task names "
+        "none. That is BenchFlow's failure, not the task's or the agent's: "
+        "the trial is unscored and stays out of the error-excluding score. "
+        "Until BenchFlow leaves the file to the test command, run "
+        'the verifier as root ([verifier] user = "root" in task.toml).'
     ),
     "verifier_no_usable_reward": (
         "The final verify left no reward BenchFlow could use: no reward file, "
@@ -292,10 +326,24 @@ _BODIES: dict[str, str] = {
         "connection to Claude was lost' means its own process or its API "
         "stream ended, not BenchFlow's connection to the sandbox."
     ),
+    "script_backend": (
+        "An operator script (--agent script:...) needs the trusted root runner "
+        "that only the docker and remote-docker backends have, so the trial is "
+        "refused before any sandbox or provider call. It is not retried: "
+        "another attempt would be refused the same way."
+    ),
     "unsupported_task_feature": (
         "The task asks for something the chosen sandbox backend cannot "
         "provide, so the trial is refused before it starts. The message names "
         "each feature and the backend."
+    ),
+    "task_refused": (
+        "The task is on BenchFlow's in-package refusal list: its reference "
+        "solution fails under one of BenchFlow's always-on protections, so "
+        "any score would be BenchFlow's doing. It is refused before the "
+        "turn for every agent, unscored and never retried, and stays in the "
+        "task count. The list is keyed by benchmark, task id and the task's "
+        "digest: a copy with any byte changed runs."
     ),
     "agent_integration:agent_auth": (
         "The agent started, then did nothing, because its own login or "
@@ -355,6 +403,79 @@ _BODIES: dict[str, str] = {
         "provider's failure, not the agent's or the model's. It is retried "
         "within the run; agent_outcome in result.json counts the failed "
         "calls."
+    ),
+    "verifier_network_refused": (
+        "test.sh's network (verifier.network_mode, else the sandbox's policy) "
+        "refused it: a packet at BenchFlow's rules, or a request at its egress "
+        "proxy. Its tests did not pass (a non-zero exit, or a reward below 1), "
+        "so the trial is unscored rather than a silent 0 that would read as "
+        "the agent's failure. It counts 0 in the every-trial mean. "
+        "verifier/verifier-network.json names the network, the counts and the "
+        "first requests refused. A pass despite refusals keeps its reward."
+    ),
+    "network_policy_breached": (
+        "BenchFlow proves the trial's network rules again at the end of the "
+        "agent's turn and at the end of test.sh, from its helper outside the "
+        "sandbox: iptables -C on every rule it put in, each rule's counter, "
+        "and a connect from inside test.sh's bounded launch to the cloud "
+        "metadata server and to TEST-NET. A rule was gone, a counter went "
+        "back (zeroed, or the rule was put in again), the check could not be "
+        "made or a connect got through, so the trial ran, or would have run, "
+        "its tests without the task's network policy. It is unscored, counts "
+        "0 in the every-trial mean, is never retried and flags the job. "
+        "verifier/network-policy.json names the rules and when they were last "
+        "proven present."
+    ),
+    "verifier_network_unheld": (
+        "The task gives the verifier a restricted network (verifier.network_mode, "
+        "draft 2's verifier network, else the sandbox's policy), and BenchFlow "
+        "could not hold test.sh to it: the rules could not be added, from its "
+        "helper or at all, or were not proven. test.sh runs the agent's code, "
+        "so it does not run with the network open instead: the trial is "
+        "unscored and never retried. The error names what failed."
+    ),
+    "test_sh_preflight_unavailable": (
+        "A branch child restores its source trial's sandbox after that trial's "
+        "agent ran, so BenchFlow never judges test.sh's commands there: it "
+        "carries the verdict the source decided before its turn. A checkpoint "
+        "made before the check recorded none, and BenchFlow could not decide "
+        "one on a fresh sandbox of the task's image either (a provider that "
+        "starts the child from the snapshot itself, or a check that could not "
+        "run), so the child was not run: unscored, never retried, and never "
+        "the task's fault. A new checkpoint carries a verdict."
+    ),
+    "test_sh_command_missing": (
+        "BenchFlow runs test.sh in the task's image as a plain, non-login "
+        "shell, with the verifier's hardened PATH, as the verifier user. Just "
+        "before the agent's turn it reads test.sh's interpreter and the "
+        "commands it runs unconditionally with errexit on, before anything "
+        "that could install a tool or change PATH, and resolves each there. "
+        "One that does not resolve means test.sh can never write a reward, so "
+        "the trial is refused before the agent runs: unscored, never retried, "
+        "no agent tokens spent. A tool the image puts on PATH only through "
+        "a login profile (~/.profile, ~/.bashrc) is not on that PATH. Other "
+        "commands test.sh names that do not resolve are warnings in "
+        "result.json and change no score."
+    ),
+    "verifier_tools_refused": (
+        "The verifier runs test.sh as root with a PATH of the image's folders "
+        "only root can write. Before the agent's turn BenchFlow locks the "
+        "image's PATH folders to root (the official rust image leaves "
+        "/usr/local/cargo/bin open to every user); a folder still open at "
+        "grading time, a relative entry, or one in the workspace, a home or a "
+        "temp folder is left out. A task whose test.sh needs programs there "
+        "declares them in [verifier] required_tools, and none did, or a "
+        "declared one is only in a folder left out. test.sh did not run, so "
+        "the trial is unscored, never a 0, and never retried. The error names "
+        "each folder and why it was left out."
+    ),
+    "verifier_launch_refused": (
+        "test.sh runs the agent's code as root, so BenchFlow starts it without "
+        "NET_ADMIN, NET_RAW and SYS_PTRACE: through its own pinned bfx where "
+        "bfx was delivered, else util-linux setpriv, else its kit Python. None "
+        "of them could (or the shell it started still held one of the three), "
+        "so test.sh did not run and the trial has no score. "
+        "verifier/test-stdout.txt says what the launch found."
     ),
     "other": (
         "An error none of the other pages covers. If it repeats on other "

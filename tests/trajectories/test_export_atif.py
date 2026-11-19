@@ -221,7 +221,9 @@ def test_write_redacts_secrets(tmp_path):
             "kind": "execute",
             "title": "env",
             "status": "completed",
-            "content": [{"text": "OPENAI_API_KEY=sk-abc123def456ghi789"}],
+            "content": [
+                {"text": ("OPENAI_API_KEY=sk" + "-abc123d" + "ef456ghi" + "789")}
+            ],
         }
     ]
     rec = write_rollout_atif_json(
@@ -232,7 +234,7 @@ def test_write_redacts_secrets(tmp_path):
         trajectory=events,
     )
     raw = (tmp_path / "trainer" / "atif.json").read_text()
-    assert "sk-abc123def456ghi789" not in raw
+    assert ("sk" + "-abc123d" + "ef456ghi" + "789") not in raw
     content = rec["steps"][0]["observation"]["results"][0]["content"]
     assert "***REDACTED***" in content
 

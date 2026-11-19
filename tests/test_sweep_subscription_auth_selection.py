@@ -10,7 +10,11 @@ from benchflow.agents.registry import resolve_agent
 from benchflow.task.plan_validation import validate_task_plan
 from tests.test_check_run_plan import _task
 from tests.test_connect_as_env import TestConnectAsEnvMerge as _ConnectAsFixtures
+from tests.test_en374_login_by_contents import login_file_text
 
+# A Claude login's dummy: ANTHROPIC_AUTH_TOKEN's contents decide its route
+# (CRED-4), so every Claude token here is shaped like an OAuth token.
+CLAUDE_ACCOUNT_A = "sk-ant-oat01-dummy-account-A"
 CLAUDE_TOKENS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_OAUTH_TOKEN",
@@ -51,7 +55,7 @@ def host_logins(tmp_path, monkeypatch):
     ):
         directory = tmp_path / folder
         directory.mkdir()
-        (directory / filename).write_text('{"dummy_account": "unrelated-B"}')
+        (directory / filename).write_text(login_file_text(filename, "unrelated-B"))
 
 
 def _inputs(tmp_path, monkeypatch, source, values):
@@ -80,10 +84,10 @@ def test_claude_token_never_selects_another_host_login(
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "relocated-claude"))
     probe = Mock(wraps=auth.check_subscription_auth)
     monkeypatch.setattr(auth, "check_subscription_auth", probe)
-    supplied = _inputs(tmp_path, monkeypatch, source, {token: "dummy-account-A"})
+    supplied = _inputs(tmp_path, monkeypatch, source, {token: CLAUDE_ACCOUNT_A})
     canonical = resolve_agent(agent).name
     result = auth.resolve_agent_env(canonical, model, supplied)
-    assert result[token] == "dummy-account-A"
+    assert result[token] == CLAUDE_ACCOUNT_A
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
     assert "BENCHFLOW_PROVIDER_API_KEY" not in result
     assert "BENCHFLOW_PROVIDER_BASE_URL" not in result
@@ -97,7 +101,7 @@ def test_claude_token_never_selects_another_host_login(
 )
 def test_any_nonempty_token_suppresses_host_login(model, tokens):
     """Guards 3df70b5e: blank aliases cannot hide another nonempty credential."""
-    values = {key: "dummy-account-A" if key in tokens else "" for key in CLAUDE_TOKENS}
+    values = {key: CLAUDE_ACCOUNT_A if key in tokens else "" for key in CLAUDE_TOKENS}
     result = auth.resolve_agent_env("claude-agent-acp", model, values)
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
@@ -148,9 +152,9 @@ def test_reresolution_discards_the_previous_host_selection(model, token):
     previous = auth.resolve_agent_env("claude-agent-acp", model, {})
     assert previous["_BENCHFLOW_SUBSCRIPTION_AUTH"] == "1"
     result = auth.resolve_agent_env(
-        "claude-agent-acp", model, {**previous, token: "dummy-account-A"}
+        "claude-agent-acp", model, {**previous, token: CLAUDE_ACCOUNT_A}
     )
-    assert result[token] == "dummy-account-A"
+    assert result[token] == CLAUDE_ACCOUNT_A
     assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in result
 
 
@@ -163,7 +167,7 @@ def test_public_network_backend_plan_keeps_only_the_supplied_account(
     """Guards 3df70b5e on each backend's ordinary public-network task path."""
     task = _task(tmp_path / "task")
     result = auth.resolve_agent_env(
-        "claude-agent-acp", model, {token: "dummy-account-A"}
+        "claude-agent-acp", model, {token: CLAUDE_ACCOUNT_A}
     )
     validate_task_plan(
         task, sandbox=backend, agent="claude-agent-acp", model=model, agent_env=result
@@ -190,11 +194,11 @@ class TestRoleHostLoginSelection:
             name="reviewer",
             agent="claude-agent-acp",
             model=model,
-            env={token: "dummy-account-A"},
+            env={token: CLAUDE_ACCOUNT_A},
         )
         await trial.connect_as(role)
         trial._planes.connect_acp.assert_awaited_once()
         trial._planes.upload_subscription_auth.assert_not_awaited()
         staged = trial._planes.write_credential_files.await_args.args[2]
-        assert staged[token] == "dummy-account-A"
+        assert staged[token] == CLAUDE_ACCOUNT_A
         assert "_BENCHFLOW_SUBSCRIPTION_AUTH" not in staged

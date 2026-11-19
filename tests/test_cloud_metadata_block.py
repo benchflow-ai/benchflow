@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests._receipt_fakes import inner_command, receipt_answer
+from tests._system_bin import system_bin
 
 
 @pytest.fixture(autouse=True)
@@ -214,21 +215,9 @@ class Sandbox:
         """/usr/bin and /bin as links, without the host's package managers,
         firewall tools, bash and timeout: the script would find those first
         (a Linux CI runner has apt-get) instead of this sandbox's stubs."""
-        sys_bin = self.root / "sysbin"
-        if sys_bin.exists():
-            return sys_bin
-        sys_bin.mkdir()
-        sys_bin.chmod(0o755)
         hidden = {"apk", "apt", "apt-get", "dnf", "microdnf", "yum", "nft"}
         hidden |= {"bash", "timeout"}
-        for d in ("/usr/bin", "/bin"):
-            for src in Path(d).iterdir():
-                name = src.name
-                if name in hidden or name.startswith(("iptables", "ip6tables")):
-                    continue
-                if not (sys_bin / name).is_symlink():
-                    (sys_bin / name).symlink_to(src)
-        return sys_bin
+        return system_bin(self.root, hidden, ("iptables", "ip6tables"), mode=0o755)
 
     def run(self, cmd: str, shell: str = "/bin/sh", **env: str) -> str:
         result = subprocess.run(
@@ -1943,7 +1932,9 @@ HOST_MAIN = "services:\n  main:\n    network_mode: host\n"
 OUTSIDE_NETWORKS = [
     "host",
     '"container:other"',
-    '"service:db"',
+    # A service the file does not define (a service of the project's own is
+    # the trial's namespace:, the lead's 04:5xZ ruling).
+    '"service:gone"',
     '"${MAIN_NET:-host}"',
 ]
 
@@ -2042,7 +2033,10 @@ async def test_the_rollout_reads_mains_network_from_the_tasks_compose(
     with (
         patch.object(trial._planes, "block_cloud_metadata", block),
         # The agent does not start with the endpoints open.
-        pytest.raises(CloudMetadataPowerError, match="sandbox startup refused"),
+        pytest.raises(
+            CloudMetadataPowerError,
+            match=r"the block is not_installed: main shares the host's network or another container's \(network_mode: host in the task's docker-compose",
+        ),
     ):
         await trial._apply_cloud_metadata_block(tmp_path)
     block.assert_not_awaited()
@@ -2505,7 +2499,10 @@ async def test_resolved_host_network_never_runs_the_metadata_script(
     with (
         patch.object(trial._planes, "block_cloud_metadata", block),
         # The agent does not start with the endpoints open.
-        pytest.raises(CloudMetadataPowerError, match="sandbox startup refused"),
+        pytest.raises(
+            CloudMetadataPowerError,
+            match=r"the block is not_installed: main may share the host's network \(main joins the external network '(default|outer)' \(name: host\)\)",
+        ),
     ):
         await trial._apply_cloud_metadata_block(tmp_path)
     block.assert_not_awaited()

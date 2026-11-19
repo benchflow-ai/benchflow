@@ -29,6 +29,7 @@ import json
 import shlex
 from typing import Any
 
+from benchflow._utils.config import EFFORT_LEVELS
 from benchflow.acp.types import McpServerSpec, StopReason
 from benchflow.agents.codex_config import codex_config_overrides
 from benchflow.native_harness.spec import (
@@ -39,9 +40,10 @@ from benchflow.native_harness.spec import (
 
 CLI = "codex"
 # model_reasoning_effort values Codex accepts. Codex 0.159.3 sends each as the
-# request's reasoning.effort, max too (its gpt-6 models list max), as codex-acp
-# does with the same CODEX_CONFIG.
-CODEX_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
+# request's reasoning.effort, max and ultra too (its gpt-6 models list both;
+# agents/codex_models.py has each model's levels), as codex-acp does with the
+# same CODEX_CONFIG.
+CODEX_EFFORTS = frozenset(EFFORT_LEVELS)
 
 _FLAGS = (
     "--json",
@@ -124,11 +126,14 @@ def _provider(config: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def codex_usage(usage: Any) -> dict[str, int] | None:
+def codex_usage(usage: Any) -> dict[str, int | None] | None:
     """A ``turn.completed`` usage block in ACP ``PromptResponse.usage`` fields.
 
-    OpenAI's ``input_tokens`` includes the cached ones, as the proxy's
-    provider usage counts them.
+    OpenAI's ``input_tokens`` includes the cached ones; BenchFlow's split
+     leaves them out, as ACP reports do. OpenAI reports no cache
+    writes, and Codex's always-0 ``cache_write_input_tokens`` says nothing,
+    so they are None unless counted. The total is OpenAI's input plus
+    output.
     """
     if not isinstance(usage, dict):
         return None
@@ -137,14 +142,16 @@ def codex_usage(usage: Any) -> dict[str, int] | None:
         value = usage.get(key)
         return value if isinstance(value, int) and value >= 0 else 0
 
-    snapshot = {
-        "input_tokens": count("input_tokens"),
+    cached = count("cached_input_tokens")
+    written = count("cache_write_input_tokens")
+    snapshot: dict[str, int | None] = {
+        "input_tokens": max(count("input_tokens") - cached - written, 0),
         "output_tokens": count("output_tokens"),
-        "cached_read_tokens": count("cached_input_tokens"),
-        "cached_write_tokens": count("cache_write_input_tokens"),
+        "cached_read_tokens": cached,
+        "cached_write_tokens": written or None,
         "thought_tokens": count("reasoning_output_tokens"),
     }
-    snapshot["total_tokens"] = snapshot["input_tokens"] + snapshot["output_tokens"]
+    snapshot["total_tokens"] = count("input_tokens") + count("output_tokens")
     return snapshot
 
 
@@ -179,7 +186,7 @@ class CodexExecParser:
         self._session_id: str | None = None
         self._started: set[str] = set()
         self._completed = False
-        self._usage: dict[str, int] | None = None
+        self._usage: dict[str, int | None] | None = None
         self._failure: str | None = None
         self._errors: list[str] = []
         self.warnings: list[str] = []

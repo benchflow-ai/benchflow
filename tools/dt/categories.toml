@@ -11,10 +11,13 @@
 
 [python.error_category]
 kept_service_freezer = "refusal"
+integrity_unavailable = "refusal"
 runtime_sealing = "refusal"
 guard_timeout = "sandbox"
+phase_timeout = "sandbox"
 invalid_provider_response = "provider"
 unsupported_task_feature = "refusal"
+task_refused = "refusal"
 sandbox_setup = "sandbox"
 install_failure = "agent_install"
 pipe_closed = "agent_error"
@@ -38,6 +41,10 @@ registry_auth = "sandbox"
 disk_full = "other"
 # DX-a round 2: a task file that does not load was "other" before.
 task_config = "other"
+# A script: agent on a backend without the operator-script runner
+# (ScriptBackendError, src/benchflow/agents/scripts.py), refused before any
+# sandbox. Rust has no operator-script runner.
+script_backend = "refusal"
 # A trial its token or turn budget stopped (src/benchflow/trial_budget.py):
 # Rust has no per-trial budget, so it is a family of its own.
 trial_budget = "agent_budget"
@@ -54,6 +61,19 @@ reward_out_of_range = "verifier_error"
 # DX-a: an empty reward on a full disk was a verifier_failure before.
 disk_full = "verifier_error"
 infra_failure = "infra"
+# The verifier's network refused a failing test.sh; the bounded launch could
+# not start test.sh without NET_ADMIN, NET_RAW and SYS_PTRACE.
+verifier_network_refused = "verifier_error"
+verifier_launch_refused = "verifier_error"
+# Hardening refused the tools test.sh would find on PATH: unscored, like the
+# two above.
+verifier_tools_refused = "verifier_error"
+# BenchFlow's network rules for the trial no longer held when proven again
+# at the end of the agent's turn or of test.sh: unscored, like the two above.
+network_policy_breached = "verifier_error"
+# The verifier's network could not be held (its rules not added or not
+# proven), so test.sh did not run, never open instead: unscored.
+verifier_network_unheld = "verifier_error"
 
 # A Python refusal by the runtime capability check
 # (UnsupportedTaskFeatureError, src/benchflow/task/runtime_capabilities.py)

@@ -149,7 +149,7 @@ async def test_shared_hardening_refuses_an_unsearchable_muse_login(box, monkeypa
     task = _harden_with_real_cleanup(monkeypatch)
 
     with pytest.raises(RuntimeError, match="credential cleanup failed"):
-        await lockdown.harden_before_verify(box, task, "agent")
+        await lockdown.harden_before_verify(box, task, "agent", integrity="strict")
     assert _login_exists(box)
 
 
@@ -176,7 +176,7 @@ async def test_linked_config_without_a_muse_login_is_verified(box, monkeypatch):
 
     monkeypatch.setattr(lockdown, "_blocked_verifier_path_prefixes", past_the_cleanup)
     with pytest.raises(_PastTheCleanup):
-        await lockdown.harden_before_verify(box, task, "agent")
+        await lockdown.harden_before_verify(box, task, "agent", integrity="strict")
 
     assert box.sh("readlink /home/agent/.config").strip() == (
         "/home/agent/dotfiles/config"
@@ -194,7 +194,7 @@ async def test_linked_config_with_a_muse_login_is_still_refused(box, monkeypatch
     task = _harden_with_real_cleanup(monkeypatch)
 
     with pytest.raises(RuntimeError, match="credential cleanup failed"):
-        await lockdown.harden_before_verify(box, task, "agent")
+        await lockdown.harden_before_verify(box, task, "agent", integrity="strict")
 
 
 async def test_cleanup_refusal_still_destroys_the_sandbox(tmp_path):

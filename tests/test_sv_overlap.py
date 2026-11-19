@@ -41,6 +41,7 @@ from benchflow.rollout._separate_verifier import (
     SeparateVerifierError,
     SolutionTransferRefused,
 )
+from benchflow.sandbox import _image_manifest
 from benchflow.sandbox.docker import DockerSandbox
 from benchflow.sandbox.protocol import ExecResult
 from benchflow.task import Task, TaskConfig
@@ -218,7 +219,11 @@ class FakeVerifier:
             )
             out, err = await process.communicate()
             return ExecResult(process.returncode, out.decode(), err.decode())
-        if "tar -xf" in cmd:
+        if _image_manifest.MANIFEST_PATH in cmd and "pre-transfer" in cmd:
+            # The image manifest, recorded in the untouched verifier sandbox
+            # before the transfer ((A)); it reads only the image.
+            self.sc.log.append(IMAGE_MANIFEST_RECORD)
+        elif "tar -xf" in cmd:
             await self.sc.step("verifier.exec unpack")
             archive = next(p for t, p in self.uploads.items() if t.endswith(".tar"))
             with tarfile.open(archive) as tar:
@@ -463,6 +468,10 @@ def _outcome(sc: Scenario) -> tuple[Any, Any, Any]:
     return r._rewards, r._verifier_error, r._error
 
 
+# The fake sandbox's log line for the image manifest's record exec.
+IMAGE_MANIFEST_RECORD = "verifier.exec image-manifest record"
+
+
 def _first_agent_bytes(sc: Scenario) -> int:
     """The first verifier event that carries the agent's bytes."""
     carriers = [
@@ -518,7 +527,12 @@ async def test_on_docker_the_verifier_starts_before_capture_returns(
     first = _first_agent_bytes(sc)
     before = [e for e in sc.log[:first] if e.startswith("verifier.")]
     assert before[:2] == ["verifier.create", "verifier.start"], sc.log
-    assert all("runtime-verifier-destinations-" in e for e in before[2:]), sc.log
+    # Then only the custody probe and the image manifest's one record.
+    assert all(
+        "runtime-verifier-destinations-" in e or e == IMAGE_MANIFEST_RECORD
+        for e in before[2:]
+    ), sc.log
+    assert before.count(IMAGE_MANIFEST_RECORD) == 1, sc.log
 
 
 @pytest.mark.parametrize("environment", ["daytona", "modal"])

@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any, Never
 
 from benchflow import __version__
+from benchflow._utils.raw_evidence import (
+    is_raw_evidence,
+    is_run_folder,
+    refuse_raw_evidence,
+    refuse_workspace,
+)
 from benchflow.publish.redact import (
     redact_value,
     redact_value_to_stability,
@@ -246,7 +252,11 @@ def stage_trajectory_artifacts(
     source_id: str,
     redact: bool = True,
 ) -> Iterator[StagedTrajectoryArtifacts]:
-    """Validate and redact JSONL artifacts without building their manifest."""
+    """Validate and redact JSONL artifacts without building their manifest.
+
+    A *path* that is a hosted run's raw evidence or sits inside it is refused
+    (``RawEvidenceError``)."""
+    refuse_raw_evidence(path)
     source_id = validate_source_id(source_id)
     resolved = _resolve_input(path)
     if len(resolved.files) > MAX_ARTIFACTS:
@@ -324,6 +334,8 @@ class WorkspaceAttachResult:
     file_count: int
     excluded_count: int
     skipped_reason: str | None
+    # Trial or job folders inside the workspace that were left out whole.
+    run_folders_excluded: int = 0
 
 
 def _workspace_archive_name(folder: Path) -> str:
@@ -337,11 +349,13 @@ def _workspace_file_excluded(name: str) -> bool:
 
 def _collect_workspace_files(
     folder: Path, *, max_bytes: int
-) -> tuple[list[Path], int, int] | str:
+) -> tuple[list[Path], int, int, int] | str:
     """Walk the workspace, honoring exclusions; return a reason string to skip.
 
-    Aborts the walk as soon as the included size passes ``max_bytes`` so a
-    runaway workspace never costs a full scan, let alone a zip.
+    A hosted run's raw vf-eval output (``is_raw_evidence``) is left out with
+    the excluded folders. Aborts the walk as soon as the included size passes
+    ``max_bytes`` so a runaway workspace never costs a full scan, let alone a
+    zip.
     """
     import os
     import stat
@@ -349,11 +363,22 @@ def _collect_workspace_files(
     included: list[Path] = []
     total_bytes = 0
     excluded = 0
+    # A local trial or job folder inside the workspace (``./jobs`` that an
+    # eval writes in the project) is left out whole: a run's folder is never
+    # uploaded as it is (``is_run_folder``).
+    run_folders = 0
     for root, dirnames, filenames in os.walk(folder, followlinks=False):
         kept_dirs = []
         for dirname in dirnames:
-            if dirname in WORKSPACE_EXCLUDED_DIRS or (Path(root, dirname).is_symlink()):
+            if (
+                dirname in WORKSPACE_EXCLUDED_DIRS
+                or Path(root, dirname).is_symlink()
+                or is_raw_evidence(Path(root), dirname)
+            ):
                 excluded += 1
+            elif is_run_folder(Path(root, dirname)):
+                excluded += 1
+                run_folders += 1
             else:
                 kept_dirs.append(dirname)
         dirnames[:] = kept_dirs
@@ -378,8 +403,14 @@ def _collect_workspace_files(
             if len(included) > MAX_ATTACHMENT_FILES:
                 return f"workspace folder exceeds {MAX_ATTACHMENT_FILES} files"
     if not included:
+        if run_folders:
+            return (
+                "workspace folder has no files to archive once its "
+                f"{run_folders} trial or job folder(s) are left out (a run's own "
+                "folder is never uploaded as it is)"
+            )
         return "workspace folder has no files to archive"
-    return included, total_bytes, excluded
+    return included, total_bytes, excluded, run_folders
 
 
 def attach_workspace_archive(
@@ -394,13 +425,16 @@ def attach_workspace_archive(
     always deleted when staging exits — success, cancel, or crash alike.
     Contents are archived as-is (no redaction); callers exclude VCS internals,
     dependency trees, and secret-shaped filenames via the module exclusion
-    lists and must surface that trade-off to the contributor.
+    lists and must surface that trade-off to the contributor. A *folder* that
+    is a hosted run's raw evidence, or a local trial or job folder, or sits
+    inside one, is refused (``RawEvidenceError``), before anything is read.
     """
     import dataclasses
     import zipfile
 
     from benchflow.publish._snapshot import regular_files
 
+    refuse_workspace(folder)
     if max_bytes is None:
         max_bytes = MAX_ATTACHMENT_BYTES
 
@@ -419,7 +453,7 @@ def attach_workspace_archive(
     collected = _collect_workspace_files(resolved, max_bytes=max_bytes)
     if isinstance(collected, str):
         return skipped(collected)
-    included, _total_bytes, excluded = collected
+    included, _total_bytes, excluded, run_folders = collected
 
     relname = validate_artifact_name(_workspace_archive_name(resolved))
     target = artifacts._staging_dir / relname
@@ -465,6 +499,7 @@ def attach_workspace_archive(
         file_count=file_count,
         excluded_count=excluded,
         skipped_reason=None,
+        run_folders_excluded=run_folders,
     )
 
 

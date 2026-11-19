@@ -41,7 +41,7 @@ A task, its environment, an agent and a model go in; a trajectory, a reward and 
 | **Benchmark** | A set of tasks, often published as a folder in a Git repository; the registry names some of them (`bench hub list`). | a folder of task folders |
 | **Rollout** (trial) | One agent's attempt at one task, in its own sandbox. | `jobs/<job>/<task>__<id>/` |
 | **Sandbox** | The isolated machine one rollout runs in: a Docker container on your machine, or a cloud sandbox on Daytona or Modal. | |
-| **Attempt** | One try at a rollout. A rollout that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default (`--retry-attempts`). The rollout counts its scored attempt, or its newest when none was scored; a scored attempt is never retried. | each trial's `attempts` |
+| **Attempt** | One try at a rollout. A rollout that fails for a reason another try could fix, such as a dropped connection, runs again in a new sandbox, up to 2 more times by default (`--retry-attempts`). The rollout counts the attempt the run kept, the last one it started; an attempt the run retried never counts, whatever score it carries. | each trial's `attempts` |
 | **Trajectory** | Everything the agent did: messages, thoughts and tool calls, and each model request that went through the proxy. | `trajectory/` |
 | **Verifier** | The task's check, usually `verifier/test.sh` running tests. | `verifier/` in the task |
 | **Reward** | The verifier's score: 1.0 for a pass, 0.0 for a fail, or a value in between for partial credit. With a rubric review, a trial passes when its test and every blocker pass, and its reward is the rubric's score. | `verifier/reward.txt`, `result.json` |

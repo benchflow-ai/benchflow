@@ -148,7 +148,9 @@ async def test_the_last_wait_stops_at_the_deadline(monkeypatch) -> None:
     clock = _fake_clock(monkeypatch)
     process = _TimedProcess(clock, runs_for=None)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError, match=r"^Command timed out after 1 seconds$"
+    ) as excinfo:
         await _poll(process, timeout_sec=1)
 
     assert str(excinfo.value) == "Command timed out after 1 seconds"
@@ -165,7 +167,9 @@ async def test_the_safety_net_cap_still_ends_a_poll_without_a_timeout(
     monkeypatch.setattr(daytona_module, "_DAYTONA_EXEC_HARD_CAP_SEC", 4)
     process = _TimedProcess(clock, runs_for=None)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError, match=r"hit the Daytona exec safety-net cap"
+    ) as excinfo:
         await _poll(process, timeout_sec=None)
 
     assert "Command timed out after 4 seconds" in str(excinfo.value)
@@ -263,7 +267,9 @@ async def test_a_command_still_running_at_the_deadline_times_out_after_one_more_
     clock = _fake_clock(monkeypatch)
     process = _SlowStatusProcess(clock, runs_for=10.0, latency=0.1)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(
+        RuntimeError, match=r"^Command timed out after 3 seconds$"
+    ) as excinfo:
         await _poll(process, timeout_sec=3)
 
     assert str(excinfo.value) == "Command timed out after 3 seconds"

@@ -57,6 +57,14 @@ CREDENTIAL_EVIDENCE_PATHS = (
     ".aws/credentials",
     ".config/gcloud/application_default_credentials.json",
     ".ssh",
+    # Files many tools read from any home, outside one agent's own folders
+    # (a ~/.netrc the turn left stayed in a Docker snapshot).
+    ".netrc",
+    ".git-credentials",
+    ".config/gh/hosts.yml",
+    ".docker/config.json",
+    ".npmrc",
+    ".pypirc",
 )
 
 

@@ -1,4 +1,4 @@
-"""Config <-> manifest consistency for the integration suite (ENG-265 slice 3).
+"""Config <-> manifest consistency for the integration suite (slice 3).
 
 One source of truth: the per-agent configs/*.yaml must agree with the release
 manifest (suites/release.yaml) on agent membership, model pins, and task set.

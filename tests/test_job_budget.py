@@ -162,12 +162,16 @@ async def test_usd_cap_counts_known_usd_only(tmp_path: Path) -> None:
     assert budget["spent"]["cost_usd"] == pytest.approx(1.2)
     assert budget["not_started"] == ["task-2"]
 
+    # A rollout with tokens and no USD can't be held to the cap: the job
+    # stops starting rollouts and says why (it never tripped before).
     other = _job(tmp_path / "b", 2, Budget(max_cost_usd=1.0))
     other._run_single_task = AsyncMock(side_effect=_runner(other, cost=None))
     await other.run()
     budget = _summary(other)["budget"]
-    assert budget["stopped"] is False
-    assert budget["spent"]["usd_unknown_trials"] == 2
+    assert budget["stopped"] is True
+    assert "--max-cost-usd can't be enforced" in budget["reason"]
+    assert budget["spent"]["usd_unknown_trials"] == 1
+    assert budget["not_started"] == ["task-1"]
 
 
 @pytest.mark.asyncio

@@ -322,8 +322,12 @@ def plan_verifier_layer(
         )
     tests_dir = Path(task.paths.tests_dir)
     try:
+        # The setup budget bounds how long setup may take, not what
+        # the image holds: leave it out, so the run's --verifier-setup-timeout
+        # or a task's value keeps the image and the key stays rc3's.
         inputs = verifier_inputs_digest(
-            tests_dir, task.config.verifier.model_dump(mode="json")
+            tests_dir,
+            task.config.verifier.model_dump(mode="json", exclude={"setup_timeout_sec"}),
         )
     except OSError as exc:
         return None, fresh_record(

@@ -547,7 +547,9 @@ def test_a_held_job_lock_says_what_to_do(tmp_path):
     job.mkdir(parents=True)
     held = JobLock.acquire(job / ".lock")
     try:
-        with pytest.raises(RuntimeError) as refused:
+        with pytest.raises(
+            RuntimeError, match=r"is already running; wait for its lock"
+        ) as refused:
             JobLock.acquire(job / ".lock")
     finally:
         held.close()

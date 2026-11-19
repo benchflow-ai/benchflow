@@ -448,10 +448,10 @@ async def test_a_target_service_verifier_builds_in_its_own_service(
 
 
 @pytest.mark.parametrize(
-    ("passing", "reward"), [(True, 1.0), (False, 0.0)], ids=["pass", "fail"]
+    ("passing", "reward"), [(True, 0.0), (False, 0.0)], ids=["pass", "fail"]
 )
 async def test_a_pytest_the_guard_never_reached_is_scored_as_test_sh_wrote(
-    tmp_path, monkeypatch, passing, reward
+    tmp_path, monkeypatch, passing, reward, caplog
 ):
     """V2-R4-3 (Astra) refused every run in which no pytest signed in, on
     the reasoning that code before pytest (a .pth an install chose) had
@@ -459,7 +459,14 @@ async def test_a_pytest_the_guard_never_reached_is_scored_as_test_sh_wrote(
     Terminal-Bench 2's qemu tasks test.sh never reaches pytest, and the
     oracle and nop were both refused (GUARD-LOAD). Code that runs before
     pytest could as well keep the guard and set the result, and the task's
-    script is trusted (contract B), so the reward is test.sh's."""
+    script is trusted (contract B), so the reward is test.sh's.
+
+    Since the lead's 13:57Z ruling ((g2)) that holds for a
+    test.sh that starts no pytest the guard reaches (TB2's qemu tasks among
+    them; tests/test_guard_no_record.py). This test.sh does start one, at a
+    command position, and its environment was taken from the guard by
+    something test.sh's text does not show: no record, so not test.sh's
+    pass, a recorded 0 that says why."""
     from tests.test_verifier_uv_state import FAILING, PASSING, score
 
     def leave(layout):
@@ -476,6 +483,8 @@ async def test_a_pytest_the_guard_never_reached_is_scored_as_test_sh_wrote(
 
     assert error is None, error
     assert rewards == {"reward": reward}
+    if passing:
+        assert "the guard left no record, though test.sh starts pytest" in caplog.text
 
 
 def test_the_runner_registers_through_the_guards_marker_format():

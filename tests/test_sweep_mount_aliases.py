@@ -56,6 +56,7 @@ async def test_plugin_policy_retains_workspace_mount_aliases_before_freeze(
         sandbox_user=sandbox_user,
         workspace="/app",
         agent_paths=agent_paths,
+        integrity="strict",
     )
     assert "/opt/plugin-view" in captured["blocked"].paths()
     assert events.index("mountinfo") < events.index("freeze")

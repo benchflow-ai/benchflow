@@ -18,7 +18,9 @@ import typer
 from benchflow.cli.doctor import eval_preflight
 
 KEY_CHECK_ENV = "BENCHFLOW_KEY_CHECK"
-FAKE_KEY = "sk-ant-api03-NOTAREALKEYjustatestvalue0123456789"
+FAKE_KEY = (
+    "sk" + "-ant-api" + "03-NOTAR" + "EALKEYju" + "statestv" + "alue0123" + "456789"
+)
 
 
 @pytest.fixture
@@ -178,7 +180,9 @@ def test_a_gpt_run_asks_openai_not_a_stale_anthropic_key(
     the key checked is the one the model uses, not the first one set. Before,
     a codex run on gpt-5 with a stale ``ANTHROPIC_API_KEY`` exported stopped
     with "Anthropic refused the key"."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-NOTAREALKEY0123456789")
+    monkeypatch.setenv(
+        "OPENAI_API_KEY", ("sk" + "-proj-NO" + "TAREALKE" + "Y0123456" + "789")
+    )
     calls = _answer_by_host(
         monkeypatch, {"api.anthropic.com": 401, "api.openai.com": 200}
     )
@@ -195,7 +199,9 @@ def test_a_claude_run_asks_anthropic_not_a_stale_openai_key(
     preflight_on, monkeypatch, capsys
 ):
     """The mirror of PT-R1-A-2: a Claude model checks only the Anthropic key."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-NOTAREALKEY0123456789")
+    monkeypatch.setenv(
+        "OPENAI_API_KEY", ("sk" + "-proj-NO" + "TAREALKE" + "Y0123456" + "789")
+    )
     calls = _answer_by_host(
         monkeypatch, {"api.anthropic.com": 200, "api.openai.com": 401}
     )
@@ -222,7 +228,9 @@ def test_a_403_on_the_models_list_does_not_stop_the_run(
     """Guards PT-R1-A-4: an OpenAI restricted or project key without Models:
     Read gets 403 on the list and still calls models, so a 403 is no refusal."""
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-NOTAREALKEY0123456789")
+    monkeypatch.setenv(
+        "OPENAI_API_KEY", ("sk" + "-proj-NO" + "TAREALKE" + "Y0123456" + "789")
+    )
     calls = _answer(monkeypatch, 403)
 
     eval_preflight(sandbox="modal", agent="codex-acp", model="gpt-5")
@@ -249,7 +257,9 @@ def test_a_401_for_a_missing_scope_does_not_stop_the_run(
     with a 401 naming the missing scope, not a 403; that key may still call
     the model, so it checks nothing."""
     monkeypatch.delenv("ANTHROPIC_API_KEY")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-NOTAREALKEY0123456789")
+    monkeypatch.setenv(
+        "OPENAI_API_KEY", ("sk" + "-proj-NO" + "TAREALKE" + "Y0123456" + "789")
+    )
     calls = _answer_401(
         monkeypatch,
         {
@@ -309,7 +319,9 @@ def test_a_401_for_a_bad_key_still_stops_the_run(
 ):
     if key_env == "OPENAI_API_KEY":
         monkeypatch.delenv("ANTHROPIC_API_KEY")
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-NOTAREALKEY0123456789")
+        monkeypatch.setenv(
+            "OPENAI_API_KEY", ("sk" + "-proj-NO" + "TAREALKE" + "Y0123456" + "789")
+        )
     _answer_401(monkeypatch, body)
 
     with pytest.raises(typer.Exit) as exc:

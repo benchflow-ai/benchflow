@@ -464,7 +464,9 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
         with pytest.raises(CaptureRejected, match=r"size mismatch|sha256 mismatch"):
             validate_local_capture(manifest_bytes, paths)
 
-    secret_trial = _trial(tmp_path / "secret", "sk-1234567890abcdefghijklmnop")
+    secret_trial = _trial(
+        tmp_path / "secret", ("sk" + "-1234567" + "890abcde" + "fghijklm" + "nop")
+    )
     with stage_trajectory_capture(
         secret_trial, source_id="demo", redact=False
     ) as staged:
@@ -482,7 +484,7 @@ def test_validator_recomputes_bytes_jsonl_and_secret_scan(tmp_path: Path) -> Non
 
     aws_session_key = tmp_path / "aws-session.jsonl"
     aws_session_key.write_text(
-        json.dumps({"output": "ASIAQWERTYUIOPASDFGH"}) + "\n",
+        json.dumps({"output": ("AS" + "IAQWERTY" + "UIOPASDF" + "GH")}) + "\n",
         encoding="utf-8",
     )
     with pytest.raises(CaptureRejected, match="secret-like"):

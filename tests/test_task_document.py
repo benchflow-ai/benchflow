@@ -75,6 +75,8 @@ def test_render_task_md_from_legacy_emits_only_declared_frontmatter(
         "metadata": {"difficulty": "easy"},
         "agent": {"timeout_sec": 120},
         "sandbox": {"cpus": 2},
+        # The converter's mark: graded as the task.toml source.
+        "benchflow": {"converted_from": "task.toml"},
     }
 
 
@@ -88,7 +90,10 @@ def test_render_task_md_from_legacy_canonicalizes_version_key(
     rendered = render_task_md_from_legacy(tmp_path)
     frontmatter = yaml.safe_load(rendered.split("---\n")[1])
 
-    assert frontmatter == {"schema_version": "1.0"}
+    assert frontmatter == {
+        "schema_version": "1.0",
+        "benchflow": {"converted_from": "task.toml"},
+    }
     assert TaskDocument.from_text(rendered).config.schema_version == "1.0"
 
 

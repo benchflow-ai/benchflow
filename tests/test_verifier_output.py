@@ -186,7 +186,11 @@ async def test_verify_test_script_surfaces_classifiable_dep_install(tmp_path):
         tmp_path,
         stdout_text=(
             "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx\n"
-            "PIP_INDEX_URL=https://user:p4ssw0rd@pypi.example/simple\n"
+            "PIP_INDEX_URL=ht"
+            + "tps://us"
+            + "er:p4ssw"
+            + "0rd@pypi"
+            + ".example/simple\n"
             "x No solution found when resolving torch==2.1.2+cpu\n"
         ),
     )

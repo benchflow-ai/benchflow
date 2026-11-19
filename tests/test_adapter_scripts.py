@@ -8,7 +8,7 @@ import yaml
 
 
 def test_harvey_lab_run_script_help_works():
-    """Guards ENG-81: Harvey run script is invokable by path."""
+    """Harvey run script is invokable by path."""
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [sys.executable, "benchmarks/harvey-lab/run_harvey_lab.py", "--help"],
@@ -23,7 +23,7 @@ def test_harvey_lab_run_script_help_works():
 
 
 def test_programbench_run_script_help_works():
-    """Guards ENG-81: ProgramBench run script is invokable by path."""
+    """ProgramBench run script is invokable by path."""
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [sys.executable, "benchmarks/programbench/run_programbench.py", "--help"],
@@ -38,7 +38,7 @@ def test_programbench_run_script_help_works():
 
 
 def test_opaquetoolsbench_run_script_help_works():
-    """Guards ENG-89: OpaqueToolsBench run script is invokable by path."""
+    """OpaqueToolsBench run script is invokable by path."""
     repo = Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [
@@ -72,7 +72,7 @@ def test_mle_bench_run_script_help_works():
 
 
 def test_opaquetoolsbench_converter_emits_oracle_solution(tmp_path):
-    """Guards ENG-101: converted tasks can run with oracle evidence."""
+    """converted tasks can run with oracle evidence."""
     repo = Path(__file__).resolve().parents[1]
     otb_dir = tmp_path / "OpaqueToolsBench"
     configs_dir = otb_dir / "src" / "datasets" / "bfcl" / "tool_configs"

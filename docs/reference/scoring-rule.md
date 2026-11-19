@@ -14,7 +14,7 @@ BenchFlow counts every headline score by one rule, `benchflow.score.v1`. `summar
 
 ## What counts
 
-- **Every finished trial is in the denominator.** n is the number of finished trials. A task an Evaluation retried counts once, as its best attempt. A planned trial that never finished (the job stopped first) is not in n. `summary.json`'s `score_of_plan` counts it, and every reader says how many there are.
+- **Every finished trial is in the denominator.** n is the number of finished trials. A task an Evaluation retried counts once, as the attempt the run kept: the last one it started, never one it retried. A planned trial that never finished (the job stopped first) is not in n. `summary.json`'s `score_of_plan` counts it, and every reader says how many there are.
 - **A trial counts 1 when it was scored and passed**: reward 1, or the rubric review's pass verdict. Every other trial counts 0: a wrong answer, a refusal, an agent or sandbox error, a model provider error, a verifier error, and a trial left with no score.
 - **score = passed / n.**
 - **The error-excluding figure is secondary**, and is always named as such: `score_excl_errors`, "scored only" on the end-of-run line and in `bench eval metrics`, "leaving out the trials with an error or no score" in `report.md`. It leaves out the trials with an error or no score. A refusal stays in it as a failure, because the agent can cause one: the plugin guard refused a pytest plugin the agent left, or the final verify found no usable reward file.

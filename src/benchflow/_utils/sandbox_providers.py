@@ -60,6 +60,10 @@ class SandboxProvider:
     #: proxy in allow mode, plus the DNS filter and CIDR rules on the uid
     #: firewall). Set only for backends validated by a live check.
     enforces_allowlist: bool = False
+    #: Whether hardening holds the verifier, root included, to
+    #: ``verifier.network_mode = "allowlist"`` (every process's rules
+    #: and the marked egress proxy, from BenchFlow's metadata helper's side).
+    enforces_verifier_allowlist: bool = False
     #: Whether, under an allowlist, the backend reads the task's running
     #: compose services: admits the ones the list names at their addresses and
     #: refuses a run where one has a route out. Elsewhere an allowlist
@@ -102,6 +106,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         runs_operator_scripts=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        enforces_verifier_allowlist=True,
         checks_allowlist_services=True,
         agent_container_no_new_privs="always",
     ),
@@ -120,6 +125,7 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         runs_operator_scripts=True,
         enforces_denylist=True,
         enforces_allowlist=True,
+        enforces_verifier_allowlist=True,
         checks_allowlist_services=True,
         agent_container_no_new_privs="always",
     ),
@@ -213,6 +219,10 @@ DENYLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
 #: Providers that cannot enforce ``network_mode = "allowlist"``.
 ALLOWLIST_UNSUPPORTED_PROVIDERS: frozenset[str] = frozenset(
     p.name for p in _PROVIDERS if not p.enforces_allowlist
+)
+#: Providers whose verifier allowlist hardening enforces.
+VERIFIER_ALLOWLIST_PROVIDERS: frozenset[str] = frozenset(
+    p.name for p in _PROVIDERS if p.enforces_verifier_allowlist
 )
 #: Providers that check an allowlist task's compose services.
 ALLOWLIST_SERVICE_CHECK_PROVIDERS: frozenset[str] = frozenset(

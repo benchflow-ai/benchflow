@@ -235,6 +235,22 @@ def _with_long_exec_heartbeat(
     )
 
 
+# `docker system dial-stdio` with the request on stdin, the write side held
+# open until the daemon has answered and closed (Connection: close). Fed
+# straight from a pipe, dial-stdio half-closes the connection at the
+# request's end, and Docker Engine 29.9 reads that as the client going away:
+# a missing path's 404 comes back as 499 ("request cancelled by client"), so
+# a download's absence check failed with "DinD archive metadata failed (HTTP
+# 499)". Engine 29.1 answered 404 either way. A fifo keeps the write side open;
+# `sh -c` so the snippet runs the same under the VM's /bin/sh -c or alone.
+DIAL_STDIO_HELD = "sh -c " + shlex.quote(
+    'd=$(mktemp -d) && mkfifo "$d/in" || exit 1; '
+    'docker system dial-stdio < "$d/in" & pid=$!; '
+    'exec 3>"$d/in"; cat >&3; '
+    'wait "$pid"; rc=$?; exec 3>&-; rm -rf "$d"; exit "$rc"'
+)
+
+
 class _DaytonaDinD(_DaytonaStrategy):
     """Docker-in-Docker compose strategy for multi-container tasks.
 
@@ -1310,6 +1326,8 @@ class _DaytonaDinD(_DaytonaStrategy):
 
         Archive HEAD returns 404 for both a missing path and a lost container;
         only a later successful ancestor lookup can establish file absence.
+        The request goes through :data:`DIAL_STDIO_HELD`, which keeps the
+        connection open until the daemon answers.
         """
         endpoint = (
             f"/containers/{urllib.parse.quote(container, safe='')}/archive?"
@@ -1317,7 +1335,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
         response = await exec_raw(
             self._vm_exec,
-            "docker system dial-stdio",
+            DIAL_STDIO_HELD,
             stdin_payload=(
                 f"HEAD {endpoint} HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n"
             ).encode("ascii"),

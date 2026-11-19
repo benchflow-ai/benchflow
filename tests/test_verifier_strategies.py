@@ -9,6 +9,7 @@ directory — no network, no containers, no provider SDKs.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -118,6 +119,13 @@ def _criteria_runner_verifier(
     sandbox.upload_dir = AsyncMock()
 
     async def run_runner(*args, **kwargs):
+        command = kwargs.get("command") or (args[0] if args else "")
+        if command.startswith("printf %s ") and "criteria-runner-manifest" in command:
+            # Root writes the runner's manifest in its closed folder.
+            rollout_paths.criteria_runner_manifest_path.write_text(
+                shlex.split(command)[2]
+            )
+            return MagicMock(exit_code=0, returncode=0)
         if calls is not None:
             calls["command"] = kwargs.get("command")
             calls["env"] = kwargs.get("env")

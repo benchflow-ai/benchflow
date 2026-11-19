@@ -70,9 +70,10 @@ def build_greet(context: Path) -> None:
 @pytest.mark.parametrize("direct", ["1", "0"])
 def test_script_agent_gets_the_images_library_path(tmp_path, monkeypatch, direct):
     """The image's LD_LIBRARY_PATH and PYTHONPATH reach the script, as they
-    reach ACP agents; its LD_BIND_NOW (a loader switch) does not. test.sh
-    runs without the image's LD_LIBRARY_PATH (V3), and result.json says so
-    by name, never by value."""
+    reach ACP agents; its LD_BIND_NOW (a loader switch) does not. In strict
+    test.sh runs without the image's LD_LIBRARY_PATH (V3), and result.json
+    says so by name, never by value; audit runs test.sh with the image's
+    environment (the faithful default, 09:58Z)."""
     docker_or_skip()
     monkeypatch.setenv("BENCHFLOW_DIRECT_DOCKER", direct)
     task = tmp_path / "task"
@@ -105,6 +106,7 @@ def test_script_agent_gets_the_images_library_path(tmp_path, monkeypatch, direct
         tmp_path,
         task,
         "/usr/bin/env > /app/agent-env.txt\n/opt/mytool/bin/greet > /app/hello.txt\n",
+        integrity="strict",
     )
     assert result.error is None, result.error
     assert result.reward == 1.0

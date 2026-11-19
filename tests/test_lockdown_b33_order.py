@@ -85,6 +85,7 @@ async def test_ancestry_is_checked_after_closure_before_verifier(
         sandbox_user="agent",
         workspace=workspace,
         restore_workspace=restore,
+        integrity="strict",
     )
     if status == 0:
         await call
@@ -111,7 +112,11 @@ async def test_without_kept_processes_no_ancestry_interpreter_is_needed(monkeypa
     build = AsyncMock(return_value={})
     monkeypatch.setattr(lockdown, "_build_verifier_env", build)
     await lockdown.harden_before_verify(
-        _make_env(execute), _make_task(), sandbox_user="agent", workspace="/app"
+        _make_env(execute),
+        _make_task(),
+        sandbox_user="agent",
+        workspace="/app",
+        integrity="strict",
     )
     build.assert_awaited_once()
     assert all("Cannot protect workspace resolution" not in cmd for cmd in commands)

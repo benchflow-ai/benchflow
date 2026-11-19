@@ -178,10 +178,28 @@ def test_every_offset_across_lines(separator):
 @pytest.mark.parametrize(
     "text,secrets",
     [
-        ("...https://bob:synthetic-password@proxy.example/a", []),
-        ("-+https://alice:synthetic@extra@proxy.example/a", []),
         (
-            "before https://bob:synthetic@proxy.example/a after",
+            (
+                "...ht"
+                + "tps://bo"
+                + "b:synthe"
+                + "tic-pass"
+                + "word@pro"
+                + "xy.examp"
+                + "le/a"
+            ),
+            [],
+        ),
+        (("-+ht" + "tps://al" + "ice:synt" + "hetic@ex" + "tra@proxy.example/a"), []),
+        (
+            (
+                "before ht"
+                + "tps://bo"
+                + "b:synthe"
+                + "tic@prox"
+                + "y.exampl"
+                + "e/a after"
+            ),
             ["bob:synthetic@proxy.example"],
         ),
         ("aaaaaab aaaaaa aaaaaab", ["aaaaaa", "aaaaaab", "*** aaaaaa"]),

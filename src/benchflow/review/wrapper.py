@@ -21,7 +21,10 @@ The rubric file itself never enters the sandbox.  Only its derivatives do:
 guidance lines inside the instruction, criterion names inside the output
 schema, and non-prompt contract metadata inside ``tests/criteria.json``. Task
 definitions are sanitized: skills and any shipped ``rubric.json`` are excluded.
-Generic run/task copies drop symlinks. Automatic workspace bundles preserve
+Generic run/task copies drop symlinks. A rollout that already holds a verdict
+gives a re-review only its rollout layout (``_REVIEW_LAYOUT``, an allow-list),
+a ``result.json`` from before any review, and a record of the names it left
+out. Automatic workspace bundles preserve
 manifest-validated internal links through an archive and verify every file after
 upload, before the reviewer starts. Available provider traces cross the canonical
 redaction boundary before inclusion.
@@ -35,6 +38,7 @@ import shutil
 import stat
 from pathlib import Path
 
+from benchflow._utils.raw_evidence import is_raw_evidence, refuse_raw_evidence
 from benchflow.review.config import (
     REVIEW_RESULT_FILENAME,
     Rubric,
@@ -91,6 +95,8 @@ def reviewer_setup_packages(image: str, *, pdf_tools: bool = False) -> tuple[str
 
 #: Rollout-side entries never copied into the evidence snapshot.  Excluding
 #: prior review output means a re-review can never read an earlier verdict.
+#: A hosted run's raw vf-eval output (``is_raw_evidence``) never enters a
+#: reviewer sandbox either.
 _EVIDENCE_EXCLUDES = (
     ".git",
     "llm_trajectory.jsonl",
@@ -100,6 +106,74 @@ _EVIDENCE_EXCLUDES = (
     REVIEW_RESULT_FILENAME,
     "review_report.json",
 )
+
+#: A ``result.json`` key holding a verdict of record: BenchFlow's ``scoring``,
+#: the ``review``/``reviews`` of older writers and a run owner's
+#: ``operator_verdict``.
+_VERDICT_KEYS = ("scoring", "review", "reviews", "operator_verdict")
+#: The top-level names a re-review's copy keeps when the rollout already holds
+#: a verdict. Everything else at the top of the rollout stays out.
+#:
+#: The copy is a blind re-review's input, so it is an allow-list: default-deny
+#: is the safe side. A verdict can be recorded under any name beside
+#: ``result.json`` (BenchFlow's score exports and regrade outputs, and the
+#: backups, re-score and publication records other tools keep there), and no
+#: deny-list can name them all. A name missing here costs the reviewer one
+#: record; a verdict let through costs the review. So a name is added here by
+#: a reviewed change, and the copy's skip record (``_LEFT_OUT_RECORD``) names
+#: whatever a rollout had that the copy left out.
+_REVIEW_LAYOUT = frozenset(
+    {
+        # The rollout layout (task.paths.RolloutPaths); result.json is
+        # written anew as the record from before any review.
+        "agent",
+        "artifacts",
+        "trajectory",
+        "verifier",
+        "config.json",
+        "result.json",
+        # The trial's records docs/evaluate/read-results.md lists, without
+        # the score exports (rewards.jsonl, results.jsonl, trainer/).
+        "timing.json",
+        "prompts.json",
+        "artifacts-manifest.json",
+        "cloud-metadata.json",
+        "firewall-power.json",
+        "locked-system-path.json",
+        "kill-before-grading.json",
+        "trust-state.json",
+        # bench bundle's trial files and folders (evidence_bundle.TRIAL_FILES
+        # and TRIAL_FOLDERS), without its reviews and regrades.
+        "steps.json",
+        "verification.json",
+        "rounds",
+        # The solver's record, and the verifier revisions verification_source
+        # admits with it.
+        "solver.json",
+        "verifier-recovery",
+        "verifier-sandbox",
+        # What the rollout writes before grading: the sandbox, a user loop's
+        # rounds, a failed rollout's traceback, the agent's network policies.
+        "sandbox.json",
+        "user_rounds.jsonl",
+        "error-traceback.txt",
+        "native-oauth-network.json",
+        "codex_apps_policy.json",
+        # Records a caller's own tooling writes into a rollout before its
+        # verifier runs, as a reported rollout's own allow-list keeps them.
+        "workspace",
+        "provider_overrides",
+        "runtime.json",
+        "evidence_capture_policy.json",
+        "runtime_facts.json",
+        "pre_verify_removed.json",
+    }
+)
+#: Beside a re-review's copy (``evidence/trial-left-out.json``, uploaded to
+#: ``/evidence/``): the top-level names of the rollout that the copy does not
+#: hold, and their count, never their contents. Outside the copy, so the copy
+#: itself holds only the rollout layout.
+_LEFT_OUT_RECORD = "trial-left-out.json"
 
 #: Task-side material the reviewer must not see: skills would break no-skill
 #: resource isolation, and the task's own rubric must never enter a sandbox.
@@ -273,8 +347,13 @@ _NETWORK_LINE_ISOLATED = "\n  allow_internet: false"
 _NETWORK_LINE_OPEN = ""
 
 
-def _evidence_ignore(extra_excludes: tuple[str, ...]):
-    """Build a copytree ignore callback: name excludes plus symlink rejection.
+def _evidence_ignore(
+    extra_excludes: tuple[str, ...],
+    root: Path | None = None,
+    root_names: frozenset[str] | None = None,
+):
+    """Build a copytree ignore callback: name excludes (and, directly in
+    *root*, every name not in *root_names*) plus symlink rejection.
 
     ``shutil.copytree(symlinks=False)`` would *dereference* links, so a
     source-controlled symlink could materialize an arbitrary host file into
@@ -285,8 +364,12 @@ def _evidence_ignore(extra_excludes: tuple[str, ...]):
 
     def ignore(directory: str, names: list[str]) -> set[str]:
         ignored = set(patterns(directory, names))
+        if root_names is not None and Path(directory) == root:
+            ignored |= {name for name in names if name not in root_names}
         for name in names:
-            if (Path(directory) / name).is_symlink():
+            if (Path(directory) / name).is_symlink() or is_raw_evidence(
+                Path(directory), name
+            ):
                 ignored.add(name)
         return ignored
 
@@ -298,16 +381,108 @@ def copy_evidence(
     destination: Path,
     *,
     extra_excludes: tuple[str, ...] = (),
+    root_names: frozenset[str] | None = None,
 ) -> None:
-    """Copy one evidence tree; drops VCS data, prior reviews, and symlinks."""
-
+    """Copy one evidence tree; drops VCS data, prior reviews, and symlinks.
+    With *root_names*, only those names are copied from the top of *source*.
+    A *source* that is a hosted run's raw evidence or sits inside it is
+    refused (``RawEvidenceError``)."""
+    refuse_raw_evidence(source)
     shutil.copytree(
         source,
         destination,
-        ignore=_evidence_ignore(extra_excludes),
+        ignore=_evidence_ignore(extra_excludes, Path(source), root_names),
         symlinks=True,  # never dereference; links are filtered by ignore()
     )
     _strip_write_bits(destination)
+
+
+def _held_verdict(rollout_dir: Path) -> bool:
+    """Whether the rollout's ``result.json`` already holds a verdict.
+
+    A linked ``result.json`` counts as one: the copy drops the link unread,
+    so nothing shows what it holds, and what is copied beside it is kept to
+    the rollout layout."""
+    path = rollout_dir / "result.json"
+    if path.is_symlink():
+        return True
+    try:
+        result = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(result, dict) and any(
+        result.get(key) is not None for key in _VERDICT_KEYS
+    )
+
+
+def _pre_review_record(trial: Path) -> dict:
+    """The copy's ``result.json`` as the first review saw it: the solver's
+    record with its admitted verifier revision, no verdict of record. Read
+    from the copy, which holds no link, never from the rollout.
+
+    Without a readable solver record (a rollout from before BenchFlow wrote
+    ``solver.json``, or one whose ``solver.json`` was a link) it is the
+    copy's ``result.json`` without its verdict keys and with only the
+    verifier's reward: ``rewards.verifier_reward`` as ``reward``, and no
+    ``rewards`` when it names none, since the scored reward is the verdict's.
+    With no ``result.json`` either (a linked one is not copied) it is ``{}``.
+    """
+    from benchflow.rollout._verifier_recovery import verification_source
+
+    try:
+        record = verification_source(trial)
+    except (OSError, ValueError, KeyError, TypeError):
+        record = None
+    if not isinstance(record, dict):
+        try:
+            record = json.loads((trial / "result.json").read_text())
+        except (OSError, ValueError):
+            record = {}
+        if not isinstance(record, dict):
+            record = {}
+        rewards = record.pop("rewards", None)
+        if isinstance(rewards, dict) and rewards.get("verifier_reward") is not None:
+            record["rewards"] = {"reward": rewards["verifier_reward"]}
+    for key in _VERDICT_KEYS:
+        record.pop(key, None)
+    return record
+
+
+def _write_pre_review_result(trial: Path) -> None:
+    """Replace the copy's ``result.json`` with :func:`_pre_review_record`."""
+    result = _pre_review_record(trial)
+    target = trial / "result.json"
+    trial.chmod(trial.stat().st_mode | stat.S_IWUSR)
+    try:
+        target.unlink(missing_ok=True)
+        target.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        target.chmod(0o444)
+    finally:
+        trial.chmod(stat.S_IMODE(trial.stat().st_mode) & ~stat.S_IWUSR)
+
+
+def _write_left_out_record(rollout_dir: Path, trial: Path) -> Path:
+    """Write ``_LEFT_OUT_RECORD`` beside *trial*: each top-level name of
+    *rollout_dir* the copy does not hold, and their count. Names only: the
+    reviewer can see that a record was left out, never what it held."""
+    held = {entry.name for entry in trial.iterdir()}
+    left_out = sorted(
+        entry.name for entry in rollout_dir.iterdir() if entry.name not in held
+    )
+    path = trial.parent / _LEFT_OUT_RECORD
+    record = {
+        "about": (
+            "Top-level names of the reviewed rollout that are not in its "
+            "evidence copy (/evidence/trial). A rollout that already holds a "
+            "verdict is copied with its rollout layout only, and its "
+            "result.json is the record from before any review."
+        ),
+        "count": len(left_out),
+        "left_out": left_out,
+    }
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o444)
+    return path
 
 
 def _copy_provider_trace(source: Path, destination: Path) -> None:
@@ -400,8 +575,21 @@ def assemble_review_task(
     dest.mkdir(parents=True)
 
     evidence = dest / "evidence"
-    copy_evidence(rollout_dir, evidence / "trial", extra_excludes=("evidence",))
+    # A re-review never reads the verdict its rollout already holds: it gets
+    # the rollout layout, the record from before any review, and the names
+    # of what was left out. A first review gets the rollout as it is.
+    held = _held_verdict(rollout_dir)
+    copy_evidence(
+        rollout_dir,
+        evidence / "trial",
+        extra_excludes=("evidence",),
+        root_names=_REVIEW_LAYOUT if held else None,
+    )
     uploads = {str(evidence / "trial"): TRIAL_MOUNT}
+    if held:
+        _write_pre_review_result(evidence / "trial")
+        left_out = _write_left_out_record(rollout_dir, evidence / "trial")
+        uploads[str(left_out)] = f"/evidence/{_LEFT_OUT_RECORD}"
     if workspace_bundle is not None:
         from benchflow.review.evidence import EvidenceManifest, prepare_workspace_upload
 

@@ -288,6 +288,129 @@ def _links_under(folder: Path) -> list[Path]:
     return [p for p in folder.rglob("*") if p.is_symlink()]
 
 
+def tasks_root_entry_refusal(root: Path, name: str) -> str | None:
+    """Why the entry *name* in the tasks root *root* is not taken as a task.
+
+    None when it is. ``bench run``'s task listing and a review resume
+    (``bench eval score``, an evaluation's resumed reviews) both apply this
+    rule, so a resume never refuses a task the run took. The entry is a
+    folder directly in *root*, or a link there to a folder with the same
+    name that is not itself a link: a task list made of links into a task
+    store runs and resumes. A link to another link, to a file or to a folder
+    of another name is refused, so the recorded task name is always the
+    real folder's. Only the link's own target is checked for being a link:
+    links further up its path (a task store reached through an alias, or
+    ``~/batch`` itself a link) are followed, as a store's layout may need
+    them, and the name is still checked on the real folder.
+    A task whose task file is a link, with a link in a folder
+    the run uploads, or in another task format with any link, is refused as
+    well (#411). Other links inside the task are left to ``copy_tree`` and
+    the upload.
+    """
+    if name in ("", ".", "..") or "/" in name:
+        return f"{name!r} is not the name of a folder in {root}"
+    entry = root / name
+    if entry.is_symlink():
+        target = entry.parent / entry.readlink()
+        if target.is_symlink():
+            return (
+                f"{name} is a link to {target}, which is a link too; "
+                "link the task folder itself"
+            )
+        if not target.is_dir():
+            return f"{name} is a link to {target}, which is not a folder"
+        real = target.resolve().name
+        if real != name:
+            return (
+                f"{name} is a link to the folder {real}; "
+                "a linked task keeps its folder's name"
+            )
+    elif not entry.is_dir():
+        return f"{root} has no folder {name}"
+    return task_folder_link_refusal(entry)
+
+
+def task_folder_link_refusal(folder: Path) -> str | None:
+    """The in-task part of ``tasks_root_entry_refusal``: why the links in the
+    task *folder* keep it out of a tasks root, or None.
+
+    A linked task file, a link in a folder the run uploads, or, in another
+    task format, any link (#411). A folder with no task file has none. A
+    review resume runs this again on the folder it resolved, so a link
+    swapped after the entry's check is judged on the folder used.
+    """
+    if not holds_task_file(folder):
+        return None
+    from benchflow.task.formats import detect_task_format
+
+    if (
+        any((folder / f).is_symlink() for f in (TASK_DOCUMENT_FILE, "task.toml"))
+        or run_folder_link_issues(folder)
+        or (detect_task_format(folder) is not None and task_symlink_issues(folder))
+    ):
+        return task_symlink_issues(folder)[0]
+    return None
+
+
+def holds_task_file(folder: Path) -> bool:
+    """Whether *folder* holds a task file (task.md, or a legacy task.toml).
+
+    Only the file's existence is checked, through any link: nothing is read,
+    so a listing can ask it of a link it refuses.
+    """
+    return (folder / TASK_DOCUMENT_FILE).is_file() or (folder / "task.toml").is_file()
+
+
+def tasks_root_entry_folder(root: Path, name: str) -> tuple[Path | None, str | None]:
+    """The folder the tasks-root rule takes for the entry *name* of the
+    resolved tasks root *root*, or None and the reason it refuses it.
+
+    A review resume and ``bench review --tasks-root`` both look a task up
+    with this, so they take the entries ``bench run`` runs
+    (``tasks_root_entry_refusal``). The root is the task itself when it has
+    the task's name (a single-task run's ``--tasks-dir``). An entry is
+    resolved once, after the rule's check, and the folder that gives is
+    judged again by its name and the rule's in-task links, so a link swapped
+    after the check cannot bring in a folder the rule refuses. The caller
+    still pins the folder's files with the task digest.
+    """
+    if name and root.name == name:
+        candidate = root
+    else:
+        if (refusal := tasks_root_entry_refusal(root, name)) is not None:
+            return None, refusal
+        try:
+            candidate = (root / name).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            return None, f"{name} no longer resolves: {exc}"
+        if candidate.name != name:
+            return None, (
+                f"{name} is a link to the folder {candidate.name}; "
+                "a linked task keeps its folder's name"
+            )
+        if (refusal := task_folder_link_refusal(candidate)) is not None:
+            return None, refusal
+    if not candidate.is_dir():
+        return None, f"{candidate} is not a folder"
+    return candidate, None
+
+
+def tasks_root_skip_reason(root: Path, name: str) -> str:
+    """The short reason a run records for an entry ``tasks_root_entry_refusal``
+    refuses (run-card.json and summary.json's ``tasks_root_skips``)."""
+    entry = root / name
+    if not entry.is_symlink():
+        return "link inside the task" if entry.is_dir() else "not a folder"
+    target = entry.parent / entry.readlink()
+    if target.is_symlink():
+        return "link to a link"
+    if not target.is_dir():
+        return "link to no folder"
+    if target.resolve().name != name:
+        return "link to a different name"
+    return "link inside the task"
+
+
 def not_runnable_message(task_dir: Path, issues: list[str]) -> str:
     """``<folder> is not a runnable task:`` and its issues, one per line."""
     listed = "\n".join(f"  - {issue}" for issue in issues)
@@ -305,11 +428,14 @@ def runnable_task_issues(task_dir: Path, *, image_supplied: bool = False) -> lis
     or tests/, oracle/ or solution/: it never arrives, #411); for task.md
     also no verifier entrypoint, a verifier.md that does not parse, and no
     image source at all (``image_supplied``: the run's own environment
-    manifest names one). Everything else ``bench check`` reports (the CTRF
-    path, rubrics, oracle/ vs solution/ drift, placeholders, links elsewhere
-    in the task) is an authoring issue: ``bench check`` lists it and the run goes ahead. A
-    legacy task.toml package otherwise only has to parse, as discovery has
-    always required of it.
+    manifest names one). Everything else ``bench check`` reports (rubrics,
+    oracle/ vs solution/ drift, placeholders, links elsewhere in the task) is
+    an authoring issue: ``bench check`` lists it and the run goes ahead. A
+    test.sh whose CTRF report never reaches /logs/verifier/ctrf.json is a
+    warning at check and at the run; the task.md plan refuses it
+    only where a criterion is graded from the report. A legacy task.toml
+    package otherwise only has to parse, as discovery has always required of
+    it.
     """
     task_md = task_dir / TASK_DOCUMENT_FILE
     task_toml = task_dir / "task.toml"
@@ -488,11 +614,6 @@ def check_task(
             "test.sh or a verifier.md selected strategy)"
         )
 
-    # Check CTRF output path consistency
-    test_sh = paths.test_path
-    if test_sh.exists():
-        issues.extend(_check_ctrf_path(test_sh))
-
     # Detect placeholder oracle scripts that have not been replaced (#360).
     for solve_sh in (
         paths.oracle_dir / "solve.sh",
@@ -581,7 +702,10 @@ def check_task_warnings(task_dir: Path) -> list[str]:
       /var/tmp, /logs, /testbed), which the pytest plugin guard refuses,
       leaving every trial unscored;
     - ``$BENCHFLOW_PYTEST`` named only in the build context or the solution
-      (:func:`_image_only_runner_warning`).
+      (:func:`_image_only_runner_warning`);
+    - a test.sh whose CTRF report never reaches /logs/verifier/ctrf.json
+      (:func:`_check_ctrf_path`): a warning where the task grades itself, and
+      the run warns in the same words.
     """
     from benchflow.task.imports import (
         classify_unknown_key,
@@ -647,6 +771,8 @@ def check_task_warnings(task_dir: Path) -> list[str]:
     image_only = _image_only_runner_warning(task_dir, paths)
     if image_only is not None:
         warnings.append(image_only)
+    if paths.test_path.is_file():
+        warnings.extend(_check_ctrf_path(paths.test_path))
     return warnings
 
 

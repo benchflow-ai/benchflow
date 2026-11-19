@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
+from benchflow.task.ctrf_report import verifier_script_ctrf_issue
 from benchflow.task.document import TaskDocument
 from benchflow.task.package import TaskPackage
 from benchflow.task.paths import TaskPaths, local_script_strategy_files
@@ -29,8 +30,6 @@ from ._evidence_paths import (
 )
 
 _RUBRIC_SUFFIXES = {".md", ".toml", ".yaml", ".yml", ".json"}
-
-_CTRF_STANDARD_PATH = "/logs/verifier/ctrf.json"
 
 
 def _check_unreplaced_verifier_placeholders(
@@ -59,24 +58,10 @@ def _check_unreplaced_verifier_placeholders(
 
 
 def _check_ctrf_path(test_sh: Path) -> list[str]:
-    """Warn when test.sh uses --ctrf with a non-standard output path."""
-    try:
-        text = test_sh.read_text()
-    except OSError:
-        return []
-    uncommented = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-    match = re.search(r"--ctrf[= ]([^\s\\]+)", uncommented)
-    if not match:
-        return []
-    path_arg = match.group(1).strip('"').strip("'")
-    if path_arg.startswith("$"):
-        return []
-    if path_arg != _CTRF_STANDARD_PATH:
-        return [
-            f"test.sh uses non-standard CTRF path '{path_arg}' "
-            f"(expected '{_CTRF_STANDARD_PATH}')"
-        ]
-    return []
+    """The CTRF report test.sh never gets to the run, in the run's words: a
+    warning (``check_task_warnings``), as the run warns."""
+    issue = verifier_script_ctrf_issue(test_sh)
+    return [] if issue is None else [issue]
 
 
 # Workspace plugin installs. The verifier's pytest plugin guard

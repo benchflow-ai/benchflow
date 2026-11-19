@@ -1,0 +1,17 @@
+{
+ "source": "https://github.com/anomalyco/models.dev",
+ "commit": "9afe121d524c044965ab0442daac933d99edf010",
+ "committed": "2026-11-14T12:26:57+00:00",
+ "date": "2026-11-14",
+ "license": "MIT (LICENSE.models-dev, at the commit)",
+ "built_with": "bun 1.3.1: bun install --frozen-lockfile, then bun run build in packages/web; dist/_api.json",
+ "api_json_sha256": "9d7ac5c8018fd475dc1271fc12fb6d72298e0cdff8c5f0f2c64098a772d4874f",
+ "api_json_providers": 236,
+ "providers": [
+  "google"
+ ],
+ "models": {
+  "google": 37
+ },
+ "sha256": "2e3348072e7d698ba2c5d087f73719b12db0e8f2520a0db02381c9d5a2eda89e"
+}

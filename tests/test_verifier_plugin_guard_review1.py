@@ -50,6 +50,11 @@ from tests.test_verifier_uv_state import (
     workspace_venv,
 )
 
+# A clean pytest's end-of-session record (the guard's ``finished``).
+_CLEAN_RECORD = json.dumps(
+    {"session": True, "exitstatus": 0, "collected": 1, "failed": 0, "passed": 1}
+)
+
 
 def signed_marker(guard_name: str, token: str, kind: str, detail: str = "") -> None:
     """Write a marker as the guard *guard_name* signs it."""
@@ -91,7 +96,7 @@ class _ManyCleanRuns(load_failure.PytestSandbox):
         if "test-stdout.txt" in command:
             name = guard_of(env)
             for i in range(300):
-                signed_marker(name, f"{i + 2}-{i:08x}", "registered")
+                signed_marker(name, f"{i + 2}-{i:08x}", "finished", _CLEAN_RECORD)
         return await super().exec(command, env=env, **kwargs)
 
 
@@ -105,7 +110,9 @@ async def test_many_clean_pytest_runs_stay_scored(
 
     Each left a ``registered`` marker, the reader counted them against its
     cap of 256 and printed ``!truncated``, and the verifier refused the
-    reward, the oracle's included. Only one registration is needed.
+    reward, the oracle's included. Only one registration is needed. Each
+    clean pytest now leaves its end-of-session record instead ((g2)):
+    300 of them still make no run unscored.
     """
     monkeypatch.setattr(load_failure, "PytestSandbox", _ManyCleanRuns)
 

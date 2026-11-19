@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "about": "The release gate's legs: one per-run VM each, run in parallel (tools/release_gate/run_gate.py --leg NAME), then combined (--combine). A release passes only when every leg passes. 'images' are pulled before the unit suite (tests skip without them); every test in a 'must_run' file must run: a skip of one fails the leg.",
+  "legs": {
+    "py3.12": {
+      "python": "3.12",
+      "docker": "ubuntu",
+      "stages": [
+        "static",
+        "unit",
+        "pip-audit",
+        "docker",
+        "hillclimb",
+        "matrix"
+      ],
+      "about": "test.yml's unit job and its Docker jobs on Python 3.12, plus the hill-climb test alone and the cost matrix, on Ubuntu's Docker (the proven Compose).",
+      "images": [
+        "ubuntu:24.04"
+      ],
+      "must_run": [
+        "tests/test_direct_docker_container.py",
+        "tests/test_locked_system_path.py"
+      ]
+    },
+    "py3.13": {
+      "python": "3.13",
+      "docker": "ubuntu",
+      "stages": [
+        "unit"
+      ],
+      "about": "The whole unit suite on Python 3.13, the other Python test.yml runs; it includes the sandbox-install unit files. 0.10.0rc3's own test run failed on exactly this leg.",
+      "images": [
+        "ubuntu:24.04"
+      ],
+      "must_run": [
+        "tests/test_direct_docker_container.py",
+        "tests/test_locked_system_path.py"
+      ]
+    },
+    "docker-ce": {
+      "python": "3.12",
+      "docker": "ce",
+      "stages": [
+        "unit"
+      ],
+      "about": "The whole unit suite on Docker CE's current Engine and Compose (bootstrap_vm.sh --docker ce), which users install from get.docker.com. Only a test the lead waives by name for this leg may fail here.",
+      "images": [
+        "ubuntu:24.04"
+      ],
+      "must_run": [
+        "tests/test_locked_system_path.py"
+      ]
+    }
+  }
+}

@@ -826,7 +826,15 @@ class TestVerifierNonzeroExitRewardAcceptance:
         async def exec_writes_reward_zero(
             *_args: object, **_kwargs: object
         ) -> MagicMock:
-            if sandbox.exec.await_count == 1:
+            from benchflow.task.verifier_core import _VERIFIER_UID_CMD
+
+            # The outputs-folder close reads the verifier user's uid first
+            # a user of its own, whose folder it leaves alone.
+            if _VERIFIER_UID_CMD in str(_args) + str(_kwargs.get("command", "")):
+                return MagicMock(return_code=0, stdout="1000\n")
+            # Setup execs (symlink, chmod, the test.sh preflight) pass their
+            # command positionally; only the test run passes command=.
+            if "command" not in _kwargs:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_text_path.write_text("0.0")
             return MagicMock(return_code=1, stdout="tests failed")
@@ -868,7 +876,15 @@ class TestVerifierNonzeroExitRewardAcceptance:
         async def exec_writes_reward_json(
             *_args: object, **_kwargs: object
         ) -> MagicMock:
-            if sandbox.exec.await_count == 1:
+            from benchflow.task.verifier_core import _VERIFIER_UID_CMD
+
+            # The outputs-folder close reads the verifier user's uid first
+            # a user of its own, whose folder it leaves alone.
+            if _VERIFIER_UID_CMD in str(_args) + str(_kwargs.get("command", "")):
+                return MagicMock(return_code=0, stdout="1000\n")
+            # Setup execs (symlink, chmod, the test.sh preflight) pass their
+            # command positionally; only the test run passes command=.
+            if "command" not in _kwargs:
                 return MagicMock(return_code=0, stdout="")
             rollout_paths.reward_json_path.write_text(json.dumps({"reward": 0.0}))
             return MagicMock(return_code=1, stdout="tests failed")

@@ -310,6 +310,8 @@ def test_list_shows_every_job_in_a_folder_of_jobs(tmp_path: Path):
         out = _invoke("eval", "list", str(listed))
         assert out.exit_code == 0, out.output
         assert "9/10 (90.0%)" in out.output and "10/10 (100.0%)" in out.output
+        # A summary without a failed count can't say a trial went unscored.
+        assert "unscored trial" not in out.output
         # No job has a memory score, so no empty Memory column (DFR-p1-17).
         assert "Jobs" in out.output and "Memory" not in out.output
 

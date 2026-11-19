@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from benchflow.sandbox.agentcore import AgentCoreSandbox
-from benchflow.sandbox.protocol import SandboxStartupError
+from benchflow.sandbox.protocol import ExecTimeoutError, SandboxStartupError
 from benchflow.task.config import SandboxConfig
 from tests._trust_admission import admitted
 
@@ -102,9 +102,51 @@ class TestExecSemantics:
         )
         with (
             patch.object(sandbox, "_client", return_value=client),
-            pytest.raises(TimeoutError),
+            pytest.raises(ExecTimeoutError),
         ):
             await sandbox.exec("sleep 999", timeout_sec=5)
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_command_is_the_exec_timeout_every_backend_raises(
+        self, sandbox
+    ):
+        """Review of PR #141, 2026-11-13 (F2): AgentCore raised a bare
+        TimeoutError for a command past its limit, where every other backend
+        raises ExecTimeoutError, so the oracle's solve.sh out of its agent
+        timeout (rollout/_setup.py's _run_oracle catches ExecTimeoutError)
+        became a timeout of BenchFlow's own set-up for the turn, retried. It is
+        ExecTimeoutError with the limit and the message it had, and the oracle's
+        limit is the agent's timeout again."""
+        from benchflow.rollout._setup import OracleTimeoutError, _run_oracle
+        from tests.test_dx_a_errors import _oracle_task
+
+        client = MagicMock()
+        client.invoke_agent_runtime_command.return_value = _stream(
+            exit_code=None, status="TIMED_OUT"
+        )
+        with patch.object(sandbox, "_client", return_value=client):
+            with pytest.raises(ExecTimeoutError) as caught:
+                await sandbox.exec("sleep 999", timeout_sec=5)
+            assert caught.value.timeout_sec == 5
+            assert str(caught.value).startswith(
+                "AgentCore command timed out after 5s: "
+            )
+
+            class Env:
+                """The oracle's solve.sh, given the agent timeout, runs on
+                AgentCore; its other commands answer at once."""
+
+                async def exec(self, command, **kwargs):
+                    if kwargs.get("timeout_sec") == 5:
+                        return await sandbox.exec(command, **kwargs)
+                    return MagicMock(return_code=0, stdout="", stderr="")
+
+            root, task = _oracle_task()
+            with pytest.raises(OracleTimeoutError) as oracle:
+                await _run_oracle(Env(), root, 5, task=task)
+        assert str(oracle.value) == (
+            "oracle/solve.sh timed out after 5s, the task's agent timeout"
+        )
 
     @pytest.mark.asyncio
     async def test_command_is_wrapped_for_bash(self, sandbox):

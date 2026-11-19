@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.10.0rc3"
+version = "0.10.0rc5"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -84,9 +84,16 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24.0",
     "pytest-timeout>=2.4.0",
+    # Property tests of the redactor's fail-closed rules
+    # (tests/test_redaction_code_name_values.py).
+    "hypothesis>=6.100",
     # `pytest -n auto` (CI's unit job and the round's test command). 3.8 is
     # the release the suite was first checked under.
     "pytest-xdist>=3.8",
+    # CI splits the unit suite into shards (`--splits 4 --group N` in
+    # .github/workflows/test.yml) so no leg runs long enough to exhaust the
+    # runner.
+    "pytest-split>=0.11",
     # Browser-level viewer tests (tests/trajectories/test_viewer_browser.py):
     # drives the interactive template in real Chromium. Tests self-skip when
     # playwright or its browser binary is absent, so plain `pytest tests/`
@@ -94,6 +101,9 @@ dev = [
     "playwright>=1.49",
     "ruff>=0.7.0",
     "ty>=0.0.1a1",
+    # The pytest plugin guard runs in the task's own Python, 3.6 and later
+    # (tests/test_pytest_plugin_guard_floor.py checks it statically).
+    "vermin>=1.6.0",
 ]
 train = [
     # Used by the Prime-RL SFT wrapper for local token-window staging before
@@ -201,22 +211,28 @@ build-backend = "hatchling.build"
 # src/benchflow/_bfx/pins.py) are package data though git ignores them.
 artifacts = ["src/benchflow/_bfx/bin/bfx-x86_64", "src/benchflow/_bfx/bin/bfx-aarch64"]
 
+# hatch_build.py bakes the source commit into the sdist and the wheel
+# (benchflow/_build.json), which records name as benchflow_build.commit.
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build.targets.sdist]
 # Allowlist: only what builds and documents the installed package. The tests,
 # their fixtures and the docs stay in the repository, out of the sdist.
+# hatch_build.py builds the wheel from the sdist, so it ships too.
 only-include = [
     "src",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "pyproject.toml",
+    "hatch_build.py",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # --dist loadgroup only matters with -n (pytest-xdist): tests that read one
 # session job share a worker, and long tests start first (tests/conftest.py).
-addopts = "-m 'not live and not integration and not e2e' --dist loadgroup"
+addopts = "-m 'not live and not integration and not e2e and not grading_matrix' --dist loadgroup"
 testpaths = ["tests"]
 markers = [
     "live: requires real Anthropic API and Docker daemon (run with -m live)",
@@ -224,6 +240,9 @@ markers = [
     "browser: drives the viewer template in real Chromium via Playwright (self-skips without playwright/chromium; deselect with -m 'not browser')",
     "e2e: end-to-end scenarios per SDK feature: real bench CLI and Python API on real sandboxes (tests/e2e/README.md: BENCHFLOW_E2E_SANDBOX=daytona for the feature tier; Docker or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona for the self-hosted policy scenario); excluded by default, run with -m e2e",
     "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
+    "ceiling: the test holds one call to tests/_timing.py's CPU-time ceiling (within_ceiling); it never runs under xdist, where a neighbour on the same core inflates CPU time: conftest leaves it out of an xdist run and CI runs it with -n 0",
+    "bfx_refusal: the test asserts the integrity refusal before the turn on a unit fake, so conftest gives its fake sandbox no stand-in bfx (tests/_fake_bfx.py)",
+    "grading_matrix: the grading-integrity matrix (tests/test_grading_integrity_matrix.py), whole trials on real Docker; left out of the default run, selected by -m deterministic (pass D) or -m grading_matrix; it fails, never skips, without Docker",
     "transport_over_bound: the test hands a backend's provider a command over the exec transport bound on purpose (tests/conftest.py exec_transport_tripwire)",
 ]
 
@@ -248,6 +267,9 @@ extend-exclude = [
     # pins: BenchFlow parses a package exactly as the reference parser does.
     "src/benchflow/taskmd/_vendor",
     "tests/fixtures/taskmd",
+    # Review R192C's A.1 oracle, byte-identical to the reviewed copy (its sha256
+    # is in tests/test_redaction_code_name_values.py).
+    "tests/_a1_oracle.py",
 ]
 
 [tool.ruff.lint]

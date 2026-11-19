@@ -89,6 +89,7 @@ __all__ = [
     "restore_from",
     "sealed",
     "stamp_snapshot",
+    "tainted",
 ]
 
 MAIN = "main"
@@ -1078,6 +1079,18 @@ def _existing(sandbox: Any) -> TrustLedger | None:
         return book
     held = _UNATTACHED.get(id(sandbox))
     return held[1] if held is not None and held[0] is sandbox else None
+
+
+def tainted(sandbox: Any, service: str = MAIN) -> bool:
+    """Whether an ingress into ``service`` has been admitted in the sandbox's
+    current generation (a restored one inherits its parent's). Creates no
+    ledger: a sandbox without one has admitted nothing."""
+    book = _existing(sandbox)
+    if not isinstance(book, TrustLedger):
+        return False
+    with book._lock:
+        entry = book.services.get(service)
+        return entry is not None and entry.state is TrustState.TAINTED
 
 
 def sealed(sandbox: Any, service: str = MAIN) -> bool:

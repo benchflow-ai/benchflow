@@ -55,7 +55,11 @@ def _task(tmp_path: Path) -> Path:
 async def test_unreachable_daemon_becomes_a_short_sandbox_startup_error(tmp_path):
     with pytest.raises(SandboxStartupError) as info:
         await _start_env_and_upload(
-            _FailingStartEnv(_COMPOSE_DAEMON_DOWN), _task(tmp_path), {}
+            _FailingStartEnv(_COMPOSE_DAEMON_DOWN),
+            _task(tmp_path),
+            {},
+            task=None,
+            agent=None,
         )
 
     message = str(info.value)
@@ -74,9 +78,15 @@ async def test_unreachable_daemon_becomes_a_short_sandbox_startup_error(tmp_path
 
 @pytest.mark.asyncio
 async def test_other_compose_failures_are_left_alone(tmp_path):
-    with pytest.raises(RuntimeError) as info:
+    with pytest.raises(
+        RuntimeError, match=r"COPY failed: file not found in build context"
+    ) as info:
         await _start_env_and_upload(
-            _FailingStartEnv(_COMPOSE_COPY_MISSING), _task(tmp_path), {}
+            _FailingStartEnv(_COMPOSE_COPY_MISSING),
+            _task(tmp_path),
+            {},
+            task=None,
+            agent=None,
         )
 
     assert not isinstance(info.value, SandboxStartupError)
@@ -206,7 +216,9 @@ async def test_other_teardown_failures_before_compose_up_stay_loud(tmp_path, cap
     )
     env._run_docker_compose_command = run
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(
+        RuntimeError, match=r"Docker compose command failed: bad Dockerfile"
+    ):
         await env.start(force_build=False)
     with caplog.at_level(logging.WARNING, logger="benchflow"):
         await env.stop(delete=True)

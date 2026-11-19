@@ -383,7 +383,14 @@ async def test_post_agent_grace_keeps_the_whole_lifecycle_backstop(
     tmp_path, monkeypatch
 ):
     """Guards the #1134 fix: stopping the agent grants verification only a
-    bounded grace; a verifier wedged past it still hits the infra backstop."""
+    bounded grace; a verifier wedged past it still hits the backstop, and the
+    trial ends there.
+
+    What the trial is recorded as changed with the ruling of
+    2026-11-13 (PR #141): the deadline's stop of the agent is the agent
+    running out of time, so the trial stays a timeout, is not retried, and
+    the verify overrun is recorded beside it in ``post_turn_failure_info``.
+    It was ``infra_failure``, which ran and paid for the agent again."""
     task_dir = tmp_path / "wedged-after-cut"
     _write_task(task_dir)
     monkeypatch.setenv("BENCHFLOW_ROLLOUT_HARD_DEADLINE", "0.5")
@@ -394,8 +401,14 @@ async def test_post_agent_grace_keeps_the_whole_lifecycle_backstop(
     result = await asyncio.wait_for(rollout.run(), timeout=15)
 
     rollout.verify.assert_awaited_once()
-    assert result.error_category == INFRA_ERROR
-    assert "hard deadline" in result.error
+    assert result.error_category == TIMED_OUT
+    assert result.rewards is None
+    assert not RetryConfig().should_retry(result.error, category=result.error_category)
+    saved = json.loads((tmp_path / "trial" / "result.json").read_text())
+    assert saved["error_category"] == TIMED_OUT
+    later = saved["post_turn_failure_info"]
+    assert (later["step"], later["kind"]) == ("verify", "host_deadline")
+    assert "hard deadline" in later["detail"]
 
 
 @pytest.mark.asyncio
@@ -415,3 +428,20 @@ async def test_caller_cancellation_during_agent_phase_is_not_a_timeout(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(run_task, timeout=15)
     rollout.verify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_agent_stopped_at_the_deadline_ran_out_of_time(tmp_path, monkeypatch):
+    """Guards the audit fix on branch ``audit-deadline-timeout``:
+    the deadline's stop reason carries none of the words the wall-clock
+    timeout does, so the trial was recorded as not having run out of time. A
+    task with no agent ``timeout_sec`` has no other clock."""
+    task_dir = tmp_path / "long-task"
+    _write_task(task_dir)
+    monkeypatch.setenv("BENCHFLOW_ROLLOUT_HARD_DEADLINE", "0.5")
+
+    rollout = _live_agent_rollout(task_dir, tmp_path / "trial")
+    result = await asyncio.wait_for(rollout.run(), timeout=15)
+
+    assert "hard deadline" in result.error
+    assert rollout._agent_ran_out_of_time is True

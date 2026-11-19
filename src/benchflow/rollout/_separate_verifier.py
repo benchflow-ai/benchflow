@@ -100,10 +100,13 @@ from benchflow.review.evidence import (
 )
 from benchflow.rollout._artifact_links import plain_link_targets
 from benchflow.rollout._collect_hooks import install_sidecar_artifacts
+from benchflow.sandbox import policy_reproof
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.sandbox._exec_receipt import receipt_exec
+from benchflow.task._document_parse import converted_from_task_toml
 from benchflow.task.paths import RolloutPaths
 from benchflow.task.verifier_errors import (
+    NetworkPolicyBreachedError,
     verifier_failure_reason,
     verifier_infrastructure_failure,
 )
@@ -1792,18 +1795,30 @@ async def _install_payload(
 
 
 def _format_verifier(task: Any, plan: VerifierImage) -> bool:
-    """A task.toml task's verifier built from ``tests/Dockerfile``.
+    """A verifier built from the Dockerfile in the task's verifier folder.
 
-    That format bundles the tests in the verifier image and gives the
-    verifier the declared artifacts, each at its path over what the image
-    put there: Terminal-Bench 4.1's live-database-cutover bakes its pristine
-    ``/app/api`` git baseline into the image and grades the agent's
-    ``/tmp/agent.patch`` against it.
+    The task.toml format builds it from ``tests/Dockerfile``, bundles the
+    tests in the verifier image and gives the verifier the declared
+    artifacts, each at its path over what the image put there: Terminal-Bench
+    4.1's live-database-cutover bakes its pristine ``/app/api`` git baseline
+    into the image and grades the agent's ``/tmp/agent.patch`` against it.
+
+    A task converted to task.md (``bench import --remove-legacy`` moves
+    ``tests/`` to ``verifier/`` and marks it ``benchflow.converted_from:
+    task.toml``) keeps that Dockerfile and its config, and is graded the same
+    way. Judged by the folder name it got the agent's whole
+    workspace instead, over the image's: atrx-vep-crispr's image PATH folder
+    ``/app/data/ensembl-vep-release-115`` then held the agent's files, and
+    hardening rightly refused it. A task.md written as one keeps BenchFlow's
+    own rule (the whole workspace crosses), whatever its folder holds.
     """
-    return (
-        plan.source == "tests/Dockerfile"
-        and getattr(task.paths, "uses_native_verifier_dir", False) is not True
-    )
+    # plan_verifier_image labels the verifier folder's Dockerfile
+    # "tests/Dockerfile" in either layout (TaskPaths.tests_dir).
+    if plan.source != "tests/Dockerfile":
+        return False
+    if getattr(task.paths, "uses_native_verifier_dir", False) is not True:
+        return True
+    return converted_from_task_toml(task)
 
 
 def _verifier_task(task: Any, plan: VerifierImage) -> Any:
@@ -1904,7 +1919,7 @@ def _default_create(rollout: Any) -> CreateEnvironment:
     cfg = rollout._config
 
     def create(task: Any, context_path: Path, paths: RolloutPaths) -> Any:
-        return rollout._planes.create_environment(
+        sandbox = rollout._planes.create_environment(
             cfg.environment,
             task,
             context_path,
@@ -1913,6 +1928,7 @@ def _default_create(rollout: Any) -> CreateEnvironment:
             preserve_agent_network=False,
             environment_manifest=None,
         )
+        return sandbox
 
     return create
 
@@ -1961,11 +1977,25 @@ def _default_verify(
                     # what the transfer wrote came from the agent.
                     sandbox_user=None,
                     workspace=workspace,
+                    integrity=getattr(
+                        getattr(rollout, "_config", None), "integrity", None
+                    ),
                     agent_paths=(workspace,) if agent_paths is None else agent_paths,
                 )
             finally:
                 kept = vars(rollout).setdefault("_warnings", [])
                 kept.extend(w for w in warnings if w not in kept)
+        # The detector's record goes in the trial's own integrity folder too
+        # a flag never changes the reward.
+        inputs = getattr(env, "_benchflow_verifier_inputs", None)
+        trial_dir = getattr(rollout, "_rollout_dir", None)
+        if isinstance(inputs, dict) and trial_dir is not None:
+            from benchflow.sandbox._image_manifest import write_detector_record
+
+            try:
+                write_detector_record(trial_dir, inputs)
+            except Exception:
+                logger.debug("verifier-inputs record not written", exc_info=True)
         diagnostics = getattr(rollout, "_diagnostics", None)
         if timeout_diag is not None and diagnostics is not None:
             diagnostics.set(timeout_diag)
@@ -2302,6 +2332,7 @@ OVERLAP = "overlap"
 #: Timing keys of the agent's release that the record copies beside the
 #: verifier's own.
 _RELEASE_TIMING = (
+    timing_spans.AGENT_SANDBOX_REPROOF,
     timing_spans.AGENT_RELEASE,
     timing_spans.AGENT_SANDBOX_STOP_BEFORE_VERIFY,
 )
@@ -2507,8 +2538,47 @@ class VerifierSandboxRun:
         # against max_sandbox_seconds (PERF-C review M1).
         self._warm = False
         self._billed_from: float | None = None
+        # The agent sandbox's rules, proven again once before anything crosses
+        # (reprove_agent_sandbox), and the breach that proof found.
+        self._agent_reproved = False
+        self.agent_breach: NetworkPolicyBreachedError | None = None
 
     # --- before the transfer --------------------------------------------------
+
+    async def reprove_agent_sandbox(self) -> None:
+        """Prove the agent sandbox's network rules again at the end of its
+        turn, before the transfer.
+
+        A shared sandbox's hardening proves them (lockdown's
+        ``network_policy_reproof`` step), but a separate verifier hardens only
+        its own sandbox: a rule of sandbox start or of the agent's turn removed
+        during the turn passed to a positive reward unseen. They are proven
+        here with :func:`benchflow.sandbox.policy_reproof.reprove`, after the
+        workspace and artifacts were captured (what crosses is fixed) and while
+        the agent's sandbox still runs: the overlap order calls this before it
+        releases that sandbox, the serial order from :meth:`finish`. The proof
+        goes in the record (``agent_sandbox_policy``); a breach is kept in
+        :attr:`agent_breach`, and :meth:`finish` then ends the trial "network
+        policy breached" with nothing packed. Runs once. A sandbox with no
+        rule ledger (a provider's, none at all) has nothing to prove.
+        """
+        if self._agent_reproved:
+            return
+        self._agent_reproved = True
+        env = getattr(self.rollout, "_env", None)
+        if env is None:
+            return
+        with timing_spans.span(timing_spans.AGENT_SANDBOX_REPROOF, into=self.timing):
+            proof = await policy_reproof.reprove(
+                env,
+                policy_reproof.END_OF_AGENT,
+                phases=policy_reproof.end_of_agent_phases,
+            )
+        if proof is None:
+            return
+        self.record["agent_sandbox_policy"] = proof.record()
+        if not proof.proven:
+            self.agent_breach = policy_reproof.breach_error(proof)
 
     def check_plan(self) -> None:
         """Plan the verifier image from the task's files; :meth:`finish` raises
@@ -2595,7 +2665,14 @@ class VerifierSandboxRun:
         if self._agent_gone_at is not None and self._charge is not None:
             self._charge.finish()
         try:
-            await self.env.start(force_build=False)
+            # Its main's ENTRYPOINT and its services start under the verifier's
+            # network, not before it (N5), whatever made the sandbox:
+            # nothing of BenchFlow's there needs the network before test.sh.
+            from benchflow.sandbox.service_cover import start_sandbox
+
+            await start_sandbox(
+                self.env, self.vtask, agent=None, separate_verifier=True
+            )
             # V2's protected verifier runtime, from the fresh image before any
             # of the agent's bytes arrive. The workspace is the declared one
             # (the agent's cwd), which the transfer's manifest must match.
@@ -2648,9 +2725,15 @@ class VerifierSandboxRun:
         archive = self.root / "transfer.tar"
         rewards: dict | None = None
         error: str | None = None
+        breach: NetworkPolicyBreachedError | None = None
         published = False
         self._finish_started = timing_spans.clock()
         try:
+            if self._agent_gone_at is None:
+                # The serial order: the agent's sandbox still runs.
+                await self.reprove_agent_sandbox()
+            if self.agent_breach is not None:
+                raise self.agent_breach
             self.check_plan()
             if self._plan_error is not None:
                 raise self._plan_error
@@ -2716,6 +2799,15 @@ class VerifierSandboxRun:
             # bytes the agent could have changed (including mounted tool aliases).
             await rollout._planes.snapshot_build_config(
                 env, workspace=summary["workspace"]
+            )
+            # And the image manifest, before any byte the agent could have
+            # changed lands; the host keeps its copy.
+            from benchflow.sandbox import _image_manifest
+
+            await _image_manifest.record(
+                env,
+                "pre-transfer",
+                timeout_sec=int(rollout._config.sandbox_setup_timeout or 600),
             )
             t0 = timing_spans.clock()
             try:
@@ -2796,6 +2888,17 @@ class VerifierSandboxRun:
                     if "transfer failed" in str(exc)
                     else "sandbox_failed"
                 )
+        except NetworkPolicyBreachedError as exc:
+            # The agent's sandbox did not keep its rules through its turn:
+            # nothing crossed, and the trial is not scored.
+            breach = exc
+            rewards, error = None, f"{policy_reproof.ending_head(exc)}{exc}"
+            record["status"] = (
+                "network_policy_breached"
+                if error.startswith(policy_reproof.NETWORK_POLICY_BREACHED)
+                else "network_policy_unproven"
+            )
+            logger.error(error)
         except asyncio.CancelledError:
             record["status"] = "interrupted"
             raise
@@ -2820,6 +2923,11 @@ class VerifierSandboxRun:
                 if not work.cancelled():
                     work.exception()
                 raise
+        if breach is not None:
+            from benchflow.rollout._setup import _write_network_policy_record
+
+            # In the trial's verifier/, which _finalize left empty.
+            _write_network_policy_record(breach.record, rollout._rollout_paths)
         return rewards, error
 
     async def _finalize(

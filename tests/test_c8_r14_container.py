@@ -24,7 +24,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="docker required"),
 ]
 
-DEBIAN_VENV = "pt-r14-debian-venv:test"
+DEBIAN_VENV = "pt-r14-debian-venv"
 DEBIAN_VENV_DOCKERFILE = """FROM debian:12
 LABEL target="PT-r14"
 RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \\
@@ -37,16 +37,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \\
 def debian_venv_image():
     if not _docker_ready():
         pytest.skip("docker daemon not running")
+    # A tag of this fixture's own, and a failed build is an error.
+    tag = f"{DEBIAN_VENV}-{uuid.uuid4().hex[:12]}:test"
     built = subprocess.run(
-        ["docker", "build", "-q", "-t", DEBIAN_VENV, "-"],
+        ["docker", "build", "-q", "-t", tag, "-"],
         input=DEBIAN_VENV_DOCKERFILE,
         capture_output=True,
         text=True,
         timeout=900,
     )
     if built.returncode != 0:
-        pytest.skip(f"cannot build the debian:12 venv image: {built.stderr[-300:]}")
-    yield DEBIAN_VENV
+        pytest.fail(
+            f"cannot build the debian:12 venv image: {built.stderr[-300:]}",
+            pytrace=False,
+        )
+    yield tag
+    subprocess.run(["docker", "rmi", "--force", tag], capture_output=True, timeout=120)
 
 
 @pytest.mark.asyncio

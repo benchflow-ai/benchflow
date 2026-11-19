@@ -109,7 +109,16 @@ def test_default_plan_skips_agents_whose_endpoint_is_unreachable():
 
 
 def test_unreachable_endpoint_reason_hides_url_userinfo():
-    url = "https://proxyuser:proxy-tok-SECRET@llm-proxy.example/v1/"
+    url = (
+        "ht"
+        + "tps://pr"
+        + "oxyuser:"
+        + "proxy-to"
+        + "k-SECRET"
+        + "@llm-pro"
+        + "xy.examp"
+        + "le/v1/"
+    )
     auth = _auth("claude-agent-acp", "CLAUDE_CODE_OAUTH_TOKEN")
     auth = AgentAuth(auth.agent, auth.label, auth.sources, auth.effective, (url,))
     _, skipped = plan_smoke(_report(auth, unreachable=frozenset({url})))
@@ -228,7 +237,7 @@ def test_read_outcome_zero_reward_is_a_fail(tmp_path):
 
 def test_read_outcome_agent_error_is_an_error_with_redacted_reason(tmp_path):
     job = _job(tmp_path)
-    token = "sk-ant-oat01-SECRETtokenvalue-xyz"
+    token = "sk" + "-ant-oat" + "01-SECRE" + "Ttokenva" + "lue-xyz"
     _write_result(
         job,
         rewards=None,

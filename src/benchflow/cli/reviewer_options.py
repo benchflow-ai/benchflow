@@ -140,9 +140,12 @@ ReviewerCriterionEvidenceOption = Annotated[
 ]
 
 
-def reviewer_idle_timeout(value: str | None) -> int | None:
-    """``--reviewer-idle-timeout`` as ReviewerConfig.idle_timeout_sec: None when
-    the flag is absent, 0 when it disables the watchdog."""
+def reviewer_idle_timeout(
+    value: str | None, flag: str = "--reviewer-idle-timeout"
+) -> int | None:
+    """``--reviewer-idle-timeout`` (or ``bench review``'s *flag*) as
+    ReviewerConfig.idle_timeout_sec: None when the flag is absent, 0 when it
+    disables the watchdog."""
     from benchflow._utils.config import normalize_agent_idle_timeout
 
     if value is None:
@@ -151,7 +154,7 @@ def reviewer_idle_timeout(value: str | None) -> int | None:
         return normalize_agent_idle_timeout(value) or 0
     except ValueError as exc:
         raise typer.BadParameter(
-            "expected whole seconds, 0 or 'none'", param_hint="--reviewer-idle-timeout"
+            "expected whole seconds, 0 or 'none'", param_hint=flag
         ) from exc
 
 

@@ -14,6 +14,8 @@ import contextvars
 import importlib
 import json
 import logging
+import math
+import os
 import re
 import shlex
 import time
@@ -586,12 +588,14 @@ _DAYTONA_STOP_RETRY_ATTEMPTS = 2
 # "502 Bad Gateway" was otherwise leaked.
 _DAYTONA_STOP_GATEWAY_RETRY_ATTEMPTS = 4
 _DAYTONA_GATEWAY_STATUS_CODES = frozenset({502, 503, 504})
-# A status or logs request of a running command that Daytona failed with a
-# 5xx gets this many attempts, about 90 s of backoff (1, 2, 4, 8, 16, 30, 30
-# s): one 502 behind a proxy restart crashed verifiers deep into test.sh
-# ("verifier crashed: Failed to get session command"). Both are
-# idempotent reads; a transport error keeps _DAYTONA_RETRY_ATTEMPTS.
-_DAYTONA_POLL_SERVER_RETRY_ATTEMPTS = 8
+# A status or logs request of a running command (both idempotent reads) that
+# failed on the transport, timed out, was rate limited or got a 5xx is asked
+# again, waiting 1 s, doubling to 60 s, until the waits add up to this many
+# seconds (BENCHFLOW_DAYTONA_POLL_RETRY_SEC; 0 asks once). One 502 behind a
+# proxy restart, or a few seconds without the API, crashed verifiers deep
+# into test.sh ("verifier crashed: Failed to get session command").
+DAYTONA_POLL_RETRY_ENV = "BENCHFLOW_DAYTONA_POLL_RETRY_SEC"
+_DAYTONA_POLL_RETRY_DEFAULT_SEC = 180.0
 _GATEWAY_ERROR_TEXT = re.compile(
     r"\b50[234] (?:bad gateway|service (?:temporarily )?unavailable"
     r"|gateway time-?out)\b",
@@ -634,20 +638,36 @@ def _is_daytona_server_error(exc: BaseException) -> bool:
 
 def _is_daytona_poll_retry_error(exc: BaseException) -> bool:
     """Whether to ask a running command's status or logs again: a transport
-    blip, a timeout, a rate limit or a 5xx. A 4xx fails at once."""
+    blip, a timeout (HTTP 408 too), a rate limit (429) or a 5xx. Any other
+    4xx fails at once."""
     return _is_daytona_transient_retry_error(exc) or _is_daytona_server_error(exc)
 
 
+def daytona_poll_retry_sec() -> float:
+    """How long a command poll's retries may wait in all, read at each try.
+    A value that is not a finite number of seconds, 0 or more, gives the
+    default: ``inf`` would retry for ever."""
+    raw = os.environ.get(DAYTONA_POLL_RETRY_ENV, "").strip()
+    if not raw:
+        return _DAYTONA_POLL_RETRY_DEFAULT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        value = float("nan")
+    if not (math.isfinite(value) and value >= 0):
+        logger.warning(
+            "Invalid %s=%r; retrying for %.0fs",
+            DAYTONA_POLL_RETRY_ENV,
+            raw,
+            _DAYTONA_POLL_RETRY_DEFAULT_SEC,
+        )
+        return _DAYTONA_POLL_RETRY_DEFAULT_SEC
+    return value
+
+
 def _poll_retries_exhausted(retry_state: Any) -> bool:
-    """Tenacity stop rule for the command polls: a 5xx gets more tries."""
-    outcome = retry_state.outcome
-    error = outcome.exception() if outcome is not None else None
-    budget = (
-        _DAYTONA_POLL_SERVER_RETRY_ATTEMPTS
-        if error is not None and _is_daytona_server_error(error)
-        else _DAYTONA_RETRY_ATTEMPTS
-    )
-    return retry_state.attempt_number >= budget
+    """Tenacity stop rule for the command polls: their waits used the budget."""
+    return retry_state.idle_for >= daytona_poll_retry_sec()
 
 
 def _is_daytona_delete_retry_error(exc: BaseException) -> bool:
@@ -696,11 +716,11 @@ _SDK_RETRY = retry(
     retry=_DAYTONA_TRANSIENT_RETRY,
     reraise=True,
 )
-# The command polls (status, then logs): _SDK_RETRY's rule plus a 5xx, which
-# gets _DAYTONA_POLL_SERVER_RETRY_ATTEMPTS (_poll_retries_exhausted).
+# The command polls (status, then logs): _SDK_RETRY's rule plus a 5xx, for
+# BENCHFLOW_DAYTONA_POLL_RETRY_SEC of waits (_poll_retries_exhausted).
 _SDK_POLL_RETRY = retry(
     stop=_poll_retries_exhausted,
-    wait=wait_exponential(multiplier=1, min=1, max=30),
+    wait=wait_exponential(multiplier=1, min=1, max=60),
     retry=retry_if_exception(_is_daytona_poll_retry_error),
     reraise=True,
 )
@@ -3079,6 +3099,117 @@ class DaytonaSandbox(BaseSandbox):
     ) -> None:
         await self._strategy.upload_file(source_path, target_path)
         await self._apply_upload_mode(target_path, mode)
+
+    # -- bfx (Q4): uploaded by root, checked before every call --------
+
+    async def plan_bfx_upload(self, timeout_sec: int = 30) -> None:
+        """Whether BenchFlow's pinned bfx can run here: the sandbox's arch,
+        and a pinned binary for it on this machine. Sets ``bfx_delivery`` to
+        ``"per-call"`` (nothing is uploaded yet), else leaves it None."""
+        from benchflow._bfx.locate import (
+            BfxUnavailable,
+            normalize_arch,
+            verified_binary,
+        )
+
+        self.bfx_delivery = None
+        from benchflow.sandbox._exec_output import exec_raw
+
+        result = await exec_raw(
+            self.exec, "uname -m", user="root", timeout_sec=timeout_sec
+        )
+        machine = (getattr(result, "stdout", "") or "").strip()
+        try:
+            arch = normalize_arch(machine)
+            verified_binary(arch)
+        except BfxUnavailable as exc:
+            self.logger.debug("bfx: not delivered (%s)", exc)
+            return
+        self._bfx_arch = arch
+        self._bfx_path = None
+        from benchflow._bfx.delivery import PER_CALL
+
+        self.bfx_delivery = PER_CALL
+
+    async def _bfx_binary(self, timeout_sec: int) -> str:
+        """The path of the uploaded bfx: a fresh root-only folder before the
+        turn, and another once the turn is over (the agent never saw it)."""
+        import uuid
+
+        from benchflow._bfx.locate import BfxUnavailable, verified_binary
+        from benchflow.sandbox._bounded_exec import turn_over
+
+        after = turn_over(self)
+        path = getattr(self, "_bfx_path", None)
+        if path and getattr(self, "_bfx_after_turn", None) == after:
+            return path
+        folder = f"/run/benchflow-bfx-{uuid.uuid4().hex}"
+        from benchflow.sandbox._exec_output import exec_raw
+
+        made = await exec_raw(
+            self.exec,
+            f"umask 077 && mkdir -m 0700 {folder} && chown 0:0 {folder}",
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        if getattr(made, "return_code", 1) != 0:
+            raise BfxUnavailable(f"no root-only folder for bfx ({folder})")
+        # BenchFlow's own pinned bytes: the transfer ledger admits them as a
+        # trusted transfer, and the sandbox's trust state does not change.
+        from benchflow.trust.state import TRUSTED_TRANSFER, admit
+
+        admission = admit(
+            self, "main", TRUSTED_TRANSFER, reason="BenchFlow's pinned bfx binary"
+        )
+        await self.upload_file(
+            verified_binary(self._bfx_arch), f"{folder}/bfx", admission=admission
+        )
+        held = await exec_raw(
+            self.exec,
+            f"chown 0:0 {folder}/bfx && chmod 0500 {folder}/bfx",
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        if getattr(held, "return_code", 1) != 0:
+            raise BfxUnavailable("the uploaded bfx could not be made root's")
+        self._bfx_path = f"{folder}/bfx"
+        self._bfx_after_turn = after
+        return self._bfx_path
+
+    async def bfx_call(
+        self, cmd: str, args: Mapping[str, Any], *, timeout_sec: int
+    ) -> dict[str, Any]:
+        """Run one bfx command as root (I1's bfx route on Daytona): the
+        uploaded binary by absolute path, only after its SHA-256 matched the
+        pin. Raises :class:`BfxUnavailable` where bfx is not delivered."""
+        import shlex
+
+        from benchflow._bfx import client as bfx_client
+        from benchflow._bfx import pins
+        from benchflow._bfx.locate import BfxUnavailable
+
+        mode = getattr(self, "bfx_delivery", None)
+        if mode in ("bind", "volume", "upload"):
+            # The DinD VM's read-only mount at /.bfx: holds against any agent.
+            path, check = bfx_client.SANDBOX_PATH, ""
+        elif mode == "per-call":
+            path = await self._bfx_binary(timeout_sec)
+            pin = pins.SHA256[self._bfx_arch]
+            check = (
+                f"bf_h=$(sha256sum {shlex.quote(path)} 2>/dev/null) || exit 98; "
+                f'[ "${{bf_h%% *}}" = {pin} ] || {{ echo bfx pin mismatch >&2; exit 98; }}; '
+            )
+        else:
+            raise BfxUnavailable("bfx is not delivered to this sandbox")
+        command = check + shlex.join(bfx_client.one_shot_argv(cmd, args, bfx=path))
+        from benchflow.sandbox._exec_output import exec_raw
+
+        result = await exec_raw(
+            self.exec, command, user="root", timeout_sec=timeout_sec
+        )
+        if getattr(result, "return_code", None) == 98:
+            raise BfxUnavailable("the uploaded bfx does not match its pin")
+        return bfx_client.parse_answer(getattr(result, "stdout", "") or "")
 
     async def upload_dir(
         self, source_dir: Path | str, target_dir: str, service: str = "main"

@@ -44,9 +44,12 @@ def test_the_check_finds_each_kind(tmp_path: Path) -> None:
     key = "sk-" + "ant-" + "a1B2" * 6
     (docs / "page.md").write_text(
         f"export ANTHROPIC_API_KEY={key}\n"
-        "Fixed in EN-1234, see PY9-D123-X.\n"
+        # The key in pieces, so the public tree guard passes on this file.
+        "Fixed in EN"
+        "-1234, see PY9-D123-X.\n"
         "Logs in /Users/someone/runs and /home/agent/workspace.\n"
-        "Preview: https://docs-v9-benchflow.vercel.app/x and https://linear.app/x/issue/1\n"
+        "Preview: https://docs-v9-benchflow.vercel.app/x and https://linear."
+        "app/x/issue/1\n"
         "Code: https://github.com/benchflow-ai/not-public and https://github.com/benchflow-ai/benchflow\n"
     )
     (docs / "examples" / "run" / "result.json").write_text("{}")

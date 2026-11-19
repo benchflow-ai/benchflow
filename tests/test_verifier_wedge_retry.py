@@ -55,10 +55,17 @@ def _mk_planes(verifier_stub):
 
 
 def _env_with_probe_output(stdout: str):
+    from benchflow.sandbox import _verifier_links
+
     env = SimpleNamespace()
     env.exec = AsyncMock(
         return_value=SimpleNamespace(stdout=stdout, stderr="", return_code=0)
     )
+    # A sandbox BenchFlow's walker runs in, with its record from before the
+    # turn: the reward's provenance is checked, and finds nothing.
+    env.bfx_delivery = "bind"
+    env.bfx_call = AsyncMock(return_value={"entries": []})
+    _verifier_links.inherit_record(env, _verifier_links.Walked("bfx"))
     return env
 
 
@@ -152,7 +159,11 @@ def _rollout(tmp_path, verify, *, recovery: bool):
     rollout._env = _env_with_probe_output("0\n")
     # The real verifier records a start receipt on the recovery path.
     rollout._planes = _mk_planes(
-        SimpleNamespace(verify=verify, execution_receipt=("/logs/verifier/s", "main"))
+        SimpleNamespace(
+            verify=verify,
+            execution_receipt=("/logs/verifier/s", "main"),
+            outputs_closed=True,
+        )
     )
     rollout._agent_cwd = "/app"
     rollout._trajectory = [{"type": "agent_message", "content": "done"}]

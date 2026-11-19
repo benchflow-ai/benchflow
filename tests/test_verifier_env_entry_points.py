@@ -349,6 +349,9 @@ async def test_a_planted_venv_pip_conf_is_not_read_on_the_soft_path(tmp_path):
     trial._env = LocalSandbox(tmp_path, paths, home)
     trial._planes = default_rollout_planes()
     trial._config.sandbox_user = None
+    # Soft verify pins pip only in strict; off and audit run test.sh as
+    # written.
+    trial._config.integrity = "strict"
     trial._trajectory = [{"type": "agent_message", "text": "done"}]
     with (
         patch("benchflow.sandbox.lockdown._read_hardening_config", return_value={}),

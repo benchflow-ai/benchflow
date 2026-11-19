@@ -259,6 +259,8 @@ def test_an_image_with_learner_skills_baked_in_starts_tainted(tmp_path):
                 box,
                 tmp_path,
                 {},
+                task=None,
+                agent=None,
                 skip_start=True,
                 upload_task_files=False,
                 image_holds_agent_bytes=baked,

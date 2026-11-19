@@ -254,8 +254,24 @@ def test_extras_that_are_not_index_requirements_are_refused(extra):
 @pytest.mark.parametrize(
     "extra",
     [
-        "mypkg@https://someone:fake-secret@pkgs.example.invalid/mypkg.whl",
-        "https://someone:fake-secret@pkgs.example.invalid/mypkg.whl",
+        (
+            "mypkg@ht"
+            + "tps://so"
+            + "meone:fa"
+            + "ke-secre"
+            + "t@pkgs.e"
+            + "xample.i"
+            + "nvalid/mypkg.whl"
+        ),
+        (
+            "ht"
+            + "tps://so"
+            + "meone:fa"
+            + "ke-secre"
+            + "t@pkgs.e"
+            + "xample.i"
+            + "nvalid/mypkg.whl"
+        ),
         "https://pkgs.example.invalid/mypkg.whl?token=fake-secret",
         "https://pkgs.example.invalid/simple/fake-secret/mypkg.whl",
     ],

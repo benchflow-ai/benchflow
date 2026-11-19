@@ -357,7 +357,9 @@ class TestCrossContainerHardeningPolicy:
 
         env.exec = AsyncMock(side_effect=receipt_aware(fake_exec))
 
-        await harden_before_verify(env, task, sandbox_user=None, workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user=None, workspace="/app", integrity="strict"
+        )
 
         # The target gets its PATH checks and one root-owned explanatory stub.
         assert services_seen, "hardening should issue at least one exec"
@@ -422,7 +424,9 @@ class TestCrossContainerHardeningPolicy:
 
         env.exec = AsyncMock(side_effect=receipt_aware(fake_exec))
 
-        await harden_before_verify(env, task, sandbox_user="agent", workspace="/app")
+        await harden_before_verify(
+            env, task, sandbox_user="agent", workspace="/app", integrity="strict"
+        )
 
         injected = task.config.verifier.env
         assert "_runtime_guard_" not in injected["PYTEST_ADDOPTS"]

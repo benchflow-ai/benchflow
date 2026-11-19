@@ -119,7 +119,9 @@ class TestPollDeadline:
         # Outer guard exists only to fail loud (rather than hang the suite) if
         # the fix regressed to an unbounded loop. With the fake clock the loop
         # is instant, so any real-time hang means an unbounded loop.
-        with pytest.raises(RuntimeError) as excinfo:
+        with pytest.raises(
+            RuntimeError, match=r"hit the Daytona exec safety-net cap"
+        ) as excinfo:
             await asyncio.wait_for(
                 sandbox._poll_response("sess-1", "cmd-1", timeout_sec=None),
                 timeout=30.0,
@@ -153,7 +155,9 @@ class TestPollDeadline:
         process = _FakeProcess([None])  # never resolves
         sandbox = _make_sandbox(process)
 
-        with pytest.raises(RuntimeError) as excinfo:
+        with pytest.raises(
+            RuntimeError, match=r"^Command timed out after 3 seconds$"
+        ) as excinfo:
             await asyncio.wait_for(
                 sandbox._poll_response("sess-1", "cmd-1", timeout_sec=3),
                 timeout=30.0,

@@ -153,6 +153,6 @@ async def test_daytona_attach_protects_or_refuses_before_the_ssh_shell(monkeypat
     )
     strategy = object.__new__(_DaytonaDirect)
     strategy._env = env
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match=r"^refused$"):
         await strategy.attach()
     assert calls == ["protect", "require"]

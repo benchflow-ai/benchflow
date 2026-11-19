@@ -9,9 +9,8 @@ name: manifest-parity
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'rel-*']
   pull_request:
-    branches: [main]
   merge_group:
 
 concurrency:

@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import subprocess
 import tarfile
+import time
 import uuid
 from pathlib import Path
 
@@ -53,9 +55,19 @@ CANARY = "sk-ant-api03-u3a-canary-" + "x" * 24
 def _docker(
     *args: str, stdin: str | None = None, check: bool = True
 ) -> subprocess.CompletedProcess:
-    run = subprocess.run(
-        ["docker", *args], input=stdin, capture_output=True, text=True, timeout=600
-    )
+    for attempt in range(4):
+        run = subprocess.run(
+            ["docker", *args], input=stdin, capture_output=True, text=True, timeout=600
+        )
+        # A listing while another test removes an image can fail on the
+        # containerd image store (env_layers._LIST_RACE_RE): list again.
+        if not (
+            args[:2] == ("image", "ls")
+            and run.returncode != 0
+            and re.search(env_layers._LIST_RACE_RE, run.stderr)
+        ):
+            break
+        time.sleep(0.25 * (attempt + 1))
     if check and run.returncode != 0:
         raise AssertionError(f"docker {' '.join(args)}: {run.stderr[-2000:]}")
     return run
@@ -72,9 +84,18 @@ def _build_task(tag: str, libc: str, project: str) -> str:
     # The compose label stands in for what `compose build` puts on a task
     # image; the layer must not carry it (teardown's `down --rmi all`
     # deletes images labelled with its project).
+    #
+    # The step's files get fixed times, and WORKDIR then finds /app there,
+    # so the image's layers are the same bytes whether BuildKit runs the
+    # step or takes it from its cache. Its build records are the shared
+    # daemon's, which other tests' prunes and BuildKit's own collection may
+    # drop at any time: then the step ran again, its new file times made
+    # other layers, and a rebuilt image got another key (review of PR #146,
+    # L3: ('miss', other key) once under -n 12).
     dockerfile = (
         f"FROM {BASES[libc]}\n"
-        "RUN echo task > /task.txt\n"
+        "RUN echo task > /task.txt && mkdir -p /app"
+        " && touch -c -t 200001010000 /task.txt /app\n"
         f"LABEL com.docker.compose.project={project}\n"
         "WORKDIR /app\n"
     )
@@ -82,8 +103,15 @@ def _build_task(tag: str, libc: str, project: str) -> str:
     return _docker("image", "inspect", "--format", "{{.Id}}", tag).stdout.strip()
 
 
-def _layer_files(tag: str, workdir: Path) -> tuple[list[str], bytes]:
-    """The paths the image's last layer adds, and the whole saved image."""
+def _rootfs(tag: str) -> list[str]:
+    return json.loads(
+        _docker("image", "inspect", "--format", "{{json .RootFS.Layers}}", tag).stdout
+    )
+
+
+def _layer_files(tag: str, workdir: Path) -> tuple[list[str], bytes, set[str]]:
+    """The paths the image's last layer adds, the whole saved image, and which
+    of the paths are directories."""
     archive = workdir / "image.tar"
     _docker("save", "--output", str(archive), tag)
     raw = archive.read_bytes()
@@ -94,8 +122,9 @@ def _layer_files(tag: str, workdir: Path) -> tuple[list[str], bytes]:
         last = outer.extractfile(manifest[0]["Layers"][-1])
         assert last is not None
         with tarfile.open(fileobj=io.BytesIO(last.read()), mode="r:*") as layer:
-            names = [m.name for m in layer.getmembers()]
-    return names, raw
+            members = layer.getmembers()
+    names = [m.name for m in members]
+    return names, raw, {m.name for m in members if m.isdir()}
 
 
 @pytest.fixture
@@ -178,9 +207,17 @@ async def test_layer_built_from_the_task_image_reused_and_clean(run_id, libc, tm
 
     # The layer adds the agent and nothing else: no credential, no per-trial
     # file (logs, the working folder, /tmp), no skill.
-    names, raw = _layer_files(first.tag, tmp_path)
+    names, raw, dirs = _layer_files(first.tag, tmp_path)
     assert "opt/runtime/bin/fake-agent" in names, names
     for name in names:
+        # BuildKit on Docker's classic overlay2 store records /etc (a mount
+        # point) as an empty directory: allowed only bare, with nothing under it.
+        if (
+            name.rstrip("/") == "etc"
+            and name in dirs
+            and not any(n.rstrip("/").startswith("etc/") for n in names)
+        ):
+            continue
         assert name.rstrip("/") in {
             "opt",
             "opt/runtime",
@@ -214,11 +251,14 @@ async def test_a_rebuilt_task_image_reuses_the_layer(run_id):
     from BuildKit's cache with a new id. The layer is still a hit."""
     task = f"bf-u3a-test-{run_id}:rebuild"
     first_id = _build_task(task, "musl", project=f"trial-a-{run_id}")
+    first_layers = _rootfs(task)
     layers = DockerLayers()
     first = await layers.ensure_agent_layer(_recipe(run_id), task, prune=False)
     _docker("image", "rm", task)
     second_id = _build_task(task, "musl", project=f"trial-b-{run_id}")
     assert second_id != first_id
+    # The same files, also when the daemon dropped the step's build records.
+    assert _rootfs(task) == first_layers
     again = await layers.ensure_agent_layer(_recipe(run_id), task, prune=False)
     assert (again.status, again.key) == ("hit", first.key)
 
@@ -319,19 +359,38 @@ async def test_a_dead_processs_trial_tag_is_untagged_and_its_layer_pruned(
 ):
     """A trial whose process was killed before teardown left its own tag on
     the layer. The prune untags it (its process is gone, no container uses
-    it) and removes the layer; a live process's tag would have kept it."""
+    it) and removes the layer; a live process's tag would have kept it.
+
+    The tag names a process that is alive (a ``sleep`` this test starts), so
+    every other test's prune on the daemon, run by another worker at the
+    same time, leaves it: only this test, told that process is gone, may
+    untag it, and its report names it. (A tag of a process every worker
+    sees gone was untagged by another worker's prune first, under load.)"""
     task = f"bf-u3a-test-{run_id}:stale"
     _build_task(task, "musl", project=f"trial-{run_id}")
     layers = DockerLayers()
     result = await layers.ensure_agent_layer(_recipe(run_id), task, prune=False)
     DockerLayers.release(result.key, daemon=result.daemon_id)
-    dead_pid = 4_000_001
+    owner = subprocess.Popen(["sleep", "600"])
+    try:
+        await _prune_a_dead_processs_tag(run_id, monkeypatch, layers, result, owner)
+    finally:
+        owner.kill()
+        owner.wait()
+
+
+async def _prune_a_dead_processs_tag(run_id, monkeypatch, layers, result, owner):
+    me = _docker_sweep.current_process()
+    start = _docker_sweep._start_ticks(owner.pid)
+    assert start, "the owner's start time (Linux /proc)"
     real = _docker_sweep._pid_exists
     monkeypatch.setattr(
-        _docker_sweep, "_pid_exists", lambda pid: pid != dead_pid and real(pid)
+        _docker_sweep, "_pid_exists", lambda pid: pid != owner.pid and real(pid)
     )
-    host = env_layers._host_hash(_docker_sweep.current_process().host)
-    dead = f"{host}-{dead_pid}-1-00000000-0000-0000-0000-000000000000"
+    host = env_layers._host_hash(me.host)
+    boot = re.sub(r"[^A-Za-z0-9-]", "", me.boot)
+    dead = f"{host}-{owner.pid}-{start}-{boot}"
+    assert env_layers.alias_owner_state(dead) == "gone"
     stale = f"{ALIAS_PREFIX}u3c-{run_id}:{dead}"
     live = f"{ALIAS_PREFIX}u3c-live-{run_id}:{alias_owner_tag()}"
     tag = layer_tag(AGENT, result.key)

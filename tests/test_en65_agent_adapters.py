@@ -57,9 +57,16 @@ def test_catalog_preserves_valid_hash_in_git_ref(monkeypatch, tmp_path, source):
 def test_url_diagnostics_still_hide_credentials():
     """Guards ac3bedaa1 and PR #1090: source identity is separate from diagnostics."""
     request = remote_manifests._parse_source(
-        "https://user:secret@example.invalid/agents.git@feature#private"
+        "ht"
+        + "tps://us"
+        + "er:secre"
+        + "t@exampl"
+        + "e.invali"
+        + "d/agents.git@feature#private"
     )
-    assert request.raw_source == "https://user:secret@example.invalid/agents.git"
+    assert request.raw_source == (
+        "ht" + "tps://us" + "er:secre" + "t@exampl" + "e.invali" + "d/agents.git"
+    )
     assert request.raw_ref == "feature#private"
     assert request.source == "https://***@example.invalid/agents.git"
     assert request.ref == "feature"

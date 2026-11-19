@@ -14,6 +14,7 @@ from benchflow._root_python import root_python_sh
 from benchflow._utils import kill_record
 from benchflow._utils.text import describe_exception
 from benchflow.agents.credentials import credential_evidence_overrides
+from benchflow.integrity.constants import hardens_verifier
 from benchflow.models import RolloutResult, rollout_time
 from benchflow.review.automatic import finish_review, prepare_review
 from benchflow.review.evidence import EvidenceLimitError, capture_task_evidence
@@ -288,7 +289,10 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
     # when no workspace evidence is requested, and do not swallow a failed
     # quiescence check as an optional capture error before admitting grading.
     await rollout.disconnect()
-    if rollout._config.sandbox_user:
+    # Off and audit keep the sandbox user's processes through grading and stop
+    # them after it (the lead's 11:25Z ruling); strict stops them here.
+    stops = hardens_verifier(getattr(rollout._config, "integrity", None))
+    if rollout._config.sandbox_user and stops:
         await _quiesce_and_record(rollout, rollout._config.sandbox_user)
     # The task's [[verifier.collect]] hooks for main, once the agent's
     # processes are stopped and before anything is frozen. They run as the
@@ -297,7 +301,11 @@ async def capture_terminal_workspace(rollout: Rollout) -> None:
     # processes are stopped again before the capture.
     from benchflow.rollout._collect_hooks import run_collect_hooks
 
-    if await run_collect_hooks(rollout, main=True) and rollout._config.sandbox_user:
+    if (
+        await run_collect_hooks(rollout, main=True)
+        and rollout._config.sandbox_user
+        and stops
+    ):
         await _quiesce_and_record(rollout, rollout._config.sandbox_user, again=True)
     from benchflow.rollout._verifier_recovery import recovery_ineligible_reason
 

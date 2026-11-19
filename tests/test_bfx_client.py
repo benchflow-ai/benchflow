@@ -142,7 +142,9 @@ def test_docker_delivery_choice(monkeypatch):
     )
     with pytest.raises(ValueError):
         delivery.docker_mode(local_daemon=True, environ={delivery.DELIVERY_ENV: "copy"})
-    assert delivery.GUARANTEE == {
+    # Daytona native's per-call copy holds against any agent.
+    assert delivery.GUARANTEE[delivery.PER_CALL] == "any-agent"
+    assert {k: v for k, v in delivery.GUARANTEE.items() if k != delivery.PER_CALL} == {
         "bind": "any-agent",
         "volume": "any-agent",
         "upload": "non-root-agent",

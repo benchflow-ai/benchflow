@@ -70,7 +70,10 @@ async def test_later_hardening_preserves_typed_backend_errors(
     )
     assert rewards is None and error is not None
     assert type(fault).__name__ in error and "fixture" in error
-    assert not warnings
+    # This fake cannot answer the verifier uid read, so the reward's
+    # provenance is unverifiable (test_reward_provenance_*): its
+    # warning is not what this test counts.
+    assert not [w for w in warnings if not w.startswith("Reward provenance")]
 
 
 async def _assess(sandbox, verifier):

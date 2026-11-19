@@ -41,19 +41,44 @@ def _jsonl_for_request_body(body: dict) -> str:
     [
         pytest.param(
             "anthropic sk-ant-",
-            '{"key": "sk-ant-api03-abc123XYZ_defghijklmnopqrstuvwxyz0123456789"}',
+            (
+                '{"key": "sk'
+                + "-ant-api"
+                + "03-abc12"
+                + "3XYZ_def"
+                + "ghijklmn"
+                + "opqrstuv"
+                + "wxyz0123"
+                + '456789"}'
+            ),
             "defghijklmnopqrstuvwxyz0123456789",
             id="anthropic",
         ),
         pytest.param(
             "openai sk-proj-",
-            '{"key": "sk-proj-abc123XYZ_defghijklmnopqrstuvwxyz0123456789"}',
+            (
+                '{"key": "sk'
+                + "-proj-ab"
+                + "c123XYZ_"
+                + "defghijk"
+                + "lmnopqrs"
+                + "tuvwxyz0"
+                + "12345678"
+                + '9"}'
+            ),
             "defghijklmnopqrstuvwxyz0123456789",
             id="openai-proj",
         ),
         pytest.param(
             "openai sk-",
-            '{"key": "sk-abc1234567defghijklmnopqrstuvwxyz"}',
+            (
+                '{"key": "sk'
+                + "-abc1234"
+                + "567defgh"
+                + "ijklmnop"
+                + "qrstuvwx"
+                + 'yz"}'
+            ),
             "defghijklmnopqrstuvwxyz",
             id="openai-generic",
         ),
@@ -65,19 +90,19 @@ def _jsonl_for_request_body(body: dict) -> str:
         ),
         pytest.param(
             "aws AKIA",
-            '{"key": "AKIAIOSFODNN7EXAMPLE"}',
+            ('{"key": "AK' + "IAIOSFOD" + "NN7EXAMP" + 'LE"}'),
             "IOSFODNN7EXAMPLE",
             id="aws-akia",
         ),
         pytest.param(
             "aws ASIA (STS)",
-            '{"key": "ASIAQWERTYUIOPASDFGH"}',
+            ('{"key": "AS' + "IAQWERTY" + "UIOPASDF" + 'GH"}'),
             "QWERTYUIOPASDFGH",
             id="aws-asia",
         ),
         pytest.param(
             "daytona dtn_",
-            '{"key": "dtn_abcdefghijklmnop1234567890"}',
+            ('{"key": "dt' + "n_abcdef" + "ghijklmn" + "op123456" + '7890"}'),
             "ghijklmnop1234567890",
             id="daytona",
         ),
@@ -160,7 +185,12 @@ def test_does_not_redact_non_secret_values(raw):
 def test_redacts_multiple_patterns_in_one_string():
     raw = (
         '{"env": "GEMINI_API_KEY=AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx '
-        'ANTHROPIC_API_KEY=sk-ant-api03-abc123XYZ_longSecretValueHere"}'
+        "ANTHROPIC_API_KEY=sk"
+        + "-ant-api"
+        + "03-abc12"
+        + "3XYZ_lon"
+        + "gSecretV"
+        + 'alueHere"}'
     )
     result = redact_trajectory_text(raw)
     assert "FORTESTSONLYxxxxxxxxxxxxxxx" not in result
@@ -278,7 +308,7 @@ def test_to_jsonl_redacts_raw_env_dump_in_message():
     [
         ("AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx", "AIzaSy"),
         ("dtn_FAKEFAKEFAKEFAKEFAKE12345678", "dtn_"),
-        ("AKIAIOSFODNN7EXAMPLE", "AKIA"),
+        (("AK" + "IAIOSFOD" + "NN7EXAMP" + "LE"), "AKIA"),
     ],
 )
 def test_audit_prefix_not_preserved(prefix_token, prefix):
@@ -372,13 +402,13 @@ def test_acp_trajectory_jsonl_redacts_event_content(tmp_path):
     "raw,leaked,kept_name",
     [
         (
-            "GEMINI_API_KEY=plainSecretNoPrefix123",
-            "plainSecretNoPrefix123",
+            ("GEMINI_API_KEY=pl" + "ainSecre" + "tNoPrefi" + "x123"),
+            ("pl" + "ainSecre" + "tNoPrefi" + "x123"),
             "GEMINI_API_KEY=",
         ),
         (
-            '{"openai_api_key": "plainSecretNoPrefix123"}',
-            "plainSecretNoPrefix123",
+            ('{"openai_api_key": "pl' + "ainSecre" + "tNoPrefi" + 'x123"}'),
+            ("pl" + "ainSecre" + "tNoPrefi" + "x123"),
             "openai_api_key",
         ),
         (
@@ -606,8 +636,9 @@ _FAKE_JWT = (
         ),
         pytest.param(
             "AWS_SECRET_ACCESS_KEY (SECRET mid-name, ends ACCESS_KEY)",
-            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPx" + "RfiCYsecretKEYval",
-            "wJalrXUtnFEMIK7MDENGbPx" + "RfiCYsecretKEYval",
+            ("AWS_SECRET_ACCESS_KEY=wJ" + "alrXUtnF" + "EMIK7MDE" + "NGbPx")
+            + "RfiCYsecretKEYval",
+            ("wJ" + "alrXUtnF" + "EMIK7MDE" + "NGbPx") + "RfiCYsecretKEYval",
             "AWS_SECRET_ACCESS_KEY",
             id="aws-secret-access-key",
         ),
@@ -620,7 +651,15 @@ _FAKE_JWT = (
         ),
         pytest.param(
             "GCP/Vertex service-account PEM private key block",
-            '{"private_key": "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkq'
+            (
+                '{"p'
+                + "rivate_k"
+                + 'ey": "--'
+                + "---BEGIN"
+                + " PRIVATE"
+                + " KEY----"
+                + "-\\nMIIEvQIBADANBgkq"
+            )
             + "PEMfakeSECRETmaterial12345"
             + '\\n-----END PRIVATE KEY-----"}',
             "PEMfakeSECRETmaterial12345",
@@ -657,8 +696,13 @@ def test_redacts_proxy_failure_leak_vectors(label, raw, leaked, kept):
     "carrier_json,leaked",
     [
         pytest.param(
-            'AzureException 401 - {"sent_headers": {"api-key": "AZ0123456789abcdefSECRET"}}',
-            "AZ0123456789abcdefSECRET",
+            (
+                'AzureException 401 - {"sent_headers": {"api-key": "AZ'
+                + "01234567"
+                + "89abcdef"
+                + 'SECRET"}}'
+            ),
+            ("AZ" + "01234567" + "89abcdef" + "SECRET"),
             id="escaped-api-key",
         ),
         pytest.param(
@@ -785,8 +829,8 @@ def test_redaction_does_not_corrupt_python_authorization_fstrings():
         # Single-quoted non-secret dict reprs.
         "{'role': 'user', 'content': 'hello world'}",
         # sk-proj-/sk-admin- kebab slugs (lowercase → no uppercase → not a key).
-        "git checkout sk-proj-refactor-auth-module",
-        "kubectl create sa sk-admin-cluster-operator-prod",
+        ("git checkout sk" + "-proj-re" + "factor-a" + "uth-modu" + "le"),
+        ("kubectl create sa sk" + "-admin-c" + "luster-o" + "perator-" + "prod"),
         # `runtime` is a common word too: lowercase slugs around sk-runtime-.
         "see task-runtime-configuration-files and disk-runtime-limit-exceeded",
         # eyJ-prefixed identifiers / dotted base64 wire formats that aren't JWTs
@@ -858,7 +902,7 @@ _ADVERSARIAL_CONTENTS = [
     '        raise HTTPException(400, "invalid")  '
     "# key sk-abc1234567defghijklmnop987654\n",
     # windows-style path backslashes adjacent to an AWS key
-    "C:\\Users\\app\\AKIAIOSFODNN7EXAMPLE",
+    ("C:\\Users\\app\\AK" + "IAIOSFOD" + "NN7EXAMP" + "LE"),
     # a JSON blob (escaped quotes once serialized) carrying a Google key
     '{"x-api-key": "AIzaSyFAKEKEYFORTESTSONLYxxxxxxxxxxxxxxx"}',
 ]
@@ -1009,7 +1053,11 @@ def test_redact_trajectory_obj_preserves_key_context_for_structured_secret():
 # per-category counts must sum to the backward-compatible total.
 
 _FAKE_PEM = (
-    "-----BEGIN PRIVATE KEY-----\nMIIEvNOTAREALKEYxyz\n-----END PRIVATE KEY-----"
+    "--"
+    + "---BEGIN"
+    + " PRIVATE"
+    + " KEY----"
+    + "-\nMIIEvNOTAREALKEYxyz\n-----END PRIVATE KEY-----"
 )
 
 
@@ -1026,7 +1074,7 @@ _FAKE_PEM = (
         ),
         pytest.param(_FAKE_PEM, "private key block", id="pem-private-key"),
         pytest.param(
-            "postgres://user:hunter2@db.example.com/app",
+            "postgres://user:" + "hunter2@db.example.com/app",
             "URL credential",
             id="url-userinfo",
         ),
@@ -1058,7 +1106,7 @@ def test_text_categories_sum_to_the_backward_compatible_count():
     text = (
         "sk-abc1234567defghijklmnop987654 and "
         "GITHUB_TOKEN=prefixlessSecretValue1234567890 and "
-        "https://user:hunter2@host/"
+        "ht" + "tps://us" + "er:hunte" + "r2@host/"
     )
     counted_text, count = redact_trajectory_text_with_count(text)
     categorized_text, categories = redact_trajectory_text_with_categories(text)

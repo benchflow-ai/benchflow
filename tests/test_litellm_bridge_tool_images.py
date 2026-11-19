@@ -272,7 +272,6 @@ def test_a_deployment_stated_text_only_gets_the_data_uri(monkeypatch):
         _result(
             "a", [{"type": "text", "text": "two"}, {"type": "text", "text": "items"}]
         ),
-        _result("a", [{"type": "text", "text": "caption"}, _image()]),
         {"type": "tool_result", "tool_use_id": "a"},
     ],
     ids=[
@@ -280,7 +279,6 @@ def test_a_deployment_stated_text_only_gets_the_data_uri(monkeypatch):
         "string",
         "bare-string-item",
         "texts",
-        "text-and-image",
         "empty",
     ],
 )
@@ -289,6 +287,86 @@ def test_every_other_tool_result_is_the_bridges_own(monkeypatch, route, model, r
     messages = _conversation(result)
 
     assert _translate(messages, model) == _stock_translate(messages, model)
+
+
+NOTE = {
+    "type": "text",
+    "text": "[An image (image/png, about 70 bytes) was left out: this model reads "
+    "text only.]",
+}
+
+
+def _images(*built: Any) -> list[Any]:
+    return [
+        part
+        for message in built
+        for part in (message.get("content") or [])
+        if isinstance(message.get("content"), list) and part.get("type") == "image_url"
+    ]
+
+
+def _every_image(messages: list[Any]) -> list[Any]:
+    """a downstream harness patch's case: a Read of a picture (text and image), of a PDF
+    page by page (several images), a lone image and a user turn's image."""
+    caption = {"type": "text", "text": "caption"}
+    return [
+        {"role": "user", "content": [{"type": "text", "text": "See this."}, _image()]},
+        *_conversation(
+            _result("pair", [caption, _image()]),
+            _result("pages", [caption, _image(), _image()]),
+            _result("lone", [_image()]),
+        )[1:],
+    ]
+
+
+@pytest.mark.usefixtures("proxy_callback")
+@pytest.mark.parametrize(
+    ("route", "model"),
+    [("azure/DeepSeek-V4-Pro", "DeepSeek-V4-Pro"), ("openai/glm-5.3", "glm-5.3")],
+)
+def test_a_text_only_model_gets_no_image_part_at_all(monkeypatch, route, model):
+    """An image beside text, a PDF's pages or a user turn's image reached a
+    text-only model as an image part, answered 400 (a downstream harness patch)."""
+    _route(monkeypatch, route)
+    messages = _every_image([])
+
+    built = _translate(messages, model)
+
+    assert len(_images(*_stock_translate(messages, model))) == 5
+    assert _images(*built) == []
+    assert _tools(built) == {
+        "pair": [{"type": "text", "text": "caption"}, NOTE],
+        "pages": [{"type": "text", "text": "caption"}, NOTE, NOTE],
+        "lone": PNG_URI,
+    }
+    assert built[0]["content"] == [{"type": "text", "text": "See this."}, NOTE]
+
+
+@pytest.mark.usefixtures("proxy_callback")
+def test_a_model_that_reads_images_gets_every_part(monkeypatch):
+    _route(monkeypatch, "azure/DeepSeek-V4.1-Flash")
+    messages = _every_image([])
+
+    built = _translate(messages, "DeepSeek-V4.1-Flash")
+
+    assert built == _stock_translate(messages, "DeepSeek-V4.1-Flash")
+    assert len(_images(*built)) == 5
+
+
+@pytest.mark.usefixtures("proxy_callback")
+def test_the_handler_sends_a_text_only_model_no_image(monkeypatch):
+    _route(monkeypatch, "azure/DeepSeek-V4-Pro")
+    kwargs, _ = (
+        LiteLLMMessagesToCompletionTransformationHandler._prepare_completion_kwargs(
+            max_tokens=1024,
+            messages=_every_image([]),
+            model="DeepSeek-V4-Pro",
+            stream=True,
+            extra_kwargs={"custom_llm_provider": "azure"},
+        )
+    )
+
+    assert _images(*kwargs["messages"]) == []
 
 
 @pytest.mark.usefixtures("proxy_callback")

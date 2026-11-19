@@ -3,18 +3,27 @@
 ``Budget`` caps one evaluation job on any of four measures. A *rollout* is one
 run of a task: a trial's first attempt, or a retry of it.
 
-- ``max_cost_usd``: USD summed over finished rollouts that reported a cost
+- ``max_cost_usd``: USD summed over finished rollouts: the agent's cost
   (provider- or price-table-derived, see usage tracking; an estimate from the
-  agent's own session log counts too). Rollouts without a USD figure are
-  counted in ``usd_unknown_trials`` and add nothing, so this cap is only as
-  complete as the USD data.
+  agent's own session log counts too) and the verifier's LLM judge's
+  (``judge_usage``). A rollout whose agent or judge spent money BenchFlow
+  could not put a price on stops the job: no rollout starts after it, and
+  ``reason`` says ``cost unknown for <model>/<agent>: --max-cost-usd can't
+  be enforced`` (a cap that counts only the priced rollouts would never
+  trip on a route that has no USD). A rollout that never reached its agent,
+  or a control (oracle, nop, a script), spent no model money and does not.
 - ``max_sandbox_seconds``: trial wall-clock seconds (from the trial's start,
   sandbox creation included, to its end, retries included), summed over
   finished trials *and* the elapsed time of running ones. Always known.
-- ``max_tokens``: total tokens over finished rollouts. Known whenever the
-  agent's usage reaches BenchFlow (``tokens_unknown_trials`` counts the
-  others).
+- ``max_tokens``: total tokens over finished rollouts, the judge's
+  included. Known whenever the agent's usage reaches BenchFlow, salvaged
+  from its own logs after a timeout or a lost sandbox too
+  (``tokens_unknown_trials`` counts the others; a result from before
+  that wrote 0 for tokens nothing counted is one of them).
 - ``max_rollouts``: rollouts started, retries included. Always known.
+
+summary.json's ``spend_all_attempts`` sums the same per-rollout figures
+(:class:`AttemptSpend`) from the job folder, so it agrees with ``spent``.
 
 When a spend cap (USD, sandbox-seconds, tokens) is reached (spent >= cap) the
 job stops starting rollouts and cancels the running ones: their rollouts are
@@ -50,9 +59,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from benchflow.usage_tracking import NO_MODEL_CALL
+
 logger = logging.getLogger(__name__)
 
-__all__ = ["Budget", "BudgetGuard"]
+__all__ = ["AttemptSpend", "Budget", "BudgetGuard"]
 
 _CAPS = ("max_cost_usd", "max_sandbox_seconds", "max_tokens", "max_rollouts")
 
@@ -127,12 +138,17 @@ def credit_trial_seconds(seconds: float) -> None:
 @contextmanager
 def cancelled_attempt_receipt(
     directory: Callable[[], Path | None],
+    usage: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> Iterator[None]:
     """Retain cancelled execution spend without publishing a scored result.
 
     The boundary surrounds the full rollout, including cleanup and scoring.
     Child tasks inherit these lists; nested rollouts contribute their verifier
     intervals to their parent too, just as the live job guard does.
+
+    ``usage`` gives the tokens and USD the attempt spent, which cleanup
+    counted: the receipt keeps them as its ``agent_result``, and the
+    job's guard counts them in ``budget.spent``.
     """
     started = time.monotonic()
     charges: list[VerifierCharge] = []
@@ -154,6 +170,7 @@ def cancelled_attempt_receipt(
                 if owner is not None and owner[1] in owner[0]._cancel_requested
                 else "interrupted"
             )
+            spent = _cancelled_spend(usage)
             write_json_atomic(
                 path / CANCELLED_BUDGET_RECORD,
                 {
@@ -166,11 +183,61 @@ def cancelled_attempt_receipt(
                             for c in charges
                         ),
                     },
+                    **({"agent_result": spent} if spent else {}),
                 },
             )
+            if owner is not None and spent:
+                owner[0].add_cancelled_spend(
+                    owner[1],
+                    cost=spent.get("cost_usd"),
+                    tokens=spent.get("total_tokens"),
+                    incomplete=spent.get("usage_incomplete") is True,
+                )
         raise
     finally:
         _attempt_charges.reset(token)
+
+
+_SPEND_FIELDS = (
+    "n_input_tokens",
+    "n_output_tokens",
+    "n_cache_read_tokens",
+    "n_cache_write_tokens",
+    "n_cache_creation_tokens",
+    "total_tokens",
+    "cost_usd",
+    "usage_source",
+    "cost_source",
+    "price_table_date",
+    "usage_incomplete",
+    "usage_incomplete_reason",
+)
+
+
+def budget_stopped_this_trial() -> bool:
+    """Whether the running trial's cancel is the job's budget stopping it."""
+    owner = _trial_budget.get()
+    return owner is not None and owner[1] in owner[0]._cancel_requested
+
+
+def _cancelled_spend(
+    usage: Callable[[], Mapping[str, Any] | None] | None,
+) -> dict[str, Any] | None:
+    """The tokens and USD a cancelled attempt spent, in result.json's terms;
+    None when nothing counted them. Never fails the cancellation."""
+    if usage is None:
+        return None
+    try:
+        metrics = usage()
+    except Exception:
+        logger.debug("Could not read a cancelled attempt's usage", exc_info=True)
+        return None
+    if not isinstance(metrics, Mapping):
+        return None
+    spent = {key: metrics.get(key) for key in _SPEND_FIELDS if key in metrics}
+    if spent.get("total_tokens") is None and spent.get("cost_usd") is None:
+        return None
+    return spent
 
 
 def with_cancelled_budget(
@@ -207,6 +274,11 @@ def with_cancelled_budget(
     merged: dict[str, Any] = (
         dict(result) if result is not None else {"_budget_cancelled": True}
     )
+    spent = receipt.get("agent_result")
+    if result is None and isinstance(spent, Mapping):
+        # What the stopped attempt spent; a result of the same
+        # attempt carries its own figures.
+        merged["agent_result"] = dict(spent)
     previous = merged.get("timing")
     previous = previous if isinstance(previous, Mapping) else {}
     # Legacy snapshots may have absent or unknown timings. Only a known
@@ -221,6 +293,155 @@ def with_cancelled_budget(
         **{k: max(timing[k], prior_seconds.get(k, 0)) for k in keys},
     }
     return merged
+
+
+#: The earlier ``usage_source`` names of a result whose tokens nothing
+#: counted: such a result wrote 0, not null.
+_UNCOUNTED_LEGACY = frozenset({"unavailable", "none"})
+
+
+def _usd(value: Any) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) else None
+    return None
+
+
+def _tokens(value: Any, legacy: Any = None) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    if value == 0 and legacy in _UNCOUNTED_LEGACY:
+        return None
+    return value
+
+
+def _get(source: Any, key: str) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key)
+    return getattr(source, key, None)
+
+
+@dataclass(frozen=True)
+class AttemptSpend:
+    """What one finished rollout spent, as the budget counts it.
+
+    ``cost_usd`` and ``tokens`` are its agent's, ``judge_cost_usd`` and
+    ``judge_tokens`` its verifier's LLM judge's (``judge_usage``); each is
+    None when unknown, never 0. :meth:`of` reads a :class:`RolloutResult`
+    or a result.json dict the same way, so ``BudgetGuard.spent`` and
+    summary.json's ``spend_all_attempts`` agree.
+    """
+
+    cost_usd: float | None
+    tokens: int | None
+    judge_cost_usd: float | None = None
+    judge_tokens: int | None = None
+    judge_calls: int = 0
+    judge_models: tuple[str, ...] = ()
+    model: str | None = None
+    agent: str | None = None
+    # The agent got as far as acting: a trajectory, a tool call or tokens.
+    reached_agent: bool = False
+    # Its agent made no model call (an oracle, a nop, a script):
+    # ``no_usage_reason`` ``no_model_call``.
+    no_model_call: bool = False
+    # Its USD is priced from a count of some of its calls only
+    # (``cost_incomplete``): a floor, never the whole.
+    cost_incomplete: bool = False
+
+    @classmethod
+    def of(cls, result: Any) -> AttemptSpend:
+        if isinstance(result, Mapping):
+            usage = result.get("agent_result")
+            usage = usage if isinstance(usage, Mapping) else {}
+            cost = usage.get("cost_usd", result.get("cost_usd"))
+            tokens = usage.get("total_tokens", result.get("total_tokens"))
+            legacy = usage.get("usage_source_legacy", usage.get("usage_source"))
+            steps = _get(result.get("trajectory_summary"), "steps")
+            acted = bool(isinstance(steps, int) and steps > 0)
+            no_usage = usage.get("no_usage_reason")
+            incomplete = usage.get("usage_incomplete", result.get("usage_incomplete"))
+        else:
+            cost = getattr(result, "cost_usd", None)
+            tokens = getattr(result, "total_tokens", None)
+            legacy = getattr(result, "usage_source_legacy", None)
+            acted = bool(getattr(result, "trajectory", None))
+            no_usage = getattr(result, "no_usage_reason", None)
+            incomplete = getattr(result, "usage_incomplete", None)
+        judge = _get(result, "judge_usage")
+        judge = judge if isinstance(judge, Mapping) else {}
+        calls = judge.get("calls")
+        models = judge.get("models")
+        tool_calls = _get(result, "n_tool_calls")
+        agent_tokens = _tokens(tokens, legacy)
+        model = _get(result, "model")
+        agent = _get(result, "agent")
+        return cls(
+            cost_usd=_usd(cost),
+            tokens=agent_tokens,
+            judge_cost_usd=_usd(judge.get("cost_usd")),
+            judge_tokens=_tokens(judge.get("total_tokens")),
+            judge_calls=calls if isinstance(calls, int) and calls > 0 else 0,
+            judge_models=tuple(sorted(models)) if isinstance(models, Mapping) else (),
+            model=model if isinstance(model, str) and model else None,
+            agent=agent if isinstance(agent, str) and agent else None,
+            reached_agent=acted
+            or (isinstance(tool_calls, int) and tool_calls > 0)
+            or bool(agent_tokens),
+            no_model_call=no_usage == NO_MODEL_CALL,
+            cost_incomplete=incomplete is True and _usd(cost) is not None,
+        )
+
+    @property
+    def total_cost_usd(self) -> float | None:
+        """The agent's and the judge's USD, the known parts; None when
+        neither is known."""
+        parts = [v for v in (self.cost_usd, self.judge_cost_usd) if v is not None]
+        return sum(parts) if parts else None
+
+    @property
+    def total_tokens(self) -> int | None:
+        parts = [v for v in (self.tokens, self.judge_tokens) if v is not None]
+        return sum(parts) if parts else None
+
+    @property
+    def usd_unknown(self) -> bool:
+        """Its agent's USD, or a judge's that ran, is unknown."""
+        return self.cost_usd is None or (
+            self.judge_calls > 0 and self.judge_cost_usd is None
+        )
+
+    @property
+    def called_no_model(self) -> bool:
+        """A control or a script, or a result that says its agent made no
+        model call: it spent nothing on a model, and nothing is unknown."""
+        from benchflow.agents.registry import is_scripted_agent
+
+        return self.no_model_call or is_scripted_agent(self.agent)
+
+    def unpriced(self) -> str | None:
+        """Why this rollout's money can't be counted, as ``<model>/<agent>
+        (why)`` (``<models>/judge (why)`` for its judge); None when it can,
+        or when it spent none.
+
+        A control or a script calls no model, and a rollout that never
+        reached its agent (its sandbox failed to start) called none.
+        """
+        if self.cost_usd is None and self.reached_agent and not self.called_no_model:
+            why = (
+                "its tokens have no list price"
+                if self.tokens
+                else "nothing counted its tokens"
+            )
+            return f"{self.model or 'its model'}/{self.agent or 'its agent'} ({why})"
+        if self.judge_calls > 0 and self.judge_cost_usd is None:
+            why = (
+                "its tokens have no list price"
+                if self.judge_tokens is not None
+                else "a response reported no usage"
+            )
+            models = ", ".join(self.judge_models) or "the judge's model"
+            return f"{models}/judge ({why})"
+        return None
 
 
 @dataclass(frozen=True)
@@ -348,6 +569,12 @@ class BudgetGuard:
     # Finished rollouts that reported no USD / no tokens.
     usd_unknown_trials: int = 0
     tokens_unknown_trials: int = 0
+    # Attempts whose counted USD is a floor (``cost_incomplete``): the cap
+    # compares what was counted of them.
+    cost_incomplete_trials: int = 0
+    # The verifier's LLM judges' part of cost_usd and tokens.
+    judge_cost_usd: float = 0.0
+    judge_tokens: int = 0
     reason: str | None = None
     cancelled: list[str] = field(default_factory=list)
     not_started: list[str] = field(default_factory=list)
@@ -358,7 +585,6 @@ class BudgetGuard:
     _verifier_tracked: set[str] = field(default_factory=set)
     _tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     _cancel_requested: set[str] = field(default_factory=set)
-    _warned_usd: bool = False
     # A spend cap was reached: running rollouts are cancelled too.
     _cancelling: bool = False
     # Finished rollouts that reported USD / tokens (the means' denominators).
@@ -388,9 +614,15 @@ class BudgetGuard:
             seconds = timing.get("total") if isinstance(timing, Mapping) else None
             self.rollouts += 1
             if r.get("_budget_cancelled"):
-                # No completed rollout means no new USD/token observation.
+                # No completed rollout, but what it spent before the stop
+                # counts (its receipt's agent_result).
                 self.sandbox_seconds += float(seconds or 0) + _verifier_sandbox_seconds(
                     timing
+                )
+                self._add_spend(
+                    cost=agent.get("cost_usd"),
+                    tokens=agent.get("total_tokens"),
+                    incomplete=agent.get("usage_incomplete") is True,
                 )
                 if isinstance(name, str):
                     self._task_seconds[name] = self._task_seconds.get(name, 0) + (
@@ -398,8 +630,7 @@ class BudgetGuard:
                     )
                 continue
             self._add(
-                cost=agent.get("cost_usd", r.get("cost_usd")),
-                tokens=agent.get("total_tokens", r.get("total_tokens")),
+                AttemptSpend.of(r),
                 seconds=(seconds if isinstance(seconds, int | float) else 0.0)
                 + _verifier_sandbox_seconds(timing),
             )
@@ -457,13 +688,45 @@ class BudgetGuard:
             },
         )
 
-    def _add(self, *, cost: Any, tokens: Any, seconds: float) -> None:
+    def _add(self, spend: AttemptSpend, *, seconds: float) -> None:
         self.sandbox_seconds += max(0.0, float(seconds))
-        if isinstance(tokens, int) and not isinstance(tokens, bool):
-            self.tokens += tokens
+        if spend.tokens is not None:
             self._token_rollouts += 1
         else:
             self.tokens_unknown_trials += 1
+        self.tokens += spend.total_tokens or 0
+        self.judge_tokens += spend.judge_tokens or 0
+        if spend.cost_usd is not None:
+            self._usd_rollouts += 1
+        self.cost_usd += spend.total_cost_usd or 0.0
+        self.judge_cost_usd += spend.judge_cost_usd or 0.0
+        if spend.usd_unknown:
+            self.usd_unknown_trials += 1
+        if spend.cost_incomplete:
+            self.cost_incomplete_trials += 1
+        if self.budget.max_cost_usd is None or self.reason is not None:
+            return
+        unpriced = spend.unpriced()
+        if unpriced is not None:
+            # A USD cap that counted only the priced rollouts would never
+            # trip on a route with no USD: stop starting rollouts.
+            self.reason = (
+                f"cost unknown for {unpriced}: --max-cost-usd can't be enforced"
+            )
+            logger.warning(
+                "%s; stopping: no new rollouts, %d running trial(s) finish",
+                self.reason,
+                len(self._running),
+            )
+            self._notify()
+
+    def _add_spend(self, *, cost: Any, tokens: Any, incomplete: bool = False) -> None:
+        """Count known tokens and USD of an attempt that never finished
+        (unknown ones are not a finished rollout's missing figure);
+        *incomplete*: its USD is priced from some of its calls only."""
+        if isinstance(tokens, int) and not isinstance(tokens, bool):
+            self.tokens += tokens
+            self._token_rollouts += 1
         if (
             isinstance(cost, int | float)
             and not isinstance(cost, bool)
@@ -471,14 +734,17 @@ class BudgetGuard:
         ):
             self.cost_usd += float(cost)
             self._usd_rollouts += 1
-        else:
-            self.usd_unknown_trials += 1
-            if self.budget.max_cost_usd is not None and not self._warned_usd:
-                self._warned_usd = True
-                logger.warning(
-                    "A rollout finished without a USD cost; --max-cost-usd counts "
-                    "only rollouts that report one (see summary.json budget.spent)."
-                )
+            if incomplete:
+                self.cost_incomplete_trials += 1
+
+    def add_cancelled_spend(
+        self, name: str, *, cost: Any, tokens: Any, incomplete: bool = False
+    ) -> None:
+        """Count trial *name*'s cancelled attempt's tokens and USD:
+        spent, though nothing was scored."""
+        del name  # the job's totals; a trial's seconds are counted apart
+        self._add_spend(cost=cost, tokens=tokens, incomplete=incomplete)
+        self._notify()
 
     def spent(self, *, now: float | None = None) -> dict[str, Any]:
         """What the job has spent so far (``summary.json``'s ``budget.spent``)."""
@@ -492,6 +758,10 @@ class BudgetGuard:
             "rollouts": self.rollouts,
             "usd_unknown_trials": self.usd_unknown_trials,
             "tokens_unknown_trials": self.tokens_unknown_trials,
+            "cost_incomplete_trials": self.cost_incomplete_trials,
+            # The verifier's LLM judges' part of cost_usd and tokens.
+            "judge_cost_usd": round(self.judge_cost_usd, 10),
+            "judge_tokens": self.judge_tokens,
         }
 
     def _rollout_cap_reached(self) -> bool:
@@ -620,8 +890,7 @@ class BudgetGuard:
     def _count(self, name: str, result: Any) -> None:
         before = self.sandbox_seconds
         self._add(
-            cost=getattr(result, "cost_usd", None),
-            tokens=getattr(result, "total_tokens", None),
+            AttemptSpend.of(result),
             seconds=(
                 0.0
                 if name in self._verifier_tracked
@@ -706,8 +975,10 @@ class BudgetGuard:
                 self.check()
 
     def summary(self) -> dict[str, Any]:
-        """The ``budget`` block of summary.json."""
-        return {
+        """The ``budget`` block of summary.json. With a USD cap and an
+        attempt whose cost counted only some of its calls, ``cost_cap_note``
+        says the cap compared the counted part only."""
+        block: dict[str, Any] = {
             "caps": self.budget.to_dict(),
             "spent": self.spent(),
             "stopped": self.stopped,
@@ -715,6 +986,14 @@ class BudgetGuard:
             "cancelled": sorted(self.cancelled),
             "not_started": sorted(self.not_started),
         }
+        partial = self.cost_incomplete_trials
+        if self.budget.max_cost_usd is not None and partial:
+            block["cost_cap_note"] = (
+                "--max-cost-usd compared the counted part only: "
+                f"{partial} attempt{'' if partial == 1 else 's'} counted only some "
+                "of their calls, so spent.cost_usd is a floor"
+            )
+        return block
 
 
 def guard_for(budget: Budget | None) -> BudgetGuard | None:

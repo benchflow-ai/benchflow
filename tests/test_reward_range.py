@@ -241,6 +241,7 @@ class TestVerifierRewardText:
         task = _task_with_config({"reward_range": [-1.0, 1.0]})
         assert _verifier(task, reward_txt)._parse_reward_text() == {"reward": -1.0}
 
+    @pytest.mark.usefixtures("strict_reward_rule")
     def test_undeclared_task_still_rejects_negative_reward_txt(
         self, tmp_path: Path
     ) -> None:
@@ -253,6 +254,7 @@ class TestVerifierRewardText:
         ):
             _verifier(MagicMock(), reward_txt)._parse_reward_text()
 
+    @pytest.mark.usefixtures("strict_reward_rule")
     def test_declared_range_still_bounds_reward_txt(self, tmp_path: Path) -> None:
         reward_txt = tmp_path / "reward.txt"
         reward_txt.write_text("-1.5")
@@ -285,6 +287,7 @@ class TestRolloutFinalGate:
             "reward": -1.0
         }
 
+    @pytest.mark.usefixtures("strict_reward_rule")
     def test_final_gate_default_stays_strict(self) -> None:
         with pytest.raises(
             RewardOutOfRange, match=re.escape("reward = -1.0 is outside [0.0, 1.0]")

@@ -171,7 +171,10 @@ def test_eval_run_publish_bucket_writes_readme_summary(
         folder, *, bucket_id, path_in_repo="", private=False
     ):
         captured["folder"] = folder
-        return SimpleNamespace(url=f"https://huggingface.co/buckets/{bucket_id}")
+        return SimpleNamespace(
+            url=f"https://huggingface.co/buckets/{bucket_id}",
+            visibility="new private bucket",
+        )
 
     import benchflow.publish.huggingface as hf_publish
 
@@ -243,7 +246,10 @@ def test_eval_run_publish_bucket_readme_dedupes_retry_attempts(
         folder, *, bucket_id, path_in_repo="", private=False
     ):
         captured["folder"] = folder
-        return SimpleNamespace(url=f"https://huggingface.co/buckets/{bucket_id}")
+        return SimpleNamespace(
+            url=f"https://huggingface.co/buckets/{bucket_id}",
+            visibility="new private bucket",
+        )
 
     import benchflow.publish.huggingface as hf_publish
 

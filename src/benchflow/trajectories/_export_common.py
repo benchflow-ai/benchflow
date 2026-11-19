@@ -18,10 +18,12 @@ This module owns the format-independent pieces:
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.attempt_decision import ATTEMPT_DECISION_FIELD, job_decisions
 from benchflow.trajectories.types import redact_trajectory_text
 
 logger = logging.getLogger(__name__)
@@ -119,7 +121,14 @@ def aggregate_rollout_jsonl(
     Scans ``job_dir/*/<rollout_relpath>`` and writes their lines to
     ``job_dir/<out_filename>``. Each artifact is normalized to end with a
     newline and re-redacted on the way through, so a legacy or hand-placed
-    raw rollout file cannot leak secrets into the job dataset. Unreadable
+    raw rollout file cannot leak secrets into the job dataset. Where the run
+    recorded which attempt of a task it kept, every row says what its attempt
+    is (``attempt_decision``: ``final`` for the kept attempt alone,
+    ``retried`` or ``superseded`` for the others,
+    :func:`benchflow._utils.attempt_decision.job_decisions`, over every
+    attempt of the job, one that left no artifact of its own included), so
+    a reader of the dataset can keep one result per task; rows of a job with
+    no such record are written as they are. Unreadable
     artifacts are skipped with a warning rather than failing the whole
     aggregation. Returns the artifact path, or ``None`` when no rollouts
     have emitted records yet.
@@ -131,6 +140,11 @@ def aggregate_rollout_jsonl(
     if not rollout_files:
         return None
     out = job_path / out_filename
+
+    def rollout_dir(src: Path) -> Path:
+        return job_path / src.relative_to(job_path).parts[0]
+
+    decisions = job_decisions(job_path, {rollout_dir(src) for src in rollout_files})
     with out.open("w") as fout:
         for src in rollout_files:
             try:
@@ -140,5 +154,26 @@ def aggregate_rollout_jsonl(
                 continue
             if not text.endswith("\n"):
                 text = text + "\n"
-            fout.write(redact_trajectory_text(text))
+            fout.write(
+                redact_trajectory_text(
+                    _with_decision(text, decisions.get(rollout_dir(src)))
+                )
+            )
     return out
+
+
+def _with_decision(text: str, decision: str | None) -> str:
+    """*text*'s JSON object rows with the attempt's *decision* added; any
+    other line, and every line when there is no decision, as it is."""
+    if decision is None:
+        return text
+    lines = []
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if isinstance(row, dict):
+            line = json.dumps({**row, ATTEMPT_DECISION_FIELD: decision})
+        lines.append(line)
+    return "\n".join(lines) + "\n"

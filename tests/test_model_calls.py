@@ -176,6 +176,119 @@ def test_a_codex_sub_agent_thread_is_no_main_call(tmp_path):
     assert mc.summarize(calls)["agent_effort"] == {"xhigh": 9}
 
 
+def _codex_rollout(folder: Path, name: str, usages: list[dict], **meta) -> None:
+    """A Codex 0.159.3 rollout of one thread: a ``token_usage_record`` and a
+    ``token_count`` event per response, the event carrying the thread's
+    running total."""
+    total: dict[str, int] = {}
+    rows: list[dict] = [
+        {
+            "type": "session_meta",
+            "payload": {"id": name, "cli_version": "0.159.3", **meta},
+        },
+        {
+            "type": "turn_context",
+            "payload": {"model": "gpt-6.1-sol", "effort": "xhigh"},
+        },
+    ]
+    for index, usage in enumerate(usages):
+        total = {key: total.get(key, 0) + value for key, value in usage.items()}
+        rows += [
+            {
+                "type": "token_usage_record",
+                "payload": {
+                    "response_id": f"resp_{name}_{index}",
+                    "usage": usage,
+                    "thread_token_usage": total,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {"last_token_usage": usage, "total_token_usage": total},
+                },
+            },
+        ]
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"rollout-{name}.jsonl").write_text(
+        "".join(
+            json.dumps({"timestamp": f"2026-11-07T15:13:{n:02d}Z", **row}) + "\n"
+            for n, row in enumerate(rows)
+        )
+    )
+
+
+def _usage(fresh: int, cached: int, output: int, reasoning: int = 0, written: int = 0):
+    """One response's usage as Codex logs it: input counts the cached and
+    the cache-written tokens, output counts the reasoning."""
+    return {
+        "input_tokens": fresh + cached + written,
+        "cached_input_tokens": cached,
+        "cache_write_input_tokens": written,
+        "output_tokens": output,
+        "reasoning_output_tokens": reasoning,
+        "total_tokens": fresh + cached + written + output,
+    }
+
+
+def test_codex_session_tokens_sum_every_response(tmp_path):
+    """The figures a codex-acp trial now reports: the last fixture event's
+    running total, in result.json's terms (input without the cached tokens,
+    total the sum of the four counts), whichever way Codex logged it."""
+    expected = {
+        "n_input_tokens": 493915 - 428800,
+        "n_output_tokens": 10207,
+        "n_cache_read_tokens": 428800,
+        # OpenAI reports no cache writes: Codex's 0 is no count.
+        "n_cache_creation_tokens": None,
+        "total_tokens": 504122,
+        "thought_tokens": 6354,
+        "calls": 9,
+    }
+    for fixture in ("codex-session.jsonl", "codex-session-old.jsonl"):
+        trial = _trial(tmp_path / fixture, codex=fixture)
+        assert mc.codex_session_tokens(trial) == expected
+
+
+def test_one_codex_call_gives_that_calls_usage(tmp_path):
+    """A one-call trial reports what codex-acp's ACP usage says of that call
+    (a gpt-6.1-sol call of 362 input, 110,848 cached and 84 output tokens)."""
+    _codex_rollout(tmp_path / mc.CODEX_SESSIONS, "main", [_usage(362, 110848, 84)])
+    assert mc.codex_session_tokens(tmp_path) == {
+        "n_input_tokens": 362,
+        "n_output_tokens": 84,
+        "n_cache_read_tokens": 110848,
+        "n_cache_creation_tokens": None,
+        "total_tokens": 111294,
+        "thought_tokens": 0,
+        "calls": 1,
+    }
+
+
+def test_codex_session_tokens_count_sub_agents_and_cache_writes(tmp_path):
+    folder = tmp_path / mc.CODEX_SESSIONS / "2026" / "11" / "07"
+    _codex_rollout(
+        folder, "main", [_usage(1000, 0, 200, 150), _usage(300, 1100, 50, written=40)]
+    )
+    _codex_rollout(
+        folder,
+        "sub",
+        [_usage(500, 0, 30)],
+        source={"subagent": {"thread_spawn": {"parent_thread_id": "main"}}},
+    )
+    assert mc.codex_session_tokens(tmp_path) == {
+        "n_input_tokens": 1800,
+        "n_output_tokens": 280,
+        "n_cache_read_tokens": 1100,
+        "n_cache_creation_tokens": 40,
+        "total_tokens": 3220,
+        "thought_tokens": 150,
+        "calls": 3,
+    }
+    assert mc.codex_session_tokens(tmp_path / "empty") is None
+
+
 def test_write_model_calls_writes_both_files(tmp_path):
     trial = _trial(tmp_path, proxy="trunc-proxy.jsonl")
     summary = mc.write_model_calls(trial)
@@ -220,12 +333,13 @@ def test_the_committed_schemas_are_current_and_records_validate(tmp_path):
         committed = json.loads((schemas / name).read_text())
         jsonschema.Draft202012Validator.check_schema(committed)
         assert committed == json.loads(json.dumps(schema)), name
-    record = mc.SCHEMAS["benchflow-model-call.v2.schema.json"]
+    record = mc.SCHEMAS["benchflow-model-call.v3.schema.json"]
     totals = mc.SCHEMAS["benchflow-model-calls.v1.schema.json"]
     # A record from before the per-call tools count still validates as v1.
     old = {**mc._record(mc.PROXY, index=0), "schema": mc.SCHEMA_V1}
     old.pop("tools")
     old.pop("seed")
+    old.pop("cost_source")  # v3
     jsonschema.validate(old, mc.SCHEMAS["benchflow-model-call.v1.schema.json"])
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(

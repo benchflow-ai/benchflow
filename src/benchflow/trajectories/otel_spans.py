@@ -24,6 +24,7 @@ failed send is logged and never fails the trial.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -272,6 +273,55 @@ def _endpoint() -> tuple[str, dict[str, str]] | None:
     return url, headers
 
 
+#: The trial folders whose spans were written and left for the run to send
+#: (``emit_trial_spans(send=False)``), while the run's retry loop runs a try
+#: it may still retry (``Evaluation._run_task``): it sends them with its
+#: decision, or as the try stops before it has one.
+_DEFERRED: contextvars.ContextVar[list[Path] | None] = contextvars.ContextVar(
+    "benchflow_deferred_trial_spans", default=None
+)
+
+
+def defer_trial_spans(pending: list[Path]) -> contextvars.Token:
+    """Collect into *pending* the trial folders whose spans are written but
+    not sent, until :func:`stop_deferring_trial_spans`."""
+    return _DEFERRED.set(pending)
+
+
+def stop_deferring_trial_spans(token: contextvars.Token) -> None:
+    _DEFERRED.reset(token)
+
+
+def send_deferred_trial_spans(pending: list[Path]) -> None:
+    """Send each folder's written spans once (:func:`send_trial_spans`) and
+    empty *pending*; never raises."""
+    folders = list(dict.fromkeys(pending))
+    pending.clear()
+    for folder in folders:
+        send_trial_spans(folder)
+
+
+def send_trial_spans(trial: Path) -> None:
+    """Send the spans :func:`emit_trial_spans` wrote for *trial* without
+    sending them; never raises. An attempt a run may still retry is sent
+    once, when the run has decided it (``Evaluation._record_attempt_decision``)."""
+    try:
+        payload = json.loads((Path(trial) / SPANS_FILE).read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(payload, dict):
+        _send(payload)
+
+
+def _send(payload: dict[str, Any]) -> None:
+    endpoint = _endpoint()
+    if endpoint is not None:
+        try:
+            send_spans(payload, *endpoint)
+        except Exception as exc:
+            logger.warning("Trial spans not sent to %s: %s", endpoint[0], exc)
+
+
 def send_spans(payload: dict[str, Any], url: str, headers: dict[str, str]) -> int:
     """POST *payload* to an OTLP/HTTP traces endpoint; the HTTP status."""
     timeout = float(os.environ.get("OTEL_EXPORTER_OTLP_TIMEOUT") or 10000) / 1000
@@ -282,8 +332,10 @@ def send_spans(payload: dict[str, Any], url: str, headers: dict[str, str]) -> in
         return response.status
 
 
-def emit_trial_spans(trial: Path) -> dict[str, Any] | None:
-    """Write the trial's spans, and send them where the environment says; never raises."""
+def emit_trial_spans(trial: Path, *, send: bool = True) -> dict[str, Any] | None:
+    """Write the trial's spans, and send them where the environment says
+    (with *send*; :func:`send_trial_spans` sends a written file later); never
+    raises."""
     try:
         payload = trial_spans(trial)
         if payload is None:
@@ -291,12 +343,12 @@ def emit_trial_spans(trial: Path) -> dict[str, Any] | None:
         target = Path(trial) / SPANS_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomic(target, json.dumps(payload, separators=(",", ":")))
-        endpoint = _endpoint()
-        if endpoint is not None:
-            try:
-                send_spans(payload, *endpoint)
-            except Exception as exc:
-                logger.warning("Trial spans not sent to %s: %s", endpoint[0], exc)
+        if send:
+            _send(payload)
+        else:
+            pending = _DEFERRED.get()
+            if pending is not None and Path(trial) not in pending:
+                pending.append(Path(trial))
         return payload
     except Exception as exc:
         logger.info("Trial spans not written: %s", exc)
