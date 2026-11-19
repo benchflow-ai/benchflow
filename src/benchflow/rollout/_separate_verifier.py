@@ -1843,6 +1843,11 @@ def _verifier_task(task: Any, plan: VerifierImage) -> Any:
     # built from tests/: the verifier uses /tests as that Dockerfile left it
     # (Verifier._bundled_tests).
     view._benchflow_bundled_tests = _format_verifier(task, plan)
+    # Its sandbox runs no agent: the launch's Modal lifetime check counts the
+    # verifier and setup budgets only (task.runtime_capabilities).
+    from benchflow._utils.modal_lifetime import VERIFIER_SANDBOX_VIEW
+
+    setattr(view, VERIFIER_SANDBOX_VIEW, True)
     return view
 
 

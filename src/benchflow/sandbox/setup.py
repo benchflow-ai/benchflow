@@ -16,7 +16,7 @@ from typing import Any, NoReturn
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow._utils.modal_gpu import modal_gpu_request
-from benchflow._utils.modal_lifetime import modal_sandbox_timeout
+from benchflow._utils.modal_lifetime import VERIFIER_SANDBOX_VIEW, modal_sandbox_timeout
 from benchflow.agents.registry import AGENTS
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox.providers import (
@@ -1172,6 +1172,8 @@ def _validate_task_runtime_for_launch(
         runtime_task,
         sandbox=sandbox_type,
         task_dir=runtime_view.task_dir,
+        # A separate verifier's sandbox runs no agent (its lifetime check).
+        verifier_sandbox=getattr(task, VERIFIER_SANDBOX_VIEW, False) is True,
     )
 
 

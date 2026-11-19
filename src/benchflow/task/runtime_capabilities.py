@@ -118,11 +118,15 @@ def validate_task_runtime_support(
     *,
     sandbox: str,
     task_dir: str | Path | None = None,
+    verifier_sandbox: bool = False,
 ) -> list[UnsupportedTaskFeature]:
     """Return unsupported parsed features for ``sandbox``.
 
     ``task`` may be a full :class:`TaskDocument` when document-only fields need
     checking, or a plain :class:`TaskConfig` for legacy split packages.
+    *verifier_sandbox*: ``task`` is the view a separate verifier's sandbox
+    is launched with (``rollout._separate_verifier._verifier_task``), which
+    runs no agent.
     """
 
     config = task.config if isinstance(task, TaskDocument) else task
@@ -138,6 +142,13 @@ def validate_task_runtime_support(
         return unsupported
 
     _append_config_issues(unsupported, config=config, sandbox=sandbox)
+    if sandbox == GPU_SANDBOX:
+        _append_modal_lifetime_issue(
+            unsupported,
+            config=config,
+            sandbox=sandbox,
+            verifier_sandbox=verifier_sandbox,
+        )
     _append_kept_services_issue(
         unsupported,
         config=config,
@@ -540,16 +551,43 @@ def raise_for_task_runtime_support(
     *,
     sandbox: str,
     task_dir: str | Path | None = None,
+    verifier_sandbox: bool = False,
 ) -> None:
-    """Raise if ``task`` contains parsed semantics unsupported by ``sandbox``."""
+    """Raise if ``task`` contains parsed semantics unsupported by ``sandbox``
+    (*verifier_sandbox*: see :func:`validate_task_runtime_support`)."""
 
     unsupported = validate_task_runtime_support(
         task,
         sandbox=sandbox,
         task_dir=task_dir,
+        verifier_sandbox=verifier_sandbox,
     )
     if unsupported:
         raise UnsupportedTaskFeatureError(unsupported)
+
+
+def _append_modal_lifetime_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    sandbox: str,
+    verifier_sandbox: bool,
+) -> None:
+    """Modal ends a sandbox at its lifetime, whatever runs in it: refuse one
+    whose budgets do not fit (:func:`modal_lifetime_issue`). A setting out of
+    range is refused where the sandbox is made."""
+    try:
+        limit = modal_sandbox_timeout()
+    except ValueError:
+        return
+    why = modal_lifetime_issue(config, limit, verifier_sandbox=verifier_sandbox)
+    if why is not None:
+        _issue(
+            unsupported,
+            path="verifier.timeout_sec" if verifier_sandbox else "agent.timeout_sec",
+            reason=why,
+            sandbox=sandbox,
+        )
 
 
 def _issue(
@@ -726,15 +764,6 @@ def _append_config_issues(
             modal_gpu_request(env.gpus, env.gpu_types)
         except ModalGPURequestError as exc:
             _issue(unsupported, path=exc.path, reason=str(exc), sandbox=sandbox)
-        # Modal ends a sandbox at its lifetime, whatever runs in it. A setting
-        # out of range is refused where the sandbox is made.
-        try:
-            limit = modal_sandbox_timeout()
-        except ValueError:
-            limit = None
-        why = None if limit is None else modal_lifetime_issue(config, limit)
-        if why is not None:
-            _issue(unsupported, path="agent.timeout_sec", reason=why, sandbox=sandbox)
     elif env.gpus or env.gpu_types:
         _issue(
             unsupported,

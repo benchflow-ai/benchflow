@@ -965,3 +965,57 @@ async def test_rlimits_are_off_by_default_on_both_launchers(tmp_path, monkeypatc
         folder = tmp_path / str(factory)
         folder.mkdir()
         await _create_kwargs(folder, monkeypatch, factory=factory)
+
+
+def _separate_verifier_task(tmp_path):
+    """A GPU task whose verifier has a sandbox of its own: agent 1800 s,
+    verifier 900 s, setup 600 s (the review's example)."""
+    from benchflow.task import Task
+
+    task_dir = tmp_path / "task"
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "verifier").mkdir()
+    (task_dir / "verifier" / "test.sh").write_text("#!/bin/sh\nexit 0\n")
+    (task_dir / "task.md").write_text(
+        '---\nschema_version: "1.3"\n'
+        "agent:\n  timeout_sec: 1800\n"
+        "verifier:\n  timeout_sec: 900\n  sandbox_mode: separate\n"
+        "sandbox:\n  gpus: 1\n  setup_timeout_sec: 600\n"
+        "---\n\n## prompt\n\nSolve it.\n"
+    )
+    return Task(task_dir), task_dir
+
+
+@pytest.mark.parametrize(
+    ("lifetime", "agent_refused", "verifier_refused"),
+    [("3000", False, False), ("2000", True, False), ("1200", True, True)],
+)
+def test_each_sandbox_of_a_separate_verifier_task_is_checked_alone(
+    tmp_path, monkeypatch, lifetime, agent_refused, verifier_refused
+):
+    """Guards PR #1248's first plan-gate check against the review finding
+    that it refused the separate verifier's sandbox: that launch's task view
+    (_separate_verifier._verifier_task) keeps the finished agent's timeout,
+    so 1800 + 900 + 600 s was counted against a sandbox that runs 900 + 600."""
+    from benchflow.rollout._separate_verifier import _verifier_task
+    from benchflow.sandbox.setup import _validate_task_runtime_for_launch
+    from benchflow.task import UnsupportedTaskFeatureError
+
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", lifetime)
+    task, task_dir = _separate_verifier_task(tmp_path)
+    plan = SimpleNamespace(sandbox=task.config.sandbox, source="Dockerfile")
+    for view, refused, path in (
+        (task, agent_refused, "agent.timeout_sec"),
+        (_verifier_task(task, plan), verifier_refused, "verifier.timeout_sec"),
+    ):
+        if not refused:
+            _validate_task_runtime_for_launch(
+                view, sandbox_type="modal", task_path=task_dir, check_compose=False
+            )
+            continue
+        with pytest.raises(UnsupportedTaskFeatureError) as raised:
+            _validate_task_runtime_for_launch(
+                view, sandbox_type="modal", task_path=task_dir, check_compose=False
+            )
+        assert [f.path for f in raised.value.features] == [path]
