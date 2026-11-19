@@ -703,3 +703,265 @@ def _done(done):
         stderr=SimpleNamespace(read=SimpleNamespace(aio=lambda: read("stderr"))),
         wait=SimpleNamespace(aio=wait),
     )
+
+
+# Gap 3: Docker's open-file and stack limits, opt-in.
+
+_HELD = [
+    "/usr/bin/prlimit",
+    "--nofile=1024:524288",
+    "--stack=8388608:unlimited",
+    "--",
+    "/usr/bin/timeout",
+    "--foreground",
+    "0",
+    "/usr/bin/setpriv",
+    "--pdeathsig",
+    "KILL",
+    "/usr/bin/prlimit",
+    "--nofile=1024:524288",
+    "--stack=8388608:unlimited",
+    "--",
+]
+
+
+@pytest.mark.parametrize(
+    ("raw", "limits"),
+    [
+        (None, None),
+        ("", None),
+        ("0", None),
+        ("off", None),
+        ("1", modal_impl.DOCKER_RLIMITS),
+        ("docker", modal_impl.DOCKER_RLIMITS),
+        ("nofile=4096:8192", {"nofile": (4096, 8192)}),
+        (
+            "nofile=1024:524288, stack=unlimited:unlimited",
+            {"nofile": (1024, 524288), "stack": (None, None)},
+        ),
+    ],
+)
+def test_the_rlimits_setting(raw, limits):
+    environ = {} if raw is None else {"BENCHFLOW_MODAL_RLIMITS": raw}
+    assert modal_impl.modal_rlimits(environ) == limits
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2",
+        "cpu=1:1",
+        "nofile=2:1",
+        "nofile=unlimited:5",
+        "nofile=1",
+        "nofile=1:2,nofile=1:2",
+    ],
+)
+def test_an_unreadable_rlimits_setting_is_refused(raw):
+    with pytest.raises(ValueError, match="BENCHFLOW_MODAL_RLIMITS"):
+        modal_impl.modal_rlimits({"BENCHFLOW_MODAL_RLIMITS": raw})
+
+
+def test_the_held_exec_prefix():
+    """The payload is a forked child (timeout) with its own copy of the
+    limits, which no later exec can reset; setpriv ends it with its waiter."""
+    argv = ["/bin/bash", "-c", "true"]
+    assert modal_impl.held_argv(argv, modal_impl.DOCKER_RLIMITS) == [*_HELD, *argv]
+
+
+def test_the_limits_file_text():
+    assert modal_impl.rlimits_conf(modal_impl.DOCKER_RLIMITS) == (
+        "# BenchFlow (BENCHFLOW_MODAL_RLIMITS): the limits su and runuser give\n"
+        "*\tsoft\tnofile\t1024\n"
+        "*\thard\tnofile\t524288\n"
+        "*\tsoft\tstack\t8192\n"
+        "*\thard\tstack\tunlimited\n"
+        "root\tsoft\tnofile\t1024\n"
+        "root\thard\tnofile\t524288\n"
+        "root\tsoft\tstack\t8192\n"
+        "root\thard\tstack\tunlimited\n"
+    )
+
+
+def _run_conf_command(root):
+    import subprocess
+
+    command = modal_impl._rlimits_conf_command(modal_impl.DOCKER_RLIMITS).replace(
+        "/etc/security", f"{root}/etc/security"
+    )
+    return subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
+
+
+def test_the_limits_file_is_written(tmp_path):
+    (tmp_path / "etc/security/limits.d").mkdir(parents=True)
+    (tmp_path / "etc/security/limits.conf").write_text(
+        "# defaults\n*  soft  core  0\n@staff hard nproc 50\n"
+    )
+    done = _run_conf_command(tmp_path)
+    assert done.returncode == 0, done
+    written = tmp_path / "etc/security/limits.d/benchflow-rlimits.conf"
+    assert written.read_text() == modal_impl.rlimits_conf(modal_impl.DOCKER_RLIMITS)
+    assert oct(written.stat().st_mode & 0o777) == "0o644"
+
+
+def test_an_image_whose_limits_config_names_one_is_refused(tmp_path):
+    (tmp_path / "etc/security/limits.d").mkdir(parents=True)
+    (tmp_path / "etc/security/limits.d/90-app.conf").write_text(
+        "*   soft   nofile   65536\n"
+    )
+    done = _run_conf_command(tmp_path)
+    assert done.returncode == 3
+    assert "90-app.conf: * soft nofile 65536" in done.stdout
+    assert not (tmp_path / "etc/security/limits.d/benchflow-rlimits.conf").exists()
+
+
+_DOCKERS = (
+    "Max open files            1024                 524288               files\n"
+    "Max stack size            8388608              unlimited            bytes\n"
+)
+_MODALS = (
+    "Max open files            1048576              1048576              files\n"
+    "Max stack size            unlimited            unlimited            bytes\n"
+)
+
+
+def test_the_su_check_reads_each_route():
+    limits = modal_impl.DOCKER_RLIMITS
+    good = f"== su nobody rc=0\n{_DOCKERS}== runuser nobody rc=0\n{_DOCKERS}"
+    assert modal_impl.rlimit_check_problems(good, limits) == []
+    bad = f"== su nobody rc=0\n{_MODALS}== su root rc=1\nsu: Authentication failure\n"
+    assert modal_impl.rlimit_check_problems(bad, limits) == [
+        "su root failed (exit status 1)",
+        "su nobody gives the nofile limit (1048576, 1048576), not (1024, 524288)",
+        "su nobody gives the stack limit (None, None), not (8388608, None)",
+    ]
+
+
+def _exec_result(stdout="", stderr="", code=0):
+    from benchflow.sandbox._base import ExecResult
+
+    return ExecResult(stdout=stdout, stderr=stderr, return_code=code)
+
+
+@pytest.mark.asyncio
+async def test_no_setting_holds_nothing(monkeypatch, fake_secret):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.delenv("BENCHFLOW_MODAL_RLIMITS", raising=False)
+    remote = _remote(exec_=_ok)
+    sandbox = _modal_sandbox(remote)
+    sandbox.exec = AsyncMock()
+    await sandbox._hold_rlimits()
+    assert sandbox._rlimits is None
+    assert remote.exec.calls == [] and not sandbox.exec.await_count
+    assert sandbox.hold_argv(["true"]) == ["true"]
+
+
+@pytest.mark.asyncio
+async def test_the_setting_holds_every_later_exec(monkeypatch, fake_secret):
+    """Every step is a root command on the system-shell route; the file is
+    written before the prefix holds, and the prefix's first command proves
+    it runs in the image."""
+    monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
+    remote = _remote(exec_=_ok)
+    sandbox = _modal_sandbox(remote)
+    su_check = f"== su nobody rc=0\n{_DOCKERS}== su root rc=0\n{_DOCKERS}"
+    seen = []
+
+    async def exec_(command, **kwargs):
+        seen.append((command, kwargs, sandbox._rlimits))
+        return _exec_result(su_check if "/proc/self/limits" in command else "")
+
+    sandbox.exec = exec_
+    await sandbox._hold_rlimits()
+    (written, *_), (proof, *_), (checked, *_) = seen
+    assert "benchflow-rlimits.conf" in written and seen[0][2] is None
+    assert proof == "true" and seen[1][2] == modal_impl.DOCKER_RLIMITS
+    assert "su -s /bin/sh" in checked
+    for _command, kwargs, _held in seen:
+        assert kwargs == {"user": "root", "system_shell": True, "timeout_sec": 60}
+    assert sandbox._rlimits == modal_impl.DOCKER_RLIMITS
+    # Every exec from now on: the route's argv behind the prefix.
+    del sandbox.exec
+    await ModalSandbox.exec(sandbox, "true", user="root")
+    (held, _kwargs) = remote.exec.calls[-1]
+    sandbox._rlimits = None
+    await ModalSandbox.exec(sandbox, "true", user="root")
+    (plain, _kwargs) = remote.exec.calls[-1]
+    assert list(held) == [*_HELD, *plain]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("results", "said"),
+    [
+        ([_exec_result("x.conf: * soft nofile 9", code=3)], "sets one of these"),
+        ([_exec_result(), _exec_result(code=127)], "could not run"),
+        ([_exec_result(), RuntimeError("no such file: prlimit")], "could not run"),
+        (
+            [
+                _exec_result(),
+                _exec_result(),
+                _exec_result(f"== su nobody rc=0\n{_MODALS}"),
+            ],
+            "su nobody",
+        ),
+    ],
+)
+async def test_a_sandbox_that_cannot_hold_them_is_refused_and_ended(
+    monkeypatch, fake_secret, results, said
+):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
+    remote = _remote(exec_=_ok)
+    sandbox = _modal_sandbox(remote)
+    sandbox.exec = AsyncMock(side_effect=results)
+    with pytest.raises(modal_impl.ModalRlimitsRefused, match=said) as raised:
+        await sandbox._hold_rlimits()
+    assert str(raised.value).startswith(
+        "sandbox startup refused: BENCHFLOW_MODAL_RLIMITS"
+    )
+    assert len(remote.terminate.calls) == 1
+    assert sandbox._sandbox is None
+
+
+@pytest.mark.asyncio
+async def test_the_agent_process_runs_behind_the_held_prefix(monkeypatch):
+    import sys
+    import types
+
+    from benchflow.sandbox.process.modal import ModalProcess
+
+    fake = types.ModuleType("modal")
+    fake.Secret = SimpleNamespace(from_dict=lambda d: d)
+    monkeypatch.setitem(sys.modules, "modal", fake)
+
+    async def route(_env):
+        return None
+
+    monkeypatch.setattr("benchflow.sandbox.process.modal.launch_route", route)
+    env = SimpleNamespace(
+        hold_argv=lambda argv: modal_impl.held_argv(argv, modal_impl.DOCKER_RLIMITS)
+    )
+    remote = SimpleNamespace(exec=_Aio(lambda *a, **k: _ended_agent_process()))
+    process = ModalProcess(remote, env=env)
+    await process.start("agent --acp")
+    (args, _kwargs) = remote.exec.calls[0]
+    assert list(args[: len(_HELD)]) == _HELD
+    assert args[len(_HELD) : len(_HELD) + 4] == (
+        "/bin/bash",
+        "--noprofile",
+        "--norc",
+        "-p",
+    )
+    await process.close()
+
+
+@pytest.mark.asyncio
+async def test_rlimits_are_off_by_default_on_both_launchers(tmp_path, monkeypatch):
+    monkeypatch.delenv("BENCHFLOW_MODAL_RLIMITS", raising=False)
+    for factory in (False, True):
+        folder = tmp_path / str(factory)
+        folder.mkdir()
+        await _create_kwargs(folder, monkeypatch, factory=factory)

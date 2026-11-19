@@ -63,6 +63,10 @@ Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
 Modal cannot unset a variable, so a thread count the image leaves unset keeps Modal's value; set it in the task's Dockerfile to choose it. Values a base image (`FROM`) sets are not read, and a task that names a prebuilt `docker_image` keeps Modal's values unless the task's `env` sets them. Each sandbox logs the names that keep Modal's.
 
+**Open-file and stack limits.** A Modal exec starts with an open-file limit of 1048576 and an unlimited stack; Docker's defaults are 1024 (hard 524288) and 8 MiB (hard unlimited), so glibc's default thread stack is 2 MiB on Modal and 8 MiB on Docker. Set `BENCHFLOW_MODAL_RLIMITS=1` to run every exec with Docker's limits, or `BENCHFLOW_MODAL_RLIMITS=nofile=SOFT:HARD,stack=SOFT:HARD` (the stack in bytes, `unlimited` allowed) for others. Each exec then runs behind `prlimit`, coreutils' `timeout` and `setpriv`, so the image needs util-linux and coreutils, and BenchFlow writes the limits to `/etc/security/limits.d/benchflow-rlimits.conf` for `su` and `runuser`. A sandbox that cannot hold them is refused at start: the image lacks those programs, its own `pam_limits` config sets one of the limits, or its `su` gives other limits. The setting is off by default.
+
+**What stays different.** The hostname is `modal` in every sandbox (Modal has no option to set it, and gVisor refuses `sethostname`); a task that needs an id per sandbox can read `/proc/sys/kernel/random/boot_id`. `/dev/shm` is sized from the host, and the kernel is gVisor's; Modal has no option for either.
+
 ## Sandbox lifetime
 
 Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.

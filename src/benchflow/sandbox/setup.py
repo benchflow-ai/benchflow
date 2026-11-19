@@ -263,6 +263,9 @@ def _create_benchflow_modal_environment_class():
                 self.exec,
                 f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
             )
+            # BENCHFLOW_MODAL_RLIMITS (opt-in): every later exec runs with
+            # its limits (ModalSandbox._hold_rlimits).
+            await self._hold_rlimits()
 
     return BenchFlowModalSandbox
 

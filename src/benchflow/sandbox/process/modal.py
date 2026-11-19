@@ -166,6 +166,10 @@ class ModalProcess(LiveProcess):
         # functions may select what root runs (C8).
         argv = root_launch_argv(script, launch_bash(route))
         argv = [*argv[:-2], "-p", *argv[-2:]]
+        # Behind BENCHFLOW_MODAL_RLIMITS's limits once the sandbox holds them.
+        hold = getattr(self._bf_env, "hold_argv", None)
+        if hold is not None:
+            argv = hold(argv)
         # Modal starts the process with the image's ENV: the loader and
         # start-up names go in empty (``docker exec -e NAME=``), so nothing
         # an image value names loads into root's shell before its first line.

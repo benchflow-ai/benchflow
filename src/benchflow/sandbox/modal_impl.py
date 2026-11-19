@@ -228,6 +228,197 @@ def modal_image_env(
     return ModalImageEnv(create, pythonpath, tuple(kept))
 
 
+#: Opt-in: the open-file and stack limits every exec runs with. ``1`` (or
+#: on, true, yes, docker): Docker's defaults (:data:`DOCKER_RLIMITS`); or
+#: ``nofile=SOFT:HARD,stack=SOFT:HARD`` (the stack in bytes; ``unlimited``
+#: allowed). Unset or ``0``: Modal's own, as before.
+RLIMITS_ENV = "BENCHFLOW_MODAL_RLIMITS"
+_ON_VALUES = frozenset({"1", "on", "true", "yes", "docker"})
+#: Limits by name, ``(soft, hard)``, None for unlimited.
+Rlimits = dict[str, tuple[int | None, int | None]]
+#: Docker's defaults when no ``--ulimit`` is given, ``(soft, hard)`` with None
+#: for unlimited. A Modal exec starts with nofile 1048576/1048576 and an
+#: unlimited stack, so glibc's default thread stack is 2 MiB there and 8 MiB
+#: on Docker.
+DOCKER_RLIMITS: Rlimits = {
+    "nofile": (1024, 524288),
+    "stack": (8388608, None),
+}
+#: The ``pam_limits`` file the limits go in for ``su`` and ``runuser``, which
+#: take a limit their config does not name from PID 1 (Debian's and Ubuntu's
+#: ``pam_limits``); under gVisor every new exec resets PID 1's to Modal's.
+RLIMITS_CONF = "/etc/security/limits.d/benchflow-rlimits.conf"
+#: util-linux's ``prlimit`` and ``setpriv`` and coreutils' ``timeout``, by
+#: absolute path as root's shell is named.
+PRLIMIT = "/usr/bin/prlimit"
+TIMEOUT = "/usr/bin/timeout"
+SETPRIV = "/usr/bin/setpriv"
+#: ``pam_limits``'s unit for each limit, in that limit's bytes (KiB stacks).
+_PAM_UNIT = {"nofile": 1, "stack": 1024}
+
+
+def _rlimit_value(text: str) -> int | None:
+    if text == "unlimited":
+        return None
+    if text.isascii() and text.isdigit():
+        return int(text)
+    raise ValueError(text)
+
+
+def modal_rlimits(environ: Mapping[str, str] | None = None) -> Rlimits | None:
+    """The limits ``BENCHFLOW_MODAL_RLIMITS`` asks every exec to run with, or
+    None (unset or off: Modal's). ValueError for a value it cannot read."""
+    env = os.environ if environ is None else environ
+    raw = (env.get(RLIMITS_ENV) or "").strip()
+    if raw.lower() in _OFF_VALUES or not raw:
+        return None
+    if raw.lower() in _ON_VALUES:
+        return dict(DOCKER_RLIMITS)
+    limits: Rlimits = {}
+    try:
+        for item in raw.split(","):
+            name, _, pair = item.strip().partition("=")
+            soft_text, _, hard_text = pair.partition(":")
+            if name not in DOCKER_RLIMITS or name in limits:
+                raise ValueError(name)
+            soft, hard = _rlimit_value(soft_text), _rlimit_value(hard_text)
+            if soft is None and hard is not None:
+                raise ValueError(pair)
+            if soft is not None and hard is not None and soft > hard:
+                raise ValueError(pair)
+            limits[name] = (soft, hard)
+    except ValueError:
+        raise ValueError(
+            f"{RLIMITS_ENV}={raw!r}: give 1 for Docker's limits (nofile "
+            "1024:524288, stack 8388608:unlimited), or "
+            "nofile=SOFT:HARD,stack=SOFT:HARD (soft at most hard; a number or "
+            "unlimited; the stack in bytes)"
+        ) from None
+    return limits
+
+
+def _limit(value: int | None) -> str:
+    return "unlimited" if value is None else str(value)
+
+
+def held_argv(argv: Sequence[str], limits: Rlimits) -> list[str]:
+    """*argv* run with *limits*, held across Modal's later execs.
+
+    Under gVisor, PID 1 and every top-level exec process share one set of
+    limits, which each new exec resets to Modal's; a forked child keeps its
+    own. So the first ``prlimit`` sets the limits on this exec, ``timeout``
+    forks the payload (and passes on its exit status and the signals it
+    gets), ``setpriv --pdeathsig KILL`` ends the payload if Modal's exec
+    timeout kills its waiter, and the second ``prlimit`` sets the limits on
+    the payload's own copy whatever another exec did in between.
+    """
+    words = [
+        f"--{name}={_limit(soft)}:{_limit(hard)}"
+        for name, (soft, hard) in limits.items()
+    ]
+    return [
+        PRLIMIT,
+        *words,
+        "--",
+        TIMEOUT,
+        "--foreground",
+        "0",
+        SETPRIV,
+        "--pdeathsig",
+        "KILL",
+        PRLIMIT,
+        *words,
+        "--",
+        *argv,
+    ]
+
+
+def rlimits_conf(limits: Rlimits) -> str:
+    """:data:`RLIMITS_CONF`'s text: *limits* for every user and for root by
+    name (Debian's ``pam_limits`` applies no ``*`` line to root)."""
+    lines = [f"# BenchFlow ({RLIMITS_ENV}): the limits su and runuser give"]
+    for domain in ("*", "root"):
+        for name, pair in limits.items():
+            for kind, value in zip(("soft", "hard"), pair, strict=True):
+                shown = "unlimited" if value is None else str(value // _PAM_UNIT[name])
+                lines.append(f"{domain}\t{kind}\t{name}\t{shown}")
+    return "\n".join(lines) + "\n"
+
+
+def _rlimits_conf_command(limits: Rlimits) -> str:
+    """Root's POSIX sh: write :data:`RLIMITS_CONF`, exit 3 (printing each
+    line) when the image's own ``pam_limits`` config names one of *limits*:
+    which line wins for su would then be the image's to say."""
+    names = "|".join(limits)
+    conf = shlex.quote(RLIMITS_CONF)
+    return (
+        f"f={conf}; found=; "
+        "for c in /etc/security/limits.conf /etc/security/limits.d/*.conf; do "
+        '[ -f "$c" ] && [ "$c" != "$f" ] || continue; '
+        "while read -r d t i v rest; do "
+        "case $d in ''|'#'*) continue;; esac; "
+        f'case $i in {names}) echo "$c: $d $t $i $v"; found=1;; esac; '
+        'done < "$c"; done; '
+        '[ -z "$found" ] || exit 3; '
+        "umask 022; mkdir -p /etc/security/limits.d && "
+        f'printf %s {shlex.quote(rlimits_conf(limits))} > "$f.tmp" && '
+        'mv -f "$f.tmp" "$f"'
+    )
+
+
+#: Root's POSIX sh: the limits ``su`` and ``runuser`` give ``nobody`` and
+#: root, each route's block headed ``== <route> rc=<status>``.
+_RLIMITS_SU_CHECK = (
+    "show='cat /proc/self/limits'; "
+    "if id nobody >/dev/null 2>&1; then users='nobody root'; else users=root; fi; "
+    "if command -v su >/dev/null 2>&1; then for u in $users; do "
+    'out=$(su -s /bin/sh "$u" -c "$show" 2>&1); echo "== su $u rc=$?"; '
+    'printf "%s\\n" "$out"; done; fi; '
+    "if command -v runuser >/dev/null 2>&1; then for u in $users; do "
+    'out=$(runuser -u "$u" -- /bin/sh -c "$show" 2>&1); echo "== runuser $u rc=$?"; '
+    'printf "%s\\n" "$out"; done; fi'
+)
+_LIMIT_ROWS = {"Max open files": "nofile", "Max stack size": "stack"}
+
+
+def rlimit_check_problems(out: str, limits: Rlimits) -> list[str]:
+    """Where :data:`_RLIMITS_SU_CHECK`'s output shows a route that failed or
+    gave other limits than *limits*."""
+    failed: list[str] = []
+    seen: dict[str, Rlimits] = {}
+    route = None
+    for line in out.splitlines():
+        if line.startswith("== "):
+            route, _, status = line[3:].rpartition(" rc=")
+            seen[route] = {}
+            if status != "0":
+                failed.append(f"{route} failed (exit status {status})")
+            continue
+        for head, name in _LIMIT_ROWS.items():
+            if route is not None and line.startswith(head):
+                words = line[len(head) :].split()[:2]
+                try:
+                    seen[route][name] = (
+                        _rlimit_value(words[0]),
+                        _rlimit_value(words[1]),
+                    )
+                except (IndexError, ValueError):
+                    seen[route][name] = (-1, -1)
+    differ = [
+        f"{route} gives the {name} limit {read.get(name)}, not {pair}"
+        for route, read in seen.items()
+        if not any(f.startswith(f"{route} failed") for f in failed)
+        for name, pair in limits.items()
+        if read.get(name) != pair
+    ]
+    return failed + differ
+
+
+class ModalRlimitsRefused(RuntimeError):
+    """The sandbox cannot hold ``BENCHFLOW_MODAL_RLIMITS``'s limits; it was
+    ended."""
+
+
 #: How long a check for Modal's own end of a sandbox waits for ``poll``.
 PLATFORM_END_POLL_SEC = 15.0
 
@@ -349,6 +540,9 @@ class ModalSandbox(BaseSandbox):
     # The image's values of the names Modal sets (_read_image_env), read
     # when the sandbox is created.
     _image_env: ModalImageEnv = ModalImageEnv()
+    # The limits every exec runs behind (BENCHFLOW_MODAL_RLIMITS, held by
+    # _hold_rlimits); None: Modal's own.
+    _rlimits: Rlimits | None = None
 
     @classmethod
     def preflight(cls) -> None:
@@ -474,6 +668,76 @@ class ModalSandbox(BaseSandbox):
             )
         return image
 
+    def hold_argv(self, argv: Sequence[str]) -> list[str]:
+        """*argv* behind :func:`held_argv` once the sandbox holds
+        ``BENCHFLOW_MODAL_RLIMITS``'s limits, else unchanged."""
+        limits = self._rlimits
+        return list(argv) if limits is None else held_argv(argv, limits)
+
+    async def _hold_rlimits(self) -> None:
+        """With ``BENCHFLOW_MODAL_RLIMITS``, run every later exec with its
+        limits (:func:`held_argv`), and write them for ``su`` and ``runuser``
+        (:data:`RLIMITS_CONF`). Refuses, and ends, a sandbox whose image
+        cannot hold them: a ``pam_limits`` config of its own naming one of
+        the limits, no ``prlimit``, ``setpriv`` or ``timeout``, or a ``su`` or
+        ``runuser`` that gives other limits. Nothing without the setting.
+        Every step is a root command on the system-shell route."""
+        limits = modal_rlimits()
+        self._rlimits = None
+        if limits is None:
+            return
+        written = await exec_raw(
+            self.exec,
+            _rlimits_conf_command(limits),
+            user="root",
+            system_shell=True,
+            timeout_sec=60,
+        )
+        if written.return_code != 0:
+            why = (written.stdout or written.stderr or "").strip()[-500:]
+            await self._refuse_rlimits(
+                f"the image's own pam_limits config sets one of these limits ({why})"
+                if written.return_code == 3
+                else f"{RLIMITS_CONF} could not be written ({why})"
+            )
+        # From here every exec runs behind the held prefix; the first proves
+        # the prefix's programs run in the image.
+        self._rlimits = limits
+        try:
+            held = await exec_raw(
+                self.exec, "true", user="root", system_shell=True, timeout_sec=60
+            )
+            code, err = held.return_code, held.stderr or ""
+        except Exception as exc:
+            code, err = None, repr(exc)
+        if code != 0:
+            self._rlimits = None
+            await self._refuse_rlimits(
+                f"{PRLIMIT}, {TIMEOUT} or {SETPRIV} could not run (exit status "
+                f"{code}: {err.strip()[-300:]!r}); the image needs util-linux "
+                "and coreutils"
+            )
+        checked = await exec_raw(
+            self.exec, _RLIMITS_SU_CHECK, user="root", system_shell=True, timeout_sec=60
+        )
+        problems = rlimit_check_problems(checked.stdout or "", limits)
+        if problems:
+            await self._refuse_rlimits("; ".join(problems))
+
+    async def _refuse_rlimits(self, why: str) -> None:
+        refusal = (
+            f"sandbox startup refused: {RLIMITS_ENV} is set, and this sandbox "
+            f"cannot hold its limits: {why}"
+        )
+        logger.error(refusal)
+        try:
+            await self._terminate_sandbox()
+        except Exception:
+            logger.warning("Could not end the refused Modal sandbox")
+        else:
+            self._sandbox = None
+        raise ModalRlimitsRefused(refusal)
+
     def exec_process_env(self) -> dict[str, str]:
         """What every exec's process env adds: the image's ``PYTHONPATH``
         (or empty), over the ``/pkg/:/root/`` Modal sets in every sandbox."""
@@ -552,6 +816,7 @@ class ModalSandbox(BaseSandbox):
         await exec_raw(
             self.exec, f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
+        await self._hold_rlimits()
         if bfx_volume is not None:
             await self._check_bfx()
 
@@ -1115,7 +1380,12 @@ class ModalSandbox(BaseSandbox):
         # the same shell, as the same user. A K1 agent command's payload is
         # the agent's own command, its barrier rebuilt around the reader.
         agent = command if hasattr(command, "agent_target") else None
-        fitted = fit(argv_for, command, cat=reader_cat(route), agent=agent)
+
+        def held(command: str) -> list[str]:
+            # Behind BENCHFLOW_MODAL_RLIMITS's limits once they are held.
+            return self.hold_argv(argv_for(command))
+
+        fitted = fit(held, command, cat=reader_cat(route), agent=agent)
         _transport.sent("Modal", fitted.sent)
         env = process_env
         try:
