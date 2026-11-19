@@ -262,7 +262,8 @@ class TestCreateEnvironment:
         assert staged != effective_env_dir
         assert str(staged).endswith(str(effective_env_dir.resolve()))
 
-    def test_modal_preflights_and_constructs_environment(self, tmp_path):
+    def test_modal_preflights_and_constructs_environment(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", raising=False)
         env_config = MagicMock()
         rollout_paths = MagicMock()
         task = SimpleNamespace(
@@ -289,6 +290,8 @@ class TestCreateEnvironment:
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=None,
+            # BENCHFLOW_MODAL_SANDBOX_TIMEOUT, unset: Modal's longest (#1245).
+            sandbox_timeout_secs=86400,
         )
         assert result is modal_env.return_value
 

@@ -16,6 +16,7 @@ What changed in each BenchFlow release: 0.9.2 is the current release, and 0.10.0
 
 - **A Modal sandbox runs a task as a Docker sandbox does, where Modal allows it** (#1245). Modal is the one backend that runs GPU tasks, and its sandboxes differed from Docker's in ways the agent and the verifier see.
   - A sandbox Modal ends itself (its lifetime ran out, a process went over its memory limit, an eviction or a preemption) is recorded: the next exec, or the agent's closed connection, fails with "Sandbox not found: Modal ended the sandbox …" and Modal's return code (124 for the lifetime, 137 for a kill), an infrastructure error, where Modal's own "not found" error was classified as another error. `stop()` asks Modal first, and keeps what it said in the sandbox's `platform_end`.
+  - `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` sets each Modal sandbox's lifetime in whole seconds, 60 to 86400 (the default, Modal's longest); another value is refused before any sandbox. The plan gate refuses a task on Modal whose agent and verifier budgets plus its setup budgets add up to more than the lifetime (at `agent.timeout_sec`). Before, every sandbox lived 24 hours and nothing checked a task against it: a task with a 30-hour agent budget started, and Modal ended its sandbox at 24 hours.
 
 ## [0.10.0rc5] - release candidate
 

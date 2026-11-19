@@ -15,6 +15,7 @@ import pytest
 
 pytest.importorskip("tenacity")
 
+from benchflow._utils.modal_lifetime import SANDBOX_TIMEOUT_ENV, modal_sandbox_timeout
 from benchflow._utils.scoring import INFRA_ERROR, PIPE_CLOSED, classify_error
 from benchflow.sandbox import modal_impl
 from benchflow.sandbox.modal_impl import (
@@ -285,3 +286,119 @@ async def test_the_agent_process_names_an_end_modal_made(monkeypatch, ended):
         assert classify_error(message) == PIPE_CLOSED
     assert raised.value.diagnostic.transport_diagnosis == "remote_session_killed"
     await process.close()
+
+
+# Gap 4: a settable lifetime, checked by the plan gate.
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [(None, 86400), ("", 86400), ("60", 60), (" 3600 ", 3600), ("86400", 86400)],
+)
+def test_the_lifetime_setting(raw, seconds):
+    environ = {} if raw is None else {SANDBOX_TIMEOUT_ENV: raw}
+    assert modal_sandbox_timeout(environ) == seconds
+
+
+@pytest.mark.parametrize("raw", ["59", "86401", "0", "-60", "3600.5", "1h", "١٢٣"])
+def test_a_lifetime_out_of_range_is_refused(raw):
+    with pytest.raises(ValueError, match=SANDBOX_TIMEOUT_ENV):
+        modal_sandbox_timeout({SANDBOX_TIMEOUT_ENV: raw})
+
+
+def _gpu_task(**sections):
+    from benchflow.task import TaskConfig
+
+    return TaskConfig.model_validate(
+        {"sandbox": {"gpus": 1, "gpu_types": ["H100"]}, **sections}
+    )
+
+
+def _lifetime_issues(config):
+    from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+    return [
+        issue
+        for issue in validate_task_runtime_support(config, sandbox="modal")
+        if issue.path == "agent.timeout_sec"
+    ]
+
+
+def test_the_plan_gate_refuses_a_task_that_outlives_a_modal_sandbox(monkeypatch):
+    """The issue's repro: a 30 h agent budget passed the gate and Modal ended
+    the sandbox at 24 h."""
+    monkeypatch.delenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", raising=False)
+    issues = _lifetime_issues(_gpu_task(agent={"timeout_sec": 30 * 3600}))
+    assert len(issues) == 1
+    assert issues[0].sandbox == "modal"
+    assert "lives 86400 s" in issues[0].reason
+    assert "agent (108000 s), verifier (600 s) and setup (600 s)" in issues[0].reason
+
+
+def test_the_plan_gate_counts_agent_verifier_and_setup(monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "4000")
+    fits = _gpu_task(
+        agent={"timeout_sec": 2000},
+        verifier={"timeout_sec": 900},
+        sandbox={"gpus": 1, "setup_timeout_sec": 600},
+    )
+    assert _lifetime_issues(fits) == []
+    over = _gpu_task(
+        agent={"timeout_sec": 2000},
+        verifier={"timeout_sec": 900},
+        sandbox={
+            "gpus": 1,
+            "setup_timeout_sec": 600,
+            "setup_commands": [{"command": "true", "timeout_sec": 600}],
+        },
+    )
+    (issue,) = _lifetime_issues(over)
+    assert "lives 4000 s" in issue.reason
+    assert "add up to 4100 s" in issue.reason
+
+
+def test_a_separate_verifier_does_not_count_against_the_agents_sandbox(monkeypatch):
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "3000")
+    shared = _gpu_task(agent={"timeout_sec": 1800}, verifier={"timeout_sec": 900})
+    assert len(_lifetime_issues(shared)) == 1
+    separate = _gpu_task(
+        agent={"timeout_sec": 1800},
+        verifier={"timeout_sec": 900, "sandbox_mode": "separate"},
+    )
+    assert _lifetime_issues(separate) == []
+
+
+def test_other_backends_have_no_lifetime_check(monkeypatch):
+    from benchflow.task import TaskConfig
+    from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "60")
+    config = TaskConfig.model_validate({"agent": {"timeout_sec": 30 * 3600}})
+    assert validate_task_runtime_support(config, sandbox="docker") == []
+
+
+def test_the_launcher_creates_modal_sandboxes_with_the_setting(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from benchflow.sandbox import setup as sandbox_setup
+    from benchflow.task import Task
+
+    task_dir = tmp_path / "task"
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (task_dir / "tests").mkdir()
+    (task_dir / "tests" / "test.sh").write_text("#!/bin/sh\nexit 0\n")
+    (task_dir / "task.toml").write_text(
+        'schema_version = "1.3"\n[environment]\ngpus = 1\n'
+    )
+    (task_dir / "instruction.md").write_text("Solve it.\n")
+    monkeypatch.setattr(ModalSandbox, "preflight", classmethod(lambda cls: None))
+
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "7200")
+    task = Task(task_dir)
+    made = sandbox_setup._create_environment("modal", task, task_dir, "t", MagicMock())
+    assert made._sandbox_timeout == 7200
+
+    monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "90000")
+    with pytest.raises(ValueError, match="BENCHFLOW_MODAL_SANDBOX_TIMEOUT"):
+        sandbox_setup._create_environment("modal", task, task_dir, "t", MagicMock())

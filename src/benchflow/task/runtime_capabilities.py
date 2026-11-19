@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow._utils.modal_gpu import ModalGPURequestError, modal_gpu_request
+from benchflow._utils.modal_lifetime import modal_lifetime_issue, modal_sandbox_timeout
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
@@ -725,6 +726,15 @@ def _append_config_issues(
             modal_gpu_request(env.gpus, env.gpu_types)
         except ModalGPURequestError as exc:
             _issue(unsupported, path=exc.path, reason=str(exc), sandbox=sandbox)
+        # Modal ends a sandbox at its lifetime, whatever runs in it. A setting
+        # out of range is refused where the sandbox is made.
+        try:
+            limit = modal_sandbox_timeout()
+        except ValueError:
+            limit = None
+        why = None if limit is None else modal_lifetime_issue(config, limit)
+        if why is not None:
+            _issue(unsupported, path="agent.timeout_sec", reason=why, sandbox=sandbox)
     elif env.gpus or env.gpu_types:
         _issue(
             unsupported,

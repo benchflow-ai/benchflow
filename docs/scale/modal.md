@@ -55,6 +55,12 @@ sandbox:
 
 Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
+## Sandbox lifetime
+
+Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.
+
+Before any sandbox, BenchFlow refuses a task whose budgets do not fit in the lifetime: the agent's `timeout_sec`, the verifier's `timeout_sec` (unless the verifier has a sandbox of its own), and the setup budgets (`setup_timeout_sec` in `[environment]`, 600 s when unset, and each setup command's `timeout_sec`).
+
 ## When Modal ends a sandbox
 
 Modal can end a sandbox on its own: when its lifetime runs out, when a process goes over its memory limit (Modal ends the whole sandbox, where Docker kills the one process), and when it evicts or preempts it. The trial then fails as an infrastructure error, with Modal's return code:

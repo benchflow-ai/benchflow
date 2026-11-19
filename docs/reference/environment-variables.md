@@ -72,6 +72,7 @@ A `docker-compose.yaml` differs in one way: Compose runs with only the variables
 | `BENCHFLOW_ACP_HANDSHAKE_TIMEOUT` | seconds an agent has to answer the first ACP message; raise it for slow images | `60` |
 | `BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC` | seconds a tool call that's still running may go past the idle timeout | 3 idle timeouts |
 | `BENCHFLOW_API_ERROR_BREAKER_THRESHOLD` | stop starting trials after this many identical permanent API errors in a row; `0` turns it off | `5` |
+| `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` | each Modal sandbox's lifetime in whole seconds, 60 to 86400; a task whose budgets do not fit is refused ([Modal](../scale/modal.md#sandbox-lifetime)) | `86400` |
 | `BENCHFLOW_REMOTE_DOCKER_HOST` | the host for `--sandbox remote-docker` ([Sandboxes](../scale/sandboxes.md)) | `DOCKER_HOST` |
 | `BENCHFLOW_DOCKER_SUBNETS` | address ranges for trial networks, or `daemon` to leave them to Docker | chosen by BenchFlow |
 | `BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS` | extra Python packages for the model proxy | none |

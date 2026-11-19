@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow._utils.modal_gpu import modal_gpu_request
+from benchflow._utils.modal_lifetime import modal_sandbox_timeout
 from benchflow.agents.registry import AGENTS
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox.providers import (
@@ -1034,6 +1035,9 @@ def _make_sandbox(
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=manifest_env or None,
+            # BENCHFLOW_MODAL_SANDBOX_TIMEOUT; a value out of range is
+            # refused here, before any sandbox.
+            sandbox_timeout_secs=modal_sandbox_timeout(),
         )
     elif sandbox_type == "agentcore":
         try:
