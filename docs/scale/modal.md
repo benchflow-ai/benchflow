@@ -59,6 +59,10 @@ Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
 **CPUs and memory.** The task's `cpus` and `memory_mb` are the sandbox's hard limits, as Docker's `cpus` and memory limit are. Modal still lets a capped sandbox use more CPU time than its limit on some hosts: 24 busy processes in a `cpus = 12` sandbox got between 13.9 and 31.2 cores' worth (on Docker, at most 12.3). A process that goes over the memory limit makes Modal end the whole sandbox, where Docker kills the one process ([below](#when-modal-ends-a-sandbox)). `BENCHFLOW_MODAL_HARD_LIMITS=0` gives Modal the two numbers as requests alone: Modal's CPU limit is then 16 CPUs above the request, and memory has no limit.
 
+**The image's environment.** Modal sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `BLIS_NUM_THREADS`, `ORT_INTER_OP_NUM_THREADS` and `ORT_INTRA_OP_NUM_THREADS` to the CPU count, `PYTHONHASHSEED=0` and `PYTHONPATH=/pkg/:/root/` in every sandbox, over the image's own values. BenchFlow reads the image's values from the task's Dockerfile (its final stage and the stages that stage is built from), with the task's `env` over them, and gives them back: the thread counts and `PYTHONHASHSEED` when the sandbox is created, `PYTHONPATH` with every command. `PYTHONHASHSEED` and `PYTHONPATH` the image leaves unset are given empty, which Python reads as unset.
+
+Modal cannot unset a variable, so a thread count the image leaves unset keeps Modal's value; set it in the task's Dockerfile to choose it. Values a base image (`FROM`) sets are not read, and a task that names a prebuilt `docker_image` keeps Modal's values unless the task's `env` sets them. Each sandbox logs the names that keep Modal's.
+
 ## Sandbox lifetime
 
 Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.

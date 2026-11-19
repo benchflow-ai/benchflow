@@ -15,6 +15,7 @@ import re
 import shlex
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from benchflow._runtime_tree import KIT_BIN
 from benchflow._utils.modal_gpu import modal_gpu_request
 from benchflow.sandbox import _transport
 from benchflow.sandbox._base import (
+    IMAGE_ENV_PREFIX,
     STARTUP_ENV_ARGV,
     SYSTEM_PATH,
     SYSTEM_SHELL_EMPTY_VARS,
@@ -58,6 +60,7 @@ from benchflow.sandbox._dir_archive import (
     source_mode,
     write_archive,
 )
+from benchflow.sandbox._dockerfile_env import final_stage_env
 from benchflow.sandbox._download import private_download
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox._exec_receipt import receipt_exec
@@ -152,6 +155,77 @@ def modal_resource(
     if not value or (env.get(HARD_LIMITS_ENV) or "").strip().lower() in _OFF_VALUES:
         return value
     return (value, value)
+
+
+#: The thread counts Modal sets in every sandbox, to the CPU request, over
+#: the image's own values (measured, modal 1.6.2); ``Sandbox.create``'s
+#: ``env`` puts the image's back. Modal also sets ``PYTHONHASHSEED=0``, and
+#: ``PYTHONPATH=/pkg/:/root/``, which it appends to a value given at create.
+MODAL_THREAD_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "ORT_INTER_OP_NUM_THREADS",
+    "ORT_INTRA_OP_NUM_THREADS",
+)
+
+
+@dataclass(frozen=True)
+class ModalImageEnv:
+    """What a Modal sandbox is given so its processes see the image's values
+    where Modal sets its own (:func:`modal_image_env`)."""
+
+    #: ``Sandbox.create``'s ``env``.
+    create: dict[str, str] = field(default_factory=dict)
+    #: The ``PYTHONPATH`` every exec starts with; None leaves Modal's.
+    pythonpath: str | None = None
+    #: The names left as Modal sets them: the image's value is not known.
+    kept: tuple[str, ...] = ()
+
+
+def modal_image_env(
+    dockerfile: str | None, task_env: Mapping[str, str] | None = None
+) -> ModalImageEnv:
+    """The image's values of the names Modal sets, from its Dockerfile.
+
+    *dockerfile* is the task's Dockerfile text (None for a prebuilt image,
+    whose values cannot be read without the image); the task's own env
+    (*task_env*, which Docker hands the container too) goes over it.
+
+    - A thread count the image sets is given at create; one it leaves unset
+      stays as Modal sets it (its client cannot unset a variable, and libgomp
+      refuses an empty ``OMP_NUM_THREADS``).
+    - ``PYTHONHASHSEED`` is given at create, empty when the image leaves it
+      unset: Python reads an empty one as unset, so hashing is randomized as
+      on Docker.
+    - ``PYTHONPATH`` (the image's, or empty) goes with every exec, since
+      Modal appends ``/pkg/:/root/`` to a value given at create; and at
+      create under its ``IMAGE_ENV_PREFIX`` name, the copy root's task
+      commands get back (``restore_image_env``), in place of PID 1's.
+    """
+    known = dockerfile is not None
+    found: dict[str, str | None] = final_stage_env(dockerfile) if known else {}
+    found.update(task_env or {})
+    create: dict[str, str] = {}
+    kept: list[str] = []
+    for name in MODAL_THREAD_VARS:
+        value = found.get(name)
+        if value:
+            create[name] = value
+        else:
+            kept.append(name)
+    seed = found.get("PYTHONHASHSEED", "" if known else None)
+    if seed is None:
+        kept.append("PYTHONHASHSEED")
+    else:
+        create["PYTHONHASHSEED"] = seed
+    pythonpath = found.get("PYTHONPATH", "" if known else None)
+    if pythonpath is None:
+        kept.append("PYTHONPATH")
+    else:
+        create[f"{IMAGE_ENV_PREFIX}PYTHONPATH"] = pythonpath
+    return ModalImageEnv(create, pythonpath, tuple(kept))
 
 
 #: How long a check for Modal's own end of a sandbox waits for ``poll``.
@@ -272,6 +346,9 @@ class ModalSandbox(BaseSandbox):
     # True once stop() has looked for Modal's own end: an end seen after that
     # is BenchFlow's terminate.
     _stopping = False
+    # The image's values of the names Modal sets (_read_image_env), read
+    # when the sandbox is created.
+    _image_env: ModalImageEnv = ModalImageEnv()
 
     @classmethod
     def preflight(cls) -> None:
@@ -350,6 +427,7 @@ class ModalSandbox(BaseSandbox):
     ) -> object:
         from modal import Sandbox
 
+        self._image_env = self._read_image_env()
         sandbox = await Sandbox.create.aio(
             app=self._app,
             image=self._image,
@@ -362,10 +440,45 @@ class ModalSandbox(BaseSandbox):
             block_network=not self.task_env_config.allow_internet,
             secrets=secrets_config,
             volumes=volumes_config,
+            env=self._image_env.create or None,
         )
         self.platform_end = None
         self._stopping = False
         return sandbox
+
+    def _read_image_env(self) -> ModalImageEnv:
+        """The image's values of the names Modal sets (:func:`modal_image_env`),
+        from the task's Dockerfile and its env; logs the names left as Modal
+        sets them."""
+        dockerfile = None
+        if not self.task_env_config.docker_image:
+            try:
+                dockerfile = self._environment_definition_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError as exc:
+                logger.warning("Could not read the task's Dockerfile: %s", exc)
+        image = modal_image_env(dockerfile, self._persistent_env)
+        if image.kept:
+            source = (
+                "the task's Dockerfile sets no value of its own for them"
+                if dockerfile is not None
+                else "the image's own values are read from a Dockerfile, and "
+                "this task names a prebuilt image"
+            )
+            logger.warning(
+                "Modal sets %s in every sandbox, and %s, so these keep "
+                "Modal's values on Modal only",
+                ", ".join(image.kept),
+                source,
+            )
+        return image
+
+    def exec_process_env(self) -> dict[str, str]:
+        """What every exec's process env adds: the image's ``PYTHONPATH``
+        (or empty), over the ``/pkg/:/root/`` Modal sets in every sandbox."""
+        pythonpath = self._image_env.pythonpath
+        return {} if pythonpath is None else {"PYTHONPATH": pythonpath}
 
     async def start(self, force_build: bool) -> None:
         gpu_config = modal_gpu_request(
@@ -929,6 +1042,9 @@ class ModalSandbox(BaseSandbox):
         # The names a pinned shell carries across its env -i: the process
         # env before its empty start-up names are added below.
         keep = dict(process_env)
+        # The image's PYTHONPATH (or empty) over Modal's /pkg/:/root/, as a
+        # docker exec starts with the image's (#1245).
+        process_env.update(self.exec_process_env())
 
         def argv_for(command: str) -> list[str]:
             if agent_restore:

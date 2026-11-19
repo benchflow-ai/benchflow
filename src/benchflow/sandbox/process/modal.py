@@ -170,6 +170,11 @@ class ModalProcess(LiveProcess):
         # start-up names go in empty (``docker exec -e NAME=``), so nothing
         # an image value names loads into root's shell before its first line.
         process_env: dict[str, str | None] = dict.fromkeys(SYSTEM_SHELL_EMPTY_VARS, "")
+        # The image's PYTHONPATH (or empty) over the /pkg/:/root/ Modal sets:
+        # root's shell keeps it for the agent, as a docker exec's (#1245).
+        image_env = getattr(self._bf_env, "exec_process_env", None)
+        if image_env is not None:
+            process_env.update(image_env())
         # The script can hold the agent's command: never log it.
         logger.debug("ModalProcess: starting the agent's exec")
         _transport.sent("Modal", argv)

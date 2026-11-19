@@ -480,3 +480,226 @@ async def _create_kwargs(tmp_path, monkeypatch, *, factory, dockerfile=None, **c
     await sandbox.start(force_build=False)
     module.Sandbox.create.aio.assert_awaited_once()
     return module.Sandbox.create.aio.await_args.kwargs
+
+
+# Gap 2: the image's thread counts, PYTHONHASHSEED and PYTHONPATH.
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "expected"),
+    [
+        ("FROM python:3.12\nENV OMP_NUM_THREADS=1 PYTHONHASHSEED=7\n", None),
+        # Legacy form, quotes, continuation lines.
+        (
+            'FROM a\nENV K V W\nENV J="two words" \\\n    L=3\n',
+            {"K": "V W", "J": "two words", "L": "3"},
+        ),
+        # A reference to a value the base image may set resolves empty, as
+        # Docker resolves one the base image leaves unset.
+        ("FROM a\nENV PYTHONPATH=/app:$PYTHONPATH\n", {"PYTHONPATH": "/app:"}),
+        # ARG defaults (a global one redeclared in the stage), braces.
+        (
+            "ARG T=4\nFROM a\nARG T\nARG U=2\nENV MKL_NUM_THREADS=${T} B=$U\n",
+            {"MKL_NUM_THREADS": "4", "B": "2"},
+        ),
+        # Another ${...} form cannot be resolved here.
+        ("FROM a\nENV A=${X:-y}\nENV B=$A\n", {"A": None, "B": None}),
+        # The final stage, through the stage it is built FROM; not another.
+        (
+            "FROM a AS one\nENV X=1\nFROM b AS two\nENV Y=2\nFROM one\nENV Z=$X$Y\n",
+            {"X": "1", "Z": "1"},
+        ),
+        # A heredoc body is not an instruction.
+        ("FROM a\nRUN <<EOF\nENV FAKE=1\nEOF\nENV REAL=1\n", {"REAL": "1"}),
+        ("# no stage\n", {}),
+    ],
+)
+def test_the_dockerfile_env_reader(dockerfile, expected):
+    from benchflow.sandbox._dockerfile_env import final_stage_env
+
+    if expected is None:
+        expected = {"OMP_NUM_THREADS": "1", "PYTHONHASHSEED": "7"}
+    assert final_stage_env(dockerfile) == expected
+
+
+def test_the_image_env_given_at_create():
+    image = modal_impl.modal_image_env(
+        "FROM python:3.12\nENV OMP_NUM_THREADS=1 PYTHONPATH=/opt/lib\n"
+    )
+    assert image.create == {
+        "OMP_NUM_THREADS": "1",
+        # Unset in the image: empty, which Python reads as unset.
+        "PYTHONHASHSEED": "",
+        # The copy root's task commands get back, in place of PID 1's.
+        "_BF_IMAGE_PYTHONPATH": "/opt/lib",
+    }
+    assert image.pythonpath == "/opt/lib"
+    # Thread counts the image leaves unset keep Modal's (no client unset).
+    assert image.kept == modal_impl.MODAL_THREAD_VARS[1:]
+
+
+def test_the_tasks_env_goes_over_the_image():
+    image = modal_impl.modal_image_env(
+        "FROM a\nENV OMP_NUM_THREADS=1\n",
+        {"OMP_NUM_THREADS": "2", "PYTHONHASHSEED": "0", "PYTHONPATH": "/t"},
+    )
+    assert image.create["OMP_NUM_THREADS"] == "2"
+    assert image.create["PYTHONHASHSEED"] == "0"
+    assert image.pythonpath == "/t"
+
+
+def test_a_prebuilt_image_keeps_what_cannot_be_read():
+    image = modal_impl.modal_image_env(None, {"MKL_NUM_THREADS": "3"})
+    assert image.create == {"MKL_NUM_THREADS": "3"}
+    assert image.pythonpath is None
+    assert "PYTHONHASHSEED" in image.kept and "PYTHONPATH" in image.kept
+
+
+def test_an_unresolvable_pythonpath_is_left_as_modal_sets_it():
+    image = modal_impl.modal_image_env("FROM a\nENV PYTHONPATH=${P:-/x}\n")
+    assert image.pythonpath is None
+    assert "_BF_IMAGE_PYTHONPATH" not in image.create
+    assert "PYTHONPATH" in image.kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_both_launchers_create_with_the_image_env(tmp_path, monkeypatch, factory):
+    """The issue's repro image: ENV OMP_NUM_THREADS=1 at cpu=12, where the
+    agent and test.sh saw OMP_NUM_THREADS=12 and PYTHONHASHSEED=0."""
+    create = await _create_kwargs(
+        tmp_path,
+        monkeypatch,
+        factory=factory,
+        dockerfile="FROM python:3.12-slim\nENV OMP_NUM_THREADS=1\n",
+        cpus=12,
+    )
+    assert create["env"] == {
+        "OMP_NUM_THREADS": "1",
+        "PYTHONHASHSEED": "",
+        "_BF_IMAGE_PYTHONPATH": "",
+    }
+
+
+def _exec_secrets(remote) -> dict:
+    (_args, kwargs) = remote.exec.calls[-1]
+    merged = {}
+    for secret in kwargs["secrets"]:
+        merged.update(secret)
+    return merged
+
+
+def _ok(*_args, **_kwargs):
+    async def read():
+        return ""
+
+    async def wait():
+        return 0
+
+    return SimpleNamespace(
+        stdout=SimpleNamespace(read=SimpleNamespace(aio=read)),
+        stderr=SimpleNamespace(read=SimpleNamespace(aio=read)),
+        wait=SimpleNamespace(aio=wait),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user", "system_shell"), [("root", False), ("root", True), (None, False)]
+)
+async def test_every_exec_starts_with_the_images_pythonpath(
+    fake_secret, user, system_shell
+):
+    remote = _remote(exec_=_ok)
+    sandbox = _modal_sandbox(remote)
+    sandbox._image_env = modal_impl.ModalImageEnv(pythonpath="/opt/lib")
+    await sandbox.exec("true", user=user, system_shell=system_shell)
+    assert _exec_secrets(remote)["PYTHONPATH"] == "/opt/lib"
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_without_an_image_env_execs_as_before(fake_secret):
+    remote = _remote(exec_=_ok)
+    sandbox = _modal_sandbox(remote)
+    await sandbox.exec("true", user="root")
+    assert "PYTHONPATH" not in _exec_secrets(remote)
+
+
+@pytest.mark.asyncio
+async def test_the_agent_process_starts_with_the_images_pythonpath(monkeypatch):
+    import sys
+    import types
+
+    from benchflow.sandbox._base import SYSTEM_SHELL_EMPTY_VARS
+    from benchflow.sandbox.process.modal import ModalProcess
+
+    fake = types.ModuleType("modal")
+    fake.Secret = SimpleNamespace(from_dict=lambda d: d)
+    monkeypatch.setitem(sys.modules, "modal", fake)
+
+    async def route(_env):
+        return None
+
+    monkeypatch.setattr("benchflow.sandbox.process.modal.launch_route", route)
+    env = SimpleNamespace(exec_process_env=lambda: {"PYTHONPATH": ""})
+    remote = SimpleNamespace(exec=_Aio(lambda *a, **k: _ended_agent_process()))
+    process = ModalProcess(remote, env=env)
+    await process.start("agent --acp")
+    (_args, kwargs) = remote.exec.calls[0]
+    assert kwargs["secrets"] == [
+        {**dict.fromkeys(SYSTEM_SHELL_EMPTY_VARS, ""), "PYTHONPATH": ""}
+    ]
+    await process.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("image", "seen"), [("/opt/lib", "/opt/lib"), ("", "")])
+async def test_roots_task_route_gets_the_images_pythonpath_back(
+    monkeypatch, image, seen
+):
+    """On a real shell: the process starts as Modal starts it (its
+    PYTHONPATH=/pkg/:/root/ in the sandbox env, with the image's copy given at
+    create); root's task route (test.sh's) ends with the image's value."""
+    import os
+    import subprocess
+
+    import modal
+
+    monkeypatch.setattr(modal.Secret, "from_dict", staticmethod(lambda env: env))
+
+    async def aio(*argv, secrets=(), **kwargs):
+        payload = argv[-1]
+        if os.geteuid() != 0:
+            # Modal runs as root; a non-root host emulates only that switch.
+            payload = payload.replace("/bin/su root -s /bin/bash -c", "/bin/sh -c")
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "PYTHONPATH": "/pkg/:/root/",
+            **modal_impl.modal_image_env(f"FROM a\nENV PYTHONPATH={image}\n").create,
+        }
+        for secret in secrets:
+            env.update(secret)
+        done = subprocess.run(
+            [*argv[:-1], payload], env=env, capture_output=True, text=True
+        )
+        return _done(done)
+
+    sandbox = _modal_sandbox(SimpleNamespace(exec=SimpleNamespace(aio=aio)))
+    sandbox._image_env = modal_impl.modal_image_env(f"FROM a\nENV PYTHONPATH={image}\n")
+    with sandbox.task_command():
+        result = await sandbox.exec('printf "[%s]" "${PYTHONPATH-unset}"', user="root")
+    assert result.stdout == f"[{seen}]", result
+
+
+def _done(done):
+    async def read(name):
+        return getattr(done, name)
+
+    async def wait():
+        return done.returncode
+
+    return SimpleNamespace(
+        stdout=SimpleNamespace(read=SimpleNamespace(aio=lambda: read("stdout"))),
+        stderr=SimpleNamespace(read=SimpleNamespace(aio=lambda: read("stderr"))),
+        wait=SimpleNamespace(aio=wait),
+    )
