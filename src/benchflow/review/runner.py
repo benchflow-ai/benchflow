@@ -49,6 +49,7 @@ from benchflow.review.wrapper import (
     assemble_review_task,
     remove_review_task,
     reviewer_setup_packages,
+    shows_final_result,
 )
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
@@ -537,6 +538,7 @@ async def _review_one(
         ),
         workspace_bundle=workspace_bundle,
         template=template,
+        final_result=shows_final_result(rollout_dir),
     )
     reviewed.notes[:0] = trial.notes
     return reviewed
@@ -553,13 +555,17 @@ async def run_review(
     workspace_bundle: Path | None = None,
     *,
     template: str | None = None,
+    final_result: bool = False,
 ) -> TrialReview:
     """Run one reviewer over admitted evidence, independently of parent persistence.
 
     Automatic scoring passes the deterministic verdict explicitly and can call
     this before its final result exists. Detached review resolves untrusted task
-    provenance before calling the same operation. Child artifacts are durable;
-    only the generated wrapper and its evidence upload copies are temporary.
+    provenance before calling the same operation, and says with *final_result*
+    when the rollout is a finished run no review has scored
+    (:func:`~benchflow.review.wrapper.shows_final_result`). Child artifacts are
+    durable; only the generated wrapper and its evidence upload copies are
+    temporary.
     """
     from benchflow import run as run_rollout
     from benchflow.acp.selection import review_rollout
@@ -594,6 +600,7 @@ async def run_review(
             pdf_tools=config.pdf_tools,
             submitted_file_rule=config.submitted_file_rule,
             criterion_evidence=config.criterion_evidence,
+            final_result=final_result,
         )
         from benchflow.review.persistence import write_json_atomic
         from benchflow.review.probe import (

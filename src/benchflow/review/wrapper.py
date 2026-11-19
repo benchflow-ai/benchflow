@@ -415,6 +415,14 @@ def _held_verdict(rollout_dir: Path) -> bool:
     )
 
 
+def shows_final_result(rollout_dir: Path) -> bool:
+    """Whether a review of *rollout_dir* shows its reviewer the run's final
+    ``result.json``: a finished run that no review has scored. The in-run
+    review's rollout has no result yet, and a re-review of a scored one
+    shows the record from before any review (:func:`_pre_review_record`)."""
+    return (rollout_dir / "result.json").is_file() and not _held_verdict(rollout_dir)
+
+
 def _pre_review_record(trial: Path) -> dict:
     """The copy's ``result.json`` as the first review saw it: the solver's
     record with its admitted verifier revision, no verdict of record. Read
@@ -556,6 +564,7 @@ def assemble_review_task(
     pdf_tools: bool = False,
     submitted_file_rule: bool = False,
     criterion_evidence: bool = False,
+    final_result: bool = False,
 ) -> tuple[Path, dict[str, str]]:
     """Assemble one wrapper task under ``dest``.
 
@@ -566,8 +575,10 @@ def assemble_review_task(
     each workspace unpacked beside its archive. The setup installs
     :func:`reviewer_setup_packages` for *image* and *pdf_tools*; the
     instruction takes the rule with *submitted_file_rule*
-    (:func:`~benchflow.review.prompts.review_template`), and each criterion's
-    Evidence line with *criterion_evidence*.
+    (:func:`~benchflow.review.prompts.review_template`), each criterion's
+    Evidence line with *criterion_evidence*, and with *final_result*
+    (:func:`shows_final_result`) does not say that the trial has no final
+    result yet.
     """
 
     if dest.exists():
@@ -649,6 +660,7 @@ def assemble_review_task(
         workspace_path=WORKSPACE_MOUNT if workspace_bundle is not None else None,
         submitted_file_rule=submitted_file_rule,
         criterion_evidence=criterion_evidence,
+        final_result=final_result,
     )
     packages = reviewer_setup_packages(image, pdf_tools=pdf_tools)
     frontmatter = _TASK_FRONTMATTER.format(

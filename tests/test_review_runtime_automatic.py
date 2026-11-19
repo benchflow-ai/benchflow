@@ -26,6 +26,7 @@ from benchflow.review.evidence import (
 )
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import ScoringResult
+from benchflow.review.prompts import NO_FINAL_RESULT_NOTE, WORKSPACE_SECTION
 from benchflow.review.runner import (
     _lock_review_evidence,
     discover_rollouts,
@@ -554,3 +555,67 @@ def test_refuse_linked_bundle_checks_every_name_a_bundle_is_read_through(
     )
     with pytest.raises(EvidenceError, match=f"symlink: {name}$"):
         refuse_linked_bundle(bundle, manifest)
+
+
+@pytest.mark.asyncio
+async def test_bench_review_of_a_scored_run_gives_the_in_run_instruction(
+    tmp_path, monkeypatch
+):
+    """Guards #1231's aim in PR #1239: a re-review of a run the in-run review
+    scored is comparable with it, so its reviewer gets the instruction the
+    in-run reviewer got, byte for byte, the workspace paragraph and its note
+    that the trial has no final result yet included (a re-review's copy is
+    the record from before any review)."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    (source / "result.json").rename(source / "solver.json")
+    make_bundle(tmp_path).rename(source / "evidence")
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(benchflow, "run", fake)
+    rubric_path = task / "verifier/rubric.json"
+    in_run = await run_review(
+        source,
+        task,
+        load_rubric(rubric_path),
+        rubric_path,
+        ReviewerConfig(agent="gemini", model="gemini/gemini-2.5-flash"),
+        tmp_path / "in-run",
+        deterministic_pass=True,
+        workspace_bundle=source / "evidence",
+    )
+    assert in_run.review_valid
+    solver = json.loads((source / "solver.json").read_text())
+    (source / "result.json").write_text(
+        json.dumps({**solver, "scoring": in_run.scoring.to_dict()})
+    )
+    await run_reviews(
+        source,
+        agent="gemini",
+        model="gemini/gemini-2.5-flash",
+        tasks_root=tmp_path / "tasks",
+        out_dir=tmp_path / "detached",
+    )
+    in_run_doc, detached_doc = fake.task_docs
+    assert NO_FINAL_RESULT_NOTE in in_run_doc
+    assert detached_doc == in_run_doc
+
+
+@pytest.mark.asyncio
+async def test_bench_review_of_an_unscored_finished_run_says_it_has_a_result(
+    tmp_path, monkeypatch
+):
+    """Guards PR #1239: a run captured with no review (--freeze-workspace, a
+    separate verifier, a recovery contract) is finished, and its result.json
+    is final. Its reviewer gets the workspace, but is not told, as the in-run
+    reviewer is, that the trial has no final result yet."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    make_bundle(tmp_path).rename(source / "evidence")
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(benchflow, "run", fake)
+    await run_reviews(
+        source, agent="gemini", tasks_root=tmp_path / "tasks", out_dir=tmp_path / "out"
+    )
+    (doc,) = fake.task_docs
+    assert WORKSPACE_SECTION.format(workspace_path="/evidence/workspace") in doc
+    assert NO_FINAL_RESULT_NOTE not in doc
