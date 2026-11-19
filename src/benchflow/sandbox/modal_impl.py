@@ -191,7 +191,9 @@ def modal_image_env(
 
     *dockerfile* is the task's Dockerfile text (None for a prebuilt image,
     whose values cannot be read without the image); the task's own env
-    (*task_env*, which Docker hands the container too) goes over it.
+    (*task_env*, which Docker hands the container too) goes over it. A name
+    whose value the reader cannot tell, or every name of a Dockerfile it
+    cannot follow, keeps Modal's value (``kept``).
 
     - A thread count the image sets is given at create; one it leaves unset
       stays as Modal sets it (its client cannot unset a variable, and libgomp
@@ -204,8 +206,10 @@ def modal_image_env(
       create under its ``IMAGE_ENV_PREFIX`` name, the copy root's task
       commands get back (``restore_image_env``), in place of PID 1's.
     """
-    known = dockerfile is not None
-    found: dict[str, str | None] = final_stage_env(dockerfile) if known else {}
+    # None: no Dockerfile, or one the reader cannot follow as Docker would.
+    image = final_stage_env(dockerfile) if dockerfile is not None else None
+    known = image is not None
+    found: dict[str, str | None] = dict(image or {})
     found.update(task_env or {})
     create: dict[str, str] = {}
     kept: list[str] = []
@@ -654,12 +658,18 @@ class ModalSandbox(BaseSandbox):
                 logger.warning("Could not read the task's Dockerfile: %s", exc)
         image = modal_image_env(dockerfile, self._persistent_env)
         if image.kept:
-            source = (
-                "the task's Dockerfile sets no value of its own for them"
-                if dockerfile is not None
-                else "the image's own values are read from a Dockerfile, and "
-                "this task names a prebuilt image"
-            )
+            if dockerfile is None:
+                source = (
+                    "the image's own values are read from a Dockerfile, and "
+                    "this task names a prebuilt image"
+                )
+            elif final_stage_env(dockerfile) is None:
+                source = "BenchFlow cannot read the task's Dockerfile as Docker would"
+            else:
+                source = (
+                    "the task's Dockerfile gives no value of its own BenchFlow "
+                    "can read for them"
+                )
             logger.warning(
                 "Modal sets %s in every sandbox, and %s, so these keep "
                 "Modal's values on Modal only",

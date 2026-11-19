@@ -1019,3 +1019,63 @@ def test_each_sandbox_of_a_separate_verifier_task_is_checked_alone(
                 view, sandbox_type="modal", task_path=task_dir, check_compose=False
             )
         assert [f.path for f in raised.value.features] == [path]
+
+
+@pytest.mark.parametrize(
+    ("dockerfile", "expected"),
+    [
+        # A comment line inside a continued ENV is skipped, as Docker skips it.
+        (
+            "FROM a\nENV A=1 \\\n# the seed\n    PYTHONHASHSEED=0\n",
+            {"A": "1", "PYTHONHASHSEED": "0"},
+        ),
+        # A tab between the keyword and its arguments.
+        ("FROM a\nENV\tPYTHONHASHSEED=0\n", {"PYTHONHASHSEED": "0"}),
+        ("FROM a\nENV\tK\tV W\n", {"K": "V W"}),
+        # A parent stage's ARG carries into the stage built FROM it...
+        (
+            "FROM python:3.12 AS base\nARG SEED=0\nFROM base\nENV PYTHONHASHSEED=$SEED\n",
+            {"PYTHONHASHSEED": "0"},
+        ),
+        # ... and a re-declaration without a default keeps it.
+        (
+            "ARG SEED=9\nFROM a AS base\nARG SEED=0\nFROM base\nARG SEED\n"
+            "ENV PYTHONHASHSEED=$SEED\n",
+            {"PYTHONHASHSEED": "0"},
+        ),
+        # Another stage's ARG does not.
+        ("FROM a AS one\nARG S=1\nFROM b\nENV X=$S\n", {"X": ""}),
+        # \$ is a literal $, in an ENV value and in an ARG default; nothing in
+        # single quotes is expanded.
+        ("FROM a\nENV PYTHONPATH=/opt/\\$vendor\n", {"PYTHONPATH": "/opt/$vendor"}),
+        ("FROM a\nARG P=/x/\\$y\nENV Q=$P\n", {"Q": "/x/$y"}),
+        ("FROM a\nENV A='$HOME' B=\"\\$x\"\n", {"A": "$HOME", "B": "$x"}),
+    ],
+)
+def test_the_dockerfile_env_reader_follows_docker(dockerfile, expected):
+    """Guards PR #1248's Dockerfile reader against the review findings on
+    comments in continuations, tabs, inherited ARGs and escaped dollars."""
+    from benchflow.sandbox._dockerfile_env import final_stage_env
+
+    assert final_stage_env(dockerfile) == expected
+
+
+@pytest.mark.parametrize(
+    "dockerfile",
+    [
+        # Another escape character: the reader does not follow the file.
+        "# escape=`\nFROM a\nENV PYTHONHASHSEED=0\n",
+        # A quote that never closes.
+        'FROM a\nENV PYTHONPATH="/opt/lib\n',
+    ],
+)
+def test_a_dockerfile_the_reader_cannot_follow_keeps_modals_values(dockerfile):
+    """Fail safe: what the reader cannot tell keeps Modal's value; it never
+    gives a value Docker would not."""
+    from benchflow.sandbox._dockerfile_env import final_stage_env
+
+    assert final_stage_env(dockerfile) is None
+    image = modal_impl.modal_image_env(dockerfile)
+    assert image.pythonpath is None
+    assert image.create == {}
+    assert {"PYTHONHASHSEED", "PYTHONPATH"} <= set(image.kept)
