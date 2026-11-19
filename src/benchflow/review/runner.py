@@ -508,10 +508,23 @@ async def _review_one(
         trial.error = str(exc)
         return trial
     # The captured workspace, as the in-run review gets it (finish_review);
-    # run_review checks it against its manifest before any upload.
+    # run_review checks it against its manifest before any upload. Only the
+    # rollout's own evidence/ folder: a link there may lead to another capture.
     bundle = rollout_dir / "evidence"
-    workspace_bundle = bundle if (bundle / "manifest.json").is_file() else None
-    if workspace_bundle is None:
+    manifest_path = bundle / "manifest.json"
+    workspace_bundle: Path | None = None
+    if (
+        bundle.is_symlink()
+        or manifest_path.is_symlink()
+        or bundle.resolve() != rollout_dir.resolve() / "evidence"
+    ):
+        trial.notes.append(
+            "workspace evidence skipped: evidence/ or evidence/manifest.json "
+            "is a symlink, so it may be another rollout's capture"
+        )
+    elif manifest_path.is_file():
+        workspace_bundle = bundle
+    else:
         trial.notes.append(
             "workspace evidence skipped: the rollout holds no captured "
             "workspace (evidence/manifest.json)"

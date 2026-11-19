@@ -18,8 +18,10 @@ from benchflow.review.evidence import (
     _UNPACK_SCRIPT,
     ArtifactEvidence,
     EvidenceEntry,
+    EvidenceError,
     EvidenceManifest,
     install_review_evidence,
+    validate_workspace,
 )
 from benchflow.review.options import ReviewerConfig
 from benchflow.review.outcome import ScoringResult
@@ -396,3 +398,41 @@ async def test_bench_review_records_a_rollout_without_a_captured_workspace(
     trial = report.trials[0]
     assert trial.review_valid
     assert any("workspace evidence skipped" in note for note in trial.notes)
+
+
+@pytest.mark.asyncio
+async def test_bench_review_skips_a_linked_evidence_folder(tmp_path, monkeypatch):
+    """An ``evidence`` link to another valid capture is not the rollout's own:
+    the reviewer gets no workspace, and the review says why."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    (source / "evidence").symlink_to(make_bundle(tmp_path), target_is_directory=True)
+    listings: list[list[str]] = []
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(
+        benchflow, "run", _script_reviewer(tmp_path / "sandbox", listings, fake)
+    )
+    report, _ = await run_reviews(
+        source, agent="gemini", tasks_root=tmp_path / "tasks", out_dir=tmp_path / "out"
+    )
+    assert not any(path.startswith("/evidence/workspace") for path in listings[0])
+    trial = report.trials[0]
+    assert trial.review_valid
+    assert any(
+        "workspace evidence skipped" in note and "symlink" in note
+        for note in trial.notes
+    )
+
+
+def test_validate_workspace_refuses_a_linked_workspace_root(tmp_path):
+    """A real ``evidence/`` whose ``workspace`` is a link to a matching tree
+    is refused before the link is resolved."""
+    bundle = make_bundle(tmp_path)
+    manifest = EvidenceManifest.model_validate_json(
+        (bundle / "manifest.json").read_text()
+    )
+    (bundle / "workspace").rename(tmp_path / "elsewhere")
+    (bundle / "workspace").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    validate_workspace(tmp_path / "elsewhere", manifest)
+    with pytest.raises(EvidenceError, match="symlink"):
+        validate_workspace(bundle / "workspace", manifest)

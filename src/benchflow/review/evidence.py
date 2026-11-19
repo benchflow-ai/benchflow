@@ -564,6 +564,9 @@ def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
     excluded = {exclusion.original_path for exclusion in manifest.exclusions}
     if any(entry.original_path in excluded for entry in manifest.entries):
         raise EvidenceError("Evidence manifest both captures and excludes a path")
+    # The root itself, before resolving: a linked root is another folder.
+    if stat.S_ISLNK(workspace.lstat().st_mode):
+        raise EvidenceError("Workspace evidence root is a symlink")
     root = workspace.resolve(strict=True)
     actual = {path.relative_to(root).as_posix(): path for path in root.rglob("*")}
     expected = {entry.path for entry in manifest.entries}
