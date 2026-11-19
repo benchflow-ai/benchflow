@@ -55,6 +55,10 @@ sandbox:
 
 Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
+## How a Modal sandbox compares with Docker
+
+**CPUs and memory.** The task's `cpus` and `memory_mb` are the sandbox's hard limits, as Docker's `cpus` and memory limit are. Modal still lets a capped sandbox use more CPU time than its limit on some hosts: 24 busy processes in a `cpus = 12` sandbox got between 13.9 and 31.2 cores' worth (on Docker, at most 12.3). A process that goes over the memory limit makes Modal end the whole sandbox, where Docker kills the one process ([below](#when-modal-ends-a-sandbox)). `BENCHFLOW_MODAL_HARD_LIMITS=0` gives Modal the two numbers as requests alone: Modal's CPU limit is then 16 CPUs above the request, and memory has no limit.
+
 ## Sandbox lifetime
 
 Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.

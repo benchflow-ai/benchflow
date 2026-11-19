@@ -402,3 +402,81 @@ def test_the_launcher_creates_modal_sandboxes_with_the_setting(tmp_path, monkeyp
     monkeypatch.setenv("BENCHFLOW_MODAL_SANDBOX_TIMEOUT", "90000")
     with pytest.raises(ValueError, match="BENCHFLOW_MODAL_SANDBOX_TIMEOUT"):
         sandbox_setup._create_environment("modal", task, task_dir, "t", MagicMock())
+
+
+# Gap 1: the task's CPUs and memory are hard limits.
+
+
+@pytest.mark.parametrize(
+    ("value", "environ", "given"),
+    [
+        (12, {}, (12, 12)),
+        (0.5, {}, (0.5, 0.5)),
+        (131072, {}, (131072, 131072)),
+        (12, {"BENCHFLOW_MODAL_HARD_LIMITS": "0"}, 12),
+        (12, {"BENCHFLOW_MODAL_HARD_LIMITS": "off"}, 12),
+        (12, {"BENCHFLOW_MODAL_HARD_LIMITS": "1"}, (12, 12)),
+        (None, {}, None),
+        (0, {}, 0),
+    ],
+)
+def test_modal_is_given_the_tasks_resources_as_limits(value, environ, given):
+    assert modal_impl.modal_resource(value, environ) == given
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_both_launchers_create_with_hard_limits(tmp_path, monkeypatch, factory):
+    """Docker sets cpus and mem_limit as limits
+    (_compose_files/docker-compose-base.yaml); a bare number is a request on
+    Modal, so 28 CPUs and 1.28 TB were visible at cpu=12."""
+    create = await _create_kwargs(
+        tmp_path, monkeypatch, factory=factory, cpus=12, memory_mb=131072
+    )
+    assert create["cpu"] == (12, 12)
+    assert create["memory"] == (131072, 131072)
+
+
+async def _create_kwargs(tmp_path, monkeypatch, *, factory, dockerfile=None, **config):
+    """``Sandbox.create``'s keyword arguments for a start of a sandbox of a task
+    with *config* (SandboxConfig fields) and *dockerfile*, all provider calls
+    fakes."""
+    import sys
+    from types import ModuleType
+    from unittest.mock import AsyncMock, MagicMock
+
+    from benchflow.sandbox._base import ExecResult
+    from benchflow.sandbox.setup import _create_benchflow_modal_environment_class
+    from benchflow.task.config import SandboxConfig
+
+    module = ModuleType("modal")
+    module.App = SimpleNamespace(lookup=SimpleNamespace(aio=AsyncMock()))
+    module.Image = MagicMock()
+    module.Secret = MagicMock()
+    module.Volume = MagicMock()
+    remote = SimpleNamespace(
+        filesystem=SimpleNamespace(make_directory=SimpleNamespace(aio=AsyncMock()))
+    )
+    module.Sandbox = SimpleNamespace(
+        create=SimpleNamespace(aio=AsyncMock(return_value=remote))
+    )
+    monkeypatch.setitem(sys.modules, "modal", module)
+    monkeypatch.setattr(
+        "benchflow.sandbox.modal_impl.bfx_delivery.provider_enabled", lambda name: False
+    )
+    (tmp_path / "Dockerfile").write_text(dockerfile or "FROM python:3.12-slim\n")
+    cls = _create_benchflow_modal_environment_class() if factory else ModalSandbox
+    sandbox = cls(
+        environment_dir=tmp_path,
+        environment_name="task",
+        session_id="trial",
+        rollout_paths=None,
+        task_env_config=SandboxConfig(**config),
+    )
+    sandbox._refuse_startup_names = AsyncMock()
+    sandbox.exec = AsyncMock(
+        return_value=ExecResult(stdout="", stderr="", return_code=0)
+    )
+    await sandbox.start(force_build=False)
+    module.Sandbox.create.aio.assert_awaited_once()
+    return module.Sandbox.create.aio.await_args.kwargs

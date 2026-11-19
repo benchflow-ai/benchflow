@@ -130,6 +130,30 @@ def modal_exec_timeout(timeout_sec: float | None) -> int | None:
     return max(1, math.ceil(timeout_sec))
 
 
+#: ``0`` (or off, false, no): give Modal the task's CPUs and memory as
+#: requests alone, as BenchFlow did before #1245.
+HARD_LIMITS_ENV = "BENCHFLOW_MODAL_HARD_LIMITS"
+_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
+
+def modal_resource(
+    value: float | None, environ: Mapping[str, str] | None = None
+) -> float | tuple[float, float] | None:
+    """``Sandbox.create``'s ``cpu`` or ``memory`` for the task's *value*.
+
+    ``(value, value)``: the request and a hard limit at it, as Docker's
+    ``cpus`` and memory limit. Modal reads a bare number as a request alone:
+    its CPU limit is then 16 cores above it and memory has none (measured
+    with modal 1.6.2: 28 CPUs visible at ``cpu=12``, 1.28 TB of memory).
+    The bare *value* with ``BENCHFLOW_MODAL_HARD_LIMITS=0``, or when the task
+    gives none.
+    """
+    env = os.environ if environ is None else environ
+    if not value or (env.get(HARD_LIMITS_ENV) or "").strip().lower() in _OFF_VALUES:
+        return value
+    return (value, value)
+
+
 #: How long a check for Modal's own end of a sandbox waits for ``poll``.
 PLATFORM_END_POLL_SEC = 15.0
 
@@ -332,8 +356,8 @@ class ModalSandbox(BaseSandbox):
             timeout=self._sandbox_timeout,
             idle_timeout=self._sandbox_idle_timeout,
             name=modal_sandbox_name(self.session_id),
-            cpu=self.task_env_config.cpus,
-            memory=self.task_env_config.memory_mb,
+            cpu=modal_resource(self.task_env_config.cpus),
+            memory=modal_resource(self.task_env_config.memory_mb),
             gpu=gpu_config,
             block_network=not self.task_env_config.allow_internet,
             secrets=secrets_config,
