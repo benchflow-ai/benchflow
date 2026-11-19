@@ -6,6 +6,10 @@ What changed in each BenchFlow release: 0.9.2 is the current release, and 0.10.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docker trials start again on a daemon that has no helper image yet.** BenchFlow builds its firewall helper on each Docker daemon from Alpine packages pinned to exact builds. On 18 November 2026 Alpine 3.24 replaced `openssl` 3.5.9-r0 with 3.5.9-r1 and dropped the old build, so the helper stopped building, and Docker refused every task that keeps the cloud metadata block (every task that does not set `allow_cloud_metadata = true`): `sandbox startup refused: BenchFlow's helper image could not be built`. The helper now pins 3.5.9-r1. 0.9.3 and 0.10.0rc5 pin the old build; there, only a daemon whose helper was built and recorded before that date still starts trials.
+
 ### What's new
 
 - **A rubric reviewer can read a submitted PDF, when you ask for it.** The default reviewer sandbox has pypdf but no PyMuPDF and no poppler, so a reviewer could not render a PDF's pages, and some reviews judged a paper by its TeX sources, or by text the agent had extracted before its last edits, instead of by the file it submitted. `--reviewer-pdf-tools` (`ReviewerConfig.pdf_tools`, `--pdf-tools` on `bench review`) installs PyMuPDF 2.1 beside numpy and pypdf with pip, so it works on every sandbox backend. `docker/reviewer-pdf/Dockerfile` builds an image that also holds poppler's `pdftotext`; pass its tag with `--reviewer-image` on the Docker reviewer sandbox, and BenchFlow installs nothing into it. The packages a reviewer's setup installs now follow a table of the images BenchFlow knows and what each already holds, where before only the default image got any; an image the table does not list still gets none unless `--reviewer-pdf-tools` asks. The option is off by default, and a reviewer with no new option gets the same task as before, byte for byte: its instruction, image and setup command (a test holds both review paths to the task the previous code wrote).
