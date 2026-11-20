@@ -311,6 +311,26 @@ async def test_the_agent_connection_moves_the_phase_to_deny_and_proves_the_agent
 
 
 @pytest.mark.asyncio
+async def test_an_agent_launch_without_the_denylist_marker_is_refused(started):
+    """On a held sandbox an agent launch that carries neither the no-web nor
+    the denylist marker is refused before the agent starts; on any other
+    sandbox such a launch needs nothing, as on main.
+
+    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``:
+    ``enforce_agent_egress_firewall`` returned on the missing markers before
+    its held dispatch, so ``enforce_agent``'s refusal could never fire."""
+    from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+    agent_env = {"BENCHFLOW_PROVIDER_BASE_URL": "http://127.0.0.1:4000"}
+    with pytest.raises(RuntimeError, match="network_mode='denylist' only"):
+        await enforce_agent_egress_firewall(started, "agent", agent_env)
+    assert "agent launch" not in [p["at"] for p in egress_gateway.held(started).proofs]
+    other = MagicMock()
+    await enforce_agent_egress_firewall(other, "agent", agent_env)
+    other.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_the_model_gateway_url_is_checked_as_before(started):
     policy = egress_denylist_for(started.task_env_config)
     with pytest.raises(ValueError, match="loopback"):

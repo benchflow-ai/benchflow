@@ -1023,7 +1023,14 @@ async def enforce_agent_egress_firewall(
         # than silently weaken the agent's no-web policy. Native model-only
         # transport carries no allowlist marker and remains valid here.
         raise RuntimeError("No-web agent cannot use an allowlist egress policy")
+    from benchflow.sandbox import egress_gateway
+
+    gateway_held = egress_gateway.held(env) is not None
     if not (no_web or denylist):
+        if gateway_held:
+            # Every launch on a held sandbox carries the denylist marker;
+            # enforce_agent refuses one that does not.
+            await egress_gateway.enforce_agent(env, sandbox_user, agent_env)
         return
     if not sandbox_user and denylist:
         raise RuntimeError("network_mode='denylist' requires a sandbox_user")
@@ -1044,9 +1051,7 @@ async def enforce_agent_egress_firewall(
         raise RuntimeError(
             "No-web agent requires an HTTP loopback provider base URL with a port"
         )
-    from benchflow.sandbox import egress_gateway
-
-    if egress_gateway.held(env) is not None:
+    if gateway_held:
         # Modal: no uid rule can go in; the gateway holds every process, so
         # prove the agent's user confined in the deny phase instead.
         await egress_gateway.enforce_agent(env, sandbox_user, agent_env)
