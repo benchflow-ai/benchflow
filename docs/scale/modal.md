@@ -79,7 +79,7 @@ python3 -I egress_gateway_server.py serve --state-dir /srv/egress-gateway \
   --listen 0.0.0.0:30100 --public 203.0.113.7:30100
 ```
 
-Run it under a service manager, or detached; it keeps each trial's state in `--state-dir`, so a restart brings its trials back where they were. A sandbox may reach every port of the gateway's address, so open nothing on that host but the gateway's port and ssh; the proxies themselves listen on its loopback. For the same reason, BenchFlow refuses a `--public` address that is private, shared, loopback or link-local. Then point `bench` at its control socket, `<state dir>/control.sock`. From another machine, forward the socket over ssh:
+Run it under a service manager, or detached; it keeps each trial's state in `--state-dir`, so a restart brings its trials back where they were. A sandbox may reach every port of the gateway's address, so open nothing on that host but the gateway's port and ssh; the proxies themselves listen on its loopback. For the same reason, BenchFlow refuses a `--public` address that is private, shared, loopback, link-local, multicast or reserved. Then point `bench` at its control socket, `<state dir>/control.sock`. From another machine, forward the socket over ssh:
 
 ```bash
 ssh -N -L /tmp/egress-gateway.sock:/srv/egress-gateway/control.sock me@203.0.113.7 &
@@ -105,4 +105,4 @@ How it differs from Docker:
 - Every byte a sandbox exchanges with the internet crosses the gateway, and its cloud bills that traffic. Put the gateway in the region Modal runs your sandboxes, and size it to the run's concurrency (each trial runs one or two proxy processes there).
 - One gateway is a single point of failure for its run. Its public port lets 256 connections wait for the challenge at once, from all sources together, for 10 seconds each: one host that holds that many open makes the gateway refuse every sandbox's new connections until they time out. That fails closed, but the run's trials fail with it; a per-source connection limit in the host's firewall prevents it.
 
-Still refused on Modal, gateway or not: `allowlist` (Modal's resolver answers every DNS name inside the sandbox, so an allowlist's DNS filter can't hold), `no-network` with a model agent, a verifier's own `no-network` or `allowlist` in the agent's sandbox, and the no-web policy.
+Still refused on Modal, gateway or not: `allowlist` (Modal's resolver answers every DNS name inside the sandbox, so an allowlist's DNS filter can't hold), `no-network` with a model agent, a verifier's own `no-network` or `allowlist` in the agent's sandbox, a `denylist` task with an `[agent] network_mode` of its own, and the no-web policy.

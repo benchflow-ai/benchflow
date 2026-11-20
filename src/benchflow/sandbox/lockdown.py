@@ -1029,7 +1029,8 @@ async def enforce_agent_egress_firewall(
     if not (no_web or denylist):
         if gateway_held:
             # A held sandbox holds the denylist alone: enforce_agent refuses
-            # a launch without its marker (an offline operator script, say).
+            # a launch without its marker (an offline operator script on a
+            # sandbox Runtime built before its agent was known, say).
             await egress_gateway.enforce_agent(env, sandbox_user, agent_env)
         return
     if not sandbox_user and denylist:
