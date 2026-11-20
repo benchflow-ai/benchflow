@@ -628,7 +628,14 @@ class Gateway:
             return None
         with rollout.lock:
             backend = rollout.backends.get(rollout.phase)
-            if rollout.closed or backend is None or backend.port is None:
+            # A proxy that exited keeps its port until the reaper restarts it,
+            # and another listener (another rollout's open proxy) may bind it.
+            if (
+                rollout.closed
+                or backend is None
+                or backend.port is None
+                or not backend.alive()
+            ):
                 rollout.count("refused_no_proxy")
                 return None
             try:

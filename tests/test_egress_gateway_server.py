@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import ast
 import base64
+import contextlib
 import json
 import shutil
 import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -99,17 +101,29 @@ def _register(gateway: server.Gateway, rid: str = "trial-1", **extra) -> dict:
     return reply
 
 
-def _connect(gateway: server.Gateway, rid: str = "trial-1", mac: str | None = None):
-    """A relay's side of the challenge; the socket, ready for the request."""
+def _challenge(gateway: server.Gateway) -> tuple[socket.socket, str]:
+    """A new connection to the public port and the nonce it was sent."""
     sock = socket.create_connection(gateway.address, timeout=10)
     line = b""
     while not line.endswith(b"\n"):
         line += sock.recv(1)
     proto, nonce = line.decode().split()
     assert proto == server.PROTOCOL
+    return sock, nonce
+
+
+def _connect(gateway: server.Gateway, rid: str = "trial-1", mac: str | None = None):
+    """A relay's side of the challenge; the socket, ready for the request."""
+    sock, nonce = _challenge(gateway)
     answer = server.answer(TOKEN, nonce, rid) if mac is None else mac
     sock.sendall(f"{rid} {answer}\n".encode())
     return sock
+
+
+def _counters(gateway: server.Gateway) -> dict[str, int]:
+    """The one registered rollout's counters."""
+    (row,) = _control(gateway, command="status")["rollouts"]
+    return row["counters"]
 
 
 def _ask(sock: socket.socket, request: bytes) -> bytes:
@@ -141,6 +155,78 @@ def test_a_wrong_or_missing_answer_reaches_no_proxy(gateway, monkeypatch):
     assert status["counters"]["handshake_refused"] == 2
     (row,) = status["rollouts"]
     assert row["counters"] == {}
+
+
+def test_an_answer_is_good_for_its_own_connection_only(gateway):
+    """An answer is bound to the nonce its connection was sent: replayed on
+    the next connection (by a host that captured it on the way), it is
+    refused and reaches no proxy.
+
+    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``
+    (mutant M5, a constant nonce, survived the first round's tests)."""
+    _register(gateway)
+    first, nonce = _challenge(gateway)
+    captured = f"trial-1 {server.answer(TOKEN, nonce, 'trial-1')}\n".encode()
+    first.sendall(captured)
+    assert _ask(first, HEALTH).startswith(b"HTTP/1.1 200")
+    replay, _ = _challenge(gateway)
+    replay.sendall(captured)
+    assert _ask(replay, HEALTH) == b""
+    status = _control(gateway, command="status")
+    assert status["counters"]["handshake_refused"] == 1
+    (row,) = status["rollouts"]
+    assert row["counters"] == {"conn_open": 1}
+
+
+def test_a_dead_deny_proxy_s_port_is_never_dialled(state_dir, monkeypatch):
+    """In ``deny``, a connection whose deny proxy has exited is refused, even
+    once another listener (such as another rollout's open proxy) has bound
+    the dead proxy's port before the reaper restarts it.
+
+    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``:
+    ``_handshake`` dialled ``Backend.port`` without checking that the proxy
+    still ran, and the denied rollout's connection reached the new listener."""
+    monkeypatch.setattr(server, "REAP_INTERVAL", 3600.0)
+    gateway = _gateway(state_dir)
+    try:
+        _register(gateway)
+        _control(gateway, command="deny", rollout="trial-1", policy=_policy())
+        backend = gateway._rollouts["trial-1"].backends["deny"]
+        port, process = backend.port, backend.process
+        assert port is not None and process is not None
+        process.kill()
+        process.wait(timeout=10)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", port))
+            listener.listen(8)
+            client = _connect(gateway)
+            client.sendall(BLOCKED)
+            deadline = time.monotonic() + 10
+            while not {"refused_no_proxy", "conn_deny"} & set(
+                counters := _counters(gateway)
+            ):
+                assert time.monotonic() < deadline, counters
+                time.sleep(0.05)
+            listener.settimeout(0.5)
+            try:
+                stolen, _ = listener.accept()
+            except TimeoutError:
+                received = b""
+            else:
+                with stolen:
+                    stolen.settimeout(5)
+                    received = stolen.recv(4096)
+        assert received == b""
+        assert counters.get("conn_deny") is None
+        assert counters["refused_no_proxy"] == 1
+        # Closed with the request unread: an end of file or a reset, no reply.
+        client.settimeout(10)
+        with client, contextlib.suppress(ConnectionResetError):
+            assert client.recv(64) == b""
+    finally:
+        gateway.close()
 
 
 def test_a_connection_reaches_the_phase_proxy(gateway):
