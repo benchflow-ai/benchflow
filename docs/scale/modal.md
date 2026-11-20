@@ -98,10 +98,11 @@ What a trial gets:
 
 How it differs from Docker:
 
-- Every process in the sandbox is under the policy, root included. A program that ignores `HTTP_PROXY` and `HTTPS_PROXY` (raw sockets, git over ssh, UDP) has no network at all, where on Docker root keeps it.
+- Every process in the sandbox is under the policy, root included. A program that ignores `HTTP_PROXY` and `HTTPS_PROXY` (raw sockets, git over ssh, UDP) has no network at all (except DNS lookups, which Modal's resolver answers), where on Docker root keeps it.
 - The model proxy is under the policy too: a denylist that names your model provider's host blocks the model, and a model endpoint given as an IP address or on a private network is refused.
-- The proxy reads the sandbox's HTTPS traffic on the gateway, model calls and their keys included. Run the gateway on a host you would trust with them.
+- The proxy reads the sandbox's HTTPS traffic on the gateway, model calls and their keys included. Run the gateway on a host you would trust with them. The oracle's `[solution].env` values go to the gateway too, so that its proxy can redact them from its logs; they stay in the trial's folder under `--state-dir` (`deny.policy.json`, `rollout.json`) until the trial is deregistered or its time to live ends.
+- Whoever can open the control socket, or its ssh forward, runs code on the gateway host as the gateway's user: a registration carries the proxy script the gateway runs.
 - Every byte a sandbox exchanges with the internet crosses the gateway, and its cloud bills that traffic. Put the gateway in the region Modal runs your sandboxes, and size it to the run's concurrency (each trial runs one or two proxy processes there).
-- One gateway is a single point of failure for its run.
+- One gateway is a single point of failure for its run. Its public port lets 256 connections wait for the challenge at once, from all sources together, for 10 seconds each: one host that holds that many open makes the gateway refuse every sandbox's new connections until they time out. That fails closed, but the run's trials fail with it; a per-source connection limit in the host's firewall prevents it.
 
 Still refused on Modal, gateway or not: `allowlist` (Modal's resolver answers every DNS name inside the sandbox, so an allowlist's DNS filter can't hold), `no-network` with a model agent, a verifier's own `no-network` or `allowlist` in the agent's sandbox, and the no-web policy.
