@@ -597,6 +597,27 @@ def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
             raise EvidenceError(f"Workspace evidence mismatch: {entry.path}")
 
 
+def refuse_linked_bundle(bundle: Path, manifest: EvidenceManifest) -> None:
+    """Refuse a bundle when any name its upload reads through is a symlink:
+    its manifest and workspace, and each captured artifact's folder (every
+    level), manifest and workspace. A link there may lead to another capture,
+    which would validate against its own manifest. *bundle* itself is the
+    caller's to check."""
+    names = ["manifest.json", "workspace"]
+    for artifact in manifest.artifacts:
+        if artifact.bundle_path is None:
+            continue
+        parts = PurePosixPath(artifact.bundle_path).parts
+        names += ["/".join(parts[: i + 1]) for i in range(len(parts))]
+        names += [
+            f"{artifact.bundle_path}/manifest.json",
+            f"{artifact.bundle_path}/workspace",
+        ]
+    for name in dict.fromkeys(names):
+        if (bundle / name).is_symlink():
+            raise EvidenceError(f"Evidence bundle path is a symlink: {name}")
+
+
 async def root_python_command(env: object, args: Sequence[str]) -> str:
     """sh that runs a stdlib-only helper as root (C8, PT-C8-R3-1): *args* is
     ``["-c", script, *argv]``, run through BenchFlow's one entry point for

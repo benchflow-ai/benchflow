@@ -11,7 +11,8 @@
 
 ### Fixed
 
-- **`bench review` gives the reviewer the captured workspace** (#1231). The in-run review gives the reviewer the rollout's captured workspace (its `evidence/` bundle, at `/evidence/workspace`); `bench review` passed none, so a reviewer of a finished run found no `/evidence/workspace`. It now passes the bundle when `evidence/manifest.json` is there, and a rollout without one gets a note in its review.
+- **`bench review` gives the reviewer the captured workspace** (#1231). The in-run review gives the reviewer the rollout's captured workspace (its `evidence/` bundle, at `/evidence/workspace`); `bench review` passed none, so a reviewer of a finished run found no `/evidence/workspace`. It now passes the bundle when `evidence/manifest.json` is there, and a rollout without one gets a note in its review. A link there never hands the reviewer another capture: a linked `evidence/` or `evidence/manifest.json` is skipped with a note, and a link below it (`workspace`, `artifacts`, an artifact's folder, or the `manifest.json` or `workspace` in one) fails that trial's review, naming the link.
+- **`bench eval regrade` refuses a linked frozen workspace.** A trial whose `evidence/`, or a folder, manifest or workspace below it, linked to another capture passed the regrade's checks, since that capture matches its own manifest, and the regrade installed it and scored it as the trial's. Such a trial is now not regradable, and its reason names the link.
 
 ## [0.10.0rc5] - release candidate
 

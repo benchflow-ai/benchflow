@@ -21,6 +21,7 @@ from benchflow.review.evidence import (
     EvidenceError,
     EvidenceManifest,
     install_review_evidence,
+    refuse_linked_bundle,
     validate_workspace,
 )
 from benchflow.review.options import ReviewerConfig
@@ -436,3 +437,120 @@ def test_validate_workspace_refuses_a_linked_workspace_root(tmp_path):
     validate_workspace(tmp_path / "elsewhere", manifest)
     with pytest.raises(EvidenceError, match="symlink"):
         validate_workspace(bundle / "workspace", manifest)
+
+
+def _capture(root: Path, name: str, content: bytes, *, artifact: bool) -> Path:
+    """A captured bundle at *root* whose workspace holds one file. With
+    *artifact* its manifest also lists a captured artifact at
+    ``artifacts/0000``, which the caller puts in place."""
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / name).write_bytes(content)
+    manifest = EvidenceManifest(
+        workspace="/app",
+        archive_sha256="0" * 64,
+        entries=(
+            EvidenceEntry(
+                path=name,
+                original_path=f"/app/{name}",
+                kind="file",
+                size=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        ),
+        artifacts=(
+            (
+                ArtifactEvidence(
+                    source="/outputs", status="captured", bundle_path="artifacts/0000"
+                ),
+            )
+            if artifact
+            else ()
+        ),
+    )
+    (root / "manifest.json").write_text(manifest.model_dump_json())
+    return root
+
+
+def _archive_reviewer(uploaded: set[str], fake: FakeRun):
+    """A reviewer that records the file names in every archive it is given."""
+
+    async def run(config):
+        for host in config.uploads:
+            if host.endswith(".tar"):
+                with tarfile.open(host) as archive:
+                    uploaded.update(Path(m.name).name for m in archive.getmembers())
+        return await fake(config)
+
+    return run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked", ["artifacts/0000", "artifacts"])
+async def test_bench_review_refuses_a_link_below_the_evidence_folder(
+    tmp_path, monkeypatch, linked
+):
+    """Guards PR #1239 (xdotli's review, 11-19) after 5df9018b: a rollout's
+    own ``evidence/`` whose ``artifacts/0000``, or ``artifacts`` itself, links
+    to another valid capture would hand the reviewer that capture as
+    ``/evidence/artifacts/0000.tar``. That trial's review fails instead,
+    naming the link, and nothing is uploaded."""
+    task = make_task(tmp_path, with_rubric=True, rubric_data=WEIGHTED_RUBRIC)
+    source = make_rollout(tmp_path / "jobs", "rollout-a", task_path=task)
+    own = _capture(tmp_path / "own", "paper.txt", b"own work", artifact=True)
+    own.rename(source / "evidence")
+    other = _capture(
+        tmp_path / "other", "secret.txt", b"another rollout's workspace", artifact=False
+    )
+    if linked == "artifacts":
+        (tmp_path / "elsewhere").mkdir()
+        other.rename(tmp_path / "elsewhere" / "0000")
+        (source / "evidence" / "artifacts").symlink_to(
+            tmp_path / "elsewhere", target_is_directory=True
+        )
+    else:
+        (source / "evidence" / "artifacts").mkdir()
+        (source / "evidence" / "artifacts" / "0000").symlink_to(
+            other, target_is_directory=True
+        )
+    uploaded: set[str] = set()
+    fake = FakeRun(review_payload=good_weighted_review())
+    monkeypatch.setattr(benchflow, "run", _archive_reviewer(uploaded, fake))
+    report, _ = await run_reviews(
+        source, agent="gemini", tasks_root=tmp_path / "tasks", out_dir=tmp_path / "out"
+    )
+    assert "secret.txt" not in uploaded
+    trial = report.trials[0]
+    assert not trial.review_valid
+    assert trial.error == f"Evidence bundle path is a symlink: {linked}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "manifest.json",
+        "workspace",
+        "artifacts",
+        "artifacts/0000",
+        "artifacts/0000/manifest.json",
+        "artifacts/0000/workspace",
+    ],
+)
+def test_refuse_linked_bundle_checks_every_name_a_bundle_is_read_through(
+    tmp_path, name
+):
+    """Guards PR #1239 (xdotli's review, 11-19): each name below a bundle
+    that its upload reads through is refused when it is a link."""
+    bundle = _capture(tmp_path / "own", "paper.txt", b"own work", artifact=True)
+    _capture(bundle / "artifacts" / "0000", "out.txt", b"output", artifact=False)
+    manifest = EvidenceManifest.model_validate_json(
+        (bundle / "manifest.json").read_text()
+    )
+    refuse_linked_bundle(bundle, manifest)
+    target = bundle / name
+    target.rename(tmp_path / "moved")
+    target.symlink_to(
+        tmp_path / "moved", target_is_directory=(tmp_path / "moved").is_dir()
+    )
+    with pytest.raises(EvidenceError, match=f"symlink: {name}$"):
+        refuse_linked_bundle(bundle, manifest)

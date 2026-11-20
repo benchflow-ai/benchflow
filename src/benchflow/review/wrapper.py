@@ -591,11 +591,18 @@ def assemble_review_task(
         left_out = _write_left_out_record(rollout_dir, evidence / "trial")
         uploads[str(left_out)] = f"/evidence/{_LEFT_OUT_RECORD}"
     if workspace_bundle is not None:
-        from benchflow.review.evidence import EvidenceManifest, prepare_workspace_upload
+        from benchflow.review.evidence import (
+            EvidenceManifest,
+            prepare_workspace_upload,
+            refuse_linked_bundle,
+        )
 
         manifest = EvidenceManifest.model_validate_json(
             (workspace_bundle / "manifest.json").read_text()
         )
+        # Before any bundle is read: a link below it may lead to another
+        # capture, which would validate and be uploaded as this one's.
+        refuse_linked_bundle(workspace_bundle, manifest)
         bundles = [(workspace_bundle, "workspace")]
         bundles.extend(
             (workspace_bundle / artifact.bundle_path, artifact.bundle_path)
