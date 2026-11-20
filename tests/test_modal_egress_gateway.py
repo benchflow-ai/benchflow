@@ -11,6 +11,7 @@ that moves the rollout's phase, the logs and the trial's record.
 from __future__ import annotations
 
 import inspect
+import ipaddress
 import json
 import shutil
 import socket
@@ -291,6 +292,36 @@ async def test_hello_takes_a_global_ipv4_address_only(gateway, monkeypatch):
             await egress_gateway.hello(control)
     gateway.public = "8.8.8.8:443"
     assert (await egress_gateway.hello(control))["public"] == "8.8.8.8:443"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("python", ["this python", "cpython 3.12.3"])
+async def test_hello_refuses_192_0_0_0_24_on_every_python(gateway, monkeypatch, python):
+    """192.0.0.0/24 (IETF protocol assignments) is refused, but for the two
+    addresses IANA lists as globally reachable (192.0.0.9 and 192.0.0.10),
+    whatever ``ipaddress`` says: cpython before 3.12.4 classed most of it global.
+
+    Guards the second review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``."""
+    if python == "cpython 3.12.3":
+        is_global = ipaddress.IPv4Address.is_global.fget
+        ietf = ipaddress.IPv4Network("192.0.0.0/24")
+        private = ("192.0.0.0/29", "192.0.0.170/31")  # its only private parts then
+
+        def old_is_global(address: ipaddress.IPv4Address) -> bool:
+            if address in ietf:
+                return not any(address in ipaddress.IPv4Network(n) for n in private)
+            return is_global(address)
+
+        monkeypatch.setattr(ipaddress.IPv4Address, "is_global", property(old_is_global))
+    monkeypatch.setattr(egress_gateway, "_LOOPBACK_PUBLIC_OK", False)
+    control = str(gateway.control_path)
+    for public in ("192.0.0.8:443", "192.0.0.100:443", "192.0.0.255:443"):
+        gateway.public = public
+        with pytest.raises(egress_gateway.EgressGatewayError, match="global IPv4"):
+            await egress_gateway.hello(control)
+    for public in ("192.0.0.9:443", "192.0.0.10:443"):
+        gateway.public = public
+        assert (await egress_gateway.hello(control))["public"] == public
 
 
 @pytest.fixture

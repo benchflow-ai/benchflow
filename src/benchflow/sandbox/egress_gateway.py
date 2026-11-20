@@ -80,6 +80,10 @@ TTL_MARGIN_SEC = 3600
 _ROLLOUT_ID_MAX = 128
 #: Whether ``hello`` may name a loopback address (the tests' gateway).
 _LOOPBACK_PUBLIC_OK = False
+#: IETF protocol assignments, not global but for these two anycast addresses
+#: (IANA); named since cpython before 3.12.4 classed most of the block global.
+_IETF_PROTOCOL = ipaddress.IPv4Network("192.0.0.0/24")
+_IETF_GLOBAL = (ipaddress.IPv4Address("192.0.0.9"), ipaddress.IPv4Address("192.0.0.10"))
 
 
 class EgressGatewayError(RuntimeError):
@@ -219,13 +223,14 @@ async def hello(control: str) -> dict[str, Any]:
         ) from exc
     # The allowlist admits the address on every port: a private, shared,
     # loopback or link-local one would open a provider-internal host.
-    if not (address.is_global and not address.is_multicast) and not (
+    reserved = address in _IETF_PROTOCOL and address not in _IETF_GLOBAL
+    if not (address.is_global and not address.is_multicast and not reserved) and not (
         _LOOPBACK_PUBLIC_OK and address.is_loopback
     ):
         raise EgressGatewayError(
             f"egress gateway at {control} names {public!r}: a Modal allowlist "
             "needs the gateway's global IPv4 address, not a private, shared, "
-            "loopback, link-local or multicast one"
+            "loopback, link-local, multicast or reserved one"
         )
     return reply
 
