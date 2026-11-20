@@ -579,17 +579,28 @@ async def attach(env: Any) -> Hold | None:
     ttl = server.DEFAULT_TTL_SEC
     if isinstance(lifetime, int) and lifetime > 0:
         ttl = min(lifetime + TTL_MARGIN_SEC, server.MAX_TTL_SEC)
-    await acall(
-        control,
-        {
-            "command": "register",
-            "rollout": hold.rollout,
-            "token": hold.token,
-            "ttl_sec": ttl,
-            "files": {k: base64.b64encode(v).decode() for k, v in files.items()},
-        },
-        timeout=REGISTER_TIMEOUT_SEC,
+    registering = asyncio.ensure_future(
+        acall(
+            control,
+            {
+                "command": "register",
+                "rollout": hold.rollout,
+                "token": hold.token,
+                "ttl_sec": ttl,
+                "files": {k: base64.b64encode(v).decode() for k, v in files.items()},
+            },
+            timeout=REGISTER_TIMEOUT_SEC,
+        )
     )
+    try:
+        await asyncio.shield(registering)
+    except asyncio.CancelledError:
+        # The request runs on in its thread: wait for the gateway's answer,
+        # so the stop deregisters a rollout it registered.
+        with contextlib.suppress(Exception):
+            await registering
+            vars(env)[STATE_ATTR] = hold
+        raise
     # From here the sandbox's stop deregisters it.
     vars(env)[STATE_ATTR] = hold
     hold.note("registered", phase="open", ttl_sec=ttl)

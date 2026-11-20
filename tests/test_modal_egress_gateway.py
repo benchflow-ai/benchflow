@@ -10,6 +10,7 @@ that moves the rollout's phase, the logs and the trial's record.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import ipaddress
 import json
@@ -17,6 +18,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -254,6 +256,43 @@ async def test_a_failed_start_proof_stops_the_sandbox_and_deregisters(
         await sandbox.start(force_build=False)
     remote.terminate.aio.assert_awaited()
     assert sandbox._sandbox is None
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_start_cancelled_while_registering_deregisters(
+    gateway, make_sandbox, provider, monkeypatch
+):
+    """A start cancelled while the gateway registers its rollout (the
+    request runs on in its thread) waits for the gateway's answer, so the
+    stop deregisters the rollout and nothing of it runs on at the gateway.
+
+    Guards the third review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: the hold was set only once ``register``
+    returned, so a cancelled attach stopped the sandbox with no hold and the
+    rollout's open proxy ran on to its time to live."""
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    register = gateway._cmd_register
+
+    def slow_register(request: dict) -> dict:
+        entered.set()
+        release.wait(30)
+        try:
+            return register(request)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(gateway, "_cmd_register", slow_register)
+    sandbox = make_sandbox()
+    start = asyncio.ensure_future(sandbox.start(force_build=False))
+    assert await asyncio.to_thread(entered.wait, 30)
+    start.cancel()
+    await asyncio.sleep(0.2)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await start
+    assert await asyncio.to_thread(done.wait, 30)
+    provider.Sandbox.create.aio.return_value.terminate.aio.assert_awaited()
     assert _status(gateway)["rollouts"] == []
 
 
