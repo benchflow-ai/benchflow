@@ -865,10 +865,10 @@ def test_a_uid_0_agent_on_a_no_web_task_is_held_to_loopback(
     network (the connect timed out instead of being refused)."""
     from benchflow.sandbox.lockdown import NO_WEB_ROOT_GID
 
-    done, result, _record, probe, _mock = _run(
+    done, result, record, probe, _mock = _run(
         tmp_path, noweb_image, "--sandbox-user", user, no_web=True
     )
-    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    assert result.get("error") in (None, ""), _why(done, result, record)
     # Held from its launch, before ACP's initialize.
     assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
     assert f"ids 0 {NO_WEB_ROOT_GID}" in probe, probe
@@ -887,9 +887,9 @@ def test_a_no_web_agent_user_is_held_from_its_launch(tmp_path, noweb_image):
     ACP's initialize, is refused by the uid firewall. On bf844d299 the
     firewall went in only after session/new, and that connect left the
     sandbox (it timed out instead of being refused)."""
-    done, result, _record, probe, _mock = _run(
+    done, result, record, probe, _mock = _run(
         tmp_path, noweb_image, "--sandbox-user", "agent", no_web=True
     )
-    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    assert result.get("error") in (None, ""), _why(done, result, record)
     assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
     assert _lines(probe, "outside") == ["refused"], probe
