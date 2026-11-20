@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from benchflow.providers.litellm_logging import STREAM_INTERRUPTED
 from tests.integration.deterministic import harness as h
 
 pytestmark = pytest.mark.deterministic
@@ -343,13 +344,26 @@ def _golden_view(facts: dict[str, Any]) -> dict[str, Any]:
     Daytona), so the golden file keeps agent-loop calls only and reports
     usage net of side calls. _check_trial still checks every captured call,
     side calls included, against the recorded totals.
+
+    The title request can also reach the proxy and be cut by the teardown
+    (HTTP 499, ``stream_interrupted``): the trial then marks its usage
+    incomplete, with LiteLLM's count of that call, the fake's side usage.
+    While no agent-loop call was cut, those marks are left out too
+    (EN-925: main's eval-hello-pass on 2026-11-20).
     """
     view = json.loads(json.dumps(facts))
     view["result"]["timing_keys"] = [
         k for k in view["result"]["timing_keys"] if k not in _UNSHARED_TIMING_KEYS
     ]
     n_side = sum(c["kind"] == "side" for c in view["llm_calls"])
+    cut_side = [
+        c
+        for c in view["llm_calls"]
+        if c["kind"] == "side" and "stream_interrupted" in c
+    ]
     view["llm_calls"] = [c for c in view["llm_calls"] if c["kind"] == "main"]
+    if cut_side and not any("stream_interrupted" in c for c in view["llm_calls"]):
+        _drop_cut_side_marks(view, len(cut_side))
     side = h.SIDE_CALL_USAGE
     per_call = {
         "input": side["input"],
@@ -369,6 +383,33 @@ def _golden_view(facts: dict[str, Any]) -> dict[str, Any]:
                 value = block[key] - n_side * per_call[quantity]
                 block[key] = round(value, 9) if quantity == "cost" else value
     return view
+
+
+def _drop_cut_side_marks(view: dict[str, Any], n_cut: int) -> None:
+    """Take out what ``n_cut`` side calls cut at the teardown add to the
+    golden view: the agent's ``interrupted_streams`` details and each
+    block's incomplete-usage marks, where the cut stream is their reason."""
+    agent = view["result"]["agent_result"]
+    details = agent.get("usage_details") or {}
+    if (details.get("interrupted_streams") or {}).get("calls_cut") != n_cut:
+        return
+    del details["interrupted_streams"]
+    if not details:
+        agent.pop("usage_details")
+    blocks = [agent, view["result"]["final_metrics"].get("extra")]
+    if view.get("atif"):
+        blocks.append((view["atif"].get("final_metrics") or {}).get("extra"))
+    for block in blocks:
+        reason = (
+            block.get("usage_incomplete_reason") if isinstance(block, dict) else None
+        )
+        if isinstance(reason, str) and reason.startswith(STREAM_INTERRUPTED):
+            for key in (
+                "usage_incomplete",
+                "usage_incomplete_reason",
+                "cost_incomplete",
+            ):
+                block.pop(key, None)
 
 
 def _check_trial(
