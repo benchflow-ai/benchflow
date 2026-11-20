@@ -261,6 +261,16 @@ def _review_command(
             ),
         ),
     ] = False,
+    criterion_evidence: Annotated[
+        bool,
+        typer.Option(
+            "--criterion-evidence",
+            help=(
+                "Show the reviewer each criterion's Evidence line, the "
+                "Evidence: sentence of its rubric description"
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Grade finished rollouts against a rubric with a reviewer agent.
 
@@ -383,6 +393,7 @@ def _review_command(
                 submitted_file_rule=submitted_file_rule,
                 reasoning_effort=reasoning_effort,
                 idle_timeout_sec=idle_timeout_sec,
+                criterion_evidence=criterion_evidence,
             )
         )
     except (ValueError, FileNotFoundError) as exc:

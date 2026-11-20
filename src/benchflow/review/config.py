@@ -15,6 +15,10 @@ integer fields::
       ]
     }
 
+The reviewer never sees ``description``, except the ``Evidence:`` sentence
+in it when the review asks for it (``ReviewerConfig.criterion_evidence``,
+:func:`criterion_evidence`).
+
 ``blocker: 1`` criteria receive a binary pass/fail judgment. ``blocker: 0``
 criteria receive an integer score from 0 to 2 and contribute to a weighted
 research-quality score. ``weight`` is an integer from 1 to 10.
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import json
 import keyword
+import re
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Self
@@ -338,25 +343,85 @@ def find_task_rubric(task_path: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def build_criteria_guidance(rubric: Rubric) -> str:
-    """Render the criterion guidance lines included in the reviewer prompt."""
+#: Where a criterion's description names its evidence.
+_EVIDENCE_LABEL = re.compile(r"\bEvidence:")
 
+#: A period that may end the Evidence sentence: one followed by white space
+#: or the end of its line, so a file name such as ``paper.pdf`` keeps its dot.
+_SENTENCE_END = re.compile(r"\.(?=\s|$)")
+
+#: Text ending in an abbreviation whose period does not end the sentence:
+#: e.g., i.e., Fig(s)., Eq(s)., Sec(s)., et al. and vs.
+_ABBREVIATION = re.compile(
+    r"(?<![\w.])(?:e\.g|i\.e|figs?|eqs?|secs?|et\s+al|vs)\Z", re.IGNORECASE
+)
+
+#: The line the criteria guidance opens with when it holds an Evidence line.
+CRITERION_EVIDENCE_HEADER = (
+    "A criterion's Evidence line names the records it is judged from; read "
+    "those records before you judge it."
+)
+
+
+def criterion_evidence(description: str) -> str | None:
+    """The records a criterion is judged from, as its *description* names them.
+
+    The text of its ``Evidence:`` sentence, white space collapsed, or None
+    when the description has none. The sentence ends at the first period
+    that ends a sentence (:data:`_SENTENCE_END`, not one of
+    :data:`_ABBREVIATION`'s), and at its line break at the latest, so no
+    other line of the description reaches the reviewer.
+    """
+
+    match = _EVIDENCE_LABEL.search(description)
+    if match is None:
+        return None
+    lines = description[match.end() :].splitlines()
+    line = lines[0] if lines else ""
+    end = len(line)
+    for stop in _SENTENCE_END.finditer(line):
+        if _ABBREVIATION.search(line, 0, stop.start()) is None:
+            end = stop.start()
+            break
+    named = " ".join(line[:end].split()).rstrip(",;: ")
+    return named if named.strip(".") else None
+
+
+def _guidance_line(rubric: Rubric, criterion: RubricCriterion) -> str:
     if not rubric.is_weighted:
-        return "\n".join(
-            f"- {criterion.name}: {criterion.guidance}" for criterion in rubric.criteria
-        )
-
-    return "\n".join(
-        (
+        return f"- {criterion.name}: {criterion.guidance}"
+    if criterion.is_blocker:
+        return (
             f"- {criterion.name} [BLOCKER; answer pass or fail; weight "
             f"{criterion.weight} does not enter weighted quality]: "
             f"{criterion.guidance}"
-            if criterion.is_blocker
-            else f"- {criterion.name} [SCORED; weight {criterion.weight}; "
-            f"answer 0, 1, or 2]: {criterion.guidance}"
         )
-        for criterion in rubric.criteria
+    return (
+        f"- {criterion.name} [SCORED; weight {criterion.weight}; "
+        f"answer 0, 1, or 2]: {criterion.guidance}"
     )
+
+
+def build_criteria_guidance(rubric: Rubric, *, evidence: bool = False) -> str:
+    """Render the criterion guidance lines included in the reviewer prompt.
+
+    With *evidence*, each criterion whose description names its evidence
+    (:func:`criterion_evidence`) gets an indented ``Evidence:`` line under its
+    guidance, and :data:`CRITERION_EVIDENCE_HEADER` opens the block. Without
+    it, or when no criterion names any, the lines are as before.
+    """
+
+    lines: list[str] = []
+    named_any = False
+    for criterion in rubric.criteria:
+        lines.append(_guidance_line(rubric, criterion))
+        named = criterion_evidence(criterion.description) if evidence else None
+        if named is not None:
+            named_any = True
+            lines.append(f"  Evidence: {named}.")
+    if named_any:
+        lines.insert(0, CRITERION_EVIDENCE_HEADER)
+    return "\n".join(lines)
 
 
 def build_review_response_model(rubric: Rubric) -> type[BaseModel]:

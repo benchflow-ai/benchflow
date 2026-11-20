@@ -20,6 +20,7 @@ from benchflow.cli._shared import (
 from benchflow.cli.reviewer_options import (
     ReviewerAgentOption,
     ReviewerConcurrencyOption,
+    ReviewerCriterionEvidenceOption,
     ReviewerEffortOption,
     ReviewerEnvOption,
     ReviewerEvidenceTimeoutOption,
@@ -100,6 +101,7 @@ def eval_regrade(
     reviewer_open_network: ReviewerNetworkOption = None,
     reviewer_pdf_tools: ReviewerPdfToolsOption = None,
     reviewer_submitted_file_rule: ReviewerSubmittedFileRuleOption = None,
+    reviewer_criterion_evidence: ReviewerCriterionEvidenceOption = None,
 ) -> None:
     """Re-run the task's current verifier on each trial's frozen workspace.
 
@@ -130,6 +132,7 @@ def eval_regrade(
         open_network=reviewer_open_network,
         pdf_tools=reviewer_pdf_tools,
         submitted_file_rule=reviewer_submitted_file_rule,
+        criterion_evidence=reviewer_criterion_evidence,
     )
     if reviewer is not None and not review:
         print_error(
