@@ -513,11 +513,7 @@ async def _review_one(
     bundle = rollout_dir / "evidence"
     manifest_path = bundle / "manifest.json"
     workspace_bundle: Path | None = None
-    if (
-        bundle.is_symlink()
-        or manifest_path.is_symlink()
-        or bundle.resolve() != rollout_dir.resolve() / "evidence"
-    ):
+    if bundle.is_symlink() or manifest_path.is_symlink():
         trial.notes.append(
             "workspace evidence skipped: evidence/ or evidence/manifest.json "
             "is a symlink, so it may be another rollout's capture"
