@@ -98,6 +98,22 @@ REFUSED_BY_MODAL_TABLE = {"allowlist", "denylist"}
 #: gateway (benchflow.sandbox.egress_gateway); every other refusal stands.
 REFUSED_WITH_GATEWAY = {**REFUSED, "modal": REFUSED["modal"] - {"denylist"}}
 GATEWAY_ENV = "BENCHFLOW_EGRESS_GATEWAY"
+#: The gateway cells: an [agent] network_mode leaves the agent's phase off the
+#: sandbox's denylist, so Modal's capability table still refuses that denylist.
+GATEWAY_CELLS = {
+    **CELLS,
+    "denylist-agent-none-separate-verifier": (
+        '[agent]\nnetwork_mode = "no-network"\n[environment]\n'
+        'network_mode = "denylist"\nblocked_hosts = ["example.org"]\n'
+        '[verifier]\nsandbox_mode = "separate"\n',
+        False,
+        NO_NETWORK_SCRIPTED_POLICY,
+    ),
+}
+REFUSED_BY_MODAL_TABLE_WITH_GATEWAY = {
+    "allowlist",
+    "denylist-agent-none-separate-verifier",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +174,7 @@ def test_each_backend_and_policy(tmp_path, cell, backend, compose, label):
         assert bool(table) is (cell in REFUSED_BY_MODAL_TABLE), table
 
 
-@pytest.mark.parametrize("cell", sorted(CELLS))
+@pytest.mark.parametrize("cell", sorted(GATEWAY_CELLS))
 @pytest.mark.parametrize(
     ("backend", "compose", "label"),
     [
@@ -174,9 +190,10 @@ def test_each_backend_and_policy_with_the_egress_gateway(
 ):
     """Guards the PR that adds BENCHFLOW_EGRESS_GATEWAY: with a gateway named,
     Modal admits the denylist (its plan gate and its capability table) and
-    nothing else; Daytona and Docker are unchanged."""
+    nothing else; Daytona and Docker are unchanged. Its second review round:
+    the table still refuses a denylist under an [agent] network_mode."""
     monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
-    toml, launches, policy = CELLS[cell]
+    toml, launches, policy = GATEWAY_CELLS[cell]
     config = _config(toml)
     issue = network_policy_issue(
         config,
@@ -195,7 +212,7 @@ def test_each_backend_and_policy_with_the_egress_gateway(
         from benchflow.task.runtime_capabilities import validate_task_runtime_support
 
         table = validate_task_runtime_support(config, sandbox="modal")
-        assert bool(table) is (cell == "allowlist"), table
+        assert bool(table) is (cell in REFUSED_BY_MODAL_TABLE_WITH_GATEWAY), table
 
 
 #: (task.toml lines under a denylist sandbox, the verifier label refused or None).

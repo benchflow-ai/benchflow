@@ -647,11 +647,15 @@ def _append_config_issues(
         if problem is not None:
             _issue(unsupported, path=f"artifacts[{i}]", reason=problem, sandbox=sandbox)
 
+    # The gateway holds a sandbox whose own network is the denylist, and the
+    # agent's phase on it only when no [agent] network_mode moves it off.
+    gateway = egress_gateway_holds(sandbox) and config.agent.network_mode is None
     _append_network_issue(
         unsupported,
         path="agent.network_mode",
         mode=config.agent.network_mode,
         sandbox=sandbox,
+        gateway=gateway,
     )
     if config.agent.network_mode == NetworkMode.ALLOWLIST and (
         config.sandbox.network_mode in (NetworkMode.NO_NETWORK, NetworkMode.DENYLIST)
@@ -670,6 +674,7 @@ def _append_config_issues(
         path="sandbox.network_mode",
         mode=config.sandbox.network_mode,
         sandbox=sandbox,
+        gateway=gateway,
     )
     if config.verifier.network_mode == NetworkMode.ALLOWLIST:
         if sandbox not in VERIFIER_ALLOWLIST_PROVIDERS:
@@ -690,6 +695,7 @@ def _append_config_issues(
             path="verifier.network_mode",
             mode=config.verifier.network_mode,
             sandbox=sandbox,
+            gateway=gateway,
         )
 
     if separate_verifier_requested(config):
@@ -834,6 +840,7 @@ def _append_network_issue(
     path: str,
     mode: NetworkMode | None,
     sandbox: str,
+    gateway: bool,
 ) -> None:
     if mode == NetworkMode.NO_NETWORK and sandbox in NO_NETWORK_UNSUPPORTED_PROVIDERS:
         _issue(
@@ -852,7 +859,7 @@ def _append_network_issue(
     if (
         mode == NetworkMode.DENYLIST
         and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS
-        and not egress_gateway_holds(sandbox)
+        and not gateway
     ):
         _issue(
             unsupported,
