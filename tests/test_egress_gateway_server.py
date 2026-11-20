@@ -17,6 +17,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -227,6 +228,61 @@ def test_a_dead_deny_proxy_s_port_is_never_dialled(state_dir, monkeypatch):
             assert client.recv(64) == b""
     finally:
         gateway.close()
+
+
+def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
+    """A proxy launched on a port another listener already holds (two
+    launches given the same port by bind(0)) is not taken for healthy on that
+    listener's ``/healthz``: the launch moves to a new port, and the denied
+    request never reaches the other listener.
+
+    Guards the second review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: ``Backend.launch`` took the first ``/healthz``
+    200 on the port, and ``deny`` recorded the other listener's port."""
+    _register(gateway)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(64)
+    listener.settimeout(0.2)
+    taken = listener.getsockname()[1]
+    received: list[bytes] = []
+    done = threading.Event()
+
+    def serve() -> None:
+        # Another proxy's stand-in: answers /healthz, keeps every other request.
+        while not done.is_set():
+            try:
+                conn, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                with contextlib.suppress(OSError):
+                    data = conn.recv(4096)
+                    if data.startswith(b"GET /healthz"):
+                        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    else:
+                        received.append(data)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    ports = iter([taken])
+    free_port = server._free_port
+    monkeypatch.setattr(server, "_free_port", lambda: next(ports, None) or free_port())
+    try:
+        reply = _control(gateway, command="deny", rollout="trial-1", policy=_policy())
+        assert reply["ok"], reply
+        refused = _ask(_connect(gateway), BLOCKED)
+        assert received == []
+        assert refused.startswith(b"HTTP/1.1 403")
+        backend = gateway._rollouts["trial-1"].backends["deny"]
+        assert backend.port != taken and backend.alive()
+    finally:
+        done.set()
+        thread.join(timeout=5)
+        listener.close()
 
 
 def test_a_connection_reaches_the_phase_proxy(gateway):

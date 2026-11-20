@@ -178,6 +178,17 @@ def backend_healthy(port: int, timeout: float = HEALTH_PROBE_TIMEOUT) -> bool:
     return head.startswith((b"HTTP/1.1 200", b"HTTP/1.0 200"))
 
 
+def _bound(stderr: Path, offset: int, port: int) -> bool:
+    """Whether *stderr* past *offset* has the proxy's line for a bind of ``port``."""
+    line = f"egress proxy listening on 127.0.0.1:{port}".encode()
+    try:
+        with stderr.open("rb") as err:
+            err.seek(offset)
+            return line in err.read().splitlines()
+    except OSError:
+        return False
+
+
 def _read_line(sock: socket.socket, limit: int) -> tuple[str | None, bytes]:
     r"""One ``\n``-terminated line (without it) and the bytes after it; (None, b'') if none."""
     data = b""
@@ -321,6 +332,7 @@ class Backend:
         for _ in range(BACKEND_START_TRIES):
             port = _free_port()
             with stderr.open("ab") as err:
+                offset = err.seek(0, os.SEEK_END)
                 process = subprocess.Popen(
                     self.argv(port),
                     stdin=subprocess.DEVNULL,
@@ -330,7 +342,9 @@ class Backend:
                 )
             deadline = time.monotonic() + BACKEND_START_TIMEOUT
             while time.monotonic() < deadline and process.poll() is None:
-                if backend_healthy(port):
+                # Every BenchFlow proxy answers /healthz alike: the port is
+                # this child's only once it says it bound it.
+                if _bound(stderr, offset, port) and backend_healthy(port):
                     self.port, self.process = port, process
                     return
                 time.sleep(HEALTH_POLL_SEC)
