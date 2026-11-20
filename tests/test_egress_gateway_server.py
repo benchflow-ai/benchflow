@@ -437,6 +437,36 @@ def test_a_rollout_deregistered_during_a_reap_stays_stopped(state_dir, monkeypat
         gateway.close()
 
 
+@pytest.mark.parametrize("command", ["deny", "open"])
+def test_a_phase_change_after_deregistration_is_refused(
+    state_dir, monkeypatch, command
+):
+    """A deny or open that looked its rollout up before a deregistration took
+    the rollout's lock is refused, and no proxy is launched for it.
+
+    Guards the third review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: ``_cmd_deny`` and ``_cmd_open`` did not
+    check ``Rollout.closed``, as ``reap_once`` now does."""
+    gateway = _gateway(state_dir)
+    rollout = None
+    try:
+        _register(gateway)
+        rollout = gateway._rollouts["trial-1"]
+        with monkeypatch.context() as patch:
+            patch.setattr(server.shutil, "rmtree", lambda *a, **k: None)
+            gateway._drop(rollout)
+        # The handler looked the rollout up before the drop took its lock.
+        monkeypatch.setattr(gateway, "_rollout", lambda request: rollout)
+        reply = _control(gateway, command=command, rollout="trial-1", policy=_policy())
+        assert not reply["ok"], reply
+        assert not any(backend.alive() for backend in rollout.backends.values())
+    finally:
+        if rollout is not None:
+            for backend in rollout.backends.values():
+                backend.stop()
+        gateway.close()
+
+
 @pytest.mark.parametrize(
     "policy",
     [

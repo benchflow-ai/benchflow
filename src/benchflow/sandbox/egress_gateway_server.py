@@ -792,6 +792,8 @@ class Gateway:
         rollout = self._rollout(request)
         policy = check_policy(request.get("policy"))
         with rollout.lock:
+            if rollout.closed:
+                raise ControlError(f"rollout {rollout.rid!r} is deregistered")
             backend = rollout.backends.get("deny")
             if policy != rollout.deny_policy or backend is None or not backend.alive():
                 backend = backend or Backend(
@@ -823,6 +825,8 @@ class Gateway:
     def _cmd_open(self, request: dict[str, Any]) -> dict[str, Any]:
         rollout = self._rollout(request)
         with rollout.lock:
+            if rollout.closed:
+                raise ControlError(f"rollout {rollout.rid!r} is deregistered")
             rollout.phase = "open"
             rollout.count("to_open")
             rollout.save()
