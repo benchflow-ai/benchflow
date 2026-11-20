@@ -92,6 +92,9 @@ jobs:
           grep -H '^nameserver' /etc/resolv.conf /run/systemd/resolve/resolv.conf || true
           docker network create en925-dns > /dev/null
           docker run --rm --network en925-dns alpine:3.20 grep -E 'ExtServers|^nameserver' /etc/resolv.conf || true
+          ip -4 route
+          ip -4 -o addr show scope global
+          docker run --rm --network en925-dns alpine:3.20 sh -c 'for u in https://releases.astral.sh/github/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz.sha256 https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz.sha256; do wget -q -T 20 -O /dev/null "$u" && echo "egress ok $u" || echo "egress FAILED $u"; done' || true
           docker network rm en925-dns > /dev/null || true
 
       # A model agent's Docker trial is refused before its turn where bfx
@@ -427,6 +430,9 @@ jobs:
           grep -H '^nameserver' /etc/resolv.conf /run/systemd/resolve/resolv.conf || true
           docker network create en925-dns > /dev/null
           docker run --rm --network en925-dns alpine:3.20 grep -E 'ExtServers|^nameserver' /etc/resolv.conf || true
+          ip -4 route
+          ip -4 -o addr show scope global
+          docker run --rm --network en925-dns alpine:3.20 sh -c 'for u in https://releases.astral.sh/github/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz.sha256 https://github.com/astral-sh/uv/releases/download/0.13.4/uv-x86_64-unknown-linux-gnu.tar.gz.sha256; do wget -q -T 20 -O /dev/null "$u" && echo "egress ok $u" || echo "egress FAILED $u"; done' || true
           docker network rm en925-dns > /dev/null || true
 
       # A model agent's Docker trial is refused before its turn where bfx
