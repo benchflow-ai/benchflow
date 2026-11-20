@@ -84,6 +84,16 @@ jobs:
           test "$(docker version --format '{{.Server.Version}}')" = 29.1.3
           test "$(docker compose version --short)" = "2.40.3+ds1-0ubuntu1~24.04.1"
 
+      # EN-925, temporary (removed before merge): which resolver a
+      # container's DNS forwards to on this runner.
+      - name: DNS a container forwards to (EN-925 diagnostic)
+        run: |
+          readlink -f /etc/resolv.conf
+          grep -H '^nameserver' /etc/resolv.conf /run/systemd/resolve/resolv.conf || true
+          docker network create en925-dns > /dev/null
+          docker run --rm --network en925-dns alpine:3.20 grep -E 'ExtServers|^nameserver' /etc/resolv.conf || true
+          docker network rm en925-dns > /dev/null || true
+
       # A model agent's Docker trial is refused before its turn where bfx
       # can't run (integrity_unavailable), and a checkout has no bfx: git
       # ignores src/benchflow/_bfx/bin. Build the pinned x86_64 binary from
@@ -408,6 +418,16 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev --extra sandbox-daytona --extra sandbox-modal --locked
+
+      # EN-925, temporary (removed before merge): which resolver a
+      # container's DNS forwards to on this runner.
+      - name: DNS a container forwards to (EN-925 diagnostic)
+        run: |
+          readlink -f /etc/resolv.conf
+          grep -H '^nameserver' /etc/resolv.conf /run/systemd/resolve/resolv.conf || true
+          docker network create en925-dns > /dev/null
+          docker run --rm --network en925-dns alpine:3.20 grep -E 'ExtServers|^nameserver' /etc/resolv.conf || true
+          docker network rm en925-dns > /dev/null || true
 
       # A model agent's Docker trial is refused before its turn where bfx
       # can't run (integrity_unavailable), and a checkout has no bfx: git
