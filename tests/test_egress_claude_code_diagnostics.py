@@ -7,6 +7,9 @@ ANTHROPIC_BASE_URL. ``BODY`` has the top-level fields and value shapes of the
 first main-turn request Claude Code 2.1.280 sent on a subscription login
 (captured with OTEL_LOG_RAW_API_BODIES; text shortened, one tool kept,
 ``betas`` dropped: the SDK sends it as the anthropic-beta header).
+
+Guards the fix from PR #1255 (issue #1254) against the refusal that came with
+the denylist's model-body check in PR #1209.
 """
 
 import json
@@ -66,6 +69,8 @@ def _body(**changes):
 
 
 def test_the_denylist_admits_claude_codes_main_turn_request():
+    """Guards PR #1255: the main-turn body with ``diagnostics`` (null or a
+    string id) passes the denylist on both Messages paths."""
     for diagnostics in (
         {"previous_message_id": None},
         {"previous_message_id": "msg_0"},
@@ -77,6 +82,8 @@ def test_the_denylist_admits_claude_codes_main_turn_request():
 
 
 def test_diagnostics_carries_only_the_previous_message_id():
+    """Guards PR #1255: any other ``diagnostics`` shape is still refused, and
+    the reason names it."""
     for diagnostics in (
         {"previous_message_id": None, "url": "https://paper.test/protected"},
         {"previous_message_id": 1},
@@ -89,6 +96,8 @@ def test_diagnostics_carries_only_the_previous_message_id():
 
 
 def test_a_refused_messages_body_is_logged_with_the_messages_reason():
+    """Guards PR #1255: a body both schemas refuse is logged with the Messages
+    reason, not only the chat-completions one."""
     why = proxy.deny_body_rule(
         POLICY, _body(diagnostics={"previous_message_id": 1}), "/v1/messages"
     )
@@ -97,5 +106,6 @@ def test_a_refused_messages_body_is_logged_with_the_messages_reason():
 
 
 def test_hosted_search_in_the_same_request_is_still_refused():
+    """Guards PR #1255: admitting ``diagnostics`` lets no hosted tool through."""
     body = _body(tools=[{"type": "web_search_20250305", "name": "web_search"}])
     assert proxy.deny_body_rule(POLICY, body, "/v1/messages?beta=true")
