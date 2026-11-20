@@ -79,7 +79,7 @@ python3 -I egress_gateway_server.py serve --state-dir /srv/egress-gateway \
   --listen 0.0.0.0:30100 --public 203.0.113.7:30100
 ```
 
-Run it under a service manager, or detached; it keeps each trial's state in `--state-dir`, so a restart brings its trials back where they were. A sandbox may reach every port of the gateway's address, so open nothing on that host but the gateway's port and ssh; the proxies themselves listen on its loopback. Then point `bench` at its control socket, `<state dir>/control.sock`. From another machine, forward the socket over ssh:
+Run it under a service manager, or detached; it keeps each trial's state in `--state-dir`, so a restart brings its trials back where they were. A sandbox may reach every port of the gateway's address, so open nothing on that host but the gateway's port and ssh; the proxies themselves listen on its loopback. For the same reason, BenchFlow refuses a `--public` address that is private, shared, loopback or link-local. Then point `bench` at its control socket, `<state dir>/control.sock`. From another machine, forward the socket over ssh:
 
 ```bash
 ssh -N -L /tmp/egress-gateway.sock:/srv/egress-gateway/control.sock me@203.0.113.7 &

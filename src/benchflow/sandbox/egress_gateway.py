@@ -78,6 +78,8 @@ REGISTER_TIMEOUT_SEC = server.register_max_sec() + 60.0
 #: A rollout lives at the gateway the sandbox's lifetime plus this.
 TTL_MARGIN_SEC = 3600
 _ROLLOUT_ID_MAX = 128
+#: Whether ``hello`` may name a loopback address (the tests' gateway).
+_LOOPBACK_PUBLIC_OK = False
 
 
 class EgressGatewayError(RuntimeError):
@@ -209,12 +211,22 @@ async def hello(control: str) -> dict[str, Any]:
     public = str(reply.get("public"))
     try:
         host, _ = server.parse_address(public)
-        ipaddress.IPv4Address(host)
+        address = ipaddress.IPv4Address(host)
     except ValueError as exc:
         raise EgressGatewayError(
             f"egress gateway at {control} names {public!r}: a Modal allowlist "
             "needs an IPv4 address and a port"
         ) from exc
+    # The allowlist admits the address on every port: a private, shared,
+    # loopback or link-local one would open a provider-internal host.
+    if not (address.is_global and not address.is_multicast) and not (
+        _LOOPBACK_PUBLIC_OK and address.is_loopback
+    ):
+        raise EgressGatewayError(
+            f"egress gateway at {control} names {public!r}: a Modal allowlist "
+            "needs the gateway's global IPv4 address, not a private, shared, "
+            "loopback, link-local or multicast one"
+        )
     return reply
 
 

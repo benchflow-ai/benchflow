@@ -59,6 +59,7 @@ def gateway(monkeypatch):
     gateway.open()
     gateway.public = f"127.0.0.1:{gateway.address[1]}"
     monkeypatch.setenv(egress_gateway.ENV, str(gateway.control_path))
+    monkeypatch.setattr(egress_gateway, "_LOOPBACK_PUBLIC_OK", True)
     yield gateway
     gateway.close()
     shutil.rmtree(folder, ignore_errors=True)
@@ -264,6 +265,32 @@ async def test_a_gateway_that_does_not_answer_fails_the_create(
     with pytest.raises(egress_gateway.EgressGatewayError):
         await sandbox.start(force_build=False)
     provider.Sandbox.create.aio.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hello_takes_a_global_ipv4_address_only(gateway, monkeypatch):
+    """The allowlist is the gateway's address on every port: a private,
+    shared, loopback, link-local or multicast one (a mistyped ``--public``)
+    is refused before any sandbox.
+
+    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``."""
+    monkeypatch.setattr(egress_gateway, "_LOOPBACK_PUBLIC_OK", False)
+    control = str(gateway.control_path)
+    for public in (
+        "10.0.0.5:443",
+        "172.16.0.1:443",
+        "192.168.1.1:443",
+        "100.64.0.1:443",
+        "127.0.0.1:443",
+        "169.254.169.254:80",
+        "0.0.0.0:443",
+        "224.0.0.1:443",
+    ):
+        gateway.public = public
+        with pytest.raises(egress_gateway.EgressGatewayError, match="global IPv4"):
+            await egress_gateway.hello(control)
+    gateway.public = "8.8.8.8:443"
+    assert (await egress_gateway.hello(control))["public"] == "8.8.8.8:443"
 
 
 @pytest.fixture
