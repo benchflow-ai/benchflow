@@ -188,7 +188,7 @@ def test_each_backend_and_policy(tmp_path, cell, backend, compose, label):
 def test_each_backend_and_policy_with_the_egress_gateway(
     tmp_path, monkeypatch, cell, backend, compose, label
 ):
-    """Guards the PR that adds BENCHFLOW_EGRESS_GATEWAY: with a gateway named,
+    """Guards PR #1253 (adds BENCHFLOW_EGRESS_GATEWAY): with a gateway named,
     Modal admits the denylist (its plan gate and its capability table) and
     nothing else; Daytona and Docker are unchanged. Its second review round:
     the table still refuses a denylist under an [agent] network_mode."""

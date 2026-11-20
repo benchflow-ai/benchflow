@@ -1,6 +1,6 @@
 """The egress gateway (benchflow.sandbox.egress_gateway_server), over real loopback sockets.
 
-Guards the Modal denylist the egress gateway holds (the PR that adds
+Guards the Modal denylist the egress gateway holds (PR #1253, which adds
 ``BENCHFLOW_EGRESS_GATEWAY``): every connection is challenged before a byte
 reaches a proxy, a connection reaches its rollout's phase proxy (BenchFlow's
 own egress proxy, run here), ``deny`` cuts what ``open`` let in, and a
@@ -163,7 +163,7 @@ def test_an_answer_is_good_for_its_own_connection_only(gateway):
     the next connection (by a host that captured it on the way), it is
     refused and reaches no proxy.
 
-    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``
+    Guards the review round of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)
     (mutant M5, a constant nonce, survived the first round's tests)."""
     _register(gateway)
     first, nonce = _challenge(gateway)
@@ -184,8 +184,8 @@ def test_a_long_request_sent_with_the_answer_reaches_the_proxy(gateway):
     a request longer than ``MAX_LINE`` behind a short answer reaches the
     proxy. An answer line that long is still refused.
 
-    Guards the third review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: ``_read_line`` refused any read past
+    Guards the third review round of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): ``_read_line`` refused any read past
     ``MAX_LINE``, however short the line in it."""
     _register(gateway)
     pad = b"".join(b"X-Pad-%d: %s\r\n" % (i, b"a" * 60) for i in range(10))
@@ -203,7 +203,7 @@ def test_a_dead_deny_proxy_s_port_is_never_dialled(state_dir, monkeypatch):
     once another listener (such as another rollout's open proxy) has bound
     the dead proxy's port before the reaper restarts it.
 
-    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``:
+    Guards the review round of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``):
     ``_handshake`` dialled ``Backend.port`` without checking that the proxy
     still ran, and the denied rollout's connection reached the new listener."""
     monkeypatch.setattr(server, "REAP_INTERVAL", 3600.0)
@@ -297,8 +297,8 @@ def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
     listener's: the dead proxy's line for that port, already in the stderr,
     does not count, since a launch reads only what follows its offset.
 
-    Guards the second review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: ``Backend.launch`` took the first ``/healthz``
+    Guards the second review round of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): ``Backend.launch`` took the first ``/healthz``
     200 on the port, and ``deny`` recorded the other listener's port."""
     _register(gateway)
     ports: list[int] = []
@@ -404,8 +404,8 @@ def test_a_rollout_deregistered_during_a_reap_stays_stopped(state_dir, monkeypat
     takes its lock and before its folder is removed, is not relaunched: no
     registry entry, reap or shutdown would reach that proxy again.
 
-    Guards the third review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: ``reap_once`` restarted a dead proxy
+    Guards the third review round of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): ``reap_once`` restarted a dead proxy
     without checking ``Rollout.closed``."""
     monkeypatch.setattr(server, "REAP_INTERVAL", 3600.0)
     clock = Clock()
@@ -444,8 +444,8 @@ def test_a_phase_change_after_deregistration_is_refused(
     """A deny or open that looked its rollout up before a deregistration took
     the rollout's lock is refused, and no proxy is launched for it.
 
-    Guards the third review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: ``_cmd_deny`` and ``_cmd_open`` did not
+    Guards the third review round of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): ``_cmd_deny`` and ``_cmd_open`` did not
     check ``Rollout.closed``, as ``reap_once`` now does."""
     gateway = _gateway(state_dir)
     rollout = None

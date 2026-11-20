@@ -1,6 +1,6 @@
 """A Modal denylist held at the egress gateway (benchflow.sandbox.egress_gateway).
 
-Guards the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``, against main at
+Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``), against main at
 d9c0e5f7, where every Modal trial with a restricted network was refused. The
 Modal SDK is a fake (as in tests/test_modal_gpu.py) and the sandbox's
 commands are scripted, but the gateway is a real one on loopback, running
@@ -267,8 +267,8 @@ async def test_a_start_cancelled_while_registering_deregisters(
     request runs on in its thread) waits for the gateway's answer, so the
     stop deregisters the rollout and nothing of it runs on at the gateway.
 
-    Guards the third review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: the hold was set only once ``register``
+    Guards the third review round of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): the hold was set only once ``register``
     returned, so a cancelled attach stopped the sandbox with no hold and the
     rollout's open proxy ran on to its time to live."""
     entered, release, done = threading.Event(), threading.Event(), threading.Event()
@@ -313,7 +313,7 @@ async def test_hello_takes_a_global_ipv4_address_only(gateway, monkeypatch):
     shared, loopback, link-local, multicast or reserved one (a mistyped
     ``--public``) is refused before any sandbox.
 
-    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``."""
+    Guards the review round of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     monkeypatch.setattr(egress_gateway, "_LOOPBACK_PUBLIC_OK", False)
     control = str(gateway.control_path)
     for public in (
@@ -340,7 +340,7 @@ async def test_hello_refuses_192_0_0_0_24_on_every_python(gateway, monkeypatch, 
     addresses IANA lists as globally reachable (192.0.0.9 and 192.0.0.10),
     whatever ``ipaddress`` says: cpython before 3.12.4 classed most of it global.
 
-    Guards the second review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``."""
+    Guards the second review round of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     if python == "cpython 3.12.3":
         is_global = ipaddress.IPv4Address.is_global.fget
         ietf = ipaddress.IPv4Network("192.0.0.0/24")
@@ -413,7 +413,7 @@ async def test_an_agent_launch_without_the_denylist_marker_is_refused(started):
     the denylist marker is refused before the agent starts; on any other
     sandbox such a launch needs nothing, as on main.
 
-    Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``:
+    Guards the review round of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``):
     ``enforce_agent_egress_firewall`` returned on the missing markers before
     its held dispatch, so ``enforce_agent``'s refusal could never fire."""
     from benchflow.sandbox.lockdown import enforce_agent_egress_firewall

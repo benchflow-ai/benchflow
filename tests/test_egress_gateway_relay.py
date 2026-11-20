@@ -1,7 +1,7 @@
 """Root's relay to the egress gateway (benchflow.sandbox._egress_gateway_relay), run as
 the sandbox runs it (``python3 -I relay.py config.json``) against a stand-in gateway.
 
-Guards the Modal denylist the egress gateway holds (the PR that adds
+Guards the Modal denylist the egress gateway holds (PR #1253, which adds
 ``BENCHFLOW_EGRESS_GATEWAY``): the relay answers the challenge without sending
 the token, forwards everything else byte for byte, closes on a bad challenge,
 and serves a loopback CONNECT itself, the wire shape Gemini's Undici client
