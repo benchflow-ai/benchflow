@@ -133,6 +133,7 @@ SETTINGS: dict[str, list[str]] = {
     "reviewer_open_network": ["--reviewer-open-network"],
     "reviewer_pdf_tools": ["--reviewer-pdf-tools"],
     "reviewer_submitted_file_rule": ["--reviewer-submitted-file-rule"],
+    "reviewer_criterion_evidence": ["--reviewer-criterion-evidence"],
     "sample_seed": ["-n", "1", "--sample-seed", "7"],
     "environment_manifest": ["--environment-manifest", "environment.toml"],
     "state": ["--state", "environment.toml"],

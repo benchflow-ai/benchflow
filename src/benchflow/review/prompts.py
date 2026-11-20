@@ -10,7 +10,9 @@ Available placeholders:
 - ``{trial_path}`` — absolute in-sandbox path of the read-only rollout evidence copy.
 - ``{task_section}`` — pre-rendered paragraph describing the task-definition
   copy (or its absence).
-- ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion.
+- ``{criteria_guidance}`` — one ``- name: guidance`` line per criterion, and
+  with ``ReviewerConfig.criterion_evidence`` each criterion's Evidence line
+  (:func:`~benchflow.review.config.build_criteria_guidance`).
 - ``{result_path}`` / ``{output_schema}`` — output-contract details.
 
 :data:`SUBMITTED_FILE_RULE` is an opt-in paragraph for tasks whose deliverable
@@ -69,6 +71,26 @@ SUBMITTED_FILE_RULE = (
 )
 #: The paragraph of :data:`REVIEW_TEMPLATE` the rule goes before.
 _RULE_ANCHOR = "Work through the criteria one at a time."
+
+#: What a reviewer given the solver's captured workspace is told about it.
+WORKSPACE_SECTION = (
+    "The solver's complete workspace snapshot is at {workspace_path}. "
+    "Read /evidence/workspace-manifest.json for its original working "
+    "directory and path mapping. Inspect the submitted files directly; "
+    "do not rely only on the solver's claims. The snapshot is read-only. "
+    "Declared outputs outside the workspace are under /evidence/artifacts; "
+    "the manifest records their original paths, including missing outputs. "
+    "Use your own /app workspace for notes or reproduction copies."
+)
+#: Said after :data:`WORKSPACE_SECTION` unless the trial copy holds the run's
+#: final result.json (a finished run no review has scored): the in-run
+#: review's trial has no result yet, and a re-review's copy of a scored one
+#: holds the record from before any review.
+NO_FINAL_RESULT_NOTE = (
+    "The parent trial has no final result yet: solver.json is the "
+    "deterministic stage record, and BenchFlow will combine it with "
+    "your judgments after this review completes."
+)
 
 TASK_SECTION_TEMPLATE = """The task the agent attempted is at {task_path}. Read its files first so you know what was required:
 - {task_path}/task.md or {task_path}/instruction.md — what the agent was asked to do
@@ -138,11 +160,16 @@ def render_review_instruction(
     output_schema: dict[str, Any] | None = None,
     workspace_path: str | None = None,
     submitted_file_rule: bool = False,
+    criterion_evidence: bool = False,
+    final_result: bool = False,
 ) -> str:
     """Render the full wrapper-task instruction body.
 
     The template is :func:`review_template` of *template* and
-    *submitted_file_rule*.
+    *submitted_file_rule*; with *criterion_evidence* its guidance carries each
+    criterion's Evidence line. With *workspace_path* the body describes the
+    workspace (:data:`WORKSPACE_SECTION`), followed, unless *final_result*,
+    by :data:`NO_FINAL_RESULT_NOTE`.
     """
 
     body = review_template(
@@ -151,22 +178,15 @@ def render_review_instruction(
         {
             "trial_path": trial_path,
             "task_section": render_task_section(task_path),
-            "criteria_guidance": build_criteria_guidance(rubric),
+            "criteria_guidance": build_criteria_guidance(
+                rubric, evidence=criterion_evidence
+            ),
         }
     )
     if workspace_path is not None:
-        body += (
-            f"\n\nThe solver's complete workspace snapshot is at {workspace_path}. "
-            "Read /evidence/workspace-manifest.json for its original working "
-            "directory and path mapping. Inspect the submitted files directly; "
-            "do not rely only on the solver's claims. The snapshot is read-only. "
-            "Declared outputs outside the workspace are under /evidence/artifacts; "
-            "the manifest records their original paths, including missing outputs. "
-            "Use your own /app workspace for notes or reproduction copies. "
-            "The parent trial has no final result yet: solver.json is the "
-            "deterministic stage record, and BenchFlow will combine it with "
-            "your judgments after this review completes."
-        )
+        body += "\n\n" + WORKSPACE_SECTION.format(workspace_path=workspace_path)
+        if not final_result:
+            body += " " + NO_FINAL_RESULT_NOTE
     output = OUTPUT_TEMPLATE.format_map(
         {
             "result_path": result_path,

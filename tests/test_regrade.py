@@ -247,6 +247,46 @@ async def test_missing_task_and_tampered_workspace_are_not_regradable(job):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("linked", ["evidence", "evidence/artifacts/0000"])
+async def test_a_linked_evidence_bundle_is_not_regradable(job, linked):
+    """Guards PR #1239 (xdotli's review, 11-19): a trial whose ``evidence/``,
+    or an artifact bundle in it, links to another capture would have that
+    capture installed and scored as its own. It is not regradable, and no
+    sandbox starts."""
+    from benchflow.review.evidence import ArtifactEvidence, EvidenceManifest
+
+    job, tasks = job
+    trial = job / "t1__a"
+    other = job / "t2__b" / "evidence"
+    bundle = trial / "evidence"
+    if linked == "evidence":
+        bundle.rename(job.parent / "t1__a-evidence")
+        bundle.symlink_to(other, target_is_directory=True)
+    else:
+        manifest = EvidenceManifest.model_validate_json(
+            (bundle / "manifest.json").read_text()
+        )
+        artifact = ArtifactEvidence(
+            source="/outputs", status="captured", bundle_path="artifacts/0000"
+        )
+        (bundle / "manifest.json").write_text(
+            manifest.model_copy(update={"artifacts": (artifact,)}).model_dump_json()
+        )
+        (bundle / "artifacts").mkdir()
+        (bundle / "artifacts" / "0000").symlink_to(other, target_is_directory=True)
+    calls: list = []
+
+    summary = await aregrade(
+        trial, tasks_dir=tasks, runner=_runner({"t1__a": {"reward": 1.0}}, calls)
+    )
+
+    [row] = summary.trials
+    assert row.status == "not_regradable", row
+    assert "symlink" in row.reason
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_a_multi_step_trial_is_not_regraded(job):
     # Its reward comes from each step's tests; one verifier on the
     # final workspace would score something else.
