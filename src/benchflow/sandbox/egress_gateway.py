@@ -222,7 +222,8 @@ async def hello(control: str) -> dict[str, Any]:
             "needs an IPv4 address and a port"
         ) from exc
     # The allowlist admits the address on every port: a private, shared,
-    # loopback or link-local one would open a provider-internal host.
+    # loopback, link-local, multicast or reserved one would open a host that
+    # is not the gateway, such as a provider-internal one.
     reserved = address in _IETF_PROTOCOL and address not in _IETF_GLOBAL
     if not (address.is_global and not address.is_multicast and not reserved) and not (
         _LOOPBACK_PUBLIC_OK and address.is_loopback

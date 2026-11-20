@@ -87,6 +87,8 @@ export BENCHFLOW_EGRESS_GATEWAY=/tmp/egress-gateway.sock
 bench run tasks/my-denylist-task -a oracle --sandbox modal
 ```
 
+macOS limits a unix socket path to 104 bytes, so forward the control socket to a short path like the one above: a longer one fails with `Bad local forwarding specification` from ssh or `AF_UNIX path too long` from `bench`.
+
 `python3 egress_gateway_server.py status --state-dir /srv/egress-gateway` lists the trials it holds. With the variable unset, a `denylist` task on Modal is refused before any sandbox, as before.
 
 What a trial gets:

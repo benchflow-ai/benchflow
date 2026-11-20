@@ -271,8 +271,8 @@ async def test_a_gateway_that_does_not_answer_fails_the_create(
 @pytest.mark.asyncio
 async def test_hello_takes_a_global_ipv4_address_only(gateway, monkeypatch):
     """The allowlist is the gateway's address on every port: a private,
-    shared, loopback, link-local or multicast one (a mistyped ``--public``)
-    is refused before any sandbox.
+    shared, loopback, link-local, multicast or reserved one (a mistyped
+    ``--public``) is refused before any sandbox.
 
     Guards the review round of the PR that adds ``BENCHFLOW_EGRESS_GATEWAY``."""
     monkeypatch.setattr(egress_gateway, "_LOOPBACK_PUBLIC_OK", False)
