@@ -179,6 +179,25 @@ def test_an_answer_is_good_for_its_own_connection_only(gateway):
     assert row["counters"] == {"conn_open": 1}
 
 
+def test_a_long_request_sent_with_the_answer_reaches_the_proxy(gateway):
+    """The relay sends its answer and the client's first bytes in one write:
+    a request longer than ``MAX_LINE`` behind a short answer reaches the
+    proxy. An answer line that long is still refused.
+
+    Guards the third review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: ``_read_line`` refused any read past
+    ``MAX_LINE``, however short the line in it."""
+    _register(gateway)
+    pad = b"".join(b"X-Pad-%d: %s\r\n" % (i, b"a" * 60) for i in range(10))
+    request = HEALTH[:-2] + pad + b"\r\n"
+    assert len(request) > server.MAX_LINE
+    sock, nonce = _challenge(gateway)
+    answer = f"trial-1 {server.answer(TOKEN, nonce, 'trial-1')}\n".encode()
+    assert _ask(sock, answer + request).startswith(b"HTTP/1.1 200")
+    long, _ = _challenge(gateway)
+    assert _ask(long, b"x" * server.MAX_LINE + b"\n" + HEALTH) == b""
+
+
 def test_a_dead_deny_proxy_s_port_is_never_dialled(state_dir, monkeypatch):
     """In ``deny``, a connection whose deny proxy has exited is refused, even
     once another listener (such as another rollout's open proxy) has bound

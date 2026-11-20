@@ -190,14 +190,16 @@ def _bound(stderr: Path, offset: int, port: int) -> bool:
 
 
 def _read_line(sock: socket.socket, limit: int) -> tuple[str | None, bytes]:
-    r"""One ``\n``-terminated line (without it) and the bytes after it; (None, b'') if none."""
+    r"""One ``\n``-terminated line shorter than *limit* (without it) and the
+    bytes read after it; (None, b'') if none. The bound is the line's alone:
+    the relay sends its first request bytes in the answer's write."""
     data = b""
     while b"\n" not in data:
         chunk = sock.recv(min(65536, limit + 1 - len(data)))
         if not chunk:
             return None, b""
         data += chunk
-        if len(data) > limit:
+        if len(data) > limit and b"\n" not in data[:limit]:
             return None, b""
     line, _, rest = data.partition(b"\n")
     try:
