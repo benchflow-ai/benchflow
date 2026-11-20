@@ -230,26 +230,19 @@ def test_a_dead_deny_proxy_s_port_is_never_dialled(state_dir, monkeypatch):
         gateway.close()
 
 
-def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
-    """A proxy launched on a port another listener already holds (two
-    launches given the same port by bind(0)) is not taken for healthy on that
-    listener's ``/healthz``: the launch moves to a new port, and the denied
-    request never reaches the other listener.
-
-    Guards the second review round of the PR that adds
-    ``BENCHFLOW_EGRESS_GATEWAY``: ``Backend.launch`` took the first ``/healthz``
-    200 on the port, and ``deny`` recorded the other listener's port."""
-    _register(gateway)
+@contextlib.contextmanager
+def _stand_in(port: int = 0):
+    """Another proxy's stand-in on ``127.0.0.1:port``: answers ``/healthz``
+    with 200 and keeps every other request. Yields its port and what it kept."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind(("127.0.0.1", 0))
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", port))
     listener.listen(64)
     listener.settimeout(0.2)
-    taken = listener.getsockname()[1]
     received: list[bytes] = []
     done = threading.Event()
 
     def serve() -> None:
-        # Another proxy's stand-in: answers /healthz, keeps every other request.
         while not done.is_set():
             try:
                 conn, _ = listener.accept()
@@ -268,10 +261,34 @@ def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
-    ports = iter([taken])
-    free_port = server._free_port
-    monkeypatch.setattr(server, "_free_port", lambda: next(ports, None) or free_port())
     try:
+        yield listener.getsockname()[1], received
+    finally:
+        done.set()
+        thread.join(timeout=5)
+        listener.close()
+
+
+def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
+    """A proxy launched on a port another listener already holds (two
+    launches given the same port by bind(0)) is not taken for healthy on that
+    listener's ``/healthz``: the launch moves to a new port, and the denied
+    request never reaches the other listener. The same holds when the reaper
+    relaunches a dead proxy on that proxy's own old port, now another
+    listener's: the dead proxy's line for that port, already in the stderr,
+    does not count, since a launch reads only what follows its offset.
+
+    Guards the second review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: ``Backend.launch`` took the first ``/healthz``
+    200 on the port, and ``deny`` recorded the other listener's port."""
+    _register(gateway)
+    ports: list[int] = []
+    free_port = server._free_port
+    monkeypatch.setattr(
+        server, "_free_port", lambda: ports.pop() if ports else free_port()
+    )
+    with _stand_in() as (taken, received):
+        ports.append(taken)
         reply = _control(gateway, command="deny", rollout="trial-1", policy=_policy())
         assert reply["ok"], reply
         refused = _ask(_connect(gateway), BLOCKED)
@@ -279,10 +296,20 @@ def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
         assert refused.startswith(b"HTTP/1.1 403")
         backend = gateway._rollouts["trial-1"].backends["deny"]
         assert backend.port != taken and backend.alive()
-    finally:
-        done.set()
-        thread.join(timeout=5)
-        listener.close()
+    # The reaper's relaunch, given the port the dead deny proxy itself bound.
+    old, process = backend.port, backend.process
+    assert old is not None and process is not None
+    process.kill()
+    process.wait(timeout=10)
+    stderr = (backend.directory / "deny.stderr").read_text()
+    assert f"egress proxy listening on 127.0.0.1:{old}" in stderr
+    with _stand_in(old) as (_, received):
+        ports.append(old)
+        gateway.reap_once()
+        refused = _ask(_connect(gateway), BLOCKED)
+        assert received == []
+        assert refused.startswith(b"HTTP/1.1 403")
+        assert backend.port != old and backend.alive()
 
 
 def test_a_connection_reaches_the_phase_proxy(gateway):
