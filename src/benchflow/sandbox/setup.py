@@ -262,6 +262,10 @@ def _create_benchflow_modal_environment_class():
                 self.exec,
                 f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
             )
+            from benchflow.sandbox import egress_gateway
+
+            # Last, as ModalSandbox.start: a denylist held at the gateway.
+            await egress_gateway.start_hold(self)
 
     return BenchFlowModalSandbox
 

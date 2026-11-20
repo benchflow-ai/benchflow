@@ -22,6 +22,7 @@ from benchflow.sandbox.providers import (
     ALLOWLIST_UNSUPPORTED_PROVIDERS,
     DENYLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
+    PROVIDERS_BY_NAME,
     SANDBOX_PROVIDER_SET,
     SANDBOX_PROVIDERS,
     SINGLE_CONTAINER_PROVIDERS,
@@ -357,6 +358,16 @@ _RESTRICTED_REMEDY = (
 )
 
 
+def egress_gateway_holds(sandbox: str) -> bool:
+    """Whether *sandbox* holds the denylist at the egress gateway this run
+    names (``BENCHFLOW_EGRESS_GATEWAY``; benchflow.sandbox.egress_gateway):
+    the agent phase's denylist, and a shared verifier's denylist under it."""
+    from benchflow.sandbox.egress_gateway import configured
+
+    provider = PROVIDERS_BY_NAME.get(sandbox)
+    return provider is not None and provider.egress_gateway and configured()
+
+
 def agent_network_policy(config: TaskConfig, *, agent_launches: bool) -> str:
     """The agent phase's network policy, one of the ``*_POLICY`` names."""
     from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
@@ -420,17 +431,22 @@ def network_policy_issue(
     """The refusal :data:`NETWORK_POLICY_REFUSALS` gives this task's agent
     phase on *sandbox*, or None."""
     refused = NETWORK_POLICY_REFUSALS.get(sandbox, frozenset())
+    gateway = egress_gateway_holds(sandbox)
+    if gateway:
+        refused = refused - {DENYLIST_POLICY}
     policy = agent_network_policy(config, agent_launches=agent_launches)
     if policy not in refused:
         # A main with no network at all (an offline sandbox, the oracle or a
         # script) gives its shared verifier none either: nothing to hold. An
         # online sandbox whose [agent] network is no-network still has one
-        # , whatever the agent phase's label.
+        # , whatever the agent phase's label. At the egress gateway, a
+        # denylist sandbox's verifier under its denylist is the phase's.
         verifier = shared_verifier_network(config)
         if (
             config.sandbox.allow_internet is False
             or verifier is None
             or SHARED_VERIFIER_POLICY not in refused
+            or (gateway and policy == DENYLIST_POLICY and verifier == "denylist")
         ):
             return None
         policy = _shared_verifier_label(verifier)
@@ -833,7 +849,11 @@ def _append_network_issue(
             reason=f"network_mode='allowlist' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
-    if mode == NetworkMode.DENYLIST and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS:
+    if (
+        mode == NetworkMode.DENYLIST
+        and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS
+        and not egress_gateway_holds(sandbox)
+    ):
         _issue(
             unsupported,
             path=path,

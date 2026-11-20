@@ -251,6 +251,8 @@ class ModalSandbox(BaseSandbox):
     ) -> object:
         from modal import Sandbox
 
+        from benchflow.sandbox import egress_gateway
+
         return await Sandbox.create.aio(
             app=self._app,
             image=self._image,
@@ -263,6 +265,9 @@ class ModalSandbox(BaseSandbox):
             block_network=not self.task_env_config.allow_internet,
             secrets=secrets_config,
             volumes=volumes_config,
+            # A denylist sandbox held at the egress gateway reaches its
+            # address alone (benchflow.sandbox.egress_gateway).
+            **await egress_gateway.create_kwargs(self),
         )
 
     async def start(self, force_build: bool) -> None:
@@ -339,6 +344,10 @@ class ModalSandbox(BaseSandbox):
         )
         if bfx_volume is not None:
             await self._check_bfx()
+        from benchflow.sandbox import egress_gateway
+
+        # Last: the relay, its proofs and the task's denylist at the gateway.
+        await egress_gateway.start_hold(self)
 
     async def _make_log_dirs(self) -> None:
         """The agent's and verifier's log folders, with their parents.
@@ -411,6 +420,11 @@ class ModalSandbox(BaseSandbox):
             self._sandbox = None
             self._app = None
             self._image = None
+            from benchflow.sandbox import egress_gateway
+
+            # After the terminate: the rollout leaves the gateway, and the
+            # trial folder gets its record.
+            await egress_gateway.detach(self)
 
     @retry(
         stop=stop_after_attempt(2),

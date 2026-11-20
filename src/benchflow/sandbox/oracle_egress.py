@@ -311,6 +311,11 @@ async def arm_oracle_egress(
     Raises ``RuntimeError`` (nothing left armed) when the policy cannot be
     enforced in this sandbox: the oracle never runs unconfined under a policy.
     """
+    from benchflow.sandbox import egress_gateway
+
+    if egress_gateway.held(env) is not None:
+        # Modal: every process of the sandbox under the policy, at the gateway.
+        return await egress_gateway.arm_oracle(env, policy)
     if getattr(env, "rules_by_helper", False) is True:
         return await _arm_every_process(env, policy)
     uid = await _oracle_uid(env, run_as)
@@ -451,6 +456,13 @@ async def _disarm_every_process(
 
 async def _disarm(env: Any, armed: OracleEgress, rollout_dir: Path) -> int:
     """Remove the rules, then stop the proxy; the rules' exit status (-1: no answer)."""
+    from benchflow.sandbox import egress_gateway
+
+    if armed.match == egress_gateway.ORACLE_MATCH:
+        # No rule to remove: the oracle's refusals into the trial folder; the
+        # phase stays deny until the verifier's network replaces it.
+        await egress_gateway.collect_logs(env, rollout_dir)
+        return 0
     if armed.match == "every process":
         return await _disarm_every_process(env, armed, rollout_dir)
     code = -1
