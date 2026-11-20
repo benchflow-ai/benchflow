@@ -20,29 +20,22 @@ import contextlib
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 
 from benchflow.sandbox import _metadata_helper as helper_mod
 from benchflow.sandbox.cloud_metadata import CLOUD_METADATA_V4
 
-
-def mock_sh(endpoints: Iterable[str] = CLOUD_METADATA_V4) -> str:
-    """The mock's script: each of ``endpoints`` on main's loopback, and a
-    server on ports 53 and 80 there."""
-    return (
-        " ".join(
-            f"ip addr add {a}/32 dev lo; "
-            f"ip route replace local {a} dev lo table local src 127.0.0.1;"
-            for a in endpoints
-        )
-        # BusyBox's persistent server keeps the listening socket open between
-        # connects. Restarting nc after each accept races the next endpoint.
-        # Port 53 too: the rules leave DNS open (its root probe checks it).
-        + " nc -lk -p 53 -e /bin/true & exec nc -lk -p 80 -e /bin/true"
+MOCK_SH = (
+    " ".join(
+        f"ip addr add {a}/32 dev lo; "
+        f"ip route replace local {a} dev lo table local src 127.0.0.1;"
+        for a in CLOUD_METADATA_V4
     )
-
-
-MOCK_SH = mock_sh()
+    # BusyBox's persistent server keeps the listening socket open between
+    # connects. Restarting nc after each accept races the next endpoint.
+    # Port 53 too: the rules leave DNS open (its root probe checks it).
+    + " nc -lk -p 53 -e /bin/true & exec nc -lk -p 80 -e /bin/true"
+)
 
 # Prints the endpoints that are local addresses of the namespace it runs in.
 LOCAL_ENDPOINTS_SH = (
