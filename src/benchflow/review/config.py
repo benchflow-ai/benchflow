@@ -343,10 +343,18 @@ def find_task_rubric(task_path: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-#: The ``Evidence:`` sentence of a criterion's description: the text after it,
-#: up to a period that ends the sentence (one followed by white space or the
-#: end), so a file name such as ``paper.pdf`` keeps its dot.
-_EVIDENCE_SENTENCE = re.compile(r"\bEvidence:\s*(.+?)(?:\.(?=\s|$)|$)", re.DOTALL)
+#: Where a criterion's description names its evidence.
+_EVIDENCE_LABEL = re.compile(r"\bEvidence:")
+
+#: A period that may end the Evidence sentence: one followed by white space
+#: or the end of its line, so a file name such as ``paper.pdf`` keeps its dot.
+_SENTENCE_END = re.compile(r"\.(?=\s|$)")
+
+#: Text ending in an abbreviation whose period does not end the sentence:
+#: e.g., i.e., Fig(s)., Eq(s)., Sec(s)., et al. and vs.
+_ABBREVIATION = re.compile(
+    r"(?<![\w.])(?:e\.g|i\.e|figs?|eqs?|secs?|et\s+al|vs)\Z", re.IGNORECASE
+)
 
 #: The line the criteria guidance opens with when it holds an Evidence line.
 CRITERION_EVIDENCE_HEADER = (
@@ -359,13 +367,23 @@ def criterion_evidence(description: str) -> str | None:
     """The records a criterion is judged from, as its *description* names them.
 
     The text of its ``Evidence:`` sentence, white space collapsed, or None
-    when the description has none.
+    when the description has none. The sentence ends at the first period
+    that ends a sentence (:data:`_SENTENCE_END`, not one of
+    :data:`_ABBREVIATION`'s), and at its line break at the latest, so no
+    other line of the description reaches the reviewer.
     """
 
-    match = _EVIDENCE_SENTENCE.search(description)
+    match = _EVIDENCE_LABEL.search(description)
     if match is None:
         return None
-    named = " ".join(match.group(1).split())
+    lines = description[match.end() :].splitlines()
+    line = lines[0] if lines else ""
+    end = len(line)
+    for stop in _SENTENCE_END.finditer(line):
+        if _ABBREVIATION.search(line, 0, stop.start()) is None:
+            end = stop.start()
+            break
+    named = " ".join(line[:end].split()).rstrip(",;: ")
     return named if named.strip(".") else None
 
 

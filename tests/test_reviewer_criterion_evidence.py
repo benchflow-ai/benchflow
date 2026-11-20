@@ -86,7 +86,7 @@ PLAIN_LINES = [
         ),
         (
             "Evidence: paper.pdf;\n  the slots a and b in Statements.lean.",
-            "paper.pdf; the slots a and b in Statements.lean",
+            "paper.pdf",
         ),
         ("Category: using_evidence.", None),
         ("Internal note for rubric authors.", None),
@@ -96,6 +96,59 @@ PLAIN_LINES = [
 )
 def test_the_evidence_sentence_is_read_from_the_description(description, named):
     assert criterion_evidence(description) == named
+
+
+@pytest.mark.parametrize(
+    ("description", "named"),
+    [
+        (
+            "Evidence: the report, e.g. section 2, and fit.py.",
+            "the report, e.g. section 2, and fit.py",
+        ),
+        ("Evidence: Fig. 3 of /app/paper.pdf.", "Fig. 3 of /app/paper.pdf"),
+        (
+            "Evidence: Eq. 4 vs. Sec. 2, i.e. the fit; Smith et al. as cited. "
+            "Grades the fit.",
+            "Eq. 4 vs. Sec. 2, i.e. the fit; Smith et al. as cited",
+        ),
+        ("Evidence: figs. 2-3 of paper.pdf. Grades X.", "figs. 2-3 of paper.pdf"),
+    ],
+)
+def test_an_abbreviation_does_not_end_the_evidence_sentence(description, named):
+    """Guards PR #1239 (xdotli's review, 11-19): the period of e.g., i.e.,
+    Fig., Eq., Sec., et al. and vs. is not a sentence end; it cut the list
+    short (``the report, e.g``, ``Fig``)."""
+    assert criterion_evidence(description) == named
+
+
+def test_a_line_break_ends_the_evidence_sentence():
+    """Guards PR #1239 (xdotli's review, 11-19): a sentence with no period
+    before its line break ran on into the next line, which put the rest of
+    the description, hidden from the reviewer, into its guidance."""
+    description = (
+        "Evidence: /app/results.csv\nThe fit should be weighted by Poisson "
+        "noise; the true value is 37.4."
+    )
+    assert criterion_evidence(description) == "/app/results.csv"
+    for line_break in ("\r\n", "\r", "\u2028"):
+        assert criterion_evidence(description.replace("\n", line_break)) == (
+            "/app/results.csv"
+        )
+    assert criterion_evidence("Evidence:\nThe true value is 37.4.") is None
+    rubric = Rubric.model_validate(
+        {
+            "criteria": [
+                {
+                    "name": "fit",
+                    "description": description,
+                    "guidance": "PASS when the fit is right.",
+                }
+            ]
+        }
+    )
+    guidance = build_criteria_guidance(rubric, evidence=True)
+    assert "  Evidence: /app/results.csv." in guidance.splitlines()
+    assert "Poisson" not in guidance and "37.4" not in guidance
 
 
 def test_the_guidance_is_unchanged_unless_asked():
