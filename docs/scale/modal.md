@@ -55,6 +55,34 @@ sandbox:
 
 Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
+## How a Modal sandbox compares with Docker
+
+**CPUs and memory.** The task's `cpus` and `memory_mb` are the sandbox's hard limits, as Docker's `cpus` and memory limit are. Modal still lets a capped sandbox use more CPU time than its limit on some hosts: 24 busy processes in a `cpus = 12` sandbox got between 13.9 and 31.2 cores' worth (on Docker, at most 12.3). A process that goes over the memory limit makes Modal end the whole sandbox, where Docker kills the one process ([below](#when-modal-ends-a-sandbox)). `BENCHFLOW_MODAL_HARD_LIMITS=0` gives Modal the two numbers as requests alone: Modal's CPU limit is then 16 CPUs above the request, and memory has no limit.
+
+**The image's environment.** Modal sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `BLIS_NUM_THREADS`, `ORT_INTER_OP_NUM_THREADS` and `ORT_INTRA_OP_NUM_THREADS` to the CPU count, `PYTHONHASHSEED=0` and `PYTHONPATH=/pkg/:/root/` in every sandbox, over the image's own values. BenchFlow reads the image's values from the task's Dockerfile (its final stage and the stages that stage is built from), with the task's `env` over them, and gives them back: the thread counts and `PYTHONHASHSEED` when the sandbox is created, `PYTHONPATH` with every command. `PYTHONHASHSEED` and `PYTHONPATH` the image leaves unset are given empty, which Python reads as unset.
+
+Modal cannot unset a variable, so a thread count the image leaves unset keeps Modal's value; set it in the task's Dockerfile to choose it. Values a base image (`FROM`) sets are not read, and a task that names a prebuilt `docker_image` keeps Modal's values unless the task's `env` sets them. Each sandbox logs the names that keep Modal's.
+
+**Open-file and stack limits.** A Modal exec starts with an open-file limit of 1048576 and an unlimited stack; Docker's defaults are 1024 (hard 524288) and 8 MiB (hard unlimited), so glibc's default thread stack is 2 MiB on Modal and 8 MiB on Docker. Set `BENCHFLOW_MODAL_RLIMITS=1` to run every exec with Docker's limits, or `BENCHFLOW_MODAL_RLIMITS=nofile=SOFT:HARD,stack=SOFT:HARD` (the stack in bytes, `unlimited` allowed) for others. Each exec then runs behind `prlimit`, coreutils' `timeout` and `setpriv`, so the image needs util-linux and coreutils, and BenchFlow writes the limits to `/etc/security/limits.d/benchflow-rlimits.conf` for `su` and `runuser`. A sandbox that cannot hold them is refused at start: the image lacks those programs, its own `pam_limits` config sets one of the limits, or its `su` gives other limits. The setting is off by default.
+
+**What stays different.** The hostname is `modal` in every sandbox (Modal has no option to set it, and gVisor refuses `sethostname`); a task that needs an id per sandbox can read `/proc/sys/kernel/random/boot_id`. `/dev/shm` is sized from the host, and the kernel is gVisor's; Modal has no option for either.
+
+## Sandbox lifetime
+
+Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.
+
+Before any sandbox, BenchFlow refuses a task whose budgets do not fit in the lifetime: the agent's `timeout_sec`, the verifier's `timeout_sec` (unless the verifier has a sandbox of its own), and the setup budgets (`setup_timeout_sec` in `[environment]`, 600 s when unset, and each setup command's `timeout_sec`).
+
+## When Modal ends a sandbox
+
+Modal can end a sandbox on its own: when its lifetime runs out, when a process goes over its memory limit (Modal ends the whole sandbox, where Docker kills the one process), and when it evicts or preempts it. The trial then fails as an infrastructure error, with Modal's return code:
+
+```text
+Sandbox not found: Modal ended the sandbox before BenchFlow stopped it (returncode 124: its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)); an exec failed with it
+```
+
+124 is the lifetime; 137 is a kill (the memory limit, an eviction, a preemption, or a terminate from outside BenchFlow).
+
 ## Limits
 
 Modal runs one container per sandbox, so a task with a `docker-compose.yaml` is refused before it starts. Of the network policies, `no-network` works; `allowlist` and `denylist` don't, and tasks that use them are refused.

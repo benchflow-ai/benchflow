@@ -68,6 +68,27 @@ _STDIN_TIMEOUT_SEC = 30.0
 _STDOUT_ENDED = object()
 
 
+async def _platform_end(
+    env: Any, seen_at: str, *, settle: bool = False
+) -> dict[str, Any] | None:
+    """How Modal ended the agent's sandbox itself
+    (``ModalSandbox.check_platform_end``), or None: still running, or no
+    BenchFlow sandbox to ask (a bare process). *settle*: the failure looks
+    like Modal ending the sandbox, so keep asking while it shuts down."""
+    check = getattr(env, "check_platform_end", None)
+    if check is None:
+        return None
+    try:
+        from benchflow.sandbox.modal_impl import PLATFORM_END_SETTLE_SEC
+
+        return await check(
+            seen_at, settle_sec=PLATFORM_END_SETTLE_SEC if settle else 0.0
+        )
+    except Exception:
+        logger.debug("Could not ask whether Modal ended the sandbox", exc_info=True)
+        return None
+
+
 class ModalProcess(LiveProcess):
     """Live stdin/stdout via ``Sandbox.exec`` (bytes streams, no PTY)."""
 
@@ -87,6 +108,8 @@ class ModalProcess(LiveProcess):
         self._stderr_tail = bytearray()
         self._write_lock = asyncio.Lock()
         self._stdout_failure: BaseException | None = None
+        # Why Modal gave no exit code once stdout closed (_exit_code).
+        self._exit_error: BaseException | None = None
         self._stdout_done = False
         # (message, exit code, diagnosis, stderr snippet) once stdout closed.
         self._closed_why: tuple[str, int | None, str, str | None] | None = None
@@ -143,10 +166,19 @@ class ModalProcess(LiveProcess):
         # functions may select what root runs (C8).
         argv = root_launch_argv(script, launch_bash(route))
         argv = [*argv[:-2], "-p", *argv[-2:]]
+        # Behind BENCHFLOW_MODAL_RLIMITS's limits once the sandbox holds them.
+        hold = getattr(self._bf_env, "hold_argv", None)
+        if hold is not None:
+            argv = hold(argv)
         # Modal starts the process with the image's ENV: the loader and
         # start-up names go in empty (``docker exec -e NAME=``), so nothing
         # an image value names loads into root's shell before its first line.
         process_env: dict[str, str | None] = dict.fromkeys(SYSTEM_SHELL_EMPTY_VARS, "")
+        # The image's PYTHONPATH (or empty) over the /pkg/:/root/ Modal sets:
+        # root's shell keeps it for the agent, as a docker exec's (#1245).
+        image_env = getattr(self._bf_env, "exec_process_env", None)
+        if image_env is not None:
+            process_env.update(image_env())
         # The script can hold the agent's command: never log it.
         logger.debug("ModalProcess: starting the agent's exec")
         _transport.sent("Modal", argv)
@@ -161,11 +193,29 @@ class ModalProcess(LiveProcess):
             self._stderr_task = asyncio.create_task(self._drain_stderr())
             if payload is not None:
                 await asyncio.wait_for(self._write(payload), timeout=_STDIN_TIMEOUT_SEC)
-        except BaseException:
+        except BaseException as exc:
             # Includes cancellation and a partial handoff: there is no file to
             # recover; close the owned transport before returning failure.
             await asyncio.shield(self.close())
-            raise
+            from benchflow.sandbox.modal_impl import (
+                ModalSandboxEndedError,
+                modal_ended_message,
+                modal_ending_error,
+            )
+
+            end = (
+                await _platform_end(
+                    self._bf_env, "agent process", settle=modal_ending_error(exc)
+                )
+                if isinstance(exc, Exception)
+                else None
+            )
+            if end is None:
+                raise
+
+            raise ModalSandboxEndedError(
+                modal_ended_message(end, "the agent's process could not start")
+            ) from exc
         logger.info("Modal process started")
 
     # -- stdout -----------------------------------------------------------
@@ -231,7 +281,8 @@ class ModalProcess(LiveProcess):
             return None
         try:
             return await asyncio.wait_for(proc.wait.aio(), timeout=_EXIT_CODE_WAIT_SEC)
-        except Exception:
+        except Exception as exc:
+            self._exit_error = exc
             logger.debug("Modal did not report the agent's exit code", exc_info=True)
         with contextlib.suppress(Exception):
             return await asyncio.wait_for(proc.poll.aio(), timeout=_EXIT_CODE_WAIT_SEC)
@@ -259,22 +310,41 @@ class ModalProcess(LiveProcess):
                 if stderr_text
                 else None
             )
-            if self._stdout_failure is not None:
-                hint = (
-                    f"its stdout stream failed ({self._stdout_failure!r}): the "
-                    "Modal sandbox or the connection to it was probably lost"
+            # A sandbox Modal ended (measured: stdout ends, wait raises
+            # "not found") is the infrastructure's, so its message names no
+            # closed pipe (scoring's "sandbox not found" marker).
+            end = None
+            if self._stdout_failure is not None or rc is None:
+                from benchflow.sandbox.modal_impl import modal_ending_error
+
+                why = self._stdout_failure or self._exit_error
+                end = await _platform_end(
+                    self._bf_env,
+                    "agent process",
+                    settle=why is not None and modal_ending_error(why),
                 )
+            if end is not None:
+                from benchflow.sandbox.modal_impl import modal_ended_message
+
                 diagnosis = "remote_session_killed"
-            elif rc is None:
-                hint = (
-                    "Modal reports no exit code: the sandbox was probably ended "
-                    "(its timeout, a terminate, or a lost worker)"
-                )
-                diagnosis = "remote_session_killed"
+                msg = modal_ended_message(end, "the agent's process ended with it.")
             else:
-                hint = f"the process exited with rc={rc}"
-                diagnosis = "process_exited"
-            msg = f"Modal process closed stdout (rc={rc}): {hint}."
+                if self._stdout_failure is not None:
+                    hint = (
+                        f"its stdout stream failed ({self._stdout_failure!r}): the "
+                        "Modal sandbox or the connection to it was probably lost"
+                    )
+                    diagnosis = "remote_session_killed"
+                elif rc is None:
+                    hint = (
+                        "Modal reports no exit code: the sandbox was probably ended "
+                        "(its timeout, a terminate, or a lost worker)"
+                    )
+                    diagnosis = "remote_session_killed"
+                else:
+                    hint = f"the process exited with rc={rc}"
+                    diagnosis = "process_exited"
+                msg = f"Modal process closed stdout (rc={rc}): {hint}."
             if stderr_snippet:
                 msg += f"\nstderr: {stderr_snippet}"
             self._closed_why = (msg, rc, diagnosis, stderr_snippet)
@@ -361,8 +431,18 @@ class ModalProcess(LiveProcess):
                 TransportClosedDiagnostic,
                 TransportClosedError,
             )
+            from benchflow.sandbox.modal_impl import (
+                modal_ended_message,
+                modal_ending_error,
+            )
 
-            msg = f"Modal process stdin write failed: {exc!r}"
+            end = await _platform_end(
+                self._bf_env, "agent process", settle=modal_ending_error(exc)
+            )
+            if end is not None:
+                msg = modal_ended_message(end, "a write to the agent failed with it")
+            else:
+                msg = f"Modal process stdin write failed: {exc!r}"
             raise TransportClosedError(
                 msg,
                 TransportClosedDiagnostic(
