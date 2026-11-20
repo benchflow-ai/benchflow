@@ -324,8 +324,12 @@ async def test_a_link_re_made_during_grading_leaves_the_reward_unverifiable(
     tmp_path, mode
 ):
     """The oracle's own processes are never marked: only the link is."""
+    # ln without -f: it makes the link again only once it is gone. With -f,
+    # GNU ln replaces a link that is there through a temporary link
+    # (/app/CuXXXXXX) renamed over it, and the scan after grading found
+    # that one too (EN-925: ['/app/CuDodFlb', '/app/grade.log']).
     remake = (
-        "setsid nohup bash -c 'while :; do ln -sfn /logs/verifier/reward.txt "
+        "setsid nohup bash -c 'while :; do ln -sn /logs/verifier/reward.txt "
         "/app/grade.log 2>/dev/null; sleep 0.05; done' </dev/null >/dev/null 2>&1 &\n"
         "sleep 0.5\n"
     )

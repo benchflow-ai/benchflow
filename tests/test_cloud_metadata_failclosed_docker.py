@@ -35,7 +35,7 @@ import pytest
 
 from benchflow.sandbox import _metadata_helper as helper_mod
 from benchflow.sandbox.cloud_metadata import CLOUD_METADATA_V4
-from tests._metadata_mock import MOCK_SH
+from tests._metadata_mock import MOCK_SH, mock_sh
 
 LABEL = "bf.test.mdprobe"
 MOCK_LABEL = "bf.test.mdprobe.mock"
@@ -54,6 +54,16 @@ MOCK_READY = {
 }
 # CAP_NET_ADMIN and CAP_NET_RAW in /proc/<pid>/status's capability masks.
 NET_ADMIN, NET_RAW = 1 << 12, 1 << 13
+# A no-web trial's mock leaves out 168.63.129.16, which is Azure's DNS
+# server as well as its WireServer. Docker's DNS in main forwards a lookup to
+# a host resolver that is not on loopback from main's own namespace, so on a
+# host that resolves through 168.63.129.16 the mock took every lookup, and
+# the model proxy's install in main resolved no name: "could not download
+# uv-x86_64-unknown-linux-gnu.tar.gz (uv 0.13.4) from releases.astral.sh or
+# github.com" (EN-925). The no-web probe connects to no metadata address, and
+# the block's proof connects to 169.254.169.254.
+AZURE_DNS = "168.63.129.16"
+NOWEB_MOCK_SH = mock_sh(a for a in CLOUD_METADATA_V4 if a != AZURE_DNS)
 
 
 def _docker_ready() -> bool:
@@ -197,9 +207,12 @@ class _Mock:
     records main's capability grants from ``docker inspect``. ``delay``
     starts it that many seconds late, as a loaded daemon can."""
 
-    def __init__(self, run_id: str, *, delay: float = 0.0) -> None:
+    def __init__(
+        self, run_id: str, *, delay: float = 0.0, script: str = MOCK_SH
+    ) -> None:
         self.run_id = run_id
         self.delay = delay
+        self.script = script
         self.main = ""
         self.cap_add: list[str] = []
         self.cap_drop: list[str] = []
@@ -282,7 +295,7 @@ class _Mock:
                     helper_mod.HELPER_BASE,
                     "sh",
                     "-c",
-                    MOCK_SH,
+                    self.script,
                 ],
                 capture_output=True,
                 timeout=120,
@@ -409,7 +422,8 @@ def _run(
         "BENCHFLOW_PROVIDER_BASE_URL=http://127.0.0.1:9/v1",
         *flags,
     ]
-    with _Mock(run_id, delay=mock_delay) as mock:
+    script = NOWEB_MOCK_SH if no_web else MOCK_SH
+    with _Mock(run_id, delay=mock_delay, script=script) as mock:
         done = subprocess.run(
             command,
             env=env,
