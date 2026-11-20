@@ -67,16 +67,20 @@ HELPER_BASE = (
     "294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
 )
 #: The firewall tools and the netfilter libraries they load, at the versions
-#: the pinned base's repository had when this recipe was checked. A
-#: repository that has moved on fails the build, and the block installs in
-#: main. iptables-legacy gives the script's tool choice the same fallback
-#: root has in a Debian main, for hosts where nf_tables does not work.
+#: the pinned base's repository had when this recipe was checked. The
+#: repository keeps only each package's latest build, so one that has moved
+#: on fails the build, and Docker then refuses every start that needs a rule
+#: in main's namespace: every task that keeps the cloud metadata block
+#: (``DockerSandbox._decide_rules_by_helper``). A pin the repository drops is
+#: moved here (openssl 3.5.9-r0 to 3.5.9-r1 on 18 November 2026).
+#: iptables-legacy gives the script's tool choice the same fallback root has
+#: in a Debian main, for hosts where nf_tables does not work.
 HELPER_PACKAGES = (
     # The verifier phase's egress proxy runs in its own container from this
     # image (_egress_container): its Python and the OpenSSL it mints
     # leaf certificates with.
     "python3=3.14.10-r1",
-    "openssl=3.5.9-r0",
+    "openssl=3.5.9-r1",
     "iptables=1.8.13-r0",
     "iptables-legacy=1.8.13-r0",
     "nftables=1.1.6-r1",
