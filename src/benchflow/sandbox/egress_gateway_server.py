@@ -908,6 +908,10 @@ class Gateway:
                 self._event("expired", rollout=rollout.rid, counters=counters)
                 continue
             with rollout.lock:
+                if rollout.closed:
+                    # Deregistered since the snapshot: its folder may not
+                    # be removed yet, but nothing would stop a relaunch.
+                    continue
                 for name, backend in rollout.backends.items():
                     policy = OPEN_POLICY if name == "open" else rollout.deny_policy
                     if backend.alive() or policy is None:

@@ -399,6 +399,44 @@ def test_a_rollout_ends_at_its_time_to_live_and_at_deregister(state_dir):
         gateway.close()
 
 
+def test_a_rollout_deregistered_during_a_reap_stays_stopped(state_dir, monkeypatch):
+    """A rollout deregistered after the reaper's snapshot, before the reaper
+    takes its lock and before its folder is removed, is not relaunched: no
+    registry entry, reap or shutdown would reach that proxy again.
+
+    Guards the third review round of the PR that adds
+    ``BENCHFLOW_EGRESS_GATEWAY``: ``reap_once`` restarted a dead proxy
+    without checking ``Rollout.closed``."""
+    monkeypatch.setattr(server, "REAP_INTERVAL", 3600.0)
+    clock = Clock()
+    gateway = _gateway(state_dir, clock)
+    backend = None
+    try:
+        _register(gateway)
+        rollout = gateway._rollouts["trial-1"]
+        backend = rollout.backends["open"]
+        assert backend.process is not None
+        backend.process.kill()
+        backend.process.wait(timeout=10)
+
+        def deregistered_in_the_gap() -> float:
+            # reap_once reads the clock once, after its snapshot.
+            gateway.clock = clock
+            with monkeypatch.context() as patch:
+                patch.setattr(server.shutil, "rmtree", lambda *a, **k: None)
+                gateway._drop(rollout)
+            return clock()
+
+        gateway.clock = deregistered_in_the_gap
+        gateway.reap_once()
+        assert rollout.closed and "trial-1" not in gateway._rollouts
+        assert not backend.alive()
+    finally:
+        if backend is not None:
+            backend.stop()
+        gateway.close()
+
+
 @pytest.mark.parametrize(
     "policy",
     [
