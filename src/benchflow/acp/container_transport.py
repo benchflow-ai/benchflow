@@ -164,7 +164,11 @@ class ContainerTransport(Transport):
         try:
             await self._cp.close()
             stderr = getattr(self._cp, "stderr_tail", "")
-            if isinstance(stderr, str) and stderr and self._agent_log_path:
+            # A blank tail is no output: `docker compose exec -i` prints a
+            # lone newline when the terminate above lands before the agent
+            # has exited on its closed stdin, and that race decided whether
+            # agent/<agent>.txt existed (EN-925).
+            if isinstance(stderr, str) and stderr.strip() and self._agent_log_path:
                 if self._agent_log_file is None:
                     self._agent_log_file = self._agent_log_path.log()
                 self._agent_log_file.write(redact_trajectory_text(stderr))
