@@ -57,7 +57,7 @@ Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
 ## Limits
 
-Modal runs one container per sandbox, so a task with a `docker-compose.yaml` is refused before it starts. Of the network policies, `no-network` works; `allowlist` and `denylist` don't, and tasks that use them are refused.
+Modal runs one container per sandbox, so a task with a `docker-compose.yaml` is refused before it starts. Of the network policies, `no-network` works. `denylist` works behind an egress gateway you run (below); without one, tasks that use it are refused. `allowlist` doesn't work, and tasks that use it are refused.
 
 BenchFlow also refuses to start a sandbox where a system library is writable by anyone but root, since the verifier later runs as root there. On Modal, our half-life task's image hit this:
 
@@ -67,3 +67,41 @@ next: if the task's workdir holds that path, give the task a workdir of its own;
 ```
 
 The same task runs on Docker and Daytona. Follow the message's fix in the task's Dockerfile.
+
+## A task's denylist: the egress gateway
+
+A Modal sandbox runs under gVisor, which has no firewall BenchFlow can add rules to, so the rules that hold the agent to the egress proxy on Docker can't go in. What Modal does enforce, outside the sandbox and for root too, is a list of addresses a sandbox may reach, set when it is created. The egress gateway uses that: each sandbox of a `denylist` task may reach the gateway's address and nothing else, and BenchFlow's egress proxy runs on the gateway instead of in the sandbox.
+
+Run the gateway on a host with a fixed public IPv4 address and one TCP port open to the internet. It needs `python3` 3.10 or newer and `openssl`, not BenchFlow; copy the one file from the package:
+
+```bash
+python3 -I egress_gateway_server.py serve --state-dir /srv/egress-gateway \
+  --listen 0.0.0.0:30100 --public 203.0.113.7:30100
+```
+
+Run it under a service manager, or detached; it keeps each trial's state in `--state-dir`, so a restart brings its trials back where they were. A sandbox may reach every port of the gateway's address, so open nothing on that host but the gateway's port and ssh; the proxies themselves listen on its loopback. Then point `bench` at its control socket, `<state dir>/control.sock`. From another machine, forward the socket over ssh:
+
+```bash
+ssh -N -L /tmp/egress-gateway.sock:/srv/egress-gateway/control.sock me@203.0.113.7 &
+export BENCHFLOW_EGRESS_GATEWAY=/tmp/egress-gateway.sock
+bench run tasks/my-denylist-task -a oracle --sandbox modal
+```
+
+`python3 egress_gateway_server.py status --state-dir /srv/egress-gateway` lists the trials it holds. With the variable unset, a `denylist` task on Modal is refused before any sandbox, as before.
+
+What a trial gets:
+
+- Each sandbox of a `denylist` task is created able to reach the gateway's address alone. Once it starts, BenchFlow registers it with the gateway and starts a relay as root on `127.0.0.1:18628`, the egress proxy's port, so the proxy variables the agent, the oracle and `test.sh` get are the ones they get on Docker. Before the trial's other steps, root proves that a direct connection fails, that the relay answers, and that a URL the task blocks is refused. If the gateway doesn't answer, or any of these fails, the sandbox is stopped and the trial ends with an error, unscored; nothing runs unconfined.
+- BenchFlow's own installs run with no policy. From each agent connection on, every connection out of the sandbox gets the task's denylist: the agent's, the oracle's, and the model proxy's, which runs in the sandbox as on Daytona.
+- The verifier gets the task's denylist (a task's verifier inherits it), or no policy when its `network_mode` is `public`. Its refusals count as they do on Docker.
+- `trajectory/egress_denylist.jsonl` and `egress_allowed.jsonl` hold the proxy's refusals and the requests it let out during each connection. `modal-egress.json` in the trial folder records the gateway, the allowed address, each change of policy and each proof.
+
+How it differs from Docker:
+
+- Every process in the sandbox is under the policy, root included. A program that ignores `HTTP_PROXY` and `HTTPS_PROXY` (raw sockets, git over ssh, UDP) has no network at all, where on Docker root keeps it.
+- The model proxy is under the policy too: a denylist that names your model provider's host blocks the model, and a model endpoint given as an IP address or on a private network is refused.
+- The proxy reads the sandbox's HTTPS traffic on the gateway, model calls and their keys included. Run the gateway on a host you would trust with them.
+- Every byte a sandbox exchanges with the internet crosses the gateway, and its cloud bills that traffic. Put the gateway in the region Modal runs your sandboxes, and size it to the run's concurrency (each trial runs one or two proxy processes there).
+- One gateway is a single point of failure for its run.
+
+Still refused on Modal, gateway or not: `allowlist` (Modal's resolver answers every DNS name inside the sandbox, so an allowlist's DNS filter can't hold), `no-network` with a model agent, a verifier's own `no-network` or `allowlist` in the agent's sandbox, and the no-web policy.
