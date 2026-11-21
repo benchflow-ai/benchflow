@@ -760,3 +760,37 @@ async def test_a_sandbox_modal_ends_during_the_proofs_is_deregistered(
         (sandbox.rollout_paths.rollout_dir / egress_gateway.RECORD_NAME).read_text()
     )
     assert record["events"][-1]["event"] == "deregistered"
+
+
+@pytest.mark.asyncio
+async def test_an_end_modal_made_at_the_agents_launch_proof_is_infrastructure(
+    gateway, started, provider
+):
+    """Modal ends the sandbox while the agent's launch proof runs: the proof
+    fails, and its error, which keeps the exec's, is classed as #1248 classes
+    an end Modal made (an infrastructure error), not as a sandbox let out."""
+    from benchflow._utils.scoring import INFRA_ERROR, classify_error
+    from benchflow.sandbox.egress_denylist import denylist_agent_env
+    from benchflow.sandbox.lockdown import enforce_agent_egress_firewall
+
+    policy = egress_denylist_for(started.task_env_config)
+    await start_egress_denylist(
+        started, "agent", policy, model_gateway_url="http://127.0.0.1:4000"
+    )
+    remote = provider.Sandbox.create.aio.return_value
+    remote.poll.aio.return_value = 137
+    remote.exec = SimpleNamespace(
+        aio=AsyncMock(side_effect=RuntimeError("Modal Sandbox is shutting down."))
+    )
+
+    async def real_exec(command, **kwargs):
+        return await ModalSandbox.exec(started, command, **kwargs)
+
+    started.exec.real = ("BF egress-gateway-probe", real_exec)
+    agent_env = denylist_agent_env(
+        {"BENCHFLOW_PROVIDER_BASE_URL": "http://127.0.0.1:4000"}, policy
+    )
+    with pytest.raises(RuntimeError, match="not held in the deny phase") as raised:
+        await enforce_agent_egress_firewall(started, "agent", agent_env)
+    assert started.platform_end is not None
+    assert classify_error(str(raised.value)) == INFRA_ERROR
