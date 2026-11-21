@@ -266,6 +266,10 @@ def _create_benchflow_modal_environment_class():
             # BENCHFLOW_MODAL_RLIMITS (opt-in): every later exec runs with
             # its limits (ModalSandbox._hold_rlimits).
             await self._hold_rlimits()
+            from benchflow.sandbox import egress_gateway
+
+            # Last, as ModalSandbox.start: a denylist held at the gateway.
+            await egress_gateway.start_hold(self)
 
     return BenchFlowModalSandbox
 

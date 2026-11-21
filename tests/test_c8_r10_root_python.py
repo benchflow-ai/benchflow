@@ -91,6 +91,11 @@ NOT_ROOT_HELPERS = {
     # Root's interpreter picked in the sandbox as root_python_sh picks it:
     # the kit's Python, the image's only where no kit exists (PT-C8-CONF-2).
     ("sandbox/egress_denylist.py", "_setup_cmd"): "root_python_pick_sh (the proxy)",
+    # The egress gateway's relay (Modal), picked the same way as the proxy's.
+    (
+        "sandbox/egress_gateway.py",
+        "_relay_start_cmd",
+    ): "root_python_pick_sh (the relay)",
     # The loopback OpenTelemetry receiver and its health probe, picked the
     # same way as the proxy's.
     ("sandbox/agent_otel.py", "_start_command"): "root_python_pick_sh (OTel receiver)",

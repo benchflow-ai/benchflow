@@ -94,6 +94,32 @@ REFUSED = {
 }
 #: Refused on Modal by its capability table (validate_task_runtime_support).
 REFUSED_BY_MODAL_TABLE = {"allowlist", "denylist"}
+#: With BENCHFLOW_EGRESS_GATEWAY set, Modal holds the denylist at the egress
+#: gateway (benchflow.sandbox.egress_gateway); every other refusal stands.
+REFUSED_WITH_GATEWAY = {**REFUSED, "modal": REFUSED["modal"] - {"denylist"}}
+GATEWAY_ENV = "BENCHFLOW_EGRESS_GATEWAY"
+#: The gateway cells: an [agent] network_mode leaves the agent's phase off the
+#: sandbox's denylist, so Modal's capability table still refuses that denylist.
+GATEWAY_CELLS = {
+    **CELLS,
+    "denylist-agent-none-separate-verifier": (
+        '[agent]\nnetwork_mode = "no-network"\n[environment]\n'
+        'network_mode = "denylist"\nblocked_hosts = ["example.org"]\n'
+        '[verifier]\nsandbox_mode = "separate"\n',
+        False,
+        NO_NETWORK_SCRIPTED_POLICY,
+    ),
+}
+REFUSED_BY_MODAL_TABLE_WITH_GATEWAY = {
+    "allowlist",
+    "denylist-agent-none-separate-verifier",
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_egress_gateway(monkeypatch):
+    """The refusals without a gateway are main's; a test that names one sets it."""
+    monkeypatch.delenv(GATEWAY_ENV, raising=False)
 
 
 def _config(toml: str) -> TaskConfig:
@@ -146,6 +172,93 @@ def test_each_backend_and_policy(tmp_path, cell, backend, compose, label):
 
         table = validate_task_runtime_support(config, sandbox="modal")
         assert bool(table) is (cell in REFUSED_BY_MODAL_TABLE), table
+
+
+@pytest.mark.parametrize("cell", sorted(GATEWAY_CELLS))
+@pytest.mark.parametrize(
+    ("backend", "compose", "label"),
+    [
+        ("daytona", False, "Daytona"),
+        ("daytona", True, "Daytona (Docker in Docker)"),
+        ("modal", False, "Modal"),
+        ("docker", False, None),
+    ],
+    ids=["daytona", "daytona-dind", "modal", "docker"],
+)
+def test_each_backend_and_policy_with_the_egress_gateway(
+    tmp_path, monkeypatch, cell, backend, compose, label
+):
+    """Guards PR #1253 (adds BENCHFLOW_EGRESS_GATEWAY): with a gateway named,
+    Modal admits the denylist (its plan gate and its capability table) and
+    nothing else; Daytona and Docker are unchanged. Its second review round:
+    the table still refuses a denylist under an [agent] network_mode."""
+    monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
+    toml, launches, policy = GATEWAY_CELLS[cell]
+    config = _config(toml)
+    issue = network_policy_issue(
+        config,
+        sandbox=backend,
+        agent_launches=launches,
+        task_dir=_task_dir(tmp_path, compose),
+    )
+    if cell in REFUSED_WITH_GATEWAY.get(backend, ()):
+        assert issue is not None
+        assert issue.reason.startswith(
+            f"the task's network policy ({policy}) is not held on {label}: "
+        )
+    else:
+        assert issue is None
+    if backend == "modal":
+        from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+        table = validate_task_runtime_support(config, sandbox="modal")
+        assert bool(table) is (cell in REFUSED_BY_MODAL_TABLE_WITH_GATEWAY), table
+
+
+#: (task.toml lines under a denylist sandbox, the verifier label refused or None).
+GATEWAY_VERIFIER_CELLS = {
+    "inherited": ("", None),
+    "public": ('[verifier]\nnetwork_mode = "public"\n', None),
+    "no-network": ('[verifier]\nnetwork_mode = "no-network"\n', "no-network"),
+    "allowlist": (
+        '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["pypi.org"]\n',
+        "allowlist",
+    ),
+}
+
+
+@pytest.mark.parametrize("launches", [True, False], ids=["model-agent", "oracle"])
+@pytest.mark.parametrize("cell", sorted(GATEWAY_VERIFIER_CELLS))
+def test_a_denylist_tasks_shared_verifier_at_the_egress_gateway(
+    tmp_path, monkeypatch, cell, launches
+):
+    """The verifier of a denylist task inherits its denylist (0.10; a task
+    cannot declare a verifier denylist of its own): at the gateway it is the
+    phase's, held. A shared verifier's no-network or allowlist is still
+    refused, as on main, and Daytona refuses them all.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
+    monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
+    toml, refused = GATEWAY_VERIFIER_CELLS[cell]
+    config = _config(
+        '[environment]\nnetwork_mode = "denylist"\nblocked_hosts = ["example.org"]\n'
+        + toml
+    )
+    task_dir = _task_dir(tmp_path, False)
+    issue = network_policy_issue(
+        config, sandbox="modal", agent_launches=launches, task_dir=task_dir
+    )
+    if refused is None:
+        assert issue is None, issue
+    else:
+        assert issue is not None
+        assert issue.reason.startswith(
+            f"the task's network policy ({refused}, the verifier's) is not held on Modal: "
+        )
+    daytona = network_policy_issue(
+        config, sandbox="daytona", agent_launches=launches, task_dir=task_dir
+    )
+    assert daytona is not None
 
 
 @pytest.fixture

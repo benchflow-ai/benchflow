@@ -15,7 +15,7 @@ These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 do
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
 | [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 48 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 128 |
-| [Warnings a run logs](#warnings-a-run-logs) | 461 |
+| [Warnings a run logs](#warnings-a-run-logs) | 464 |
 
 ## Causes a run names
 
@@ -1577,6 +1577,9 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.docker` | ``Snapshot image … is still in use (kept container?); remove it with `docker image rm …` when done`` |
 | `benchflow.sandbox.docker` | `Snapshot image … removal failed: …` |
 | `benchflow.sandbox.egress_denylist` | `Egress log … not collected: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `Egress log … not collected: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: rollout … not deregistered: …` (unreleased) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: … not written: …` (unreleased) |
 | `benchflow.sandbox.env_layers` | `Not reusing …: no BenchFlow build on this machine made it; building the … layer again` |
 | `benchflow.sandbox.env_layers` | `Pruning build records of layer … failed: …` |
 | `benchflow.sandbox.env_layers` | `Pruning old … layers failed: …` |

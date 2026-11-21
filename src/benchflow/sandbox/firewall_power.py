@@ -305,6 +305,7 @@ def firewall_rules_hold_agent(
 ) -> tuple[str, ...]:
     """The firewall rules of BenchFlow's that will hold the agent user in
     ``env``, by name; empty when none does (the check is then not needed)."""
+    from benchflow.sandbox import egress_gateway
     from benchflow.sandbox._compose import compose_needs_net_admin
     from benchflow.sandbox.lockdown import (
         EGRESS_ALLOWLIST_ENV,
@@ -312,6 +313,10 @@ def firewall_rules_hold_agent(
         _guard_needed_here,
     )
 
+    if egress_gateway.held(env) is not None:
+        # Held at the egress gateway: Modal's allowlist is outside the
+        # sandbox, and no uid rule or NET_ADMIN is in it to take away.
+        return ("the cloud metadata block",) if cloud_metadata_armed else ()
     holds: list[str] = []
     if agent_env.get(EGRESS_DENYLIST_ENV) == "1":
         holds.append(

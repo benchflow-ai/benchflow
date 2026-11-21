@@ -1445,6 +1445,10 @@ async def _proxy_refusals(env: Any, armed: VerifierNetwork) -> list[dict[str, An
         from benchflow.sandbox.egress_denylist import in_sandbox_refusals
 
         found = (await in_sandbox_refusals(env) or [])[armed.proxy_baseline :]
+    elif armed.proxy == "egress gateway":
+        from benchflow.sandbox.egress_gateway import refusals_since_arm
+
+        found = await refusals_since_arm(env)
     else:
         return []
     return [e for e in found if e.get("action") == "blocked"]
