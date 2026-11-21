@@ -684,9 +684,14 @@ async def test_the_relay_and_its_proofs_run_behind_the_held_rlimits(
 ):
     """With ``BENCHFLOW_MODAL_RLIMITS``, both launchers hold the limits before
     the gateway's attach: the relay starts, and every proof runs, behind the
-    held prefix (prlimit, timeout, setpriv), as each exec does. The relay
-    outlives its launch: ``setpriv --pdeathsig`` is the launch shell's, and
-    a forked child does not inherit it."""
+    held prefix (prlimit, timeout, setpriv), as each exec does.
+
+    Checks order and wrapping only. That the relay outlives its launch under
+    gVisor is shown by the live Modal run at dee2c46d (relay 200 at start and
+    at the verifier, 66 held execs).
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``) with PR #1248's
+    ``BENCHFLOW_MODAL_RLIMITS``."""
     monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
     sandbox = make_sandbox(factory=factory)
     script = sandbox.exec
@@ -713,7 +718,10 @@ async def test_a_sandbox_refused_for_its_rlimits_never_reaches_the_gateway(
     gateway, make_sandbox, provider, monkeypatch
 ):
     """The limits are held, or refused, before the attach: a sandbox that
-    cannot hold them is ended with no rollout at the gateway."""
+    cannot hold them is ended with no rollout at the gateway.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``) with PR #1248's
+    ``BENCHFLOW_MODAL_RLIMITS``."""
     monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
     sandbox = make_sandbox()
     sandbox.exec.su_check = "== su root rc=1\n"
