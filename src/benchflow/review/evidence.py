@@ -564,6 +564,9 @@ def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
     excluded = {exclusion.original_path for exclusion in manifest.exclusions}
     if any(entry.original_path in excluded for entry in manifest.entries):
         raise EvidenceError("Evidence manifest both captures and excludes a path")
+    # The root itself, before resolving: a linked root is another folder.
+    if stat.S_ISLNK(workspace.lstat().st_mode):
+        raise EvidenceError("Workspace evidence root is a symlink")
     root = workspace.resolve(strict=True)
     actual = {path.relative_to(root).as_posix(): path for path in root.rglob("*")}
     expected = {entry.path for entry in manifest.entries}
@@ -592,6 +595,27 @@ def validate_workspace(workspace: Path, manifest: EvidenceManifest) -> None:
             )
         if not valid:
             raise EvidenceError(f"Workspace evidence mismatch: {entry.path}")
+
+
+def refuse_linked_bundle(bundle: Path, manifest: EvidenceManifest) -> None:
+    """Refuse a bundle when any name its upload reads through is a symlink:
+    its manifest and workspace, and each captured artifact's folder (every
+    level), manifest and workspace. A link there may lead to another capture,
+    which would validate against its own manifest. *bundle* itself is the
+    caller's to check."""
+    names = ["manifest.json", "workspace"]
+    for artifact in manifest.artifacts:
+        if artifact.bundle_path is None:
+            continue
+        parts = PurePosixPath(artifact.bundle_path).parts
+        names += ["/".join(parts[: i + 1]) for i in range(len(parts))]
+        names += [
+            f"{artifact.bundle_path}/manifest.json",
+            f"{artifact.bundle_path}/workspace",
+        ]
+    for name in dict.fromkeys(names):
+        if (bundle / name).is_symlink():
+            raise EvidenceError(f"Evidence bundle path is a symlink: {name}")
 
 
 async def root_python_command(env: object, args: Sequence[str]) -> str:

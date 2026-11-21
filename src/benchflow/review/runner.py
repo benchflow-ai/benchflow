@@ -49,6 +49,7 @@ from benchflow.review.wrapper import (
     assemble_review_task,
     remove_review_task,
     reviewer_setup_packages,
+    shows_final_result,
 )
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 
@@ -507,6 +508,24 @@ async def _review_one(
     except ReviewRubricError as exc:
         trial.error = str(exc)
         return trial
+    # The captured workspace, as the in-run review gets it (finish_review);
+    # run_review checks it against its manifest before any upload. Only the
+    # rollout's own evidence/ folder: a link there may lead to another capture.
+    bundle = rollout_dir / "evidence"
+    manifest_path = bundle / "manifest.json"
+    workspace_bundle: Path | None = None
+    if bundle.is_symlink() or manifest_path.is_symlink():
+        trial.notes.append(
+            "workspace evidence skipped: evidence/ or evidence/manifest.json "
+            "is a symlink, so it may be another rollout's capture"
+        )
+    elif manifest_path.is_file():
+        workspace_bundle = bundle
+    else:
+        trial.notes.append(
+            "workspace evidence skipped: the rollout holds no captured "
+            "workspace (evidence/manifest.json)"
+        )
     reviewed = await run_review(
         rollout_dir,
         task_dir,
@@ -517,7 +536,9 @@ async def _review_one(
         deterministic_pass=source_deterministic_pass(
             _read_json(rollout_dir / "result.json") or {}
         ),
+        workspace_bundle=workspace_bundle,
         template=template,
+        final_result=shows_final_result(rollout_dir),
     )
     reviewed.notes[:0] = trial.notes
     return reviewed
@@ -534,13 +555,17 @@ async def run_review(
     workspace_bundle: Path | None = None,
     *,
     template: str | None = None,
+    final_result: bool = False,
 ) -> TrialReview:
     """Run one reviewer over admitted evidence, independently of parent persistence.
 
     Automatic scoring passes the deterministic verdict explicitly and can call
     this before its final result exists. Detached review resolves untrusted task
-    provenance before calling the same operation. Child artifacts are durable;
-    only the generated wrapper and its evidence upload copies are temporary.
+    provenance before calling the same operation, and says with *final_result*
+    when the rollout is a finished run no review has scored
+    (:func:`~benchflow.review.wrapper.shows_final_result`). Child artifacts are
+    durable; only the generated wrapper and its evidence upload copies are
+    temporary.
     """
     from benchflow import run as run_rollout
     from benchflow.acp.selection import review_rollout
@@ -574,6 +599,8 @@ async def run_review(
             environment=config.environment,
             pdf_tools=config.pdf_tools,
             submitted_file_rule=config.submitted_file_rule,
+            criterion_evidence=config.criterion_evidence,
+            final_result=final_result,
         )
         from benchflow.review.persistence import write_json_atomic
         from benchflow.review.probe import (
@@ -639,6 +666,7 @@ async def run_review(
             else None,
             "pdf_tools": config.pdf_tools,
             "submitted_file_rule": config.submitted_file_rule,
+            "criterion_evidence": config.criterion_evidence,
             # The template (the rule in it or not) and the instruction the
             # reviewer got, rendered from it for this rollout.
             "template_sha256": _sha256(
@@ -875,10 +903,12 @@ async def run_reviews(
     submitted_file_rule: bool = False,
     reasoning_effort: str | None = None,
     idle_timeout_sec: int | None = None,
+    criterion_evidence: bool = False,
 ) -> tuple[ReviewReport, Path]:
     """Review rollout(s) at ``path`` and return the report plus its location.
 
-    *pdf_tools* and *submitted_file_rule* are those of :class:`ReviewerConfig`.
+    *pdf_tools*, *submitted_file_rule* and *criterion_evidence* are those of
+    :class:`ReviewerConfig`.
     """
 
     path = Path(path).resolve()
@@ -922,6 +952,7 @@ async def run_reviews(
         concurrency=max(1, concurrency),
         pdf_tools=pdf_tools,
         submitted_file_rule=submitted_file_rule,
+        criterion_evidence=criterion_evidence,
     )
     semaphore = asyncio.Semaphore(max(1, concurrency))
 

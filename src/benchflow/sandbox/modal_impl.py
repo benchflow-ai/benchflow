@@ -8,11 +8,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import logging
 import math
 import os
 import re
 import shlex
+import time
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +35,7 @@ from benchflow._runtime_tree import KIT_BIN
 from benchflow._utils.modal_gpu import modal_gpu_request
 from benchflow.sandbox import _transport
 from benchflow.sandbox._base import (
+    IMAGE_ENV_PREFIX,
     STARTUP_ENV_ARGV,
     SYSTEM_PATH,
     SYSTEM_SHELL_EMPTY_VARS,
@@ -56,6 +60,7 @@ from benchflow.sandbox._dir_archive import (
     source_mode,
     write_archive,
 )
+from benchflow.sandbox._dockerfile_env import final_stage_env
 from benchflow.sandbox._download import private_download
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox._exec_receipt import receipt_exec
@@ -71,6 +76,8 @@ from benchflow.task.paths import RolloutPaths, SandboxPaths
 
 if TYPE_CHECKING:
     from benchflow.sandbox.process import LiveProcess
+
+logger = logging.getLogger(__name__)
 
 #: Inert Secret names for the values a Modal command re-exports by name
 #:: no loader or shell reads them.
@@ -126,6 +133,359 @@ def modal_exec_timeout(timeout_sec: float | None) -> int | None:
     return max(1, math.ceil(timeout_sec))
 
 
+#: ``0`` (or off, false, no): give Modal the task's CPUs and memory as
+#: requests alone, as BenchFlow did before #1245.
+HARD_LIMITS_ENV = "BENCHFLOW_MODAL_HARD_LIMITS"
+_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
+
+def modal_resource(
+    value: float | None, environ: Mapping[str, str] | None = None
+) -> float | tuple[float, float] | None:
+    """``Sandbox.create``'s ``cpu`` or ``memory`` for the task's *value*.
+
+    ``(value, value)``: the request and a hard limit at it, as Docker's
+    ``cpus`` and memory limit. Modal reads a bare number as a request alone:
+    its CPU limit is then 16 cores above it and memory has none (measured
+    with modal 1.6.2: 28 CPUs visible at ``cpu=12``, 1.28 TB of memory).
+    The bare *value* with ``BENCHFLOW_MODAL_HARD_LIMITS=0``, or when the task
+    gives none.
+    """
+    env = os.environ if environ is None else environ
+    if not value or (env.get(HARD_LIMITS_ENV) or "").strip().lower() in _OFF_VALUES:
+        return value
+    return (value, value)
+
+
+#: The thread counts Modal sets in every sandbox, to the CPU request, over
+#: the image's own values (measured, modal 1.6.2); ``Sandbox.create``'s
+#: ``env`` puts the image's back. Modal also sets ``PYTHONHASHSEED=0``, and
+#: ``PYTHONPATH=/pkg/:/root/``, which it appends to a value given at create.
+MODAL_THREAD_VARS = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "ORT_INTER_OP_NUM_THREADS",
+    "ORT_INTRA_OP_NUM_THREADS",
+)
+
+
+@dataclass(frozen=True)
+class ModalImageEnv:
+    """What a Modal sandbox is given so its processes see the image's values
+    where Modal sets its own (:func:`modal_image_env`)."""
+
+    #: ``Sandbox.create``'s ``env``.
+    create: dict[str, str] = field(default_factory=dict)
+    #: The ``PYTHONPATH`` every exec starts with; None leaves Modal's.
+    pythonpath: str | None = None
+    #: The names left as Modal sets them: the image's value is not known.
+    kept: tuple[str, ...] = ()
+
+
+def modal_image_env(
+    dockerfile: str | None, task_env: Mapping[str, str] | None = None
+) -> ModalImageEnv:
+    """The image's values of the names Modal sets, from its Dockerfile.
+
+    *dockerfile* is the task's Dockerfile text (None for a prebuilt image,
+    whose values cannot be read without the image); the task's own env
+    (*task_env*, which Docker hands the container too) goes over it. A name
+    whose value the reader cannot tell, or every name of a Dockerfile it
+    cannot follow, keeps Modal's value (``kept``).
+
+    - A thread count the image sets is given at create; one it leaves unset
+      stays as Modal sets it (its client cannot unset a variable, and libgomp
+      refuses an empty ``OMP_NUM_THREADS``).
+    - ``PYTHONHASHSEED`` is given at create, empty when the image leaves it
+      unset: Python reads an empty one as unset, so hashing is randomized as
+      on Docker.
+    - ``PYTHONPATH`` (the image's, or empty) goes with every exec, since
+      Modal appends ``/pkg/:/root/`` to a value given at create; and at
+      create under its ``IMAGE_ENV_PREFIX`` name, the copy root's task
+      commands get back (``restore_image_env``), in place of PID 1's.
+    """
+    # None: no Dockerfile, or one the reader cannot follow as Docker would.
+    image = final_stage_env(dockerfile) if dockerfile is not None else None
+    known = image is not None
+    found: dict[str, str | None] = dict(image or {})
+    found.update(task_env or {})
+    create: dict[str, str] = {}
+    kept: list[str] = []
+    for name in MODAL_THREAD_VARS:
+        value = found.get(name)
+        if value:
+            create[name] = value
+        else:
+            kept.append(name)
+    seed = found.get("PYTHONHASHSEED", "" if known else None)
+    if seed is None:
+        kept.append("PYTHONHASHSEED")
+    else:
+        create["PYTHONHASHSEED"] = seed
+    pythonpath = found.get("PYTHONPATH", "" if known else None)
+    if pythonpath is None:
+        kept.append("PYTHONPATH")
+    else:
+        create[f"{IMAGE_ENV_PREFIX}PYTHONPATH"] = pythonpath
+    return ModalImageEnv(create, pythonpath, tuple(kept))
+
+
+#: Opt-in: the open-file and stack limits every exec runs with. ``1`` (or
+#: on, true, yes, docker): Docker's defaults (:data:`DOCKER_RLIMITS`); or
+#: ``nofile=SOFT:HARD,stack=SOFT:HARD`` (the stack in bytes; ``unlimited``
+#: allowed). Unset or ``0``: Modal's own, as before.
+RLIMITS_ENV = "BENCHFLOW_MODAL_RLIMITS"
+_ON_VALUES = frozenset({"1", "on", "true", "yes", "docker"})
+#: Limits by name, ``(soft, hard)``, None for unlimited.
+Rlimits = dict[str, tuple[int | None, int | None]]
+#: Docker's defaults when no ``--ulimit`` is given, ``(soft, hard)`` with None
+#: for unlimited. A Modal exec starts with nofile 1048576/1048576 and an
+#: unlimited stack, so glibc's default thread stack is 2 MiB there and 8 MiB
+#: on Docker.
+DOCKER_RLIMITS: Rlimits = {
+    "nofile": (1024, 524288),
+    "stack": (8388608, None),
+}
+#: The ``pam_limits`` file the limits go in for ``su`` and ``runuser``, which
+#: take a limit their config does not name from PID 1 (Debian's and Ubuntu's
+#: ``pam_limits``); under gVisor every new exec resets PID 1's to Modal's.
+RLIMITS_CONF = "/etc/security/limits.d/benchflow-rlimits.conf"
+#: util-linux's ``prlimit`` and ``setpriv`` and coreutils' ``timeout``, by
+#: absolute path as root's shell is named.
+PRLIMIT = "/usr/bin/prlimit"
+TIMEOUT = "/usr/bin/timeout"
+SETPRIV = "/usr/bin/setpriv"
+#: ``pam_limits``'s unit for each limit, in that limit's bytes (KiB stacks).
+_PAM_UNIT = {"nofile": 1, "stack": 1024}
+
+
+def _rlimit_value(text: str) -> int | None:
+    if text == "unlimited":
+        return None
+    if text.isascii() and text.isdigit():
+        return int(text)
+    raise ValueError(text)
+
+
+def modal_rlimits(environ: Mapping[str, str] | None = None) -> Rlimits | None:
+    """The limits ``BENCHFLOW_MODAL_RLIMITS`` asks every exec to run with, or
+    None (unset or off: Modal's). ValueError for a value it cannot read."""
+    env = os.environ if environ is None else environ
+    raw = (env.get(RLIMITS_ENV) or "").strip()
+    if raw.lower() in _OFF_VALUES or not raw:
+        return None
+    if raw.lower() in _ON_VALUES:
+        return dict(DOCKER_RLIMITS)
+    limits: Rlimits = {}
+    try:
+        for item in raw.split(","):
+            name, _, pair = item.strip().partition("=")
+            soft_text, _, hard_text = pair.partition(":")
+            if name not in DOCKER_RLIMITS or name in limits:
+                raise ValueError(name)
+            soft, hard = _rlimit_value(soft_text), _rlimit_value(hard_text)
+            if soft is None and hard is not None:
+                raise ValueError(pair)
+            if soft is not None and hard is not None and soft > hard:
+                raise ValueError(pair)
+            limits[name] = (soft, hard)
+    except ValueError:
+        raise ValueError(
+            f"{RLIMITS_ENV}={raw!r}: give 1 for Docker's limits (nofile "
+            "1024:524288, stack 8388608:unlimited), or "
+            "nofile=SOFT:HARD,stack=SOFT:HARD (soft at most hard; a number or "
+            "unlimited; the stack in bytes)"
+        ) from None
+    return limits
+
+
+def _limit(value: int | None) -> str:
+    return "unlimited" if value is None else str(value)
+
+
+def held_argv(argv: Sequence[str], limits: Rlimits) -> list[str]:
+    """*argv* run with *limits*, held across Modal's later execs.
+
+    Under gVisor, PID 1 and every top-level exec process share one set of
+    limits, which each new exec resets to Modal's; a forked child keeps its
+    own. So the first ``prlimit`` sets the limits on this exec, ``timeout``
+    forks the payload (and passes on its exit status and the signals it
+    gets), ``setpriv --pdeathsig KILL`` ends the payload if Modal's exec
+    timeout kills its waiter, and the second ``prlimit`` sets the limits on
+    the payload's own copy whatever another exec did in between.
+    """
+    words = [
+        f"--{name}={_limit(soft)}:{_limit(hard)}"
+        for name, (soft, hard) in limits.items()
+    ]
+    return [
+        PRLIMIT,
+        *words,
+        "--",
+        TIMEOUT,
+        "--foreground",
+        "0",
+        SETPRIV,
+        "--pdeathsig",
+        "KILL",
+        PRLIMIT,
+        *words,
+        "--",
+        *argv,
+    ]
+
+
+def rlimits_conf(limits: Rlimits) -> str:
+    """:data:`RLIMITS_CONF`'s text: *limits* for every user and for root by
+    name (Debian's ``pam_limits`` applies no ``*`` line to root)."""
+    lines = [f"# BenchFlow ({RLIMITS_ENV}): the limits su and runuser give"]
+    for domain in ("*", "root"):
+        for name, pair in limits.items():
+            for kind, value in zip(("soft", "hard"), pair, strict=True):
+                shown = "unlimited" if value is None else str(value // _PAM_UNIT[name])
+                lines.append(f"{domain}\t{kind}\t{name}\t{shown}")
+    return "\n".join(lines) + "\n"
+
+
+def _rlimits_conf_command(limits: Rlimits) -> str:
+    """Root's POSIX sh: write :data:`RLIMITS_CONF`, exit 3 (printing each
+    line) when the image's own ``pam_limits`` config names one of *limits*:
+    which line wins for su would then be the image's to say."""
+    names = "|".join(limits)
+    conf = shlex.quote(RLIMITS_CONF)
+    return (
+        f"f={conf}; found=; "
+        "for c in /etc/security/limits.conf /etc/security/limits.d/*.conf; do "
+        '[ -f "$c" ] && [ "$c" != "$f" ] || continue; '
+        "while read -r d t i v rest; do "
+        "case $d in ''|'#'*) continue;; esac; "
+        f'case $i in {names}) echo "$c: $d $t $i $v"; found=1;; esac; '
+        'done < "$c"; done; '
+        '[ -z "$found" ] || exit 3; '
+        "umask 022; mkdir -p /etc/security/limits.d && "
+        f'printf %s {shlex.quote(rlimits_conf(limits))} > "$f.tmp" && '
+        'mv -f "$f.tmp" "$f"'
+    )
+
+
+#: Root's POSIX sh: the limits ``su`` and ``runuser`` give ``nobody`` and
+#: root, each route's block headed ``== <route> rc=<status>``.
+_RLIMITS_SU_CHECK = (
+    "show='cat /proc/self/limits'; "
+    "if id nobody >/dev/null 2>&1; then users='nobody root'; else users=root; fi; "
+    "if command -v su >/dev/null 2>&1; then for u in $users; do "
+    'out=$(su -s /bin/sh "$u" -c "$show" 2>&1); echo "== su $u rc=$?"; '
+    'printf "%s\\n" "$out"; done; fi; '
+    "if command -v runuser >/dev/null 2>&1; then for u in $users; do "
+    'out=$(runuser -u "$u" -- /bin/sh -c "$show" 2>&1); echo "== runuser $u rc=$?"; '
+    'printf "%s\\n" "$out"; done; fi'
+)
+_LIMIT_ROWS = {"Max open files": "nofile", "Max stack size": "stack"}
+
+
+def rlimit_check_problems(out: str, limits: Rlimits) -> list[str]:
+    """Where :data:`_RLIMITS_SU_CHECK`'s output shows a route that failed or
+    gave other limits than *limits*."""
+    failed: list[str] = []
+    seen: dict[str, Rlimits] = {}
+    route = None
+    for line in out.splitlines():
+        if line.startswith("== "):
+            route, _, status = line[3:].rpartition(" rc=")
+            seen[route] = {}
+            if status != "0":
+                failed.append(f"{route} failed (exit status {status})")
+            continue
+        for head, name in _LIMIT_ROWS.items():
+            if route is not None and line.startswith(head):
+                words = line[len(head) :].split()[:2]
+                try:
+                    seen[route][name] = (
+                        _rlimit_value(words[0]),
+                        _rlimit_value(words[1]),
+                    )
+                except (IndexError, ValueError):
+                    seen[route][name] = (-1, -1)
+    differ = [
+        f"{route} gives the {name} limit {read.get(name)}, not {pair}"
+        for route, read in seen.items()
+        if not any(f.startswith(f"{route} failed") for f in failed)
+        for name, pair in limits.items()
+        if read.get(name) != pair
+    ]
+    return failed + differ
+
+
+class ModalRlimitsRefused(RuntimeError):
+    """The sandbox cannot hold ``BENCHFLOW_MODAL_RLIMITS``'s limits; it was
+    ended."""
+
+
+#: How long a check for Modal's own end of a sandbox waits for ``poll``.
+PLATFORM_END_POLL_SEC = 15.0
+
+#: How long a failure that looks like Modal ending the sandbox waits for
+#: ``poll`` to report the end, asking every :data:`PLATFORM_END_SETTLE_STEP_SEC`.
+#: While Modal shuts a sandbox down, an exec fails with "Modal Sandbox is
+#: shutting down." and ``poll`` still answers None (measured, modal 1.6.2).
+PLATFORM_END_SETTLE_SEC = 20.0
+PLATFORM_END_SETTLE_STEP_SEC = 1.0
+#: The modal errors an exec in an ending or ended sandbox raises.
+_ENDING_ERRORS = frozenset(
+    {"ConflictError", "NotFoundError", "SandboxTerminatedError", "SandboxTimeoutError"}
+)
+
+
+def modal_ending_error(exc: BaseException) -> bool:
+    """Whether *exc* is how Modal fails an exec in a sandbox it is ending or
+    ended ("is shutting down", "not found ... has already shut down")."""
+    text = str(exc).lower()
+    return (
+        type(exc).__name__ in _ENDING_ERRORS
+        or "shutting down" in text
+        or "shut down" in text
+    )
+
+
+#: The start of every error raised for a sandbox Modal ended itself. A trial
+#: error that holds "sandbox not found" is an infrastructure error
+#: (``benchflow._utils.scoring``).
+MODAL_ENDED = "Sandbox not found: Modal ended the sandbox"
+
+
+def platform_end_reason(returncode: int) -> str:
+    """What the ``returncode`` Modal reports for an ended sandbox says ended it.
+
+    Measured with modal 1.6.2: 124 when its lifetime (``Sandbox.create``'s
+    ``timeout``) ran out; 137 when it was killed, which is also what a
+    process over a hard memory limit does (Modal ends the whole sandbox).
+    """
+    if returncode == 124:
+        return "its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)"
+    if returncode == 137:
+        return (
+            "it was killed: a process went over its memory limit, or Modal "
+            "evicted or preempted it, or it was terminated from outside BenchFlow"
+        )
+    return f"its main process exited with {returncode}"
+
+
+def modal_ended_message(end: Mapping[str, Any], what: str) -> str:
+    """The error for *what* failing in a sandbox Modal ended (*end*:
+    :attr:`ModalSandbox.platform_end`)."""
+    return (
+        f"{MODAL_ENDED} before BenchFlow stopped it (returncode "
+        f"{end['returncode']}: {end['reason']}); {what}"
+    )
+
+
+class ModalSandboxEndedError(RuntimeError):
+    """An exec failed because Modal ended the sandbox before BenchFlow stopped
+    it. The message starts with :data:`MODAL_ENDED`."""
+
+
 #: ``Sandbox.filesystem``'s errors and the builtin ones the legacy file API
 #: raised, which BenchFlow's callers catch (FileNotFoundError, ...).
 _FILESYSTEM_ERRORS: dict[str, type[OSError]] = {
@@ -173,6 +533,20 @@ class ModalSandbox(BaseSandbox):
     # exec passes the env as a Modal Secret, never in the command (exec below),
     # so another verifier user gets it privately (b173 PY8-MAIN-40).
     exec_env_is_private = True
+
+    #: How Modal ended this sandbox before BenchFlow stopped it
+    #: (``returncode``, ``reason``, ``seen_at``), or None
+    #: (:meth:`check_platform_end`).
+    platform_end: dict[str, Any] | None = None
+    # True once stop() has looked for Modal's own end: an end seen after that
+    # is BenchFlow's terminate.
+    _stopping = False
+    # The image's values of the names Modal sets (_read_image_env), read
+    # when the sandbox is created.
+    _image_env: ModalImageEnv = ModalImageEnv()
+    # The limits every exec runs behind (BENCHFLOW_MODAL_RLIMITS, held by
+    # _hold_rlimits); None: Modal's own.
+    _rlimits: Rlimits | None = None
 
     @classmethod
     def preflight(cls) -> None:
@@ -253,22 +627,137 @@ class ModalSandbox(BaseSandbox):
 
         from benchflow.sandbox import egress_gateway
 
-        return await Sandbox.create.aio(
+        self._image_env = self._read_image_env()
+        sandbox = await Sandbox.create.aio(
             app=self._app,
             image=self._image,
             timeout=self._sandbox_timeout,
             idle_timeout=self._sandbox_idle_timeout,
             name=modal_sandbox_name(self.session_id),
-            cpu=self.task_env_config.cpus,
-            memory=self.task_env_config.memory_mb,
+            cpu=modal_resource(self.task_env_config.cpus),
+            memory=modal_resource(self.task_env_config.memory_mb),
             gpu=gpu_config,
             block_network=not self.task_env_config.allow_internet,
             secrets=secrets_config,
             volumes=volumes_config,
+            env=self._image_env.create or None,
             # A denylist sandbox held at the egress gateway reaches its
             # address alone (benchflow.sandbox.egress_gateway).
             **await egress_gateway.create_kwargs(self),
         )
+        self.platform_end = None
+        self._stopping = False
+        return sandbox
+
+    def _read_image_env(self) -> ModalImageEnv:
+        """The image's values of the names Modal sets (:func:`modal_image_env`),
+        from the task's Dockerfile and its env; logs the names left as Modal
+        sets them."""
+        dockerfile = None
+        if not self.task_env_config.docker_image:
+            try:
+                dockerfile = self._environment_definition_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError as exc:
+                logger.warning("Could not read the task's Dockerfile: %s", exc)
+        image = modal_image_env(dockerfile, self._persistent_env)
+        if image.kept:
+            if dockerfile is None:
+                source = (
+                    "the image's own values are read from a Dockerfile, and "
+                    "this task names a prebuilt image"
+                )
+            elif final_stage_env(dockerfile) is None:
+                source = "BenchFlow cannot read the task's Dockerfile as Docker would"
+            else:
+                source = (
+                    "the task's Dockerfile gives no value of its own BenchFlow "
+                    "can read for them"
+                )
+            logger.warning(
+                "Modal sets %s in every sandbox, and %s, so these keep "
+                "Modal's values on Modal only",
+                ", ".join(image.kept),
+                source,
+            )
+        return image
+
+    def hold_argv(self, argv: Sequence[str]) -> list[str]:
+        """*argv* behind :func:`held_argv` once the sandbox holds
+        ``BENCHFLOW_MODAL_RLIMITS``'s limits, else unchanged."""
+        limits = self._rlimits
+        return list(argv) if limits is None else held_argv(argv, limits)
+
+    async def _hold_rlimits(self) -> None:
+        """With ``BENCHFLOW_MODAL_RLIMITS``, run every later exec with its
+        limits (:func:`held_argv`), and write them for ``su`` and ``runuser``
+        (:data:`RLIMITS_CONF`). Refuses, and ends, a sandbox whose image
+        cannot hold them: a ``pam_limits`` config of its own naming one of
+        the limits, no ``prlimit``, ``setpriv`` or ``timeout``, or a ``su`` or
+        ``runuser`` that gives other limits. Nothing without the setting.
+        Every step is a root command on the system-shell route."""
+        limits = modal_rlimits()
+        self._rlimits = None
+        if limits is None:
+            return
+        written = await exec_raw(
+            self.exec,
+            _rlimits_conf_command(limits),
+            user="root",
+            system_shell=True,
+            timeout_sec=60,
+        )
+        if written.return_code != 0:
+            why = (written.stdout or written.stderr or "").strip()[-500:]
+            await self._refuse_rlimits(
+                f"the image's own pam_limits config sets one of these limits ({why})"
+                if written.return_code == 3
+                else f"{RLIMITS_CONF} could not be written ({why})"
+            )
+        # From here every exec runs behind the held prefix; the first proves
+        # the prefix's programs run in the image.
+        self._rlimits = limits
+        try:
+            held = await exec_raw(
+                self.exec, "true", user="root", system_shell=True, timeout_sec=60
+            )
+            code, err = held.return_code, held.stderr or ""
+        except Exception as exc:
+            code, err = None, repr(exc)
+        if code != 0:
+            self._rlimits = None
+            await self._refuse_rlimits(
+                f"{PRLIMIT}, {TIMEOUT} or {SETPRIV} could not run (exit status "
+                f"{code}: {err.strip()[-300:]!r}); the image needs util-linux "
+                "and coreutils"
+            )
+        checked = await exec_raw(
+            self.exec, _RLIMITS_SU_CHECK, user="root", system_shell=True, timeout_sec=60
+        )
+        problems = rlimit_check_problems(checked.stdout or "", limits)
+        if problems:
+            await self._refuse_rlimits("; ".join(problems))
+
+    async def _refuse_rlimits(self, why: str) -> None:
+        refusal = (
+            f"sandbox startup refused: {RLIMITS_ENV} is set, and this sandbox "
+            f"cannot hold its limits: {why}"
+        )
+        logger.error(refusal)
+        try:
+            await self._terminate_sandbox()
+        except Exception:
+            logger.warning("Could not end the refused Modal sandbox")
+        else:
+            self._sandbox = None
+        raise ModalRlimitsRefused(refusal)
+
+    def exec_process_env(self) -> dict[str, str]:
+        """What every exec's process env adds: the image's ``PYTHONPATH``
+        (or empty), over the ``/pkg/:/root/`` Modal sets in every sandbox."""
+        pythonpath = self._image_env.pythonpath
+        return {} if pythonpath is None else {"PYTHONPATH": pythonpath}
 
     async def start(self, force_build: bool) -> None:
         gpu_config = modal_gpu_request(
@@ -342,6 +831,7 @@ class ModalSandbox(BaseSandbox):
         await exec_raw(
             self.exec, f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
         )
+        await self._hold_rlimits()
         if bfx_volume is not None:
             await self._check_bfx()
         from benchflow.sandbox import egress_gateway
@@ -407,13 +897,66 @@ class ModalSandbox(BaseSandbox):
         if self._sandbox:
             await self._sandbox.terminate.aio()
 
+    async def check_platform_end(
+        self, seen_at: str, *, settle_sec: float = 0.0
+    ) -> dict[str, Any] | None:
+        """Whether Modal ended the sandbox itself, from its public ``poll``.
+
+        Modal ends a sandbox on its own when its lifetime runs out, when a
+        process goes over a hard memory limit, and when it evicts or
+        preempts it; the next exec then fails with Modal's "shutting down" or
+        "not found". *settle_sec*: how long to keep asking while ``poll``
+        still answers None (a sandbox Modal is shutting down). The first end
+        seen is kept in :attr:`platform_end` and logged. None while the
+        sandbox runs, once :meth:`stop` has begun (BenchFlow's own
+        terminate), or when ``poll`` does not answer within
+        :data:`PLATFORM_END_POLL_SEC`. Never raises.
+        """
+        if self.platform_end is not None:
+            return self.platform_end
+        sandbox = self._sandbox
+        if sandbox is None or self._stopping:
+            return None
+        deadline = time.monotonic() + settle_sec
+        while True:
+            try:
+                code = await asyncio.wait_for(sandbox.poll.aio(), PLATFORM_END_POLL_SEC)
+            except Exception as exc:
+                logger.debug("Modal did not answer poll: %r", exc)
+                return None
+            if self._stopping:
+                return None
+            if isinstance(code, int) and not isinstance(code, bool):
+                break
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(PLATFORM_END_SETTLE_STEP_SEC)
+        self.platform_end = {
+            "returncode": code,
+            "reason": platform_end_reason(code),
+            "seen_at": seen_at,
+        }
+        logger.warning(
+            "Modal ended sandbox %s before BenchFlow stopped it (returncode %d: %s)",
+            getattr(sandbox, "object_id", "?"),
+            code,
+            self.platform_end["reason"],
+        )
+        return self.platform_end
+
     async def stop(self, delete: bool) -> None:
         if not self._sandbox:
             return
 
+        # Before the terminate, after which an ended sandbox is BenchFlow's
+        # doing: whether Modal ended it first (platform_end). A sandbox Modal
+        # ended needs no terminate.
+        ended = await self.check_platform_end("stop")
+        self._stopping = True
         try:
-            await self._terminate_sandbox()
-            await self._sandbox.wait.aio(raise_on_termination=False)
+            if ended is None:
+                await self._terminate_sandbox()
+                await self._sandbox.wait.aio(raise_on_termination=False)
         except Exception as e:
             self.logger.warning(f"Error terminating Modal sandbox: {e}")
         finally:
@@ -788,6 +1331,9 @@ class ModalSandbox(BaseSandbox):
         # The names a pinned shell carries across its env -i: the process
         # env before its empty start-up names are added below.
         keep = dict(process_env)
+        # The image's PYTHONPATH (or empty) over Modal's /pkg/:/root/, as a
+        # docker exec starts with the image's (#1245).
+        process_env.update(self.exec_process_env())
 
         def argv_for(command: str) -> list[str]:
             if agent_restore:
@@ -858,24 +1404,42 @@ class ModalSandbox(BaseSandbox):
         # the same shell, as the same user. A K1 agent command's payload is
         # the agent's own command, its barrier rebuilt around the reader.
         agent = command if hasattr(command, "agent_target") else None
-        fitted = fit(argv_for, command, cat=reader_cat(route), agent=agent)
+
+        def held(command: str) -> list[str]:
+            # Behind BENCHFLOW_MODAL_RLIMITS's limits once they are held.
+            return self.hold_argv(argv_for(command))
+
+        fitted = fit(held, command, cat=reader_cat(route), agent=agent)
         _transport.sent("Modal", fitted.sent)
         env = process_env
-        process = await self._sandbox.exec.aio(
-            *fitted.sent,
-            workdir=cwd,
-            secrets=[Secret.from_dict(env)] if env else [],
-            timeout=modal_exec_timeout(timeout_sec),
-        )
-        if fitted.payload is not None:
-            process.stdin.write(fitted.payload)
-            process.stdin.write_eof()
-            await process.stdin.drain.aio()
+        try:
+            process = await self._sandbox.exec.aio(
+                *fitted.sent,
+                workdir=cwd,
+                secrets=[Secret.from_dict(env)] if env else [],
+                timeout=modal_exec_timeout(timeout_sec),
+            )
+            if fitted.payload is not None:
+                process.stdin.write(fitted.payload)
+                process.stdin.write_eof()
+                await process.stdin.drain.aio()
 
-        stdout = await process.stdout.read.aio()
-        stderr = await process.stderr.read.aio()
+            stdout = await process.stdout.read.aio()
+            stderr = await process.stderr.read.aio()
 
-        return_code = await process.wait.aio()
+            return_code = await process.wait.aio()
+        except Exception as exc:
+            # Modal ended the sandbox (its lifetime, a memory kill, an
+            # eviction): its error names no cause, so poll says what ended.
+            end = await self.check_platform_end(
+                "command",
+                settle_sec=PLATFORM_END_SETTLE_SEC if modal_ending_error(exc) else 0.0,
+            )
+            if end is None:
+                raise
+            raise ModalSandboxEndedError(
+                modal_ended_message(end, "an exec failed with it")
+            ) from exc
 
         return ExecResult(
             stdout=stdout,

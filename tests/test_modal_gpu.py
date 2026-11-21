@@ -93,8 +93,9 @@ async def test_both_launchers_deliver_effective_gpu_request(
     create = provider.Sandbox.create.aio
     create.assert_awaited_once()
     assert create.await_args.kwargs["gpu"] == expected
-    assert create.await_args.kwargs["cpu"] == 2
-    assert create.await_args.kwargs["memory"] == 4096
+    # The task's CPUs and memory as hard limits, as on Docker (#1245).
+    assert create.await_args.kwargs["cpu"] == (2, 2)
+    assert create.await_args.kwargs["memory"] == (4096, 4096)
     assert create.await_args.kwargs["name"] == "gpu-trial"
     assert sandbox._sandbox is create.return_value
     assert sandbox._sandbox.filesystem.make_directory.aio.await_count == 2

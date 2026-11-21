@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from benchflow.sandbox import egress_gateway
+from benchflow.sandbox import egress_gateway, modal_impl
 from benchflow.sandbox import egress_gateway_server as server
 from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox.egress_denylist import (
@@ -34,6 +34,7 @@ from benchflow.sandbox.egress_denylist import (
     stop_egress_denylist,
 )
 from benchflow.sandbox.modal_impl import ModalSandbox
+from benchflow.sandbox.setup import _create_benchflow_modal_environment_class
 from benchflow.task.config import TaskConfig
 from benchflow.task.paths import RolloutPaths
 from tests.receipt_fakes import receipt_answer
@@ -80,6 +81,8 @@ def provider(monkeypatch):
         filesystem=SimpleNamespace(make_directory=SimpleNamespace(aio=AsyncMock())),
         terminate=SimpleNamespace(aio=AsyncMock()),
         wait=SimpleNamespace(aio=AsyncMock()),
+        # Modal's poll: None while the sandbox runs (#1248's platform ends).
+        poll=SimpleNamespace(aio=AsyncMock(return_value=None)),
     )
     module.Sandbox = SimpleNamespace(
         create=SimpleNamespace(aio=AsyncMock(return_value=remote))
@@ -98,9 +101,18 @@ class Script:
         self.commands: list[tuple[str, object]] = []
         self.probe: dict = dict(CONFINED)
         self.deny: dict = dict(REFUSED)
+        #: The sandbox; each command's ``_rlimits`` is kept in :attr:`held`.
+        self.sandbox: ModalSandbox | None = None
+        self.held: list[object] = []
+        #: The su check's answer under ``BENCHFLOW_MODAL_RLIMITS``.
+        self.su_check = ""
+        #: ``(words, exec)``: a command holding *words* runs on *exec*.
+        self.real: tuple[str, object] | None = None
 
     def answer(self, command: str) -> ExecResult:
-        if "BF egress-gateway-probe" in command:
+        if "/proc/self/limits" in command:
+            out = self.su_check
+        elif "BF egress-gateway-probe" in command:
             out = "BF egress-gateway-probe " + json.dumps(self.probe)
         elif "BF egress-gateway-deny" in command:
             out = "BF egress-gateway-deny " + json.dumps(self.deny)
@@ -110,6 +122,9 @@ class Script:
 
     async def __call__(self, command, **kwargs):
         self.commands.append((str(command), kwargs.get("user")))
+        self.held.append(getattr(self.sandbox, "_rlimits", None))
+        if self.real is not None and self.real[0] in str(command):
+            return await self.real[1](command, **kwargs)
         return receipt_answer(str(command), self.answer)
 
     def ran(self, words: str) -> list[str]:
@@ -118,19 +133,31 @@ class Script:
 
 @pytest.fixture
 def make_sandbox(tmp_path, provider):
-    def make(toml: str = DENYLIST, session: str = "task__trial-1") -> ModalSandbox:
-        (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    def make(
+        toml: str = DENYLIST,
+        session: str = "task__trial-1",
+        *,
+        factory: bool = False,
+        dockerfile: str = "FROM python:3.12-slim\n",
+        **kwargs: object,
+    ) -> ModalSandbox:
+        """*factory*: the launcher ``bench`` runs (BenchFlowModalSandbox,
+        whose own ``start`` holds the gateway too)."""
+        (tmp_path / "Dockerfile").write_text(dockerfile)
         paths = RolloutPaths(rollout_dir=tmp_path / session)
         paths.mkdir()
-        sandbox = ModalSandbox(
+        cls = _create_benchflow_modal_environment_class() if factory else ModalSandbox
+        sandbox = cls(
             environment_dir=tmp_path,
             environment_name="task",
             session_id=session,
             rollout_paths=paths,
             task_env_config=_config(toml).sandbox,
+            **kwargs,
         )
         sandbox._refuse_startup_names = AsyncMock()
         sandbox.exec = Script()
+        sandbox.exec.sandbox = sandbox
         sandbox.upload_dir = AsyncMock()
         return sandbox
 
@@ -254,6 +281,10 @@ async def test_a_failed_start_proof_stops_the_sandbox_and_deregisters(
     remote = provider.Sandbox.create.aio.return_value
     with pytest.raises(egress_gateway.EgressGatewayError):
         await sandbox.start(force_build=False)
+    # The stop asked Modal, which said the sandbox runs: a refusal at the
+    # gateway is not an end Modal made (#1248's platform_end).
+    remote.poll.aio.assert_awaited()
+    assert sandbox.platform_end is None
     remote.terminate.aio.assert_awaited()
     assert sandbox._sandbox is None
     assert _status(gateway)["rollouts"] == []
@@ -609,3 +640,123 @@ def test_modals_sdk_takes_the_allowlist():
     assert (
         "outbound_cidr_allowlist" in inspect.signature(modal.Sandbox.create).parameters
     )
+
+
+# With #1248 (Modal's Docker parity) on main: its settings and the gateway.
+
+#: ``cat /proc/self/limits``'s rows for Docker's limits.
+_DOCKER_LIMITS = (
+    "Max open files            1024                 524288               files\n"
+    "Max stack size            8388608              unlimited            bytes\n"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_the_create_takes_the_image_env_and_the_allowlist_together(
+    gateway, make_sandbox, provider, factory
+):
+    """Both launchers create a held sandbox with #1248's image env beside the
+    gateway's allowlist, and the rollout's time to live follows the sandbox's
+    lifetime (``BENCHFLOW_MODAL_SANDBOX_TIMEOUT``, given to the launcher)."""
+    sandbox = make_sandbox(
+        factory=factory,
+        dockerfile="FROM python:3.12-slim\nENV PYTHONHASHSEED=0 OMP_NUM_THREADS=2\n",
+        sandbox_timeout_secs=600,
+    )
+    await sandbox.start(force_build=False)
+    kwargs = provider.Sandbox.create.aio.await_args.kwargs
+    assert kwargs["outbound_cidr_allowlist"] == ["127.0.0.1/32"]
+    assert kwargs["env"]["PYTHONHASHSEED"] == "0"
+    assert kwargs["env"]["OMP_NUM_THREADS"] == "2"
+    hold = egress_gateway.held(sandbox)
+    assert hold is not None
+    assert hold.events[0]["event"] == "registered"
+    assert hold.events[0]["ttl_sec"] == 600 + egress_gateway.TTL_MARGIN_SEC
+    await sandbox.stop(True)
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_the_relay_and_its_proofs_run_behind_the_held_rlimits(
+    gateway, make_sandbox, monkeypatch, factory
+):
+    """With ``BENCHFLOW_MODAL_RLIMITS``, both launchers hold the limits before
+    the gateway's attach: the relay starts, and every proof runs, behind the
+    held prefix (prlimit, timeout, setpriv), as each exec does. The relay
+    outlives its launch: ``setpriv --pdeathsig`` is the launch shell's, and
+    a forked child does not inherit it."""
+    monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
+    sandbox = make_sandbox(factory=factory)
+    script = sandbox.exec
+    script.su_check = f"== su root rc=0\n{_DOCKER_LIMITS}"
+    await sandbox.start(force_build=False)
+    flat = [c for c, _ in script.commands]
+    conf = flat.index(script.ran("benchflow-rlimits.conf")[0])
+    attach = flat.index(script.ran("chmod 700 /opt/runtime-egress")[0])
+    relay = flat.index(script.ran("relay.json </dev/null")[0])
+    assert conf < attach < relay
+    assert all(
+        limits == modal_impl.DOCKER_RLIMITS for limits in script.held[attach:]
+    ), script.held[attach:]
+    assert sandbox.hold_argv(["/bin/bash", "-c", flat[relay]])[0] == (
+        modal_impl.PRLIMIT
+    )
+    assert _phase(gateway) == "open"
+    await sandbox.stop(True)
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_refused_for_its_rlimits_never_reaches_the_gateway(
+    gateway, make_sandbox, provider, monkeypatch
+):
+    """The limits are held, or refused, before the attach: a sandbox that
+    cannot hold them is ended with no rollout at the gateway."""
+    monkeypatch.setenv("BENCHFLOW_MODAL_RLIMITS", "1")
+    sandbox = make_sandbox()
+    sandbox.exec.su_check = "== su root rc=1\n"
+    with pytest.raises(modal_impl.ModalRlimitsRefused):
+        await sandbox.start(force_build=False)
+    provider.Sandbox.create.aio.return_value.terminate.aio.assert_awaited()
+    assert sandbox.exec.ran(egress_gateway.RELAY_DIR) == []
+    assert egress_gateway.held(sandbox) is None
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_modal_ends_during_the_proofs_is_deregistered(
+    gateway, make_sandbox, provider
+):
+    """Modal ends the sandbox during the start proof (its lifetime, a memory
+    kill): the probe's exec fails as #1248 fails it, an infrastructure
+    error, and the stop that follows deregisters the rollout without a
+    terminate."""
+    remote = provider.Sandbox.create.aio.return_value
+    remote.poll.aio.return_value = 137
+    remote.exec = SimpleNamespace(
+        aio=AsyncMock(
+            side_effect=RuntimeError(
+                "Modal Sandbox with container ID ta-1 not found. This means "
+                "this Sandbox has already shut down."
+            )
+        )
+    )
+    sandbox = make_sandbox()
+
+    async def real_exec(command, **kwargs):
+        return await ModalSandbox.exec(sandbox, command, **kwargs)
+
+    sandbox.exec.real = ("BF egress-gateway-probe", real_exec)
+    with pytest.raises(modal_impl.ModalSandboxEndedError, match="returncode 137"):
+        await sandbox.start(force_build=False)
+    assert sandbox.platform_end is not None
+    assert sandbox.platform_end["seen_at"] == "command"
+    remote.exec.aio.assert_awaited()
+    remote.terminate.aio.assert_not_awaited()
+    assert _status(gateway)["rollouts"] == []
+    record = json.loads(
+        (sandbox.rollout_paths.rollout_dir / egress_gateway.RECORD_NAME).read_text()
+    )
+    assert record["events"][-1]["event"] == "deregistered"

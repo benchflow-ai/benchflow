@@ -372,6 +372,7 @@ def regradable_reason(trial: Path) -> str | None:
     from benchflow.review.evidence import (
         EvidenceError,
         EvidenceManifest,
+        refuse_linked_bundle,
         validate_workspace,
     )
 
@@ -384,6 +385,11 @@ def regradable_reason(trial: Path) -> str | None:
             "(steps.json), and a regrade runs one verifier on the final workspace"
         )
     bundle = trial / "evidence"
+    # The trial's own capture only: a link, here or below (each artifact
+    # bundle the regrade installs), may lead to another trial's.
+    linked = "frozen workspace is linked, so it may be another trial's"
+    if bundle.is_symlink():
+        return f"{linked}: evidence/ is a symlink"
     if not (bundle / "manifest.json").is_file():
         return (
             "no frozen workspace (evidence/); run with --freeze-workspace or a "
@@ -393,6 +399,10 @@ def regradable_reason(trial: Path) -> str | None:
         manifest = EvidenceManifest.model_validate_json(
             (bundle / "manifest.json").read_text()
         )
+        try:
+            refuse_linked_bundle(bundle, manifest)
+        except EvidenceError as exc:
+            return f"{linked}: {exc}"
         validate_workspace(bundle / "workspace", manifest)
     except (EvidenceError, OSError, ValueError) as exc:
         return f"frozen workspace does not match its manifest: {exc}"

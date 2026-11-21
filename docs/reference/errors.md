@@ -15,7 +15,7 @@ These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 do
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
 | [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 48 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 128 |
-| [Warnings a run logs](#warnings-a-run-logs) | 461 |
+| [Warnings a run logs](#warnings-a-run-logs) | 464 |
 
 ## Causes a run names
 
@@ -1628,7 +1628,10 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.lockdown` | `workspace … absent in image; grant skipped` (unreleased) |
 | `benchflow.sandbox.metadata` | `Failed to persist sandbox.json for …: …` |
 | `benchflow.sandbox.modal_impl` | `Could not end the refused Modal sandbox` |
+| `benchflow.sandbox.modal_impl` | `Could not read the task's Dockerfile: …` (unreleased) |
 | `benchflow.sandbox.modal_impl` | `Error terminating Modal sandbox: …` |
+| `benchflow.sandbox.modal_impl` | `Modal ended sandbox … before BenchFlow stopped it (returncode …: …)` (unreleased) |
+| `benchflow.sandbox.modal_impl` | `Modal sets … in every sandbox, and …, so these keep Modal's values on Modal only` (unreleased) |
 | `benchflow.sandbox.modal_impl` | `bfx: the mounted volume is not usable (…)` |
 | `benchflow.sandbox.process._base` | `Invalid …=…; using default …s` |
 | `benchflow.sandbox.process._base` | `Skipped an output line over … bytes` |

@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 from benchflow._utils.modal_gpu import ModalGPURequestError, modal_gpu_request
+from benchflow._utils.modal_lifetime import modal_lifetime_issue, modal_sandbox_timeout
 from benchflow.rewards.rubric_config import criteria_aggregate_policy_from_rubric
 from benchflow.sandbox._compose import compose_definition_path
 from benchflow.sandbox.providers import (
@@ -118,11 +119,15 @@ def validate_task_runtime_support(
     *,
     sandbox: str,
     task_dir: str | Path | None = None,
+    verifier_sandbox: bool = False,
 ) -> list[UnsupportedTaskFeature]:
     """Return unsupported parsed features for ``sandbox``.
 
     ``task`` may be a full :class:`TaskDocument` when document-only fields need
     checking, or a plain :class:`TaskConfig` for legacy split packages.
+    *verifier_sandbox*: ``task`` is the view a separate verifier's sandbox
+    is launched with (``rollout._separate_verifier._verifier_task``), which
+    runs no agent.
     """
 
     config = task.config if isinstance(task, TaskDocument) else task
@@ -138,6 +143,13 @@ def validate_task_runtime_support(
         return unsupported
 
     _append_config_issues(unsupported, config=config, sandbox=sandbox)
+    if sandbox == GPU_SANDBOX:
+        _append_modal_lifetime_issue(
+            unsupported,
+            config=config,
+            sandbox=sandbox,
+            verifier_sandbox=verifier_sandbox,
+        )
     _append_kept_services_issue(
         unsupported,
         config=config,
@@ -555,16 +567,43 @@ def raise_for_task_runtime_support(
     *,
     sandbox: str,
     task_dir: str | Path | None = None,
+    verifier_sandbox: bool = False,
 ) -> None:
-    """Raise if ``task`` contains parsed semantics unsupported by ``sandbox``."""
+    """Raise if ``task`` contains parsed semantics unsupported by ``sandbox``
+    (*verifier_sandbox*: see :func:`validate_task_runtime_support`)."""
 
     unsupported = validate_task_runtime_support(
         task,
         sandbox=sandbox,
         task_dir=task_dir,
+        verifier_sandbox=verifier_sandbox,
     )
     if unsupported:
         raise UnsupportedTaskFeatureError(unsupported)
+
+
+def _append_modal_lifetime_issue(
+    unsupported: list[UnsupportedTaskFeature],
+    *,
+    config: TaskConfig,
+    sandbox: str,
+    verifier_sandbox: bool,
+) -> None:
+    """Modal ends a sandbox at its lifetime, whatever runs in it: refuse one
+    whose budgets do not fit (:func:`modal_lifetime_issue`). A setting out of
+    range is refused where the sandbox is made."""
+    try:
+        limit = modal_sandbox_timeout()
+    except ValueError:
+        return
+    why = modal_lifetime_issue(config, limit, verifier_sandbox=verifier_sandbox)
+    if why is not None:
+        _issue(
+            unsupported,
+            path="verifier.timeout_sec" if verifier_sandbox else "agent.timeout_sec",
+            reason=why,
+            sandbox=sandbox,
+        )
 
 
 def _issue(
