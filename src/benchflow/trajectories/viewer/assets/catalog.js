@@ -359,6 +359,7 @@ BF.catalog = (() => {
   }
 
   function show(options = {}) {
+    document.body.classList.add("browsing");
     document.getElementById("content").classList.add("hidden");
     const main = document.getElementById("view-index");
     main.classList.remove("hidden");
@@ -377,6 +378,16 @@ BF.catalog = (() => {
     state.scrollY = window.scrollY;
   }
 
+  // Rows for the detail view's rail: every run, in the catalog's order.
+  function railItems() {
+    return rollouts.map((run) => ({
+      id: run.id,
+      name: (run.task_name || run.name || run.id) + (run.task_name && run.name ? " " + String(run.name).split("__").pop() : ""),
+      tone: runStatus(run),
+      meta: run.reward === null || run.reward === undefined ? "" : String(run.reward),
+    }));
+  }
+
   function hasRun(runId) {
     return rollouts.some((run) => run.id === runId);
   }
@@ -389,6 +400,7 @@ BF.catalog = (() => {
   return {
     hasRun,
     init,
+    railItems,
     readBranch,
     readURL,
     rememberScroll,

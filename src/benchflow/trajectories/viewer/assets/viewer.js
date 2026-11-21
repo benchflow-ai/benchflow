@@ -66,6 +66,7 @@ BF.core = (() => {
   const EXECUTION_LABELS = new Map([["completed", "completed"], ["errored", "errored"], ["timed_out", "timed out"]]);
 
   function showDetailShell(isBrowse) {
+    document.body.classList.remove("browsing");
     document.getElementById("view-index").classList.add("hidden");
     document.getElementById("content").classList.remove("hidden");
     document.getElementById("backbar").classList.toggle("hidden", !isBrowse);

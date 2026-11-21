@@ -525,12 +525,26 @@ class VerifierTest:
     name: str
     status: VerifierStatus
     duration: float | None
+    # Wall time from the record's start/stop timestamps (unit-checked); the
+    # raw ``duration`` keeps whatever unit the producer wrote.
+    seconds: float | None = None
+    # A failed test's report: the CTRF message and trace, plus the frame
+    # (``tests/test_outputs.py:261``) and first explanation line read from it.
+    message: str | None = None
+    trace: str | None = None
+    location: str | None = None
+    assertion: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "status": self.status,
             "duration": self.duration,
+            "seconds": self.seconds,
+            "message": self.message,
+            "trace": self.trace,
+            "location": self.location,
+            "assertion": self.assertion,
         }
 
 
@@ -595,6 +609,10 @@ class VerifierArtifacts:
     stderr: str | None = None
     ctrf: list[VerifierTest] | None = None
     recovery: VerifierRecovery | None = None
+    # From ctrf.json's results: the test runner ("pytest 8.4.1") and the
+    # seconds between its summary start and stop.
+    ctrf_tool: str | None = None
+    ctrf_seconds: float | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -604,6 +622,8 @@ class VerifierArtifacts:
             "ctrf": [test.to_payload() for test in self.ctrf]
             if self.ctrf is not None
             else None,
+            "ctrf_tool": self.ctrf_tool,
+            "ctrf_seconds": self.ctrf_seconds,
             "recovery": self.recovery.to_payload()
             if self.recovery is not None
             else None,
@@ -743,6 +763,32 @@ class Lineage:
         }
 
 
+VerdictTone = Literal["pass", "fail", "unscored"]
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """The run card's plain sentence: what the run scored and why.
+
+    ``step`` is the tool call the sentence names (the call a timeout
+    interrupted, or the last call before an error) and ``test`` the failing
+    test it names, so the page can link the sentence to its evidence.
+    """
+
+    tone: VerdictTone
+    sentence: str
+    step: int | None = None
+    test: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "tone": self.tone,
+            "sentence": self.sentence,
+            "step": self.step,
+            "test": self.test,
+        }
+
+
 @dataclass(frozen=True)
 class ViewerPayload:
     rollout_name: str
@@ -751,6 +797,7 @@ class ViewerPayload:
     verifier: VerifierArtifacts
     rubric: RubricReview | None = None
     lineage: Lineage | None = None
+    verdict: Verdict | None = None
     schema_version: int = 1
 
     def to_payload(self) -> dict[str, Any]:
@@ -762,6 +809,7 @@ class ViewerPayload:
             "verifier": self.verifier.to_payload(),
             "rubric": self.rubric.to_payload() if self.rubric is not None else None,
             "lineage": self.lineage.to_payload() if self.lineage is not None else None,
+            "verdict": self.verdict.to_payload() if self.verdict is not None else None,
         }
 
 
