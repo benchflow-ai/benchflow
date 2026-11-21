@@ -128,6 +128,7 @@ def _exchange(port: int, request: bytes) -> bytes:
 
 
 def test_the_challenge_is_answered_and_the_bytes_forwarded_as_sent(run_relay):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     gateway = StandInGateway(reply=b"HTTP/1.1 204 No Content\r\n\r\n")
     try:
         port = run_relay(gateway)
@@ -146,6 +147,7 @@ def test_the_challenge_is_answered_and_the_bytes_forwarded_as_sent(run_relay):
     "challenge", [b"FPEG/1 n0\n", b"BFEG/1\n", b"BFEG/1 a b\n", b""]
 )
 def test_a_bad_challenge_closes_the_client(run_relay, challenge):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     gateway = StandInGateway(challenge=challenge or b"x" * 300)
     try:
         port = run_relay(gateway)
@@ -178,7 +180,9 @@ def model_gateway():
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
 def test_a_loopback_connect_is_served_in_the_sandbox(run_relay, model_gateway, host):
     """Undici's CONNECT to the in-sandbox model gateway, through HTTPS_PROXY,
-    never goes to the gateway (there 127.0.0.1 is the gateway host's own)."""
+    never goes to the gateway (there 127.0.0.1 is the gateway host's own).
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     gateway = StandInGateway()
     try:
         port = run_relay(gateway)
@@ -196,7 +200,9 @@ def test_a_loopback_connect_is_served_in_the_sandbox(run_relay, model_gateway, h
 
 def test_other_connects_go_to_the_gateway(run_relay):
     """A CONNECT to the relay's own port, a privileged loopback port or a
-    public host is the gateway's to judge."""
+    public host is the gateway's to judge.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     gateway = StandInGateway(reply=b"HTTP/1.1 403 Forbidden\r\n\r\n")
     try:
         port = run_relay(gateway)
@@ -210,7 +216,9 @@ def test_other_connects_go_to_the_gateway(run_relay):
 
 def test_the_relay_and_the_gateway_speak_the_same_protocol(run_relay):
     """End to end on loopback: the relay, a real gateway and BenchFlow's
-    proxy behind it, in the deny phase."""
+    proxy behind it, in the deny phase.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     import base64
     import shutil
     import tempfile
@@ -257,6 +265,7 @@ def test_the_relay_and_the_gateway_speak_the_same_protocol(run_relay):
 
 
 def test_loopback_port_reads_only_a_loopback_connect():
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     assert relay.loopback_port(b"CONNECT 127.0.0.1:4000 HTTP/1.1\r\n", 18628) == 4000
     assert relay.loopback_port(b"CONNECT localhost:4000 HTTP/1.0\r\n", 18628) == 4000
     for head in (
@@ -271,7 +280,9 @@ def test_loopback_port_reads_only_a_loopback_connect():
 
 
 def test_the_relay_runs_on_python_38_with_the_standard_library_alone():
-    """Task images bring their own python3; the relay is uploaded as a file."""
+    """Task images bring their own python3; the relay is uploaded as a file.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     text = SOURCE.read_text()
     tree = ast.parse(text, feature_version=(3, 8))
     imported = {

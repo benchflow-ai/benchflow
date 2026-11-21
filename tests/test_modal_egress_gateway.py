@@ -195,6 +195,7 @@ def _blocked_request(gateway: server.Gateway, hold: egress_gateway.Hold) -> byte
 async def test_a_denylist_sandbox_is_created_with_the_gateway_alone_and_proved(
     gateway, make_sandbox, provider
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     sandbox = make_sandbox()
     await sandbox.start(force_build=False)
 
@@ -249,6 +250,7 @@ async def test_a_denylist_sandbox_is_created_with_the_gateway_alone_and_proved(
 async def test_any_other_sandbox_is_created_as_before(
     make_sandbox, provider, monkeypatch, toml
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     monkeypatch.delenv(egress_gateway.ENV, raising=False)
     if toml != DENYLIST:
         monkeypatch.setenv(egress_gateway.ENV, "/nonexistent/control.sock")
@@ -275,6 +277,7 @@ async def test_any_other_sandbox_is_created_as_before(
 async def test_a_failed_start_proof_stops_the_sandbox_and_deregisters(
     gateway, make_sandbox, provider, monkeypatch, probe, deny
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     monkeypatch.setattr(egress_gateway, "HEALTH_TIMEOUT_SEC", 0)
     sandbox = make_sandbox()
     sandbox.exec.probe, sandbox.exec.deny = probe, deny
@@ -331,6 +334,7 @@ async def test_a_start_cancelled_while_registering_deregisters(
 async def test_a_gateway_that_does_not_answer_fails_the_create(
     make_sandbox, provider, monkeypatch
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     monkeypatch.setenv(egress_gateway.ENV, "/nonexistent/control.sock")
     sandbox = make_sandbox()
     with pytest.raises(egress_gateway.EgressGatewayError):
@@ -406,6 +410,7 @@ async def started(gateway, make_sandbox):
 async def test_the_agent_connection_moves_the_phase_to_deny_and_proves_the_agent(
     gateway, started
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.egress_denylist import denylist_agent_env
     from benchflow.sandbox.lockdown import (
         arm_agent_uid_before_its_proxy,
@@ -460,6 +465,7 @@ async def test_an_agent_launch_without_the_denylist_marker_is_refused(started):
 
 @pytest.mark.asyncio
 async def test_the_model_gateway_url_is_checked_as_before(started):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     policy = egress_denylist_for(started.task_env_config)
     with pytest.raises(ValueError, match="loopback"):
         await start_egress_denylist(
@@ -469,6 +475,7 @@ async def test_the_model_gateway_url_is_checked_as_before(started):
 
 @pytest.mark.asyncio
 async def test_each_stop_takes_the_lines_since_the_last(gateway, started, tmp_path):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     policy = egress_denylist_for(started.task_env_config)
     hold = egress_gateway.held(started)
     await start_egress_denylist(started, "agent", policy)
@@ -497,7 +504,9 @@ async def test_a_log_longer_than_one_read_is_read_to_its_end(
     gateway, started, tmp_path, monkeypatch
 ):
     """Each ``log`` answer holds a bounded part of each log: the trajectory
-    gets every line, and the verifier counts from the log's real end."""
+    gets every line, and the verifier counts from the log's real end.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.lockdown import _arm_verifier_network
     from benchflow.sandbox.verifier_network import refused_since_arm
 
@@ -525,6 +534,7 @@ async def test_a_log_longer_than_one_read_is_read_to_its_end(
 async def test_the_oracle_runs_under_deny_and_its_refusals_are_kept(
     gateway, started, tmp_path
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.oracle_egress import arm_oracle_egress, disarm_oracle_egress
 
     policy = egress_denylist_for(started.task_env_config)
@@ -544,6 +554,7 @@ async def test_the_oracle_runs_under_deny_and_its_refusals_are_kept(
 
 @pytest.mark.asyncio
 async def test_a_public_verifier_runs_open(gateway, started):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.lockdown import _arm_verifier_network
     from benchflow.sandbox.verifier_network import refused_since_arm
 
@@ -563,6 +574,7 @@ async def test_a_public_verifier_runs_open(gateway, started):
 async def test_a_denylist_verifier_runs_under_deny_its_refusals_counted_from_the_arm(
     gateway, started
 ):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.lockdown import _arm_verifier_network
     from benchflow.sandbox.verifier_network import refused_since_arm
 
@@ -594,6 +606,7 @@ async def test_a_denylist_verifier_runs_under_deny_its_refusals_counted_from_the
 
 @pytest.mark.asyncio
 async def test_a_verifier_the_gateway_cannot_prove_is_not_held(gateway, started):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.lockdown import _arm_verifier_network
     from benchflow.task.verifier_errors import VerifierNetworkUnheldError
 
@@ -604,6 +617,7 @@ async def test_a_verifier_the_gateway_cannot_prove_is_not_held(gateway, started)
 
 @pytest.mark.asyncio
 async def test_no_uid_firewall_is_named_for_the_firewall_power_check(started):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     from benchflow.sandbox.egress_denylist import denylist_agent_env
     from benchflow.sandbox.firewall_power import firewall_rules_hold_agent
 
@@ -618,6 +632,7 @@ async def test_no_uid_firewall_is_named_for_the_firewall_power_check(started):
 
 
 def test_a_mock_never_looks_held():
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     assert egress_gateway.held(MagicMock()) is None
     assert egress_gateway.held(SimpleNamespace()) is None
 
@@ -627,6 +642,7 @@ def test_a_mock_never_looks_held():
     [("task__abc", "task__abc"), ("..", None), ("a b", None), ("x" * 200, None)],
 )
 def test_rollout_ids_are_safe_folder_names(session, expected):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     rid = egress_gateway.rollout_id(session)
     assert server.ROLLOUT_ID.fullmatch(rid)
     if expected is not None:
@@ -635,7 +651,9 @@ def test_rollout_ids_are_safe_folder_names(session, expected):
 
 def test_modals_sdk_takes_the_allowlist():
     """The create's keyword, on the pinned SDK (a renamed one would fail every
-    held create; the start proof would also find the direct connect open)."""
+    held create; the start proof would also find the direct connect open).
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     modal = pytest.importorskip("modal")
     assert (
         "outbound_cidr_allowlist" in inspect.signature(modal.Sandbox.create).parameters

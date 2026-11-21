@@ -141,7 +141,9 @@ def _ask(sock: socket.socket, request: bytes) -> bytes:
 
 def test_a_wrong_or_missing_answer_reaches_no_proxy(gateway, monkeypatch):
     """A connection that fails the challenge is closed before a byte of it
-    reaches a proxy: the proxies see no connection at all."""
+    reaches a proxy: the proxies see no connection at all.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     wrong = _connect(gateway, mac="0" * 64)
     assert _ask(wrong, HEALTH) == b""
@@ -332,6 +334,7 @@ def test_a_launch_takes_only_the_port_its_own_proxy_bound(gateway, monkeypatch):
 
 
 def test_a_connection_reaches_the_phase_proxy(gateway):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     assert _ask(_connect(gateway), HEALTH).startswith(b"HTTP/1.1 200")
     # open: no policy, so the proxy tries the host (which does not resolve).
@@ -346,6 +349,7 @@ def test_a_connection_reaches_the_phase_proxy(gateway):
 
 
 def test_deny_cuts_what_open_let_in_and_open_cuts_nothing(gateway):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     early = _connect(gateway)
     reply = _control(gateway, command="deny", rollout="trial-1", policy=_policy())
@@ -361,6 +365,7 @@ def test_deny_cuts_what_open_let_in_and_open_cuts_nothing(gateway):
 
 
 def test_a_restarted_gateway_brings_its_rollouts_back_in_their_phase(state_dir):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     clock = Clock()
     first = _gateway(state_dir, clock)
     try:
@@ -379,6 +384,7 @@ def test_a_restarted_gateway_brings_its_rollouts_back_in_their_phase(state_dir):
 
 
 def test_a_rollout_ends_at_its_time_to_live_and_at_deregister(state_dir):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     clock = Clock()
     gateway = _gateway(state_dir, clock)
     try:
@@ -477,6 +483,7 @@ def test_a_phase_change_after_deregistration_is_refused(
     ids=["allowlist", "native-claude", "native-codex"],
 )
 def test_register_refuses_a_policy_the_gateway_cannot_hold(gateway, policy):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     reply = server.request(
         gateway.control_path,
         {
@@ -503,6 +510,7 @@ def test_register_refuses_a_policy_the_gateway_cannot_hold(gateway, policy):
     ids=["gateway-port", "allowlist", "native-claude", "native-codex", "not-a-list"],
 )
 def test_deny_refuses_a_policy_the_gateway_cannot_hold(gateway, extra):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     reply = server.request(
         gateway.control_path,
@@ -514,6 +522,7 @@ def test_deny_refuses_a_policy_the_gateway_cannot_hold(gateway, extra):
 
 
 def test_log_reads_each_proxy_log_from_an_offset(gateway):
+    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     _control(gateway, command="deny", rollout="trial-1", policy=_policy())
     _ask(_connect(gateway), BLOCKED)
@@ -528,7 +537,9 @@ def test_log_reads_each_proxy_log_from_an_offset(gateway):
 
 
 def test_the_gateway_needs_nothing_outside_the_standard_library():
-    """It runs on an operator's host with no BenchFlow installed."""
+    """It runs on an operator's host with no BenchFlow installed.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     tree = ast.parse(Path(server.__file__).read_text())
     imported = {
         alias.name.split(".")[0]

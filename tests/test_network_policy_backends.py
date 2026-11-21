@@ -235,7 +235,9 @@ def test_a_denylist_tasks_shared_verifier_at_the_egress_gateway(
     """The verifier of a denylist task inherits its denylist (0.10; a task
     cannot declare a verifier denylist of its own): at the gateway it is the
     phase's, held. A shared verifier's no-network or allowlist is still
-    refused, as on main, and Daytona refuses them all."""
+    refused, as on main, and Daytona refuses them all.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
     toml, refused = GATEWAY_VERIFIER_CELLS[cell]
     config = _config(
