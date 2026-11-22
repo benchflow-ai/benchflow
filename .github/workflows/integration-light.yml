@@ -7,8 +7,8 @@
 #   * The PLANNER (integration_matrix.py), the AGENT JUDGE (agent_judge.py), and
 #     the live scenarios ALWAYS load from TRUSTED ORIGIN/MAIN via a sparse
 #     checkout — never from the PR head. Only src/benchflow (the code-under-test)
-#     comes from the PR head; it is the orchestrator that runs `bench`, but the
-#     verdict logic is trusted-main code.
+#     and bfx (the binary it pins) come from the PR head; src/benchflow is the
+#     orchestrator that runs `bench`, but the verdict logic is trusted-main code.
 #   * detect-scope holds NO secrets (contents: read only) and runs in seconds so
 #     this whole workflow can be UNCONDITIONALLY REQUIRED in branch protection:
 #     when the diff needs no rollout it reports a green no-op (should_run=false).
@@ -257,6 +257,10 @@ jobs:
           # orchestrator code-under-test comes from the PR head.
           git fetch --no-tags origin "$HEAD_SHA"
           git checkout "$HEAD_SHA" -- src/benchflow
+          # bfx's source comes from the same commit as the pin it must match
+          # (src/benchflow/_bfx/pins.py), so a PR that changes both builds.
+          # It is code under test like src/benchflow, which already runs here.
+          git checkout "$HEAD_SHA" -- bfx
 
       - name: Select integration provider
         run: python .github/scripts/select_integration_provider.py
@@ -275,6 +279,18 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev --extra judge --extra sandbox-daytona --locked
+
+      # A model agent's Docker trial is refused before its turn where bfx
+      # can't run (integrity_unavailable), and a checkout has no bfx: git
+      # ignores src/benchflow/_bfx/bin. Build the pinned x86_64 binary from
+      # source as test.yml does; the build stops on any other bytes.
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --target x86_64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 BFX_ARCHES=x86_64 scripts/build_bfx.sh
 
       - name: Run one real smoke rollout on Docker
         run: |
