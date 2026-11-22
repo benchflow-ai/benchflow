@@ -46,7 +46,8 @@ async def test_real_docker_client_and_its_child_stop_before_return(
             # A killed orphan can remain a zombie until container init
             # reaps it. It cannot build or retain an output pipe then.
             return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
-        except FileNotFoundError:
+        # A process reaped between open() and read() fails the read with ESRCH.
+        except (FileNotFoundError, ProcessLookupError):
             return False
 
     try:
