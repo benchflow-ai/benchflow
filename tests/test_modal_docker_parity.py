@@ -20,6 +20,7 @@ from benchflow._utils.scoring import INFRA_ERROR, PIPE_CLOSED, classify_error
 from benchflow.sandbox import modal_impl
 from benchflow.sandbox.modal_impl import (
     MODAL_ENDED,
+    MODAL_LIFETIME_END,
     ModalSandbox,
     ModalSandboxEndedError,
 )
@@ -92,9 +93,13 @@ async def test_stop_records_an_end_modal_made_before_the_terminate(code, said):
     remote = _remote(poll=code)
     sandbox = _modal_sandbox(remote)
     await sandbox.stop(delete=True)
+    # The fake keeps no Modal result: the return code alone names the end.
     assert sandbox.platform_end == {
         "returncode": code,
+        "status": None,
         "reason": modal_impl.platform_end_reason(code),
+        "memory_kill": False,
+        "lifetime": code == 124,
         "seen_at": "stop",
     }
     assert said in sandbox.platform_end["reason"]
@@ -114,23 +119,27 @@ async def test_stop_of_a_running_sandbox_records_no_end():
 
 
 @pytest.mark.asyncio
-async def test_a_failed_exec_in_an_ended_sandbox_is_an_infrastructure_error(
-    fake_secret,
-):
+@pytest.mark.parametrize("code", [124, 137])
+async def test_a_failed_exec_in_an_ended_sandbox_names_the_end(fake_secret, code):
     """The issue's repro: a timeout=60 sandbox running a 120 s exec. Modal
-    ends it, the exec's wait raises NotFoundError and poll returns 124."""
-    sandbox = _modal_sandbox(_remote(poll=124))
+    ends it, the exec's wait raises NotFoundError and poll returns 124: a
+    lifetime end, named and not rerun as infrastructure (a rerun meets the
+    same lifetime, as ruled in review). 137 with no status (an
+    eviction or a terminate from outside) stays an infrastructure error."""
+    sandbox = _modal_sandbox(_remote(poll=code))
     with pytest.raises(ModalSandboxEndedError) as raised:
         await sandbox.exec("sleep 120", user="root")
     message = str(raised.value)
-    assert message.startswith(MODAL_ENDED)
-    assert "returncode 124" in message
+    assert message.startswith(MODAL_LIFETIME_END if code == 124 else MODAL_ENDED)
+    assert f"returncode {code}" in message
     assert isinstance(raised.value.__cause__, NotFoundError)
     assert sandbox.platform_end["seen_at"] == "command"
-    # Modal's own text classifies as no infrastructure error; ours does.
+    # Modal's own text classifies as no infrastructure error; ours names it.
     assert classify_error(str(raised.value.__cause__)) != INFRA_ERROR
-    assert classify_error(message) == INFRA_ERROR
-    assert classify_error(f"ModalSandboxEndedError: {message}") == INFRA_ERROR
+    assert (classify_error(message) == INFRA_ERROR) is (code == 137)
+    assert (classify_error(f"ModalSandboxEndedError: {message}") == INFRA_ERROR) is (
+        code == 137
+    )
 
 
 @pytest.mark.asyncio
@@ -942,7 +951,9 @@ async def test_the_agent_process_runs_behind_the_held_prefix(monkeypatch):
 
     monkeypatch.setattr("benchflow.sandbox.process.modal.launch_route", route)
     env = SimpleNamespace(
-        hold_argv=lambda argv: modal_impl.held_argv(argv, modal_impl.DOCKER_RLIMITS)
+        hold_argv=lambda argv, route=None: modal_impl.held_argv(
+            argv, modal_impl.DOCKER_RLIMITS
+        )
     )
     remote = SimpleNamespace(exec=_Aio(lambda *a, **k: _ended_agent_process()))
     process = ModalProcess(remote, env=env)

@@ -96,6 +96,13 @@ INCOMPLETE_BRANCH_CHILD_PROXY = (
 INCOMPLETE_SANDBOX_PROXY = (
     "the in-sandbox model proxy's usage log may miss calls: {detail}"
 )
+INCOMPLETE_SHORT_LOG = (
+    "Claude Code's session log counts fewer {kinds} tokens than the turns "
+    "reported (its lines can be written before a response ends), so each "
+    "count of those kinds is the reports', and the cost priced from the log "
+    "is short of them: incomplete here means the tokens, or the cost priced "
+    "from the log"
+)
 
 
 def redaction_failure(rollout: Any) -> str | None:
@@ -273,7 +280,13 @@ def _label_cost(rollout: Any, metrics: dict[str, Any]) -> dict[str, Any]:
                 getattr(rollout._config, "model", None) or ""
             ]
             labelled["price_table_date"] = _snapshot_date_for(models)
-        elif estimate.get("method") == "usage-at-list-price":
+        elif estimate.get("method") == "usage-at-list-price" or (
+            # Claude Code's own counts, every model priced by BenchFlow (a
+            # Claude model's part, if any, is Claude Code's figure: undated).
+            estimate.get("method") == "claude-code-tokens-at-list-price"
+            and set(estimate.get("models") or {})
+            == set(estimate.get("repriced_models") or [])
+        ):
             labelled["price_table_date"] = _snapshot_date_for(
                 (estimate.get("models") or {}).keys()
             )

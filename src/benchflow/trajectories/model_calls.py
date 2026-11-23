@@ -1106,12 +1106,103 @@ def upstream_attempts(path: Path) -> dict[str, int] | None:
     }
 
 
+#: The callback's refusal rules, by the error each answers with.
+_REFUSAL_REASONS = {
+    "model-not-served": "model_not_served",
+    "trial-budget": "trial_budget_spent",
+}
+
+
+def gateway_requests(path: Path) -> list[dict[str, Any]] | None:
+    """The proxy's ``request_end`` record of each request it served
+    (``provider_requests.jsonl``), as far as :func:`summarize` reads them: a
+    refusal the callback reported (``refused``: its rule and the model asked
+    for) and the request's effort (``effort_asked``, ``effort_pin``,
+    ``effort_sent``; benchflow.effort_pin). None without that file."""
+    if not path.is_file():
+        return None
+    keep = ("status", "refused", "effort_asked", "effort_pin", "effort_sent")
+    return [
+        {key: row.get(key) for key in keep}
+        for row in _jsonl(path)
+        if row.get("event") == "request_end"
+    ]
+
+
+def _gateway_figures(
+    calls: list[dict[str, Any]],
+    gateway: list[dict[str, Any]] | None,
+    run_effort: str | None,
+) -> dict[str, Any]:
+    """``refused_calls`` and the refusal and effort figures beside it (see
+    :func:`summarize`)."""
+    refused = [c for c in calls if c.get("refused") is not None]
+    model_refused = sum(1 for c in refused if c["refused"]) if refused else None
+    by_reason: Counter[str] = Counter(
+        c["finish_reason"] if c.get("finish_reason") in _REFUSED else "refusal"
+        for c in refused
+        if c["refused"]
+    )
+    models: Counter[str] = Counter()
+    rows = gateway or []
+    for row in rows:
+        refusal = row.get("refused")
+        if not isinstance(refusal, dict):
+            continue
+        rule = str(refusal.get("rule"))
+        by_reason[_REFUSAL_REASONS.get(rule, rule.replace("-", "_"))] += 1
+        if rule == "model-not-served":
+            models[str(refusal.get("model"))] += 1
+    gateway_refused = sum(1 for row in rows if isinstance(row.get("refused"), dict))
+    pinned = next(
+        (row["effort_pin"] for row in rows if isinstance(row.get("effort_pin"), str)),
+        None,
+    )
+    # Each request the gateway let through: the effort it asked for, and the
+    # one it went upstream at (the pin's, where the pin rewrote it).
+    through = [row for row in rows if not isinstance(row.get("refused"), dict)]
+    asked = [
+        row["effort_asked"]
+        for row in through
+        if isinstance(row.get("effort_asked"), str)
+    ]
+    used = [
+        value
+        for row in through
+        if isinstance(value := row.get("effort_sent") or row.get("effort_asked"), str)
+    ]
+    run_level = _effort_level(run_effort)
+    return {
+        "refused_calls": None
+        if model_refused is None and not gateway_refused
+        else (model_refused or 0) + gateway_refused,
+        "model_refused_calls": model_refused,
+        "refusals_by_reason": dict(by_reason),
+        "models_refused": dict(models),
+        "effort_pin": pinned,
+        "effort_rewrites": sum(1 for row in rows if row.get("effort_sent"))
+        if gateway is not None
+        else None,
+        # A thinking budget with no level (budget_tokens=N, the agent's own)
+        # is no level to compare.
+        "effort_mismatches": sum(
+            1 for value in used if _effort_level(value) not in (None, run_level)
+        )
+        if gateway is not None and run_level is not None
+        else None,
+        "efforts_used": dict(Counter(used)) if gateway is not None else None,
+        "efforts_requested": dict(Counter(asked)) if gateway is not None else None,
+    }
+
+
 def summarize(
     calls: list[dict[str, Any]],
     *,
     first_agent_tools: dict[str, Any] | None = None,
     input_files: dict[str, Any] | None = None,
     upstream: dict[str, int] | None = None,
+    gateway: list[dict[str, Any]] | None = None,
+    run_effort: str | None = None,
 ) -> dict[str, Any]:
     """The trial's totals, with the source of each (``sources``).
 
@@ -1119,12 +1210,31 @@ def summarize(
     request offered (:func:`tool_surface`); None for a source that cannot
     see requests. ``input_files`` is the proxy's view of the files the agent
     read (:class:`_InputScan`). ``upstream`` is :func:`upstream_attempts`.
+
+    ``gateway`` is :func:`gateway_requests`, the proxy's record of every
+    request it served, refused ones too (benchflow#1246): ``refused_calls``
+    counts the calls the model refused (a refusal or a content filter,
+    ``model_refused_calls``) and the requests the gateway refused before any
+    provider saw them; ``refusals_by_reason`` names why
+    (``model_not_served``, ``trial_budget_spent``, ``refusal``,
+    ``content_filter``) and ``models_refused`` the models a
+    ``model_not_served`` refusal was asked for. ``effort_pin`` is the level
+    the proxy pinned each request's effort to (None without a pin),
+    ``effort_rewrites`` the requests it rewrote, and ``effort_mismatches``
+    the requests that went upstream at another effort than *run_effort*, the
+    run's (None with no effort asked for or no proxy record).
+    ``efforts_used`` counts the requests by the effort each went upstream at
+    and ``efforts_requested`` by the one each asked for (the same without a
+    pin): Anthropic ``output_config.effort``, OpenAI ``reasoning_effort`` and
+    Responses ``reasoning.effort`` are BenchFlow's level names already; an
+    Anthropic thinking budget with no level is the agent's own and counts as
+    ``budget_tokens=N``, compared with no level and never pinned. A request
+    that carried no effort counts in none of these.
     """
     sources = sorted({c["source"] for c in calls})
     known = lambda key: [c[key] for c in calls if c.get(key) is not None]  # noqa: E731
     seen = {key: bool(known(key)) for key in FIELDS}
     truncated = known("truncated")
-    refused = known("refused")
     summary: dict[str, Any] = {
         "schema": SUMMARY_SCHEMA,
         "calls": len(calls),
@@ -1137,7 +1247,7 @@ def summarize(
         "finish_reasons": dict(Counter(known("finish_reason"))),
         "truncated_calls": sum(truncated) if truncated else None,
         "truncation_rate": sum(truncated) / len(truncated) if truncated else None,
-        "refused_calls": sum(refused) if refused else None,
+        **_gateway_figures(calls, gateway, run_effort),
         "http_errors": sum(1 for status in known("http_status") if status >= 400)
         if seen["http_status"]
         else None,
@@ -1268,7 +1378,11 @@ def agent_outcome(
         "http_status_counts": summary.get("http_status_counts"),
         "agent_retries": summary.get("agent_retries"),
         "upstream_retries": summary.get("upstream_retries"),
-        "refused_calls": summary.get("refused_calls"),
+        # The model's own refusals; the gateway's are in model-calls.json
+        # (a summary from before 0.10.1 counted only the model's).
+        "refused_calls": summary.get(
+            "model_refused_calls", summary.get("refused_calls")
+        ),
         "terminal_provider_error": terminal_error,
         "last_http_status": status,
     }
@@ -1522,11 +1636,16 @@ def write_model_calls(
     """Write ``trajectory/model-calls.jsonl`` and ``model-calls.json``; None
     when no source recorded a call."""
     from benchflow._utils.disk_space import write_text_atomic
+    from benchflow.effort_pin import trial_run_effort
 
     calls, seen = _proxy_scan(trial / PROXY_LOG)
     if not calls:
         calls, seen = model_calls(trial, session_root=session_root), {}
-    if not calls:
+    gateway = gateway_requests(trial / PROXY_ATTEMPTS)
+    if not calls and not any(
+        isinstance(row.get("refused"), dict) for row in gateway or []
+    ):
+        # A trial whose every request the gateway refused still says so.
         return None
     # Each file is written beside its place and renamed over it, so a link
     # left at either name is replaced, never followed.
@@ -1535,7 +1654,11 @@ def write_model_calls(
         "".join(json.dumps(call, separators=(",", ":")) + "\n" for call in calls),
     )
     summary = summarize(
-        calls, **seen, upstream=upstream_attempts(trial / PROXY_ATTEMPTS)
+        calls,
+        **seen,
+        upstream=upstream_attempts(trial / PROXY_ATTEMPTS),
+        gateway=gateway,
+        run_effort=trial_run_effort(trial),
     )
     write_text_atomic(trial / SUMMARY_FILE, json.dumps(summary, indent=2) + "\n")
     return summary
@@ -1634,6 +1757,20 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "truncated_calls": _INT,
             "truncation_rate": _NUM,
             "refused_calls": _INT,
+            "model_refused_calls": _INT,
+            "refusals_by_reason": _COUNTS,
+            "models_refused": _COUNTS,
+            "effort_pin": _STR,
+            "effort_rewrites": _INT,
+            "effort_mismatches": _INT,
+            "efforts_used": {
+                "type": ["object", "null"],
+                "additionalProperties": {"type": "integer"},
+            },
+            "efforts_requested": {
+                "type": ["object", "null"],
+                "additionalProperties": {"type": "integer"},
+            },
             "http_errors": _INT,
             "http_status_counts": _COUNTS,
             "agent_retries": _INT,

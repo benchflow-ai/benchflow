@@ -18,6 +18,7 @@ the verifier's error, the rewards or the diagnostic. In order:
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,6 +74,8 @@ def incomplete_reason(provenance: dict[str, Any]) -> str | None:
     if not checks["links-after-grading"].get("passed"):
         return APPEARED
     closed = checks.get("outputs-closed")
+    if closed is not None and closed.get("applies") is False:
+        closed = None  # a verify never due a close (no test command): no check
     if closed is not None and not closed.get("ran"):
         return CLOSE_UNREPORTED
     if closed is not None and not closed.get("passed"):
@@ -88,17 +91,86 @@ class IntegrityUnavailableError(RuntimeError):
 
 def benchflow_gap(provenance: dict[str, Any]) -> str | None:
     """Why a link check did not run through BenchFlow's own gap (no record
-    from before the turn; bfx cannot run), or None."""
-    from benchflow.sandbox._verifier_links import BFX_UNAVAILABLE, NO_RECORD
+    from before the turn, or one that is not complete; bfx cannot run), or
+    None."""
+    from benchflow.sandbox._verifier_links import (
+        BFX_UNAVAILABLE,
+        INCOMPLETE_RECORD,
+        NO_RECORD,
+    )
 
     for c in provenance.get("checks") or ():
         why = c.get("why") if isinstance(c, dict) else None
         if (
             not c.get("ran")
+            and c.get("applies") is not False
             and isinstance(why, str)
-            and (why == NO_RECORD or why.startswith(BFX_UNAVAILABLE))
+            and (
+                why == NO_RECORD
+                or why.startswith(BFX_UNAVAILABLE)
+                or why.startswith(INCOMPLETE_RECORD)
+            )
         ):
             return why
+    return None
+
+
+def pre_turn_refusal(record: Any, *, primary_agent: str | None) -> str | None:
+    """Why the trial is refused before the agent's turn because of its record
+    of the links before the turn, or None.
+
+    A record that is not complete (a walk bfx failed on twice, a walk over a
+    cap, bfx that could not run after all) can't tell the image's own links
+    from the turn's. That is BenchFlow's gap, known before any agent code
+    runs, so it is a refusal before the turn (Q4), unscored, for every model
+    agent, non-root or root; never the agent's 0 after it (Q6 asks for a
+    check defeated during the run). The oracle is exempt and runs. No record
+    at all keeps its own rule (unscored after the turn, F39)."""
+    from benchflow._utils.scoring import INTEGRITY_UNAVAILABLE_HEADER
+    from benchflow.sandbox._verifier_links import (
+        BFX_UNAVAILABLE,
+        INCOMPLETE_RECORD,
+        Walked,
+    )
+
+    if primary_agent == "oracle" or not isinstance(record, Walked) or record.complete:
+        return None
+    why = record.why or "unknown why"
+    if why.startswith(BFX_UNAVAILABLE):
+        return INTEGRITY_UNAVAILABLE_HEADER + why
+    return f"{INTEGRITY_UNAVAILABLE_HEADER}{INCOMPLETE_RECORD}: {why}"
+
+
+async def rb2_refusal(
+    verifier_user: str,
+    agent_user: str,
+    read_uid: Callable[[str], Awaitable[str | None]],
+) -> str | None:
+    """RB2 by uid, before the turn: why the trial is refused, or None.
+    Another name for the agent's uid is the agent's own user, whose
+    processes could reach the verifier's output folder. *read_uid* reads a
+    user's uid as that user (None: it could not be read). Where either uid
+    can't be read nothing shows they differ, so the trial is refused with
+    that reason (REVIEW-FINAL F7: fail closed)."""
+    uid = await read_uid(verifier_user)
+    if uid is None:
+        return (
+            f"the uid of the task's verifier user ({verifier_user}) could not "
+            "be read, so it can't be told from the agent's"
+        )
+    agent_uid = await read_uid(agent_user)
+    if agent_uid is None:
+        return (
+            f"the uid of the agent's user ({agent_user}) could not be read, so "
+            f"the verifier user's ({verifier_user}, uid {uid}) can't be told "
+            "from it"
+        )
+    if uid == agent_uid:
+        return (
+            f"the task's verifier user ({verifier_user}) has the agent's own "
+            f"uid ({uid}, {agent_user}), so its output folder cannot be kept "
+            "from the agent's processes"
+        )
     return None
 
 

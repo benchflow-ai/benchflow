@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from benchflow._utils import staged_secrets
 from benchflow.agents.env import (
     _LOGIN_ALIASES,
     _LOGIN_KEYS_BY_FAMILY,
@@ -373,4 +374,5 @@ def agent_launch_env(
     # OpenCode reads the model catalog its install wrote and no other
     # (agents/opencode_catalog), whatever the run's env says.
     launch.update(pinned_catalog_env(agent))
+    staged_secrets.register_env(launch)
     return launch

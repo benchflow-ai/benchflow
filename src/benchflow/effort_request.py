@@ -613,10 +613,13 @@ def _known_levels(
         if levels is not None:
             return bare, levels
         # An OpenAI model the pinned Codex lists takes those levels whichever
-        # agent asks: the provider refuses the others after launch.
+        # agent asks: the provider refuses the others after launch. A
+        # provider catalog BenchFlow ships for Codex lists only the levels
+        # Codex offers (DeepSeek's API takes every level), so it binds Codex
+        # alone (refuse_unsupported_effort), not another agent.
         from benchflow.agents.codex_models import codex_model_efforts
 
-        catalog = codex_model_efforts(bare)
+        catalog = codex_model_efforts(bare, provider_catalogs=False)
         if catalog:
             return bare, catalog
     return None
@@ -840,6 +843,96 @@ def _refuse_a_level_the_model_lacks(
         )
 
 
+def _refuse_a_pin_from_benchflow_s_environment(agent_env: Mapping[str, str]) -> None:
+    """Refuse a run that does not ask for the effort pin while
+    ``BENCHFLOW_EFFORT_PIN`` is set in BenchFlow's own environment: a host
+    proxy starts from that environment with the run's agent env over it, so
+    the pin would hold the run's calls while its config and run card say
+    none (benchflow.effort_pin)."""
+    import os
+
+    from benchflow.effort_pin import EFFORT_PIN_ENV, effort_pin_setting
+
+    try:
+        host = effort_pin_setting(os.environ)
+    except ValueError as exc:
+        raise EffortRequestError(str(exc)) from None
+    if host is not None and EFFORT_PIN_ENV not in agent_env:
+        raise EffortRequestError(
+            f"{EFFORT_PIN_ENV} is set in BenchFlow's own environment (the shell "
+            "or .env), and this run does not ask for the effort pin: a model "
+            "proxy started here would pin its calls anyway",
+            hint=f"unset {EFFORT_PIN_ENV}, or pin the run with --effort-pin "
+            "(effort_pin: true in a run config)",
+        )
+
+
+def _refuse_a_pin_nothing_can_hold(
+    agent: str | None,
+    model: str | None,
+    effort: str | None,
+    agent_env: Mapping[str, str],
+) -> str | None:
+    """The level ``--effort-pin`` holds the run's model calls to (the run's
+    effort), None without the pin; refused before launch where it could pin
+    nothing: the run asks for no effort, or its model calls go around
+    BenchFlow's model proxy (benchflow.effort_pin)."""
+    from benchflow.effort_pin import SWITCH_ON, effort_pin_setting
+
+    _refuse_a_pin_from_benchflow_s_environment(agent_env)
+    try:
+        pin = effort_pin_setting(agent_env)
+    except ValueError as exc:
+        raise EffortRequestError(str(exc)) from None
+    if pin is None:
+        return None
+    if not effort:
+        raise EffortRequestError(
+            "--effort-pin holds every model call's reasoning effort to the run's, "
+            "and this run asks for none",
+            hint="give --effort (or a model[effort] suffix), or drop --effort-pin",
+        )
+    if pin not in (SWITCH_ON, effort):
+        raise EffortRequestError(
+            f"BENCHFLOW_EFFORT_PIN={pin} is not the run's effort {effort}",
+            hint="use --effort-pin, which pins to the run's --effort",
+        )
+    from benchflow.trial_budget import unenforceable_reason
+
+    why = unenforceable_reason(agent or "", model, agent_env)
+    if why is not None:
+        raise EffortRequestError(
+            f"--effort-pin needs BenchFlow's model proxy, and {agent}'s model "
+            f"calls would go around it: {why}",
+            hint="run it on a route the proxy serves (an API key), or drop "
+            "--effort-pin",
+        )
+    return effort
+
+
+def _pin_to_the_run_s_level(
+    agent: str | None,
+    model: str | None,
+    reasoning_effort: str | None,
+    env: dict[str, str],
+) -> None:
+    """Give the proxy the run's level in place of the pin's switch."""
+    from benchflow.effort_pin import EFFORT_PIN_ENV, effort_pin_on
+
+    # Every rollout passes here before its proxy starts, the SDK's too.
+    _refuse_a_pin_from_benchflow_s_environment(env)
+    try:
+        on = effort_pin_on(env)
+    except ValueError as exc:
+        raise EffortRequestError(str(exc)) from None
+    if not on:
+        return
+    asked = effort_request(agent, model, reasoning_effort, env).effort
+    level = _refuse_a_pin_nothing_can_hold(agent, model, asked, env)
+    if level is not None:
+        env[EFFORT_PIN_ENV] = level
+
+
 def with_route_effort(
     agent: str | None,
     model: str | None,
@@ -852,8 +945,10 @@ def with_route_effort(
     over what the agent sends, so ``-e low`` ran at high and every trial
     recorded a mismatch. A request wins over a route's default (lead ruling,
     2026-11-13): the route is sent the request. With nothing asked, the
-    route keeps its default."""
+    route keeps its default. With ``--effort-pin`` (benchflow.effort_pin) the
+    proxy is given the run's level, which it holds every call to."""
     env = dict(agent_env)
+    _pin_to_the_run_s_level(agent, model, reasoning_effort, env)
     if str(env.get(BEDROCK_EFFORT_ENV) or "").strip():
         # The request itself: settle_effort refused it beside another level.
         return env
@@ -952,6 +1047,7 @@ def settle_effort(
     refuse_known_downgrade(agent, model, request.effort)
     _refuse_agent_without_effort(agent, model, request.launch, env, named_as)
     _refuse_what_the_route_cannot_carry(agent, model, request.effort, request.launch)
+    _refuse_a_pin_nothing_can_hold(agent, model, request.effort, given)
     bare, _ = split_model_effort(model)
     if request.effort and request.source:
         _refuse_requests_nothing_applies(

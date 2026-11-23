@@ -24,7 +24,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from benchflow._dotenv import load_dotenv_env
-from benchflow.agents.codex_config import apply_codex_provider_config
+from benchflow._utils import staged_secrets
+from benchflow.agents.codex_config import (
+    apply_codex_model_catalog,
+    apply_codex_provider_config,
+)
 from benchflow.agents.login_dirs import login_display, login_path
 from benchflow.agents.muse_config import validate_muse_model
 from benchflow.agents.registry import (
@@ -37,6 +41,12 @@ from benchflow.errors import MissingCredentialError
 
 # Claude Code's output cap, which BenchFlow sets for every agent unless the operator does (the run card names it).
 CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT = "128000"
+# Claude Code's model for its sub-agents, and the switch that makes it hold
+# over the Agent tool's own ``model`` argument: with the model alone, Claude
+# Code 2.1.316 still sent ``haiku`` and ``opus`` sub-agents to
+# claude-haiku-5-5 and claude-opus-5-5 (benchflow#1246).
+CLAUDE_CODE_SUBAGENT_MODEL_ENV = "CLAUDE_CODE_SUBAGENT_MODEL"
+CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +759,10 @@ def inject_vertex_credentials(agent_env: dict[str, str], model: str) -> None:
             hint="gcloud auth application-default login",
         )
     agent_env.setdefault("GOOGLE_APPLICATION_CREDENTIALS_JSON", adc_path.read_text())
+    staged_secrets.register(
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        agent_env["GOOGLE_APPLICATION_CREDENTIALS_JSON"],
+    )
     agent_env.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     if "GOOGLE_CLOUD_PROJECT" not in agent_env:
         raise MissingCredentialError(
@@ -1132,6 +1146,9 @@ def _configure_codex_custom_provider(
         provider_name=agent_env.get("BENCHFLOW_PROVIDER_NAME", "openai-compatible"),
         strict=True,
     )
+    # A model a provider's published Codex catalog lists (DeepSeek's) is not
+    # in Codex's bundled one: point Codex at the shipped catalog.
+    apply_codex_model_catalog(agent_env, model)
 
 
 def _drop_inherited_generic_provider_overrides(
@@ -1273,6 +1290,83 @@ def inherit_agent_auth_env(
         if agent == "openhands":
             _bridge_explicit_openhands_provider_env(inherited, explicit_keys)
     return inherited
+
+
+def runs_claude_code(agent: str) -> bool:
+    """Whether the agent runs the Claude Code CLI: its login stands in for
+    ANTHROPIC_API_KEY (claude-agent-acp, over ACP or as the native CLI)."""
+    login = getattr(AGENTS.get(agent), "subscription_auth", None)
+    return login is not None and login.replaces_env == "ANTHROPIC_API_KEY"
+
+
+def subagent_model_pin(
+    agent: str, model: str | None, run_env: dict[str, str]
+) -> tuple[str | None, str | None]:
+    """Claude Code's sub-agent model for a run, and the pin's state.
+
+    ``("pinned", <id>)``: BenchFlow sets ``CLAUDE_CODE_SUBAGENT_MODEL`` to the
+    run's model id, as every route hands it to Claude Code (the bare id: the
+    one a login and a named endpoint run, and a name the proxy's config
+    serves beside its ``runtime-`` alias), with ``_FORCE=1``.
+    ``("run-set", None)``: the run's env names either variable, and
+    BenchFlow sets neither. ``("off", None)``: the run names no model, so
+    Claude Code picks its own and its sub-agents theirs. ``(None, None)``
+    for an agent that does not run Claude Code."""
+    if not runs_claude_code(agent):
+        return None, None
+    if (
+        CLAUDE_CODE_SUBAGENT_MODEL_ENV in run_env
+        or CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV in run_env
+    ):
+        return "run-set", None
+    if not model:
+        return "off", None
+    from benchflow.effort_request import EffortRequestError, split_model_effort
+    from benchflow.providers.litellm_config import strip_provider_prefix
+
+    try:
+        # An effort suffix is no part of the id (a context size such as
+        # [1m] is, and stays); the run settles the effort before launch.
+        bare, _ = split_model_effort(model)
+    except EffortRequestError:
+        bare = model
+    return "pinned", strip_provider_prefix(bare or model)
+
+
+def _through_the_proxy(agent: str, model: str | None, env: dict[str, str]) -> bool:
+    """Whether the agent's calls go through BenchFlow's model proxy, as
+    ensure_litellm_runtime decides it from the resolved env."""
+    from benchflow.agents.registry import is_scripted_agent
+
+    return (
+        bool(routed_model(agent, model))
+        and not is_scripted_agent(agent)
+        and not uses_native_subscription_auth(agent, model, env)
+        and not uses_direct_anthropic_endpoint(agent, model, env)
+    )
+
+
+def subagent_model_value(
+    agent: str, model: str | None, run_env: dict[str, str]
+) -> str | None:
+    """The name BenchFlow pins Claude Code's sub-agents to, as the launch
+    sets it: through the model proxy, the proxy's name for the run's model
+    (the main loop's ANTHROPIC_MODEL); on a Claude login or a named endpoint,
+    the model id (:func:`subagent_model_pin`). None when BenchFlow sets no
+    pin."""
+    state, pinned = subagent_model_pin(agent, model, run_env)
+    if state != "pinned" or pinned is None or model is None:
+        return None
+    if _through_the_proxy(agent, model, inherit_agent_auth_env(agent, model, run_env)):
+        from benchflow.effort_request import EffortRequestError, split_model_effort
+        from benchflow.providers.litellm_config import safe_model_alias
+
+        try:
+            bare, _ = split_model_effort(model)
+        except EffortRequestError:
+            bare = model
+        return safe_model_alias(bare or model)
+    return pinned
 
 
 def resolve_agent_env(
@@ -1506,6 +1600,17 @@ def resolve_agent_env(
     agent_env.setdefault(
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS", CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT
     )
+    state, pinned = subagent_model_pin(agent, model, agent_env)
+    if (
+        state == "pinned"
+        and pinned is not None
+        and not _through_the_proxy(agent, model, agent_env)
+    ):
+        # A login or a named endpoint: the id the main loop runs. Through the
+        # proxy the wiring pins the proxy's own name for the model
+        # (litellm_runtime._wire_litellm_agent_env), the main loop's.
+        agent_env[CLAUDE_CODE_SUBAGENT_MODEL_ENV] = pinned
+        agent_env[CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV] = "1"
     # Disable telemetry/non-essential traffic in container
     agent_env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     _record_credential_policy(agent, model, agent_env, explicit_agent_env_keys)

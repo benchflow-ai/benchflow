@@ -31,8 +31,8 @@ from benchflow.runtime import check_rollout_config
 
 MIMO = "xiaomi/mimo-v2.6-pro"
 TOKEN_PLAN = "https://token-plan.example.test/v1"
-# deepseek serves OpenAI chat completions only: no Responses API for Codex.
-UNROUTABLE = "deepseek/deepseek-v4-pro"
+# Z.ai's coding plan answers 404 on /responses: no Responses API for Codex.
+UNROUTABLE = "zai-coding/glm-5.3-flash"
 OPENROUTER_CLAUDE = "openrouter/anthropic/claude-opus-5.5"
 
 
@@ -144,7 +144,7 @@ def test_bench_eval_run_refuses_an_unroutable_pair_before_a_job_exists(
             "--jobs-dir",
             str(tmp_path / "jobs"),
             "--agent-env",
-            "DEEPSEEK_API_KEY=test-key",
+            "ZAI_API_KEY=test-key",
         ],
     )
 
@@ -205,7 +205,9 @@ def test_evaluation_run_refuses_an_unroutable_pair_before_a_job_exists(tmp_path)
 
 def test_a_single_rollout_refuses_an_unroutable_pair(tmp_path):
     task = _task(tmp_path)
-    with pytest.raises(ValueError, match="only supports openai-completions"):
+    with pytest.raises(
+        ValueError, match="requires provider protocol 'openai-responses'"
+    ):
         check_rollout_config(
             RolloutConfig(
                 task_path=task,
@@ -304,7 +306,7 @@ def test_bench_run_and_its_dry_run_refuse_the_same_pair(tmp_path, monkeypatch, d
         "--jobs-dir",
         str(tmp_path / "jobs"),
         "--agent-env",
-        "DEEPSEEK_API_KEY=test-key",
+        "ZAI_API_KEY=test-key",
     ]
 
     result = CliRunner().invoke(app, [*args, *(["--dry-run"] if dry_run else [])])

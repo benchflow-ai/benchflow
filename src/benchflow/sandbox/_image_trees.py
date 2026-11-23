@@ -55,11 +55,19 @@ import re
 import shlex
 import zlib
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
+
+from benchflow._uv_pin import UV_CACHE_DIR
+
+#: Where BenchFlow's own uv cache unpacks each wheel it installs.
+UV_ARCHIVE = f"{UV_CACHE_DIR}/archive-v0"
 
 # Runs inside the manifest's record script (Python 3.6-safe: an image's own
 # python3 may run it; stdlib only), after its walk: adds ``record["trees"]``.
-# *options*: ``{}`` before the turn; after it, :func:`after_options`.
+# *options*: ``{}`` before the turn; after it, :func:`after_options`. It uses
+# the files walk's ``by_name``, ``manifest_names`` and ``roots`` (a Python
+# tree by its name, the names it records, the trees it left out).
 SECTIONS_SCRIPT = r"""
 def _bf_trees(record, pruned, options):
     import base64, time, zlib
@@ -69,6 +77,9 @@ def _bf_trees(record, pruned, options):
     stdlib_name = re.compile(r"python[0-9][0-9.]*$")
     python_bin = re.compile(r"python[0-9.]*[dmu]*$")
     system = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    # Each entry's inode, device and link count: a snapshot keeps them, a
+    # swap or a replacement doesn't.
+    ids = {}
 
     def digest_of(path):
         try:
@@ -91,6 +102,7 @@ def _bf_trees(record, pruned, options):
             return False
 
     def print_of(path, st, always=False):
+        ids[path] = [st.st_ino, st.st_dev, st.st_nlink]
         link, digest = "", ""
         if stat.S_ISLNK(st.st_mode):
             try:
@@ -121,11 +133,6 @@ def _bf_trees(record, pruned, options):
                 name, _, value = line.partition("=")
                 found.append(name.strip() + " = " + value.strip())
         return sorted(found)
-
-    def python_root(name, parent):
-        if name in ("site-packages", "dist-packages"):
-            return True
-        return bool(stdlib_name.match(name)) and os.path.basename(parent) == "lib"
 
     trees, sites, pytest11, prefixes = {}, [], {}, []
 
@@ -171,9 +178,13 @@ def _bf_trees(record, pruned, options):
                     continue
                 if entry.path in pruned:
                     continue
-                if entry.name == "pkgs" and os.path.isdir(os.path.join(top, "conda-meta")):
+                # Every Python tree by its name, before the turn and after
+                # it (the files walk's by_name): one made in the turn is
+                # judged here too, its .pth files included.
+                named = by_name(entry.name, top)
+                if named and entry.name == "pkgs":
                     continue
-                if python_root(entry.name, top):
+                if named:
                     if stdlib_name.match(entry.name):
                         prefixes.append(os.path.dirname(top))
                     record_tree(entry.path)
@@ -324,6 +335,13 @@ def _bf_trees(record, pruned, options):
     # list and md5sums (or a conffile's in the status file), or its pip
     # dist's RECORD. Such a file is an install, not a planted hook.
     owned = {}
+    # BenchFlow's own uv cache (root's alone) unpacks each wheel it installs
+    # into an archive entry; a conftest.py or pytest configuration file a
+    # wheel ships (numpy's and fsspec's conftest.py for the model proxy) is
+    # the wheel's own when a dist RECORD at that entry's root lists it with
+    # its sha256. One that matches no RECORD stays planted.
+    uv_archive = options.get("uv_archive") or ""
+    uv_names = set(options.get("uv_names") or ())
     candidates = [
         p for p in trees
         if "/__pycache__/" not in p
@@ -342,6 +360,23 @@ def _bf_trees(record, pruned, options):
         candidates += [
             p for p, e in tools.items()
             if e[5] >= since - 1000000000 and (stat.S_ISREG(e[0]) or stat.S_ISLNK(e[0]))
+        ]
+    # A conftest.py or pytest configuration file the files walk found in a
+    # Python tree made in the turn (apt-get installing python3-numpy) is
+    # checked against dpkg as well.
+    def in_tree(path):
+        parts = path.split("/")
+        return any(
+            by_name(parts[i], "/".join(parts[:i]) or "/") for i in range(1, len(parts) - 1)
+        )
+    candidates += [
+        p for p in record.get("files", {})
+        if p.rsplit("/", 1)[-1] in manifest_names and in_tree(p)
+    ]
+    if uv_archive:
+        candidates += [
+            p for p in record.get("files", {})
+            if p.startswith(uv_archive + "/") and p.rsplit("/", 1)[-1] in uv_names
         ]
     dpkg = {}
     if candidates:
@@ -419,6 +454,50 @@ def _bf_trees(record, pruned, options):
         mine = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
         return "pip:" + entry[0] if mine == entry[1] else ""
 
+    uv_records = {}
+
+    def uv_owner(path):
+        if not uv_archive or not path.startswith(uv_archive + "/"):
+            return ""
+        entry, _, inner = path[len(uv_archive) + 1:].partition("/")
+        if not entry or not inner:
+            return ""
+        root = uv_archive + "/" + entry
+        # Read through no link: a RECORD resolves inside its entry (a linked
+        # dist-info or RECORD would keep its bytes elsewhere). The walk
+        # records no linked file and descends no linked folder.
+        real_root = os.path.realpath(root)
+        if root not in uv_records:
+            found = {}
+            try:
+                for n in os.listdir(root):
+                    if not n.endswith(".dist-info"):
+                        continue
+                    record_path = os.path.join(root, n, "RECORD")
+                    if not os.path.realpath(record_path).startswith(real_root + "/"):
+                        continue
+                    try:
+                        with open(record_path, "rb") as handle:
+                            for line in handle.read().decode("utf-8", "replace").splitlines():
+                                parts = line.rsplit(",", 2)
+                                if len(parts) == 3 and parts[1].startswith("sha256="):
+                                    found[parts[0]] = (n, parts[1][7:])
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            uv_records[root] = found
+        hit = uv_records[root].get(inner)
+        if hit is None:
+            return ""
+        try:
+            with open(path, "rb") as handle:
+                digest = hashlib.sha256(handle.read()).digest()
+        except OSError:
+            return ""
+        mine = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return "uv:" + hit[0] if mine == hit[1] else ""
+
     for path in candidates:
         name = listed(path)
         if name:
@@ -432,12 +511,18 @@ def _bf_trees(record, pruned, options):
             mine = pip_owner(path)
             if mine:
                 owned[path] = mine
+        mine = uv_owner(path)
+        if mine:
+            owned[path] = mine
 
     section = {
         "python_trees": trees, "sites": sites, "pytest11": pytest11,
         "interpreters": interpreters, "path_tools": tools, "path_folders": folders,
         "startup": startup, "homes": homes, "walk_started_ns": started,
         "processes": processes, "owned": owned, "startup_env": env_files,
+        "roots": sorted(set(roots)),
+        "ids": ids,
+        "walk_pid": os.getpid(),
     }
     text = json.dumps(section, sort_keys=True).encode("utf-8")
     record["trees"] = base64.b64encode(zlib.compress(text, 6)).decode("ascii")
@@ -494,7 +579,14 @@ NOTES = (
     "not covered: /tmp (L10)",
     "not covered: pip and uv configuration (L11b)",
     "a change, not a flag: an edited standard-library module (L7e)",
+    "a change, not a flag (snapshot-ctime): a file only root can write, which "
+    "the walk before didn't hash, whose ctime alone moved inside a snapshot "
+    "the trial took (a Daytona snapshot sets the ctime of files in the "
+    "sandbox's writable layer at its start, an edited file's too)",
     "not covered: what test.sh's own code does while it runs (L12)",
+    "a conftest.py or pytest configuration file in BenchFlow's own uv cache "
+    "counts as its wheel's when the cached RECORD lists it with its sha256; "
+    "the cache is writable by root only",
 )
 
 
@@ -527,11 +619,28 @@ def _unpack(text: Any) -> dict[str, Any] | None:
         out[key] = tuple(v for v in values if isinstance(v, str))
     started = data.get("walk_started_ns")
     out["walk_started_ns"] = started if type(started) is int else None
+    walk_pid = data.get("walk_pid")
+    out["walk_pid"] = walk_pid if type(walk_pid) is int else None
     owned = data.get("owned")
     out["owned"] = {
         str(path): str(who)
         for path, who in (owned.items() if isinstance(owned, dict) else ())
         if isinstance(path, str) and isinstance(who, str)
+    }
+    found_roots = data.get("roots")
+    # None in a record without them: the walk after then goes by name.
+    out["roots"] = (
+        tuple(v for v in found_roots if isinstance(v, str))
+        if isinstance(found_roots, list)
+        else None
+    )
+    ids = data.get("ids")
+    out["ids"] = {
+        str(path): list(entry)
+        for path, entry in (ids.items() if isinstance(ids, dict) else ())
+        if isinstance(entry, list)
+        and len(entry) == 3
+        and all(type(v) is int for v in entry)
     }
     env_files = data.get("startup_env")
     out["startup_env"] = tuple(
@@ -572,13 +681,26 @@ def after_options(before: Any, startup_extra: Iterable[str] = ()) -> dict[str, A
     trees = _trees(before)
     if trees is None:
         return {}
+    roots = trees.get("roots")
     return {
+        # Only the Python trees found before the turn are trees after it.
+        **({"roots": list(roots)} if roots is not None else {}),
         "folders": list(trees["path_folders"]),
         "homes": list(trees["homes"]),
         "interpreters": sorted(trees["interpreters"]),
         "since_ns": trees["walk_started_ns"],
         "startup_extra": [p for p in startup_extra if p.startswith("/")],
+        "uv_archive": UV_ARCHIVE,
+        "uv_names": sorted(manifest_names()),
     }
+
+
+def manifest_names() -> tuple[str, ...]:
+    """The conftest and pytest configuration names the files walk records
+    (``_image_manifest.NAMES``)."""
+    from benchflow.sandbox._image_manifest import NAMES
+
+    return NAMES
 
 
 def owned(manifest: Any) -> dict[str, str]:
@@ -726,6 +848,99 @@ def _same(was: Sequence[Any], now: Sequence[Any]) -> bool:
     return list(was[:7]) == list(now[:7])
 
 
+#: Seconds either side of a recorded snapshot window a ctime may fall in and
+#: still count as the snapshot's (the host's clock against the sandbox's).
+SNAPSHOT_CTIME_MARGIN_SEC = 5
+
+
+def snapshot_during(
+    ctime_sec: float, windows: Iterable[tuple[float, float]]
+) -> float | None:
+    """The start (epoch seconds) of the recorded snapshot window *ctime_sec*
+    falls in, or None. A Daytona snapshot sets the ctime of files in the
+    sandbox's writable layer to its start."""
+    return next(
+        (
+            start
+            for start, end in windows
+            if start - SNAPSHOT_CTIME_MARGIN_SEC
+            <= ctime_sec
+            <= end + SNAPSHOT_CTIME_MARGIN_SEC
+        ),
+        None,
+    )
+
+
+def snapshot_note(start: float) -> str:
+    at = datetime.fromtimestamp(start, UTC).isoformat(timespec="seconds")
+    return f"ctime moved during the snapshot at {at}; not compared"
+
+
+def only_root_writes(mode: Any, uid: Any) -> bool:
+    """Whether only root can change the file in place: root owns it, and no
+    group or other write bit is set. A link's own mode is always 0777; its
+    target text can't change in place, so its owner alone decides. *mode* is
+    the walk's number, or the shell walk's text (its type letter, then the
+    octal bits: ``f755``, ``l777``); one it can't read is not root-only."""
+    if uid != 0:
+        return False
+    if isinstance(mode, str):
+        try:
+            bits = int(mode[1:], 8)
+        except ValueError:
+            return False
+        return mode[:1] == "l" or not bits & 0o022
+    if type(mode) is not int:
+        return False
+    return (mode & 0o170000) == 0o120000 or not mode & 0o022
+
+
+def _same_file(before: Mapping[str, Any], after: Mapping[str, Any], path: str) -> bool:
+    """Whether both walks recorded *path*'s inode, device and link count, and
+    they are the same: a snapshot keeps them, a swap of two files with the
+    same fingerprint, or ``ln -f``, changes them."""
+    was = (before.get("ids") or {}).get(path)
+    return was is not None and was == (after.get("ids") or {}).get(path)
+
+
+def _snapshot_ctime(
+    where, path, kind, was, now, context, same_file: bool
+) -> dict[str, Any] | None:
+    """A change row for an entry whose ctime is the one field that moved, to
+    a time inside a snapshot window the trial recorded
+    (``context["snapshot_windows"]``), that only root can change in place
+    (:func:`only_root_writes`) and that is the same file (*same_file*:
+    :func:`_same_file`); None for anything else, an entry it can't read
+    included, which is then compared as without a snapshot. A snapshot sets
+    the ctime of an edited file too, so a file the agent user could have
+    edited in place, keeping its size and setting its mtime back, is
+    compared as without a snapshot. Only an entry the walk before didn't
+    hash, and one the walk after could read."""
+    windows = (context or {}).get("snapshot_windows") or ()
+    if not windows or not same_file:
+        return None
+    # The identity map is one per walk, by path, so an entry one section
+    # plants or removes can carry an identity both walks recorded through
+    # another section: its missing side (None) raises inside the try, and it
+    # is declined.
+    try:
+        if (was[7] and was[7] != "?") or now[7] == "?":
+            return None
+        fields = (0, 1, 2, 3, 4, 6)
+        if [was[i] for i in fields] != [now[i] for i in fields]:
+            return None
+        if not only_root_writes(was[0], was[1]):
+            return None
+        start = snapshot_during(now[5] / 1e9, windows)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if start is None:
+        return None
+    return _row(
+        where, path, kind, "snapshot-ctime", was, now, note=snapshot_note(start)
+    )
+
+
 def _side(entry: Sequence[Any] | None) -> dict[str, Any] | None:
     if entry is None:
         return None
@@ -747,6 +962,48 @@ def _row(where, path, kind, category, was, now, **extra) -> dict[str, Any]:
         "after": _side(now),
         **extra,
     }
+
+
+def _same_link(was: Sequence[Any] | None, now: Sequence[Any]) -> bool:
+    """Whether *now* may take a package as its owner: not a link, or the
+    same link (same target) the walk before saw. An owner check reads
+    through a link, so a new or re-pointed one is never a package's."""
+    if not now[6]:
+        return True
+    return was is not None and now[6] != "?" and was[6] == now[6]
+
+
+def _record_vouches(
+    owner: str, path: str, b: Mapping[str, Any], a: Mapping[str, Any]
+) -> bool:
+    """Whether a pip RECORD can vouch for *path*: only one the agent user
+    couldn't have written. The dist's RECORD is the one the walk before saw,
+    unchanged (owner, mode, size, mtime and ctime: a snapshot between the
+    walks moves every ctime, so this arm then never holds), or it is root's
+    with no group or other write. dpkg's database and BenchFlow's uv cache
+    are root's alone."""
+    if not owner.startswith("pip:"):
+        return True
+    site = next(
+        (
+            s
+            for s in sorted(
+                (str(s) for s in a["sites"]), key=lambda s: len(s), reverse=True
+            )
+            if path.startswith(s + "/")
+        ),
+        None,
+    )
+    if site is None:
+        return False
+    record = f"{site}/{owner[4:]}/RECORD"
+    now = a["python_trees"].get(record)
+    if now is None:
+        return False
+    was = b["python_trees"].get(record)
+    if was is not None and list(was[:7]) == list(now[:7]):
+        return True
+    return only_root_writes(now[0], now[1])
 
 
 def _differences(old: Mapping[str, Any], new: Mapping[str, Any]):
@@ -812,8 +1069,20 @@ def diff_python_trees(
     tops = _plugin_tops(b)
     flags, changes = [], []
     for path, kind, was, now in _differences(old, new):
+        moved = _snapshot_ctime(
+            "python_trees", path, kind, was, now, context, _same_file(b, a, path)
+        )
+        if moved:
+            changes.append(moved)
+            continue
         category = tree_category(path, sites, tops, kind)
-        if category == "startup" and path in a.get("owned", {}):
+        owner = a.get("owned", {}).get(path)
+        if (
+            category == "startup"
+            and owner
+            and _same_link(was, now)
+            and _record_vouches(owner, path, b, a)
+        ):
             # A package's own, as installed (dpkg md5sums or a pip RECORD).
             category = "startup-owned"
         (flags if category in CATEGORIES else changes).append(
@@ -847,7 +1116,12 @@ def diff_interpreters(
         return [], [], 0
     flags, changes = [], []
     for path, kind, was, now in _differences(b["interpreters"], a["interpreters"]):
-        if kind == "planted":
+        moved = _snapshot_ctime(
+            "interpreters", path, kind, was, now, context, _same_file(b, a, path)
+        )
+        if moved:
+            changes.append(moved)
+        elif kind == "planted":
             changes.append(
                 _row("interpreters", path, kind, "interpreter-new", was, now)
             )
@@ -878,13 +1152,19 @@ def diff_path_tools(before: Any, after: Any, context: Mapping[str, Any] | None =
     for path, kind, was, now in _differences(b["path_tools"], a["path_tools"]):
         if path in skip:
             continue
+        moved = _snapshot_ctime(
+            "path_tools", path, kind, was, now, context, _same_file(b, a, path)
+        )
+        if moved:
+            changes.append(moved)
+            continue
         folder, _, name = path.rpartition("/")
         flag = name in names and (
             kind == "edited"
             or (kind == "planted" and order.get(folder, never) < first.get(name, -1))
         )
         category = "path-tool" if flag else "path-tool-change"
-        if flag and path in a.get("owned", {}):
+        if flag and path in a.get("owned", {}) and _same_link(was, now):
             # A package's own file, as installed (apt-get reinstalling it).
             flag, category = False, "path-tool-owned"
         (flags if flag else changes).append(
@@ -922,6 +1202,12 @@ def diff_startup(before: Any, after: Any, context: Mapping[str, Any] | None = No
     old, new = b["startup"], a["startup"]
     flags, changes = [], []
     for path, kind, was, now in _differences(old, new):
+        moved = _snapshot_ctime(
+            "startup", path, kind, was, now, context, _same_file(b, a, path)
+        )
+        if moved:
+            changes.append(moved)
+            continue
         if (
             kind == "planted"
             and path not in looked
@@ -960,6 +1246,26 @@ def own_processes(env: Any) -> frozenset[tuple[int, int]]:
 
 #: The verifier's output folders: a turn process that works there is a flag.
 WATCHED = ("/logs/verifier",)
+#: PID 1's program in a Daytona sandbox.
+DAYTONA_DAEMON = "/usr/local/bin/daytona"
+#: Where the host keeps the shell of each session BenchFlow opened through
+#: Daytona's API: (pid, start ticks), read by a probe in that session when it
+#: opened (sandbox.daytona).
+SESSION_SHELLS_ATTR = "_benchflow_session_shells"
+#: Set on the sandbox by a rollout whose integrity check diffs the processes
+#: (audit and off): only then does Daytona probe each session it opens.
+RECORD_SESSION_SHELLS_ATTR = "_benchflow_record_session_shells"
+
+
+def session_shells(env: Any) -> frozenset[tuple[int, int]]:
+    """The session shells the host recorded for *env* (:data:`SESSION_SHELLS_ATTR`)."""
+    return frozenset(
+        (entry[0], entry[1])
+        for entry in getattr(env, SESSION_SHELLS_ATTR, None) or ()
+        if isinstance(entry, (tuple, list))
+        and len(entry) == 2
+        and all(type(v) is int for v in entry)
+    )
 
 
 def _abuse(row: Sequence[Any], watched: Sequence[str]) -> str:
@@ -996,7 +1302,15 @@ def diff_processes(before: Any, after: Any, context: Mapping[str, Any] | None = 
     parent is outside the sandbox's pid namespace (PPid 0: only the engine's
     exec makes one, so BenchFlow's execs, this walk included) and all under
     it; and the daemons recorded (``context["own_processes"]``) and
-    all under them. A zombie is not alive."""
+    all under them. Also the walk's own process (``walk_pid``) and all under
+    it, and each process it runs under, short of PID 1, that one alone: on
+    Daytona the walk runs under BenchFlow's command channel or a session, not
+    an engine exec, and what else runs beside it there is counted. And the
+    shell of each session BenchFlow opened on Daytona
+    (``context["own_shells"]``, by pid and start), that shell alone: a
+    session's shell outlives its command, so what a turn left under it is
+    still the turn's. Where PID 1 is Daytona's own daemon there is no
+    keep-alive child. A zombie is not alive."""
     b, a = _trees(before), _trees(after)
     if b is None or a is None or not a["processes"]:
         return [], [], 0
@@ -1008,9 +1322,22 @@ def diff_processes(before: Any, after: Any, context: Mapping[str, Any] | None = 
     own = (context or {}).get("own_processes") or frozenset()
     roots = [pid for pid, row in rows.items() if row[1] == 0 and pid != 1]
     roots += [pid for pid, row in rows.items() if (pid, row[2]) in own]
+    # The walk and all under it; each process it runs under, short of PID 1,
+    # that process alone (what else runs under one is still counted).
+    walk = a.get("walk_pid")
+    ancestors: set[int] = set()
+    if type(walk) is int and walk in rows and walk != 1:
+        roots.append(walk)
+        up = rows[walk][1]
+        while up in rows and up != 1 and up not in ancestors:
+            ancestors.add(up)
+            up = rows[up][1]
+    daytona = 1 in rows and rows[1][5].split(" ", 1)[0] == DAYTONA_DAEMON
     benchflows = {1}
+    # Daytona's daemon keeps itself alive as PID 1: no keep-alive child there,
+    # so a sleep the turn left under PID 1 is not taken for one.
     keepalive = [p for p in children.get(1, ()) if rows[p][5].startswith("sleep ")]
-    benchflows.update(keepalive[:1])
+    benchflows.update([] if daytona else keepalive[:1])
     # PID 1's other children are not BenchFlow's: an orphan the turn left
     # is reparented there.
     while roots:
@@ -1019,6 +1346,9 @@ def diff_processes(before: Any, after: Any, context: Mapping[str, Any] | None = 
             continue
         benchflows.add(pid)
         roots.extend(children.get(pid, ()))
+    benchflows.update(ancestors)
+    shells = (context or {}).get("own_shells") or frozenset()
+    benchflows.update(pid for pid, row in rows.items() if (pid, row[2]) in shells)
     earlier = {(row[0], row[2]) for row in b["processes"]}
     new = {
         pid
@@ -1077,7 +1407,8 @@ def diff_processes(before: Any, after: Any, context: Mapping[str, Any] | None = 
 def interpreter_stat_command(before: Any) -> str | None:
     """A shell-only look at the pre-turn interpreters (and PATH pythons),
     for when the walk after the turn could not run (its Python replaced):
-    ``path|mode-hex|uid|gid|size|mtime|ctime`` or ``path|gone`` per line."""
+    ``path|mode-hex|uid|gid|size|mtime|ctime|inode|device|links`` or
+    ``path|gone`` per line."""
     trees = _trees(before)
     if trees is None:
         return None
@@ -1094,20 +1425,48 @@ def interpreter_stat_command(before: Any) -> str | None:
     return (
         "for f in "
         + " ".join(shlex.quote(p) for p in paths)
-        + "; do if s=$(stat -c '%f|%u|%g|%s|%Y|%Z' -- \"$f\" 2>/dev/null); "
+        + "; do if s=$(stat -c '%f|%u|%g|%s|%Y|%Z|%i|%d|%h' -- \"$f\" 2>/dev/null); "
         'then printf "%s|%s\\n" "$f" "$s"; else printf "%s|gone\\n" "$f"; fi; done'
     )
 
 
-def interpreter_stat_flags(before: Any, output: str | None) -> list[dict[str, Any]]:
+def _whole_lines(output: str) -> list[str]:
+    """The lines the look printed in full: each ends with a newline, so a
+    last line without one was cut."""
+    return [line.removesuffix("\r") for line in output.split("\n")[:-1]]
+
+
+def interpreter_stat_flags(
+    before: Any,
+    output: str | None,
+    snapshot_windows: Iterable[tuple[float, float]] = (),
+    notes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Flags for the interpreters the shell look found changed: whole
-    seconds, mode, owner and size (no digest without a Python)."""
+    seconds, mode, owner and size (no digest without a Python). A line that
+    can't be read (output a cut channel truncated) flags nothing: that
+    interpreter is not checked (:func:`interpreter_stat_unchecked`).
+
+    ctime is the one field a process can't set back, so it is compared, but
+    not when it is the only change, it falls inside a snapshot window the
+    trial recorded (*snapshot_windows*, epoch seconds), only root can write
+    the file (:func:`only_root_writes`) and it is the same file (its inode,
+    device and link count as recorded): a Daytona snapshot sets the ctime of
+    files in the sandbox's writable layer to its start. A link is never
+    excused here: the look sees no link's target. Each such interpreter is
+    added to *notes* instead of flagged.
+
+    The walk that runs never excuses an entry it hashed before; the walk
+    before hashes every interpreter, but nothing here can hash one after, so
+    the owner and identity rules alone decide (a root-only interpreter only
+    root, or a swap the identity shows, can change)."""
+    windows = list(snapshot_windows)
     trees = _trees(before)
     if trees is None or not output:
         return []
     pre = {**trees["path_tools"], **trees["interpreters"]}
     flags = []
-    for line in output.splitlines():
+    for line in _whole_lines(output):
         path, _, rest = line.partition("|")
         was = pre.get(path)
         if was is None:
@@ -1117,13 +1476,8 @@ def interpreter_stat_flags(before: Any, output: str | None) -> list[dict[str, An
                 _row("interpreters", path, "removed", "interpreter", was, None)
             )
             continue
-        try:
-            parts = rest.split("|")
-            seen = [int(parts[0], 16), *(int(p) for p in parts[1:6])]
-        except (ValueError, IndexError):
-            seen = []
-        if len(seen) != 6:
-            flags.append(_row("interpreters", path, "edited", "interpreter", was, None))
+        seen = _stat_fields(rest)
+        if seen is None:
             continue
         expected = [
             was[0],
@@ -1133,10 +1487,56 @@ def interpreter_stat_flags(before: Any, output: str | None) -> list[dict[str, An
             was[4] // 1_000_000_000,
             was[5] // 1_000_000_000,
         ]
-        if seen != expected:
+        if seen[:6] != expected:
+            during = snapshot_during(seen[5], windows)
+            if (
+                seen[:5] == expected[:5]
+                and (seen[0] & 0o170000) != 0o120000
+                and only_root_writes(seen[0], seen[1])
+                and seen[6:] == (trees.get("ids") or {}).get(path)
+                and during is not None
+            ):
+                if notes is not None:
+                    notes.append({"path": path, "note": snapshot_note(during)})
+                continue
             now = [*seen[:4], seen[4] * 1_000_000_000, seen[5] * 1_000_000_000, "", ""]
             flags.append(_row("interpreters", path, "edited", "interpreter", was, now))
     return flags
+
+
+def interpreter_stat_unchecked(before: Any, output: str | None) -> list[str]:
+    """The interpreters the shell look asked about that its output doesn't
+    answer for: no line, or one that can't be read (empty or cut output).
+    They are not checked, which the record says; never "edited"."""
+    trees = _trees(before)
+    command = interpreter_stat_command(before)
+    if trees is None or command is None:
+        return []
+    pre = {**trees["path_tools"], **trees["interpreters"]}
+    asked = [
+        p
+        for p in pre
+        if p in trees["interpreters"]
+        or re.fullmatch(r"python[0-9.]*[dmu]*", p.rsplit("/", 1)[-1])
+    ]
+    answered = set()
+    for line in _whole_lines(output or ""):
+        path, _, rest = line.partition("|")
+        if rest == "gone" or _stat_fields(rest) is not None:
+            answered.add(path)
+    return sorted(p for p in asked if p not in answered)
+
+
+def _stat_fields(rest: str) -> list[int] | None:
+    """``mode-hex|uid|gid|size|mtime|ctime|inode|device|links`` as nine
+    numbers, or None."""
+    parts = rest.split("|")
+    if len(parts) != 9:
+        return None
+    try:
+        return [int(parts[0], 16), *(int(p) for p in parts[1:9])]
+    except ValueError:
+        return None
 
 
 # -- an image without a Python: the shell walk (F-C) --------------------------
@@ -1174,7 +1574,167 @@ function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
   }
 }
 """
-_PRINTF = r"'E\0%s\0%%p\0%%y%%m\0%%U\0%%G\0%%s\0%%T@\0%%C@\0%%l\0'"
+_PRINTF = (
+    r"'E\0%s\0%%p\0%%y%%m\0%%U\0%%G\0%%s\0%%T@\0%%C@\0%%l\0"
+    r"I\0%%p\0%%i\0%%D\0%%n\0'"
+)
+# Each pytest configuration file's pytest section, hashed: S records.
+_SECTIONS_SH = r"""
+for f; do
+  n=${f##*/}
+  case $n in
+    pytest.ini|.pytest.ini|pytest.toml|.pytest.toml) h=$(sha256sum < "$f" | cut -c1-64) ;;
+    *) t=$(awk -v n="$n" "$BF_SECTION_AWK" "$f" 2>/dev/null)
+       if [ -n "$t" ]; then h=$(printf "%s" "$t" | sha256sum | cut -c1-64); else h=; fi ;;
+  esac
+  printf "S\\0%s\\0%s\\0" "$f" "$h"
+done
+"""
+# What each kept link points at (Q records), as the Python walk keeps it: a
+# regular file's sha256 within the cap, else its type, never read.
+_TARGETS_SH = r"""
+command -v timeout >/dev/null 2>&1 && to="timeout 30" || to=
+for l; do
+  if [ -d "$l" ]; then t=folder
+  elif [ -f "$l" ]; then
+    s=$(stat -L -c %s -- "$l" 2>/dev/null)
+    if [ -z "$s" ]; then t=dangling
+    elif [ "$s" -gt "$BF_TARGET_CAP" ]; then
+      t="regular:$s:not-hashed:$(stat -L -c '%d:%i:%.9Y:%.9Z:%u:%a' -- "$l" 2>/dev/null | tr -d .)"
+    elif [ ! -r "$l" ]; then t=unreadable
+    else t="sha256:$($to head -c "$BF_TARGET_CAP" -- "$l" 2>/dev/null | sha256sum | cut -c1-64)"
+    fi
+  elif [ -p "$l" ]; then t=fifo:not-hashed
+  elif [ -c "$l" ]; then t=char:not-hashed
+  elif [ -b "$l" ]; then t=block:not-hashed
+  elif [ -S "$l" ]; then t=socket:not-hashed
+  elif [ -e "$l" ]; then t=other:not-hashed
+  else t=dangling
+  fi
+  printf "Q\\0%s\\0%s\\0" "$l" "$t"
+done
+"""
+# Whether a folder named like a Python tree that the walk before didn't find
+# is one (exit 0), as the Python walk's interpreter_tree: under a venv, a
+# conda env or a user site.
+_TREE_SH = r"""
+d=$1; n=${d##*/}; up=${d%/*}
+case $n in
+  site-packages|dist-packages)
+    v=${up##*/}
+    case $v in python[0-9]*) ;; *) exit 1 ;; esac
+    case ${v#python} in *[!0-9.]*) exit 1 ;; esac
+    lib=${up%/*}; [ "${lib##*/}" = lib ] || exit 1; prefix=${lib%/*} ;;
+  python[0-9]*)
+    case ${n#python} in *[!0-9.]*) exit 1 ;; esac
+    [ "${up##*/}" = lib ] || exit 1; prefix=${up%/*} ;;
+  *) exit 1 ;;
+esac
+tree=
+# A venv every pytest skips: pyvenv.cfg (8.3 and later) and an activate
+# script in bin/ (before 8.3). A conda env made in the turn is not one.
+if [ -f "$prefix/pyvenv.cfg" ] && [ -d "$prefix/bin" ]; then
+  for a in activate activate.csh activate.fish Activate Activate.bat Activate.ps1; do
+    if [ -e "$prefix/bin/$a" ] || [ -L "$prefix/bin/$a" ]; then tree=1; fi
+  done
+fi
+case $prefix in
+  /root/.local) tree=1 ;;
+  /home/*/.local) h=${prefix#/home/}; case ${h%/.local} in */*) ;; *) tree=1 ;; esac ;;
+esac
+[ -n "$tree" ] || exit 1
+[ "$2" = walk ] || exit 0
+# A user site is a dot folder pytest never enters, whatever it held.
+case $prefix in */.local) exit 0 ;; esac
+# The tree's conftest.py and pytest configuration names, kept with its
+# prefix (Y): the host drops them unless the prefix held a file before.
+printf 'Y\0%s\0%s\0' "$d" "$prefix"
+find "$d" -type f \( @NAMES@ \) -printf 'F\0%p\0%s\0'
+find "$d" -type l \( @NAMES@ \) -printf 'K\0%p\0%l\0'
+find "$d" -type l \( @NAMES@ \) -exec sh -c "$BF_TARGETS" bf-targets {} +
+find "$d" -type f \( @NAMES@ \) -exec sha256sum -z -- {} +
+find "$d" -type f \( @CONFIGS@ \) -exec sh -c "$BF_SECTIONS" bf-sections {} +
+exit 0
+"""
+# The folder links, as the Python walk follows them (its follow_links): each
+# once by its link path, skipped when the walk records the target by its real
+# path, each real folder once, nested links in turn, up to the cap (state in
+# $BF_LK: seen, left, roots). V marks a walk through a link; U a link left
+# unwalked, with why.
+_LINKS_SH = r"""
+is_tree() {
+  n=${1##*/}; up=${1%/*}
+  case $n in
+    site-packages|dist-packages) ;;
+    python[0-9]*)
+      case ${n#python} in *[!0-9.]*) return 1 ;; esac
+      [ "${up##*/}" = lib ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ -f "$BF_LK/roots" ] || return 0
+  grep -qxF -- "$1" "$BF_LK/roots" && return 0
+  case $1 in "$BF_RUNTIME"/*) [ -n "$BF_RUNTIME" ] && return 0 ;; esac
+  sh -c "$BF_TREE" bf-tree "$1"
+}
+# Whether a Python tree the walk left to the trees section is at or below
+# $1 and exposed: made in the turn, or its folder not root's alone. The
+# runtime tree is root's alone.
+hides_tree() {
+  p=${1%/}
+  while IFS= read -r t; do
+    case $t in "$p"|"$p"/*) ;; *) continue ;; esac
+    case $t in "$BF_RUNTIME"/*) [ -n "$BF_RUNTIME" ] && continue ;; esac
+    if [ -f "$BF_LK/roots" ] && ! grep -qxF -- "$t" "$BF_LK/roots"; then return 0; fi
+    # The tree's folder, and its own site-packages or dist-packages, root's
+    # alone (an image can let the agent pip install by giving it the site).
+    for f in "$t" "$t/site-packages" "$t/dist-packages"; do
+      [ "$f" = "$t" ] || [ -e "$f" ] || [ -L "$f" ] || continue
+      o=$(stat -c '%u %a' -- "$f" 2>/dev/null) || return 0
+      [ "${o% *}" = 0 ] || return 0
+      case ${o#* } in *[2367]?|*[2367]) return 0 ;; esac
+    done
+  done < "$BF_LK/trees"
+  return 1
+}
+recorded() {
+  case $1 in @PRUNED@) return 1 ;; esac
+  p=$1
+  while [ -n "$p" ]; do
+    is_tree "$p" && return 1
+    p=${p%/*}
+  done
+  return 0
+}
+unwalked() {
+  printf 'U\0%s\0' "$1"
+  find "$2" -maxdepth 0 -printf '%p\0%l\0'
+}
+for l; do
+  [ -d "$l" ] || continue
+  k=$(stat -L -c '%d:%i' -- "$l" 2>/dev/null) || continue
+  r=$(readlink -f -- "$l" 2>/dev/null; printf .); r=${r%?}; r=${r%?}
+  t=$(stat -c '%d:%i' -- "$r" 2>/dev/null) || t=
+  if [ "$k" = "$t" ]; then
+    case $r in /proc|/proc/*|/sys|/sys/*) continue ;; esac
+    recorded "$r" && ! hides_tree "$r" && continue
+  fi
+  grep -qxF -- "$k" "$BF_LK/seen" && continue
+  echo "$k" >> "$BF_LK/seen"
+  left=$(cat "$BF_LK/left")
+  if [ "$left" -lt 1 ]; then unwalked over-cap "$l"; continue; fi
+  if ! find -H "$l" -maxdepth 1 -printf '' >/dev/null 2>&1; then unwalked unreadable "$l"; continue; fi
+  n=$(find -H "$l" -mindepth 1 -printf x 2>/dev/null | head -c "$left" | wc -c)
+  if [ $((n + 1)) -gt "$left" ]; then unwalked over-cap "$l"; echo 0 > "$BF_LK/left"; continue; fi
+  echo $((left - n - 1)) > "$BF_LK/left"
+  printf 'V\0%s\0' "$l"
+  find -H "$l" -mindepth 1 -type f \( @WANTED@ \) -printf 'F\0%p\0%s\0'
+  find -H "$l" -mindepth 1 -type l \( @WANTED@ \) -printf 'K\0%p\0%l\0'
+  find -H "$l" -mindepth 1 -type l \( @WANTED@ \) -exec sh -c "$BF_TARGETS" bf-targets {} +
+  find -H "$l" -mindepth 1 -type f \( @WANTED@ \) -exec sha256sum -z -- {} +
+  find -H "$l" -mindepth 1 -type f \( @CONFIGS@ \) -exec sh -c "$BF_SECTIONS" bf-sections {} +
+  find -H "$l" -mindepth 1 -type l -xtype d -print0 | LC_ALL=C sort -z | xargs -0 -r sh -c "$BF_LINKS" bf-links
+done
+"""
 _PYROOT = (
     r"-name site-packages -o -name dist-packages -o -regex '.*/lib/python[0-9][0-9.]*'"
 )
@@ -1205,6 +1765,51 @@ def shell_walk_command(
         [f"-name {q(n)}" for n in names] + [f"-name {q('*' + s)}" for s in suffixes]
     )
     configs = " -o ".join(f"-name {q(n)}" for n in sectioned)
+    # The Python trees: by name before the turn; after it, those found then.
+    known = options.get("roots")
+    known = (
+        [r for r in known if isinstance(r, str)] if isinstance(known, list) else None
+    )
+    runtime = str(options.get("runtime_root") or "").rstrip("/")
+    in_runtime = (
+        [f"\\( -type d -path {q(runtime + '/*')} \\( {_PYROOT} \\) \\)"]
+        if runtime
+        else []
+    )
+    pyroot = (
+        _PYROOT
+        if known is None
+        else " -o ".join(
+            [f"-path {q(r)}" for r in known]
+            + in_runtime
+            + [
+                f'\\( -type d \\( {_PYROOT} \\) -exec sh -c "$BF_TREE" bf-tree {{}} \\; \\)'
+            ]
+        )
+    )
+    pruned_case = "|".join(f"{q(p)}|{q(p.rstrip('/'))}/*" for p in pruned) or "''"
+    tree_sh = _TREE_SH.replace(
+        "@NAMES@", " -o ".join(f"-name {q(n)}" for n in names)
+    ).replace("@CONFIGS@", configs)
+    known_prune = "".join(f" -o -path {q(r)}" for r in known or ()) + (
+        f" -o -path {q(runtime)}" if runtime else ""
+    )
+    new_trees = (
+        f"find / \\( {prune}{known_prune} \\) -prune -o -type d \\( {_PYROOT} \\) "
+        '-exec sh -c "$BF_TREE" bf-tree {} walk \\; -prune'
+        if known is not None
+        else ":"
+    )
+    links_sh = (
+        _LINKS_SH.replace("@PRUNED@", pruned_case)
+        .replace("@WANTED@", wanted)
+        .replace("@CONFIGS@", configs)
+    )
+    roots_file = (
+        f'printf %s {q("".join(r + chr(10) for r in known))} > "$BF_LK/roots"'
+        if known is not None
+        else ":"
+    )
     watched = [w for w in (options.get("watched") or WATCHED) if w.startswith("/")]
     watch_case = "|".join(f"{q(w)}|{q(w.rstrip('/'))}/*" for w in watched) or "''"
     folders = options.get("folders")
@@ -1218,27 +1823,32 @@ def shell_walk_command(
     entry = lambda section: _PRINTF % section  # noqa: E731
     return f"""
 command -v find >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 \\
-  && find / -maxdepth 0 -printf '' >/dev/null 2>&1 || exit 125
+  && find / -maxdepth 0 -printf '' >/dev/null 2>&1 \\
+  && printf '' | sort -z >/dev/null 2>&1 && printf '' | xargs -0 -r true 2>/dev/null || exit 125
 export LC_ALL=C
-export BF_SECTION_AWK={q(_SECTION_AWK)}
+export BF_SECTION_AWK={q(_SECTION_AWK)} BF_SECTIONS={q(_SECTIONS_SH)} BF_TARGETS={q(_TARGETS_SH)}
+export BF_RUNTIME={q(runtime)}
+export BF_LINKS={q(links_sh)} BF_TREE={q(tree_sh)} BF_TARGET_CAP={int(options.get("target_cap", 64 << 20))}
+BF_LK=$(mktemp -d 2>/dev/null) || exit 125
+export BF_LK
+trap 'rm -rf "$BF_LK"' EXIT
+echo {int(options.get("link_cap", 200000))} > "$BF_LK/left"; : > "$BF_LK/seen"; : > "$BF_LK/trees"
+{roots_file}
 z() {{ printf '%s\\0' "$@"; }}
-z M started "$(date +%s%N)" M walker shell
+z M started "$(date +%s%N)" M walker shell M walk_pid "$$"
 given_folders={q(lists["given_folders"])}; given_homes={q(lists["given_homes"])}
 since_at={q(since_at)}
 extra={q(lists["extra"])}; interps={q(lists["interps"])}
 penv() {{ tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n "s/^$1=//p" | head -n 1; }}
-find / \\( {prune} -o {_PYROOT} \\) -prune -o -type f \\( {wanted} \\) -printf 'F\\0%p\\0%s\\0'
-find / \\( {prune} -o {_PYROOT} \\) -prune -o -type f \\( {wanted} \\) -exec sha256sum -z -- {{}} +
-find / \\( {prune} -o {_PYROOT} \\) -prune -o -type f \\( {configs} \\) -exec sh -c '
-  for f; do
-    n=${{f##*/}}
-    case $n in
-      pytest.ini|.pytest.ini|pytest.toml|.pytest.toml) h=$(sha256sum < "$f" | cut -c1-64) ;;
-      *) t=$(awk -v n="$n" "$BF_SECTION_AWK" "$f" 2>/dev/null)
-         if [ -n "$t" ]; then h=$(printf "%s" "$t" | sha256sum | cut -c1-64); else h=; fi ;;
-    esac
-    printf "S\\0%s\\0%s\\0" "$f" "$h"
-  done' bf-sections {{}} +
+find / \\( {prune} -o {pyroot} \\) -prune -o -type f \\( {wanted} \\) -printf 'F\\0%p\\0%s\\0'
+find / \\( {prune} -o {pyroot} \\) -prune -o -type l \\( {wanted} \\) -printf 'K\\0%p\\0%l\\0'
+find / \\( {prune} -o {pyroot} \\) -prune -o -type l \\( {wanted} \\) -exec sh -c "$BF_TARGETS" bf-targets {{}} +
+find / \\( {prune} -o {pyroot} \\) -prune -o -type f \\( {wanted} \\) -exec sha256sum -z -- {{}} +
+find / \\( {prune} -o {pyroot} \\) -prune -o -type f \\( {configs} \\) -exec sh -c "$BF_SECTIONS" bf-sections {{}} +
+# The Python trees (and folder links named like one) left to the trees section.
+find / \\( {prune} \\) -prune -o \\( {pyroot} \\) \\( -type d -o -type l -xtype d \\) -printf 'W\\0%p\\0' -fprintf "$BF_LK/trees" '%p\\n' -prune
+{new_trees}
+find / \\( {prune} -o {pyroot} \\) -prune -o -type l -xtype d -print0 | LC_ALL=C sort -z | xargs -0 -r sh -c "$BF_LINKS" bf-links
 # The package's file list that names a file (L), and the name (N): its own
 # or, under a merged /usr, its /bin-style alias. No globs and no word
 # splitting: the PATH loop runs with set -f and IFS=:.
@@ -1294,7 +1904,8 @@ printf '%s\\n' "$roots" | while IFS= read -r r; do
   find "$r" -mindepth 1 ! -type d \\( -name '*.pth' -o -name sitecustomize.py -o -name usercustomize.py \\) \
     ! -path '*/__pycache__/*' -print | while IFS= read -r f; do own "$f"; done
 done
-find / \\( {prune} -o {_PYROOT} \\) -prune -o -type f \\( -name sitecustomize.py -o -name usercustomize.py -o -name '*.pth' \\) \\
+find / \\( {prune} -o {pyroot} \\) -prune -o -type f \\( -name sitecustomize.py -o -name usercustomize.py -o -name '*.pth' \\
+  -o \\( \\( -name conftest.py -o {configs} \\) \\( -path '*/site-packages/*' -o -path '*/dist-packages/*' -o -regex '.*/lib/python[0-9][0-9.]*/.*' \\) \\) \\) \\
   -print | while IFS= read -r f; do own "$f"; done
 IFS=:; set -f
 for b in $interps; do interp "$b"; done
@@ -1378,9 +1989,32 @@ def load_shell(text: str | None, taken: str) -> tuple[dict, dict] | None:
     if not text:
         return None
     tokens = text.split("\0")
-    counts = {"F": 2, "S": 2, "E": 9, "T": 1, "P": 2, "R": 9, "M": 2, "O": 2}
+    counts = {
+        "F": 2,
+        "K": 2,
+        "Q": 2,
+        "V": 1,
+        "U": 3,
+        "W": 1,
+        "Y": 2,
+        "S": 2,
+        "E": 9,
+        "I": 4,
+        "T": 1,
+        "P": 2,
+        "R": 9,
+        "M": 2,
+        "O": 2,
+    }
     owned: dict[str, str] = {}
     sizes: dict[str, int] = {}
+    links: dict[str, str] = {}
+    targets: dict[str, str] = {}
+    vias: list[str] = []
+    unwalked: dict[str, tuple[str, str]] = {}
+    roots: list[str] = []
+    new_trees: list[tuple[str, str]] = []
+    ids: dict[str, list[int]] = {}
     hashes: dict[str, str] = {}
     sections: dict[str, dict[str, list]] = {
         "trees": {},
@@ -1415,6 +2049,18 @@ def load_shell(text: str | None, taken: str) -> tuple[dict, dict] | None:
                 return None
             if token == "F":
                 sizes[fields[0]] = int(fields[1])
+            elif token == "K":
+                links[fields[0]] = fields[1]
+            elif token == "Q":
+                targets[fields[0]] = fields[1]
+            elif token == "V":
+                vias.append(fields[0])
+            elif token == "U":
+                unwalked[fields[1]] = (fields[0], fields[2])
+            elif token == "W":
+                roots.append(fields[0])
+            elif token == "Y":
+                new_trees.append((fields[0], fields[1]))
             elif token == "S":
                 pytest_sections[fields[0]] = fields[1]
             elif token == "E":
@@ -1429,6 +2075,8 @@ def load_shell(text: str | None, taken: str) -> tuple[dict, dict] | None:
                     link,
                     "",
                 ]
+            elif token == "I":
+                ids[fields[0]] = [int(fields[1]), int(fields[2]), int(fields[3])]
             elif token == "T":
                 sites.append(fields[0])
             elif token == "P":
@@ -1465,6 +2113,33 @@ def load_shell(text: str | None, taken: str) -> tuple[dict, dict] | None:
             files[path] = {"sha256": hashes[path], "size": size}
             if path in pytest_sections:
                 files[path]["pytest"] = pytest_sections[path]
+    for path, target in links.items():
+        files[path] = {
+            "sha256": "link:" + target,
+            "size": 0,
+            "link": target,
+            "target": targets.get(path, "?"),
+        }
+    for path, (why, target) in unwalked.items():
+        files[path] = {
+            **files.get(
+                path,
+                {"sha256": "link:" + target, "size": 0, "link": target},
+            ),
+            "target": "folder",
+            "unwalked": why,
+        }
+    # A file reached through a folder link: the deepest link it was walked
+    # through.
+    by_depth = sorted(set(vias), key=lambda v: len(v), reverse=True)
+    trees_by_depth = sorted(set(new_trees), key=lambda t: len(t[0]), reverse=True)
+    for path, entry in files.items():
+        via = next((v for v in by_depth if path.startswith(v + "/")), None)
+        if via is not None:
+            entry["via"] = via
+        tree = next((p for d, p in trees_by_depth if path.startswith(d + "/")), None)
+        if tree is not None:
+            entry["tree"] = tree
     started = meta.get("started", "")
     trees = {
         "python_trees": sections["trees"],
@@ -1480,7 +2155,12 @@ def load_shell(text: str | None, taken: str) -> tuple[dict, dict] | None:
         "walk_started_ns": int(started) if started.isdigit() else None,
         "processes": tuple(processes),
         "owned": owned,
+        "ids": ids,
         "startup_env": tuple(f for f in meta.get("env_files", "").split(":") if f),
+        "roots": tuple(sorted(set(roots))),
         "walker": "shell",
+        "walk_pid": int(meta["walk_pid"])
+        if meta.get("walk_pid", "").isdigit()
+        else None,
     }
     return files, trees

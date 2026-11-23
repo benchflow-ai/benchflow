@@ -4,7 +4,9 @@ Compose builds a service's Env from a Go map, so a prototype's Config.Env
 order changes between identical runs, and the bootstrap copied that order
 into main's argv and its receipt label. Both now carry the rows sorted by
 key, stably: rows that share a key keep their order, so ``env --`` (which
-assigns left to right) still gives the same environment.
+assigns left to right) still gives the same environment. Under BenchFlow's
+waiter main's argv carries only the cleared names' values (given back to its
+own process by bfx's --setenv), and a token of its own per start.
 """
 
 from __future__ import annotations
@@ -89,13 +91,20 @@ async def test_repeated_compose_starts_give_one_argv_and_receipt(tmp_path, monke
     # The Compose path itself (the direct path is off in tests by default).
     monkeypatch.setattr(DockerSandbox, "direct_docker", False, raising=False)
     environment = {"D_FOUR": "4", "A_ONE": "1", "C_THREE": "x$y", "B_TWO": ""}
+    # Two of the names a held container has cleared: the waiter gives their
+    # values back to main's own process, as --setenv pairs in its argv, sorted.
+    cleared = {"NLSPATH": "/opt/b/%N", "LOCPATH": "/opt/a"}
     seen = set()
     for _ in range(6):
         name = f"perf-e-env-{uuid.uuid4().hex[:8]}"
         env_dir = tmp_path / name / "environment"
         env_dir.mkdir(parents=True)
         (env_dir / "Dockerfile").write_text(f"FROM {IMAGE}\n")
-        compose = {"services": {"main": {"image": IMAGE, "environment": environment}}}
+        compose = {
+            "services": {
+                "main": {"image": IMAGE, "environment": {**environment, **cleared}}
+            }
+        }
         (env_dir / "docker-compose.yaml").write_text(
             json.dumps(compose).replace("$", "$$")
         )
@@ -120,10 +129,20 @@ async def test_repeated_compose_starts_give_one_argv_and_receipt(tmp_path, monke
                     check=True,
                 ).stdout
             )[0]["Config"]
-            seen.add((tuple(config["Entrypoint"]), config["Labels"][bootstrap.LABEL]))
+            argv = list(config["Entrypoint"])
+            assert argv[:3] == [bootstrap.WAITER, "hold", "--token"], argv
+            argv[3] = "<token>"  # one per start, so its waiter is named apart
+            seen.add((tuple(argv), config["Labels"][bootstrap.LABEL]))
         finally:
             await sandbox.stop(delete=True)
     assert len(seen) == 1
     ((argv, _),) = seen
-    rows = [row for row in argv if row.partition("=")[0] in environment]
-    assert rows == ["A_ONE=1", "B_TWO=", "C_THREE=x$y", "D_FOUR=4"]
+    # The service's other variables stay in the container's own environment.
+    assert not [row for row in argv if row.partition("=")[0] in environment]
+    assert argv[4:9] == (
+        "--setenv",
+        "LOCPATH=/opt/a",
+        "--setenv",
+        "NLSPATH=/opt/b/%N",
+        "--",
+    )

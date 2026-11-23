@@ -132,8 +132,12 @@ class UsageExport(_Model):
         None,
         description="when cost_usd is the agent's own estimate (1.3): source "
         "(claude-code-session-log), method (claude-code-cost: Claude Code's "
-        "totals; usage-at-list-price: its logged usage at list prices), path, "
-        "sessions, responses, models (USD per model), context_1m",
+        "totals; claude-code-tokens-at-list-price: Claude Code's own counts at "
+        "BenchFlow's list price, for a model Claude Code does not price, with "
+        "its figure kept as claude_code_usd and the models in repriced_models; "
+        "usage-at-list-price: its logged usage at list prices), path, "
+        "sessions, responses, models (USD per model), unpriced_models (models "
+        "no list price covers: no cost), context_1m",
     )
 
 

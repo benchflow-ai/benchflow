@@ -88,7 +88,7 @@ CI runs seven agents.
 | skill loading, `.agents/skills`, skill injection | `low-3` + `medium-3` | no-skill and with-skill; skill-catalog extraction | L2 |
 | Docker, Daytona, sandbox, root or path code | `low-3` + `medium-3` | Docker and Daytona parity; cleanup dry run | L2 |
 | verifier, rewards, judge, anti-hacking code | `citation` + `weighted-gdp-calc` + `shock-analysis-supply` | judge fails closed, reward-hacking scan, verifier isolation | L3 |
-| network, package install, LLM-proxy routing | `jax-computing-basics` + `data-to-d3` + one high task | `openhands`, `pi-acp` and `opencode` at L2; all five DeepSeek agents at L3 (set `expanded`); networking off, and the `citation-check` allowlist variant | L2 |
+| network, package install, LLM-proxy routing | `jax-computing-basics` + `data-to-d3` + one high task | `openhands`, `pi-acp` and `opencode` at L2; all five DeepSeek agents at L3 (set `expanded`); each task's own network policy, and a `citation-check` cell labelled `allowlist` | L2 |
 | release-critical refactor | `expanded` | every affected axis, lower concurrency | L3 |
 
 ### The network lane
@@ -101,8 +101,9 @@ CI runs seven agents.
 - `src/benchflow/task/runtime_capabilities.py`.
 
 What the lane runs:
-- **Tasks:** `citation-check` with networking off, and `citation-check-network`. The variant allows only the four hosts the citation skill calls: `eutils.ncbi.nlm.nih.gov`, `scholar.google.com`, `doi.org` and `api.crossref.org`.
-- **Check:** the planner records each cell's expected `network_mode` from the task file; it does not pass it to `bench`. The grader's `V-NETWORK` check reads the task's declared policy. [REVIEW_RUBRIC.md](./REVIEW_RUBRIC.md#v-network) gives the result for each of the four modes: `no-network`, `allowlist`, `denylist` and `public`.
+- **Tasks:** `jax-computing-basics`, `data-to-d3` and `weighted-gdp-calc`, plus one `citation-check` cell, all from `benchflow-ai/skillsbench` at `main`.
+- **Networks:** each cell runs under the policy its task declares. The planner labels the cells `default-off`, and the `citation-check` cell `allowlist`, but `bench` never gets the label. All ten tasks the integration lanes run declare `public` today, so no cell runs under a restricted network yet. The allowlist example, `docs/examples/task-md/real-skillsbench/citation-check-network`, allows only the four hosts the citation skill calls (`eutils.ncbi.nlm.nih.gov`, `scholar.google.com`, `doi.org` and `api.crossref.org`); no cell runs it.
+- **Check:** the grader's `V-NETWORK` grades the policy each trial ran under, never the label. It reads the trial's `integrity/manifest.json` (the agent's mode and its allowed hosts), else the job's `run-card.json` (the mode), else `verifier/verifier-network.json` (the verifier's mode). An allowlist or denylist run with no record of its lists is `na`. A cell that ran `public` is `quarantine`, or `fail` on a PR that touches the verifier or sandbox, and its line in `hardening_summary.md` says why. So V-NETWORK can't pass until a cell really runs restricted. [REVIEW_RUBRIC.md](./REVIEW_RUBRIC.md#v-network) gives the result for each of the four modes: `no-network`, `allowlist`, `denylist` and `public`.
 
 ### Cells without keys are skipped
 
@@ -240,9 +241,9 @@ Only `src/benchflow` comes from the PR. The planner, grader, harness and review 
 - Actions are pinned by SHA, as in `.github/workflows/test.yml`:
 
   ```
-  actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+  actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
   astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
-  actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+  actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
   ```
 
 ## Admin setup
@@ -252,7 +253,8 @@ The one-time GitHub setup (secrets, branch protection, labels) is in [ADMIN_SETU
 ## Not built yet
 
 - A `--network-mode` flag on `bench run`.
-- The review pack reading the agent's network mode from the run. With `--integrity` on, a trial already records it in its `integrity/` folder (`agent_network_mode`); the grader still reads the task's declaration.
+- Passing each cell's network policy to `bench`, so the network lane runs cells under `no-network` and `allowlist`.
+- Recording the allowed hosts in `run-card.json`, so an allowlist run with `--integrity off` (no `integrity/manifest.json`) is graded on them.
 - A live egress check (`V-NETWORK-CONFORM`): `no-network` blocks all traffic, and `allowlist` reaches only its hosts plus the model provider. Run it with the verifier-and-rewards scope rule, not on every PR.
 - A hash of the verifier files before and after the run, written into the rollout as `verifier_files_mutated`.
 - Parity that accounts for sample size: a minimum trial count and confidence intervals instead of a fixed reward band.
@@ -266,6 +268,6 @@ The one-time GitHub setup (secrets, branch protection, labels) is in [ADMIN_SETU
 - **Task set:** one of the named sets above, picked from the diff.
 - **Realness gate:** the check that a rollout really ran: `n_tool_calls > 0`, tokens `> 0`, a reward, no infrastructure or verifier error, and no flagged verifier tamper. It holds even when the LLM judge passes. `agent_judge.realness_issues`, reported as `R-REAL`.
 - **Verifier tamper:** an agent changing the files that decide its score. Found by scanning the trajectory (`agent_judge._scan_verifier_tamper`), reported as `V-TAMPER`.
-- **`network_mode`:** the task's network policy: `no-network`, `allowlist`, `denylist` or `public`. CI checks the declared policy (`V-NETWORK`). It does not yet check live traffic.
+- **`network_mode`:** the task's network policy: `no-network`, `allowlist`, `denylist` or `public`. CI grades the policy each trial ran under (`V-NETWORK`). It does not yet check live traffic.
 - **Evidence check:** a script that turns run outputs into a release gate: `check_results`, `check_adapter_evidence`, `check_hosted_env_evidence`, `check_trace_to_task_evidence` and the external baseline checker.
 - **`deepagents_harness.py`:** a steerable agent that makes honest and reward-hacking rollouts on purpose, to test the judge.

@@ -120,8 +120,15 @@ class TestDaytonaExecEnvSecrecy:
                 captured["command"] = request.command
                 return _Resp()
 
+        uploads: list[bytes] = []
+
+        class _FileSystemAPI:
+            async def upload_file(self, data, path, timeout=None):
+                uploads.append(bytes(data))
+
         class _FakeSandbox:
             process = _ProcessAPI()
+            fs = _FileSystemAPI()
 
         sandbox._sandbox = _FakeSandbox()
 
@@ -147,6 +154,10 @@ class TestDaytonaExecEnvSecrecy:
         # the regression marker is ``env KEY=`` adjacency at a word boundary.)
         assert "env OPENAI_API_KEY=" not in cmd
         assert "env AUTHORIZATION=" not in cmd
+        # The values went up as the exec's env file, which the command opens.
+        (body,) = uploads
+        assert b"sk-leak" in body and b"Bearer leak" in body
+        assert "8</opt/runtime/run/env-" in cmd
 
     @pytest.mark.asyncio
     async def test_daytona_dind_exec_no_secret_in_argv(self) -> None:
@@ -160,16 +171,28 @@ class TestDaytonaExecEnvSecrecy:
         multi-service task. Regression for the #412 follow-up.
         """
         pytest.importorskip("daytona")  # sandbox-daytona optional dependency
-        from benchflow.sandbox._base import ExecResult, ExecRoute
+        from types import SimpleNamespace
+
+        from benchflow.sandbox._base import ENV_FROM_STDIN, ExecResult, ExecRoute
         from benchflow.sandbox.daytona import _DaytonaDinD
 
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
         captured: list[list[str]] = []
+        stdin_files: list[str | None] = []
+        bodies: list[bytes] = []
 
-        async def fake_compose_exec(subcommand, timeout_sec=None):
+        async def fake_compose_exec(subcommand, timeout_sec=None, stdin_file=None):
             captured.append(subcommand)
+            stdin_files.append(stdin_file)
             return ExecResult(stdout="", stderr="", return_code=0)
 
+        class _EnvFiles:
+            async def path(self, sandbox, body, route):
+                bodies.append(body)
+                return "/opt/runtime/run/env-x/y"
+
+        files = _EnvFiles()
+        strategy._env = SimpleNamespace(_exec_env=lambda: files)
         strategy._compose_exec = fake_compose_exec  # type: ignore[method-assign]
 
         await strategy.exec(
@@ -192,14 +215,16 @@ class TestDaytonaExecEnvSecrecy:
             for token in sub
         )
         # The wrapped command is still routed to the target container via
-        # ``sh -c <wrapper>`` and the wrapper sources an env file inside it.
+        # ``sh -c <wrapper>``; the wrapper reads the env from its stdin, which
+        # the compose exec gets from the VM's env file holding the values.
         assert sub[-3] == "/bin/sh"
         assert sub[-2] == "-c"
         wrapped = sub[-1]
-        # The shell's own printf and eval set it: no program, no file (b143).
-        assert wrapped.startswith(INLINE_START)
-        assert "sk-dind-leak" in wrapped_env_body(wrapped)
+        assert wrapped.startswith(ENV_FROM_STDIN)
         assert wrapped.endswith("run-verifier")
+        assert stdin_files == ["/opt/runtime/run/env-x/y"]
+        (body,) = bodies
+        assert b"sk-dind-leak" in body and b"Bearer dind" in body
 
     @pytest.mark.asyncio
     async def test_daytona_dind_exec_without_env_unchanged(self) -> None:

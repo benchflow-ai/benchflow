@@ -240,7 +240,8 @@ path-venv|path-refused)
   check .venv_bin-bash bash -c true
   ;;
 reward-file)
-  echo 1 > /logs/verifier/reward.txt && echo "live reward-txt"
+  # Refused since #1247: /logs/verifier is closed to the agent from sandbox setup.
+  echo 1 > /logs/verifier/reward.txt 2>/dev/null && echo "live reward-txt" || echo "live reward-txt-refused"
   (
     while :; do
       echo 1 > /logs/verifier/reward.txt 2>/dev/null
@@ -252,7 +253,8 @@ reward-file)
   kill -0 $! 2>/dev/null && echo "live survivor"
   ;;
 reward-link)
-  ln -s /proc/sys/net/ipv4/ip_forward /logs/verifier/reward.txt && echo "live reward-link"
+  ln -s /proc/sys/net/ipv4/ip_forward /logs/verifier/reward.txt 2>/dev/null && echo "live reward-link" \
+    || echo "live reward-link-refused"
   ;;
 esac
 rm -f "$C"/* 2>/dev/null
@@ -290,8 +292,9 @@ LIVE = {
         ".venv_bin-bash",
     },
     "path-refused": {".venv_bin-python3"},
-    "reward-file": {"reward-txt", "survivor"},
-    "reward-link": {"reward-link"},
+    # Refused at the source since #1247 (the folder is closed from setup); the writer still runs.
+    "reward-file": {"reward-txt-refused", "survivor"},
+    "reward-link": {"reward-link-refused"},
 }
 
 
@@ -532,9 +535,8 @@ def test_a_reward_file_written_before_grading_is_discarded(runs):
         kill = json.loads((trial / "kill-before-grading.json").read_text())
         assert kill["killed_total"] >= 1, (trial.name, kill)
     assert not (shared / "verifier" / "reward.txt").exists()
-    # The separate verifier sets the agent's /logs/verifier aside and lists it.
-    record = (separate / "verifier-sandbox" / "verifier-sandbox.json").read_text()
-    assert "reward.txt" in record, record[:2000]
+    # The agent's plant never got into /logs/verifier (#1247: the folder is closed from setup), so the separate
+    # verifier's set-aside listing no longer shows it; the live marker says it was refused (LIVE).
 
 
 def test_a_symlinked_reward_file_is_discarded(runs):

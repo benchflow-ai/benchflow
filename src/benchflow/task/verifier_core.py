@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn
+from typing import Any
 from uuid import uuid4
 
 from benchflow._runtime_tree import KIT_BIN, RuntimeKit
@@ -72,6 +72,8 @@ from benchflow.sandbox._guard_verdicts import agents_rejection
 from benchflow.sandbox._guard_verdicts import read_verdicts as read_guard_verdicts
 from benchflow.sandbox._guard_verdicts import unconfirmed as unconfirmed_guard_verdicts
 from benchflow.sandbox._task_route import as_task_command
+from benchflow.sandbox._transport import READ_FAILED
+from benchflow.sandbox.daytona_exec_env import remove_exec_env_files
 from benchflow.sandbox.lockdown import (
     GuardMarker,
     _exec_return_code,
@@ -119,7 +121,6 @@ from benchflow.task.verifier_errors import (
     VerifierExecutionError,
     VerifierInfrastructureError,
     VerifierLaunchRefusedError,
-    VerifierNetworkRefusedError,
     VerifierOutputParseError,
     VerifierResult,
     VerifierSetupError,
@@ -155,9 +156,11 @@ logger = logging.getLogger(__name__)
 # Where the test command records that it started (#1136): a BenchFlow-owned
 # directory, never the verifier output dir test.sh inspects.
 _EXECUTION_RECEIPT_DIR = PurePosixPath("/run/runtime")
-# At most this many of test.sh's outputs are made readable to the host in one
-# chmod before the at-exit copy (:meth:`Verifier._let_host_read_outputs`).
+# At most this many of test.sh's outputs are made readable to the host before
+# the at-exit copy (:meth:`Verifier._let_host_read_outputs`), the names the
+# host reads to score first; the shell route takes them this many at a time.
 _HOST_READ_MAX = 512
+_HOST_READ_CHUNK = 64
 
 # The verifier's setup commands (clearing the output dir, chmod, the target
 # verifier dir, the criteria-runner manifest) run after the agent has finished. On
@@ -247,6 +250,31 @@ _VERIFIER_UID_CMD = (
     'while read -r k v r; do case $k in Uid:) echo "$v"; exit 0;; esac; '
     "done < /proc/self/status; exit 1"
 )
+
+
+async def user_uid(sandbox: Any, user: str, *, service: str = "main") -> str | None:
+    """*user*'s uid in *sandbox*, read by a shell started as that user (its
+    own /proc/self/status); None when it can't be read. Before the turn, for
+    RB2: two names for one uid are one user."""
+    kwargs = (
+        {"system_shell": True}
+        if getattr(sandbox, "supports_system_shell", False) is True
+        else {}
+    )
+    try:
+        result = await exec_raw(
+            sandbox.exec,
+            _VERIFIER_UID_CMD,
+            user=user,
+            service=service,
+            timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+            **kwargs,
+        )
+    except Exception:
+        return None
+    uid = (getattr(result, "stdout", "") or "").strip()
+    return uid if _exec_return_code(result) == 0 and uid.isdigit() else None
+
 
 # What the plugin guard's ``unrecorded`` marker says on its first line
 # (``_pytest_plugin_guard._unrecorded``).
@@ -539,6 +567,12 @@ class Verifier:
     # none (llm-judge, agent-judge, an ORS episode) grades a reward test.sh
     # never wrote, and the close is no check of it.
     outputs_close_due: bool = False
+    # What the read before the copy at test.sh's exit granted, skipped and
+    # left out (:meth:`_let_host_read_outputs`; None: nothing to grant).
+    read_grant: dict[str, Any] | None = None
+    # Each workspace the grant made sticky, with the mode the step before a
+    # root test.sh left it (:meth:`_check_sticky_closed`; None: no such step).
+    workspace_modes_before_test: dict[str, str | None] | None = None
 
     def __init__(
         self,
@@ -582,6 +616,10 @@ class Verifier:
         # The service the issued test command runs in, for the network
         # verdict of one killed at its deadline (timed_out_network_verdict).
         self._issued_service: str | None = None
+        # What the verifier's network refused the last test command, when it
+        # refused anything (_end_of_test_proof): the trial's read flag and
+        # result.json's ``verifier_network_refused``. Never a change of score.
+        self.network_refusal: dict[str, Any] | None = None
         # Awaited with the verifier's code folder in the sandbox just before
         # the verifier's first command there (test.sh, a script strategy, a
         # criteria-runner runner, a task.md rubric's judge runner), after its
@@ -935,8 +973,15 @@ class Verifier:
             return ""
         state = verifier_freeze.state_path()
         self._freeze_state = (state, service)
+        # The channels the stop leaves running follow the channel in use:
+        # ``bfx serve`` only where bfx sits at /.bfx (bfx_delivered); per-call
+        # (Daytona) and bfx off run the kit's helpers (map-H2 §1.2f). A name
+        # alone exempts nobody: the stop also asks for a real uid of 0, so the
+        # kit's patterns hold whether or not Q4 refused model agents here.
+        from benchflow.sandbox._bounded_exec import bfx_delivered
+
         return verifier_freeze.freeze_step(
-            state, kit_channels=getattr(self._sandbox, "bfx_delivery", None) is None
+            state, kit_channels=not bfx_delivered(self._sandbox)
         )
 
     async def _cancel_freeze(self) -> None:
@@ -1284,7 +1329,12 @@ class Verifier:
         and the folder goes to the host user once test.sh has exited
         (:meth:`_open_output_dir_to_host`). A verifier that runs as a user
         of its own keeps the folder as it was, as do kept services, whose own
-        rule applies."""
+        rule applies.
+
+        A root test.sh in integrity audit and off also meets each workspace
+        the sandbox user's grant made root's and 1777 (a daemon folder or a
+        reserved folder in it) without group or other write, in this same
+        exec: see :meth:`_sticky_workspaces` (#1249)."""
         self._closed_to_host = False
         self.outputs_close_due = True
         if self.before_test is not None:
@@ -1298,6 +1348,7 @@ class Verifier:
             self.outputs_open_why = "the verifier user's uid could not be read"
             return
         owner = uid if uid.isdigit() else "0"
+        sticky = self._sticky_workspaces(service, owner)
         owner_spec = "0:0" if owner == "0" else owner
         # Root's own files stay (BenchFlow's launch record, test-stdout.txt);
         # the hard-link rule holds for root's and the verifier user's alike.
@@ -1340,6 +1391,18 @@ class Verifier:
             if owner != "0":
                 # test.sh's own user writes its output there.
                 command += f" && chown {owner} {stdout}"
+        if sticky:
+            from benchflow._runtime_tree import (
+                WORKSPACE_CLOSED_ATTR,
+                close_granted_command,
+            )
+
+            # Its status is not the close's: what it shows is judged below.
+            command = f"{command} && {{ {close_granted_command(sticky)}; }}"
+            with contextlib.suppress(AttributeError):
+                # Re-opened before another turn whatever the exec answers (a
+                # timeout included).
+                setattr(self._sandbox, WORKSPACE_CLOSED_ATTR, dict(sticky))
         with contextlib.suppress(AttributeError):
             self._sandbox._benchflow_outputs_clearing = "the close"
         try:
@@ -1394,13 +1457,66 @@ class Verifier:
         # Root's from the marker on: the host writes test-stdout.txt only to a
         # folder it still owns.
         self._closed_to_host = mounted and closed and not self._host_writes_outputs()
+        if sticky:
+            self._check_sticky_closed(result, sticky)
+
+    def _sticky_workspaces(self, service: str, owner: str) -> dict[str, str]:
+        """The workspaces whose group and other write a root test.sh's close
+        takes (#1249 (b), (c)), with the modes the grant recorded
+        (``_runtime_tree.WORKSPACE_MODE_ATTR``); empty when none applies.
+
+        Only for test.sh as root in the agent's container (``main``), in
+        integrity audit and off (test.sh as written). Strict gives each
+        workspace its image mode back in the freeze before (and its separate
+        verifier is a fresh sandbox); a verifier user of the task's own owns
+        what it writes and may need to create files in the workspace, so the
+        grant stays as it is for it."""
+        if service != "main" or owner != "0" or not self._runs_as_written():
+            return {}
+        from benchflow._runtime_tree import WORKSPACE_MODE_ATTR
+
+        modes = getattr(self._sandbox, WORKSPACE_MODE_ATTR, None)
+        if not isinstance(modes, dict):
+            return {}
+        return {
+            path: mode
+            for path, mode in modes.items()
+            if isinstance(path, str) and isinstance(mode, str)
+        }
+
+    def _check_sticky_closed(self, result: Any, sticky: dict[str, str]) -> None:
+        """Judge what the workspace step showed: each workspace without group
+        or other write, else a verifier error before test.sh (never a quiet 0
+        from a write test.sh could not make). The modes go in the verifier's
+        record, and the next agent turn gets the grant's mode back first
+        (``lockdown.reopen_granted_workspaces``)."""
+        from benchflow._runtime_tree import (
+            granted_closed,
+            shown_modes,
+            shown_modes_problem,
+        )
+
+        stdout = getattr(result, "stdout", "")
+        stdout = stdout if isinstance(stdout, str) else ""
+        shown = shown_modes(stdout)
+        self.workspace_modes_before_test = {
+            path: f"{shown[path][0]:o}" if path in shown else None
+            for path in sorted(sticky)
+        }
+        problem = shown_modes_problem(stdout, sticky, granted_closed)
+        if problem is not None:
+            raise VerifierSetupError(
+                "Verifier hardening failed: taking group and other write from "
+                f"the workspace before test.sh ({problem})"
+            )
 
     async def _open_output_dir_to_host(self, service: str) -> None:
         """Once test.sh has exited (and its outputs are copied, see
         :meth:`_take_outputs_at_exit`), give the mounted folder the
         :meth:`_close_output_dir` closed to the host user, so BenchFlow can
         add its records there: the folder only, test.sh's files staying
-        root's as before the gate; failing that, 0777 with a warning."""
+        root's as before the gate; failing that, the trial stops (never 0777,
+        #1247)."""
         if not getattr(self, "_closed_to_host", False):
             return
         self._closed_to_host = False
@@ -1418,17 +1534,19 @@ class Verifier:
             )
             if self._host_writes_outputs():
                 return
-        await exec_raw(
-            self._sandbox.exec,
-            f"chmod 777 {folder}",
-            user="root",
-            service=service,
-            timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
-            **self._setup_exec_kwargs(),
-        )
-        self._logger.warning(
-            "the verifier outputs folder was made writable by every user after "
-            "test.sh: the host could not add its records to it otherwise"
+        # Never opened to every user (#1247): the agent's processes are alive
+        # after test.sh in audit and off. By the code this is not reached: a
+        # root host, and rootless Docker (container root is the host user),
+        # can write the folder after the close, so ``_closed_to_host`` stays
+        # False; with the host uid's chown done, a host that still can't
+        # write is one whose container root isn't host root (userns-remap),
+        # where the close's own chown of the host's folder fails first.
+        # Reached anyway, the trial stops here instead.
+        raise VerifierInfrastructureError(
+            "the verifier outputs folder could not be given back to the host user "
+            "after test.sh, and BenchFlow will not open it to every user while "
+            "the agent's processes may run; its records for this trial can't be "
+            "written"
         )
 
     def _host_writes_outputs(self) -> bool:
@@ -1467,10 +1585,25 @@ class Verifier:
         them as its own user, so the copy skipped the reward and the trial
         lost it (a shared reward script writes every reward this way); the
         hand-over to the host user (:meth:`_hand_mounted_outputs_to_host`)
-        never runs while the agent's processes may live. Root only adds read
-        for group and others to each regular file the host cannot open: the
-        owner and every write bit stay as test.sh left them, so no process
-        gets a write it did not have.
+        never runs while the agent's processes may live. Root adds read for
+        group and others, nothing else:
+
+        - only names directly in the folder (a subfolder may be another
+          user's to change: REV2 R2-1), the names the host reads to score
+          first (:data:`verifier_outputs.PRIORITY`), the rest after them,
+          capped (R2-4);
+        - through bfx's ``chmod``, which acts on the descriptor it opened,
+          never follows a link and skips a hardlinked file, and only once
+          bfx's ``stat`` shows the folder root's (or the verifier user's)
+          with no group or other write: no other user can then swap a name in
+          it;
+        - the reward names on that alone; the rest only while the freeze is
+          proven held (its state file) or where no agent code can run.
+
+        Without bfx (it isn't delivered: only the oracle runs in off and
+        audit, Q4; strict has no agent code left) a root shell does the same
+        name by name, a regular file and no link. The record is
+        ``read_grant``.
         """
         from benchflow.task import verifier_outputs
 
@@ -1483,30 +1616,215 @@ class Verifier:
         if os.getuid() == 0:
             return
         try:
-            names = verifier_outputs.unreadable(Path(rollout_dir))
+            names = verifier_outputs.unreadable_top(Path(rollout_dir))
         except OSError:
             return
         if not names:
             return
-        folder = PurePosixPath(str(sandbox_paths.verifier_dir))
-        targets = " ".join(
-            shlex.quote(str(folder / name)) for name in names[:_HOST_READ_MAX]
-        )
+        priority = [n for n in names if n in verifier_outputs.PRIORITY]
+        rest = [n for n in names if n not in verifier_outputs.PRIORITY]
+        grant: dict[str, Any] = {
+            "granted": [],
+            "skipped": {},
+            "not_held": 0,
+            "not_granted": 0,
+        }
+        self.read_grant = grant
+        folder = str(sandbox_paths.verifier_dir)
+        if self._bfx_grants():
+            why = await self._outputs_folder_open(folder)
+            if why is not None:
+                grant["why"] = why
+                self._logger.warning(
+                    "test.sh's unreadable outputs were not made readable: %s", why
+                )
+                return
+            if rest and self._agent_may_run(service) and not await self._freeze_held():
+                grant["not_held"] = len(rest)
+                rest = []
+        room = max(0, _HOST_READ_MAX - len(priority))
+        grant["not_granted"] = max(0, len(rest) - room)
+        targets = priority + rest[:room]
+        if self._bfx_grants():
+            await self._bfx_grant(folder, targets, grant)
+        else:
+            await self._shell_grant(folder, targets, grant, service)
         try:
-            await exec_raw(
-                self._sandbox.exec,
-                f"chmod go+r -- {targets}",
-                user="root",
-                service=service,
-                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
-                **self._setup_exec_kwargs(),
-            )
-        except Exception as e:
+            left = [
+                n
+                for n in verifier_outputs.unreadable_top(Path(rollout_dir))
+                if n in priority
+            ]
+        except OSError:
+            left = []
+        if left:
+            grant["still_unreadable"] = left
             self._logger.warning(
-                "Could not let the host read %d of test.sh's outputs: %s",
-                len(names),
-                describe_exception(e),
+                "test.sh's %s could not be made readable to the host: %s",
+                ", ".join(left),
+                grant["skipped"] or "unknown why",
             )
+
+    def _bfx_grants(self) -> bool:
+        """Whether the read grant goes through bfx (it is delivered here)."""
+        return isinstance(
+            getattr(self._sandbox, "bfx_delivery", None), str
+        ) and callable(getattr(self._sandbox, "bfx_call", None))
+
+    async def _outputs_folder_open(self, folder: str) -> str | None:
+        """Why no name in *folder* may be granted (another user could swap
+        one), from bfx's ``stat`` of it; None when it is root's or the
+        verifier user's, with no group or other write."""
+        parent, _, name = folder.rstrip("/").rpartition("/")
+        try:
+            answer = await self._sandbox.bfx_call(
+                "stat",
+                {"root": parent or "/", "paths": [name]},
+                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+            )
+        except Exception as exc:
+            return (
+                f"the output folder could not be looked at: {describe_exception(exc)}"
+            )
+        entries = [e for e in answer.get("entries") or () if isinstance(e, dict)]
+        facts = entries[0] if entries else {}
+        if "error" in facts or facts.get("type") != "dir":
+            return f"the output folder could not be looked at ({facts})"
+        uid = self._verifier_uid_read
+        owners = {0} | ({int(uid)} if isinstance(uid, str) and uid.isdigit() else set())
+        if facts.get("uid") not in owners:
+            return f"the output folder is uid {facts.get('uid')}'s"
+        mode = facts.get("mode")
+        if not isinstance(mode, int) or mode & 0o022:
+            return "the output folder is writable by its group or others"
+        return None
+
+    async def _freeze_held(self) -> bool:
+        """Whether the stop after test.sh's exit holds the sandbox still now:
+        its state file, root's and written only by the stop, says it was made
+        and every process stopped (:func:`verifier_freeze.held`)."""
+        import base64
+
+        from benchflow.task import verifier_freeze
+
+        pending = getattr(self, "_freeze_state", None)
+        if pending is None:
+            return False
+        state, _service = pending
+        try:
+            answer = await self._sandbox.bfx_call(
+                "scan",
+                {"paths": [state], "contents": [state], "mounts": False, "acl": False},
+                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+            )
+        except Exception:
+            return False
+        facts = next(
+            (
+                e
+                for e in answer.get("entries") or ()
+                if isinstance(e, dict) and e.get("path") == state
+            ),
+            {},
+        )
+        mode = facts.get("mode")
+        if (
+            facts.get("type") != "file"
+            or facts.get("uid") != 0
+            or not isinstance(mode, int)
+            or mode & 0o022
+        ):
+            return False
+        content = (answer.get("contents") or {}).get(state) or {}
+        try:
+            text = base64.b64decode(content.get("b64") or "").decode("utf-8", "replace")
+        except (ValueError, TypeError):
+            return False
+        return verifier_freeze.held(text)
+
+    async def _bfx_grant(
+        self, folder: str, names: list[str], grant: dict[str, Any]
+    ) -> None:
+        """bfx ``chmod +044`` on each of *names* in *folder*: the descriptor
+        it opened, never a link, never a hardlinked file. One ``bfx serve``
+        for many names where the sandbox has it."""
+        from benchflow.sandbox._verifier_links import _wire
+
+        def args(name: str) -> dict[str, Any]:
+            return _wire({"root": folder, "set": "044"}, "path", name)
+
+        def record(name: str, answer: Any) -> None:
+            answer = answer if isinstance(answer, dict) else {}
+            if answer.get("skipped_links"):
+                grant["skipped"][name] = "a link"
+            elif answer.get("skipped_hardlinks"):
+                grant["skipped"][name] = "a file with another name elsewhere"
+            elif answer.get("skipped_mounts"):
+                grant["skipped"][name] = "a mount point"
+            else:
+                grant["granted"].append(name)
+
+        session = getattr(self._sandbox, "bfx_session", None)
+        if len(names) > 8 and callable(session):
+            try:
+                async with session(timeout_sec=_SETUP_EXEC_TIMEOUT_SEC) as serve:
+                    for name in names:
+                        try:
+                            record(
+                                name,
+                                await serve.call(
+                                    "chmod", args(name), timeout=_SETUP_EXEC_TIMEOUT_SEC
+                                ),
+                            )
+                        except Exception as exc:
+                            grant["skipped"][name] = describe_exception(exc)
+                return
+            except Exception as exc:
+                self._logger.warning(
+                    "bfx serve for the read grant did not start (%s); one call "
+                    "per name instead",
+                    describe_exception(exc),
+                )
+                names = [n for n in names if n not in grant["granted"]]
+        for name in names:
+            try:
+                record(
+                    name,
+                    await self._sandbox.bfx_call(
+                        "chmod", args(name), timeout_sec=_SETUP_EXEC_TIMEOUT_SEC
+                    ),
+                )
+            except Exception as exc:
+                grant["skipped"][name] = describe_exception(exc)
+
+    async def _shell_grant(
+        self, folder: str, names: list[str], grant: dict[str, Any], service: str
+    ) -> None:
+        """Without bfx: a root shell adds read to each name directly in
+        *folder* that is still a regular file and no link, a few at a time
+        (never one long argv)."""
+        for i in range(0, len(names), _HOST_READ_CHUNK):
+            chunk = names[i : i + _HOST_READ_CHUNK]
+            targets = " ".join(shlex.quote(f"{folder}/{name}") for name in chunk)
+            try:
+                result = await exec_raw(
+                    self._sandbox.exec,
+                    f'for p in {targets}; do [ -f "$p" ] && [ ! -L "$p" ] && '
+                    'chmod go+r -- "$p"; done; true',
+                    user="root",
+                    service=service,
+                    timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                    **self._setup_exec_kwargs(),
+                )
+            except Exception as e:
+                for name in chunk:
+                    grant["skipped"][name] = describe_exception(e)
+                continue
+            if _exec_return_code(result) != 0:
+                for name in chunk:
+                    grant["skipped"][name] = f"rc={_exec_return_code(result)}"
+                continue
+            grant["granted"].extend(chunk)
 
     async def _hand_mounted_outputs_to_host(
         self, sandbox_paths: SandboxPaths, service: str
@@ -1771,7 +2089,36 @@ class Verifier:
 
         await self._setup_step("writing the verifier env", write)
         (folder,) = chosen
+        # The command removes it when it starts; one that never starts
+        # leaves it to _remove_unread_root_env.
+        self._unread_root_env = (folder, service)
         return _root_file_env_prefix(folder) + command, None
+
+    async def _remove_unread_root_env(self, ran: bool) -> None:
+        """Remove the root-only env folder of :meth:`_env_by_root_file` when
+        its test command did not start (refused before it ran, or its exec
+        failed), so the env is not kept for the rest of the trial or in a
+        snapshot. A command that ran removed it itself."""
+        pending = getattr(self, "_unread_root_env", None)
+        self._unread_root_env = None
+        if pending is None or ran:
+            return
+        folder, service = pending
+        try:
+            await exec_raw(
+                self._sandbox.exec,
+                f"/bin/rm -rf -- {folder}",
+                user="root",
+                service=service,
+                timeout_sec=_SETUP_EXEC_TIMEOUT_SEC,
+                **self._setup_exec_kwargs(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not remove the verifier env's folder %s: %s",
+                folder,
+                describe_exception(exc),
+            )
 
     async def _clear_output_dir(self, service: str) -> None:
         # While services are kept the folder stays closed to them: on a
@@ -2143,10 +2490,16 @@ class Verifier:
             service=service,
             verifier_outputs_are_mounted=verifier_outputs_are_mounted,
         )
+        # An earlier test command's copy at its exit (a multi-step task's
+        # earlier verify) is not this one's outputs: never put back over them.
+        from benchflow.task import verifier_outputs
+
+        verifier_outputs.forget(self._sandbox)
         with as_task_command(self._sandbox):
             self.test_command_issued = True
             self._issued_service = service
             self._sandbox._benchflow_test_command_issued = True
+            ran = False
             try:
                 test_result = await exec_raw(
                     self._sandbox.exec,
@@ -2160,6 +2513,7 @@ class Verifier:
                         else self._task.config.verifier.timeout_sec
                     ),
                 )
+                ran = _exec_return_code(test_result) != READ_FAILED
             except (TimeoutError, ExecTimeoutError):
                 await self._cancel_freeze()
                 raise
@@ -2167,6 +2521,11 @@ class Verifier:
                 raise VerifierExecutionError(
                     f"Sandbox test-command exec failed: {describe_exception(e)}"
                 ) from e
+            finally:
+                # The verifier env's file is not kept past its command.
+                if env:
+                    await remove_exec_env_files(self._sandbox)
+                await self._remove_unread_root_env(ran)
         return await self._scored_under_network(
             after_test(_exec_return_code(test_result), parse_rewards=parse_rewards),
             service,
@@ -2298,9 +2657,9 @@ class Verifier:
         self, scoring: Awaitable[VerifierResult], service: str
     ) -> VerifierResult:
         """test.sh's scoring, then its network's verdict (:meth:`_network_verdict`).
-        A test.sh that left no usable reward after refused packets ends
-        "verifier network refused" too: the refusals take precedence over
-        "verifier wrote no usable reward"."""
+        A test.sh that left no usable reward after refused packets keeps that
+        ending ("verifier wrote no usable reward", a failure), with the
+        refusals recorded."""
         try:
             result = await scoring
         except (
@@ -2323,39 +2682,28 @@ class Verifier:
         cause: BaseException | None = None,
     ) -> VerifierResult:
         """test.sh's reward under the verifier's network: its refused
-        packets go to ``verifier/verifier-network.json``; a test.sh short of
-        full marks with any refused is the ending "verifier network refused",
-        unscored, never a silent 0."""
+        packets go to ``verifier/verifier-network.json``, and any refusal to
+        :attr:`network_refusal` with test.sh's exit and whether it passed.
+        The reward stands as test.sh gave it. A refused packet can come from
+        test.sh's own code or from code the agent left that test.sh runs, as
+        root in the same phase, and BenchFlow can't tell them apart: the
+        trial is scored and flagged for a read, never unscored for it."""
         armed_here = getattr(self._sandbox, "_benchflow_verifier_network", None)
         if not self._network_judged(service, armed_here):
             return result
         from benchflow.sandbox.verifier_network import network_refusal_ends
 
         armed, refused = await self._end_of_test_proof(service, armed_here)
-        if armed is None:
+        if armed is None or refused <= 0 or self.network_refusal is None:
             return result
-        reward = (result.rewards or {}).get("reward")
+        reward = None if cause is not None else (result.rewards or {}).get("reward")
         exit_code = getattr(self, "test_return_code", None)
-        if cause is not None and refused:
-            raise VerifierNetworkRefusedError(
-                f"test.sh exited {exit_code} and left no usable reward ({cause}) "
-                f"after the verifier's network ({armed.where} under {armed.mode}: "
-                "verifier.network_mode, else the sandbox's policy) refused it "
-                f"{armed.refusal_words(refused)}, so the run is not scored. If its tests need "
-                "those hosts, set verifier.network_mode in the task (see "
-                "verifier/verifier-network.json)"
-            ) from cause
+        self.network_refusal.update(
+            exit_code=exit_code,
+            passed=not network_refusal_ends(refused, exit_code, reward),
+        )
         if cause is not None:
-            return result
-        if network_refusal_ends(refused, exit_code, reward):
-            raise VerifierNetworkRefusedError(
-                f"test.sh exited {exit_code} with reward {reward!r} after the "
-                f"verifier's network ({armed.where} under {armed.mode}: "
-                "verifier.network_mode, else the sandbox's policy) refused it "
-                f"{armed.refusal_words(refused)}, so the run is not scored. If its tests need "
-                "those hosts, set verifier.network_mode in the task (see "
-                "verifier/verifier-network.json)"
-            )
+            self.network_refusal["no_usable_reward"] = True
         return result
 
     @staticmethod
@@ -2386,16 +2734,25 @@ class Verifier:
             armed=armed_here if isinstance(armed_here, VerifierNetwork) else None,
         )
         if proof is not None and not proof.proven:
-            self._policy_breached(proof, armed_here)
+            await self._policy_breached(proof, armed_here)
         armed, refused = await refused_since_arm(self._sandbox)
         if proof is not None:
             # After the count: a refused TEST-NET connect counts at the final
             # REJECT, and it is not test.sh's.
             await policy_reproof.connect_from_launch(self._sandbox, proof, service)
             if not proof.proven:
-                self._policy_breached(proof, armed)
+                await self._policy_breached(proof, armed)
         if armed is None:
             return None, refused
+        if refused > 0:
+            self.network_refusal = {
+                "phase": "test.sh",
+                "where": armed.where,
+                "mode": armed.mode,
+                "refused": refused,
+                "refused_words": armed.refusal_words(refused),
+                **({"timed_out": True} if timed_out else {}),
+            }
         try:
             record = armed.record(refused)
             launch = getattr(self, "_launch_text", None)
@@ -2403,7 +2760,11 @@ class Verifier:
                 record["launch"] = launch
             if proof is not None:
                 record["policy"] = {
-                    "state": "held",
+                    # Unproven only for held services that run nothing: one
+                    # restarted, or one exited (policy_reproof.with_held_restarts).
+                    "state": "held"
+                    if proof.proven
+                    else "not proven, held after a restart or exited",
                     "proven_at": proof.checked_at,
                     "rules": proof.record()["rules"],
                 }
@@ -2430,7 +2791,8 @@ class Verifier:
         of a test command that returned (:meth:`_end_of_test_proof`). A breach
         raises :class:`NetworkPolicyBreachedError`, the ending "network policy
         breached" (unscored). A clean proof leaves the timeout's 0 as it was,
-        whatever the network refused, and its record says ``timed_out``.
+        whatever the network refused: its record says ``timed_out``, and a
+        refusal is flagged as after a returned test command.
         """
         service = self._issued_service
         armed = getattr(self._sandbox, "_benchflow_verifier_network", None)
@@ -2438,7 +2800,7 @@ class Verifier:
             return
         await self._end_of_test_proof(service, armed, timed_out=True)
 
-    def _policy_breached(self, proof: Any, armed: Any) -> NoReturn:
+    async def _policy_breached(self, proof: Any, armed: Any) -> None:
         """Record the breach in ``verifier/verifier-network.json`` (never
         "held") and end the run "network policy breached"."""
         from benchflow.sandbox import policy_reproof
@@ -2456,7 +2818,9 @@ class Verifier:
                 self._rollout_paths.verifier_dir / VERIFIER_NETWORK_RECORD,
                 json.dumps(record, sort_keys=True) + "\n",
             )
-        raise policy_reproof.breach_error(proof)
+        error = await policy_reproof.with_held_restarts(self._sandbox, proof)
+        if error is not None:
+            raise error
 
     @property
     def test_command_finishable(self) -> bool:
@@ -3450,10 +3814,16 @@ class Verifier:
             await self._require_writable_test_stdout(test_stdout_path, service)
         if self.before_test is not None:
             await self.before_test(str(verifier_code_dir))
+        # An earlier test command's copy at its exit (a multi-step task's
+        # earlier verify) is not this one's outputs: never put back over them.
+        from benchflow.task import verifier_outputs
+
+        verifier_outputs.forget(self._sandbox)
         with as_task_command(self._sandbox):
             self.test_command_issued = True
             self._issued_service = service
             self._sandbox._benchflow_test_command_issued = True
+            ran = False
             try:
                 result = await exec_raw(
                     self._sandbox.exec,
@@ -3463,12 +3833,18 @@ class Verifier:
                     service=service,
                     timeout_sec=self._task.config.verifier.timeout_sec,
                 )
+                ran = _exec_return_code(result) != READ_FAILED
             except (TimeoutError, ExecTimeoutError):
                 raise
             except Exception as e:
                 raise VerifierExecutionError(
                     f"Sandbox test-command exec failed: {describe_exception(e)}"
                 ) from e
+            finally:
+                # The verifier env's file is not kept past its command.
+                if run_env:
+                    await remove_exec_env_files(self._sandbox)
+                await self._remove_unread_root_env(ran)
         return_code = _exec_return_code(result)
 
         if verifier_outputs_are_mounted:

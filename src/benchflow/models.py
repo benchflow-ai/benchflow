@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from benchflow._utils.aware_time import aware
 from benchflow.usage_tracking import (
     UsageSource,
     legacy_usage_source,
@@ -367,7 +368,7 @@ class RolloutResult:
         True
         """
         duration = (
-            (self.finished_at - self.started_at).total_seconds()
+            (aware(self.finished_at) - aware(self.started_at)).total_seconds()
             if self.started_at is not None and self.finished_at is not None
             else None
         )

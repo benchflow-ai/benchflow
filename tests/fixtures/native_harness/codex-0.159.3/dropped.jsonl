@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000000"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 3/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 4/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"Reconnecting... 5/5 (stream disconnected before completion: error sending request)"}
+{"type":"error","message":"stream disconnected before completion: error sending request"}
+{"type":"turn.failed","error":{"message":"stream disconnected before completion: error sending request"}}

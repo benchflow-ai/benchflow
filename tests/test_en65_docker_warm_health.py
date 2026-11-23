@@ -102,8 +102,10 @@ async def test_unbound_auxiliary_images_start_cold(tmp_path, monkeypatch, kind):
             [0, 0.5, 1, 1.5, 2, 10],
         ),
         ({"StartPeriod": 1_000_000_000}, [0, 5, 13]),
-        ({"StartInterval": 500_000_000}, [0, 8]),
-        ({}, [0, 8]),
+        # The probe at 0 comes before Docker's first (one interval after the
+        # start), so its failure counts nothing.
+        ({"StartInterval": 500_000_000}, [0, 8, 16]),
+        ({}, [0, 8, 16]),
     ],
 )
 async def test_startup_health_interval_and_retry_boundary(

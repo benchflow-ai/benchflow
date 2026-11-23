@@ -48,7 +48,7 @@ sandbox:
 
 Below the header is the instruction. The body can be split at reserved headings: `## prompt` holds the instruction, and `## role:<name>`, `## scene:<name>` and `## user-persona` hold the parts of a [multi-turn task](./multi-turn.md). A body with none of them is the instruction as a whole.
 
-The header's top-level keys are `schema_version`, `task`, `metadata`, `agent`, `verifier`, `sandbox`, `oracle`, `source`, `artifacts` and `reward`, and for multi-turn tasks `agents`, `scenes` and `user`. An unknown key is refused, so a typo can't silently change a run. `steps` describes a [multi-step task](./multi-step.md), which only 0.10.0rc2 runs, and 0.10.0rc2 adds `preference` for [human preferences](./human-preferences.md).
+The header's top-level keys are `schema_version`, `task`, `metadata`, `agent`, `verifier`, `sandbox`, `oracle`, `source`, `artifacts` and `reward`, and for multi-turn tasks `agents`, `scenes` and `user`. An unknown key is refused, so a typo can't silently change a run. A header from before July 2026 may say `environment:` where it now says `sandbox:` (SkillsBench's v1.1 tag does); BenchFlow reads it as `sandbox:`, and refuses a header with both. `steps` describes a [multi-step task](./multi-step.md), which only 0.10.0rc2 runs, and 0.10.0rc2 adds `preference` for [human preferences](./human-preferences.md).
 
 ## The environment
 
@@ -71,7 +71,7 @@ sandbox:
 
 ## Services the agent works with
 
-A task whose agent needs other services, such as a database or a mock API, puts a `docker-compose.yaml` (or `compose.yaml`) next to the Dockerfile. Docker, remote Docker and Daytona run its services; Modal, AgentCore and Apple Container run one container, so they refuse such a task before it starts rather than run it without its services.
+A task whose agent needs other services, such as a database or a mock API, puts a `docker-compose.yaml` next to the Dockerfile. That is the only name BenchFlow reads: on Docker a `docker-compose.yml`, `compose.yaml` or `compose.yml` is ignored, with a warning in the run's log and the trial's `warnings`, and the task runs as main alone. Docker, remote Docker and Daytona run its services; Modal, AgentCore and Apple Container run one container, so they refuse such a task before it starts rather than run it without its services.
 
 ## Other task formats
 

@@ -611,36 +611,8 @@ def _report_eval_result(result: EvaluationResult, job_dir: Path | None = None) -
         soft_wrap=True,
     )
     _report_scoring(getattr(result, "scoring", None))
-    if agent.lower() == "oracle" and total_errors == 0 and result.passed < result.total:
-        # The oracle control's own verdict, as nop's: a task its reference
-        # solution fails measures nothing until that is fixed.
-        failed = [
-            str(getattr(f, "task_name", "") or "")
-            for f in getattr(result, "task_failures", None) or []
-        ]
-        named = ", ".join(n for n in failed[:5] if n)
-        if named and len(failed) > 5:
-            named += f" and {len(failed) - 5} more"
-        print_hint(
-            f"oracle control: {result.passed}/{result.total}: the reference "
-            f"solution fails {result.total - result.passed} of the tasks"
-            + (f" ({named})" if named else "")
-            + "; they measure nothing until their solution or verifier is fixed",
-            style="yellow",
-        )
-    if empty_control and total_errors == 0:
-        if result.passed == 0:
-            print_hint(
-                f"{agent} control: {result.passed}/{result.total}, as expected: "
-                "doing nothing passes none of the tasks"
-            )
-        else:
-            print_hint(
-                f"{agent} control: {result.passed}/{result.total} passed with "
-                "nothing done: those tasks can be passed without solving them; "
-                "check their verifiers",
-                style="yellow",
-            )
+    for text, verdict_style in control_verdicts(result):
+        print_hint(text, style=verdict_style)
     caveat = getattr(result, "mean_reward_caveat", None)
     if caveat:
         console.print(f"[dim]{escape(caveat)}[/dim]")
@@ -772,6 +744,55 @@ def _report_scoring(scoring: Any) -> None:
 
 # The empty controls (benchflow.jobs' empty agents): an expected 0.
 _EMPTY_CONTROL_AGENTS = frozenset({"nop", "noop", "empty"})
+
+
+def control_verdicts(result: Any) -> list[tuple[str, str]]:
+    """A control run's verdict lines (text, style), for the default screen and
+    the long-form footer alike: an oracle that fails a task, and nop's 0 said
+    to be the expected result (DF-p1-first-run-13) or its pass flagged."""
+    agent = str(getattr(getattr(result, "config", None), "agent", "") or "")
+    errors = int(getattr(result, "errored", 0) or 0) + int(
+        getattr(result, "verifier_errored", 0) or 0
+    )
+    if errors:
+        return []
+    passed, total = int(result.passed), int(result.total)
+    if agent.lower() == "oracle" and passed < total:
+        # A task its reference solution fails measures nothing until fixed.
+        failed = [
+            str(getattr(f, "task_name", "") or "")
+            for f in getattr(result, "task_failures", None) or []
+        ]
+        named = ", ".join(n for n in failed[:5] if n)
+        if named and len(failed) > 5:
+            named += f" and {len(failed) - 5} more"
+        return [
+            (
+                f"oracle control: {passed}/{total}: the reference solution fails "
+                f"{total - passed} of the tasks"
+                + (f" ({named})" if named else "")
+                + "; they measure nothing until their solution or verifier is fixed",
+                "yellow",
+            )
+        ]
+    if agent.lower() not in _EMPTY_CONTROL_AGENTS:
+        return []
+    if passed == 0:
+        return [
+            (
+                f"{agent} control: {passed}/{total}, as expected: doing nothing "
+                "passes none of the tasks",
+                "",
+            )
+        ]
+    return [
+        (
+            f"{agent} control: {passed}/{total} passed with nothing done: those "
+            "tasks can be passed without solving them; check their verifiers",
+            "yellow",
+        )
+    ]
+
 
 # Task names shown per cause before "and N more".
 _MAX_CAUSE_TASKS = 5
@@ -920,12 +941,15 @@ def _trial_ending(trial: object) -> tuple[bool, str | None]:
     return refused, stopped if isinstance(stopped, str) else None
 
 
-def _report_outcomes(result: object, job_dir: Path | None) -> None:
+def _report_outcomes(
+    result: object, job_dir: Path | None, *, compact: bool = False
+) -> None:
     """Scored, unscored and errored trials, by cause, with whose fault and what next.
 
     Then the run's cost and time. ``result.results`` (one RolloutResult per
     task) feeds it; a result without them (sharded runs, older callers)
-    prints nothing here.
+    prints nothing here. ``compact`` (the default end of a run) leaves
+    out the counts line and the cost and time lines, which its table has.
     """
     import json
     from collections.abc import Mapping
@@ -997,12 +1021,13 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
                 (name, cause.next_step, str(rollout or ""))
             )
     scored = counts["passed"] + counts["failed"]
-    console.print(
-        f"Outcomes: {scored} scored ({counts['passed']} passed, {counts['failed']} "
-        f"failed), {no_score_text(counts)}",
-        highlight=False,
-        soft_wrap=True,
-    )
+    if not compact:
+        console.print(
+            f"Outcomes: {scored} scored ({counts['passed']} passed, {counts['failed']} "
+            f"failed), {no_score_text(counts)}",
+            highlight=False,
+            soft_wrap=True,
+        )
     if zeroed:
         shown = ", ".join(zeroed[:_MAX_CAUSE_TASKS])
         if len(zeroed) > _MAX_CAUSE_TASKS:
@@ -1131,6 +1156,8 @@ def _report_outcomes(result: object, job_dir: Path | None) -> None:
             f"stopped the job; `bench eval resume {where}` runs them on "
             "another login or after the reset",
         )
+    if compact:
+        return
     costs = [
         c
         for trial in results.values()
@@ -1200,9 +1227,11 @@ def _parse_agent_env(entries: list[str] | None) -> dict[str, str]:
 def _apply_dotenv_to_process_env() -> None:
     """Expose local .env credentials to provider SDKs without overriding env.
 
-    The opt-ins that let tasks read the operator's variables or reach this
-    machine are not taken from it: a ``.env`` in the folder ``bench`` runs
-    from may belong to the benchmark being run.
+    No isolation switch is taken from it: a ``.env`` in the folder ``bench``
+    runs from may belong to the benchmark being run, so every
+    ``BENCHFLOW_ALLOW_*`` (the task env and host access opt-ins among them)
+    and every ``BENCHFLOW_METADATA_*`` name in it is skipped. An exported
+    value of those names still counts.
     """
     import os
 
@@ -1211,7 +1240,9 @@ def _apply_dotenv_to_process_env() -> None:
     from benchflow.task.env import ALLOW_TASK_ENV_VAR
 
     for key, value in load_dotenv_env().items():
-        if key in (ALLOW_TASK_ENV_VAR, ALLOW_HOST_ACCESS_VAR):
+        if key in (ALLOW_TASK_ENV_VAR, ALLOW_HOST_ACCESS_VAR) or key.startswith(
+            ("BENCHFLOW_ALLOW_", "BENCHFLOW_METADATA_")
+        ):
             continue
         os.environ.setdefault(key, value)
 

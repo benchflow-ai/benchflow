@@ -1,13 +1,14 @@
-"""Hosted evals: runs that BenchHub executes on its own servers, not this machine.
+"""Hosted evals: runs that the hosted service executes on its own servers, not this machine.
 
-``bench hosted`` and the functions below talk to the hosted-eval service (BenchHub's ``/api/v1`` API):
+``bench hosted`` and the functions below talk to the hosted-eval service (its ``/api/v1`` API):
 
 - the address is ``--hub``, else ``BENCHFLOW_HOSTED_URL``; there is no default, and with neither every command
   stops before sending anything. It must be https, except to this machine (localhost, 127.0.0.1);
 - the key is sent as ``Authorization: Bearer``. It comes from ``BENCHFLOW_HUB_KEY`` (or ``BENCHFLOW_API_KEY``), else
   from a key file that only its owner can read (``--key-file``, ``BENCHFLOW_HUB_KEY_FILE``, or
   ``~/.config/benchflow/hub-key``); never from a command's arguments. A BenchFlow Hub key (``bfk_`` and 36 base62
-  characters) is checked offline before any call; BenchHub's own ``bh_<prefix>_<secret>`` keys are sent as they are.
+  characters) is checked offline before any call; the service's own ``bh_<prefix>_<secret>`` keys are sent as they
+  are.
   The key is never printed or logged: messages name only its kind (``bfk_…``, ``bh_…``). The client masks the key,
   its secret parts and anything else shaped like a key in what the service sends back: error messages, run records,
   events, metrics, traces and logs (a trajectories export is written to its file as sent).
@@ -24,6 +25,7 @@ while the hub's key service is down, which says nothing about the key. Standard 
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -52,8 +54,8 @@ SKIP_CHECKSUM_ENV = "BENCHFLOW_HUB_KEY_NO_CHECKSUM"
 RUNS_PATH = "/api/v1/runs"
 TRACES_PATH = "/api/v1/traces"
 SECRETS_PATH = "/api/v1/secrets"
-#: Providers whose own API key the service's key proxy takes (BenchHub ``runs/keyproxy.py``). The key stays on the
-#: service; the run's sandbox gets a token for that run only.
+#: Providers whose own API key the service's key proxy takes. The key stays on the service; the run's sandbox gets a
+#: token for that run only. An account key (``bfk_``) may store only these kinds.
 KEY_KINDS = ("anthropic", "deepseek", "kimi", "zai", "mimo")
 #: A run in one of these is still going; every other status is final.
 ACTIVE_STATUSES = frozenset({"queued", "starting", "running"})
@@ -62,7 +64,7 @@ EXPORT_FORMATS = ("atif", "messages")
 
 _BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _BFK = re.compile(r"^bfk_([0-9A-Za-z]{30})([0-9A-Za-z]{6})$")
-# BenchHub's own keys (accounts.py): bh_, a prefix of letters and digits, _, a URL-safe secret.
+# The hosted service's own keys: bh_, a prefix of letters and digits, _, a URL-safe secret.
 _BH = re.compile(r"^bh_[0-9A-Za-z]+_[0-9A-Za-z_-]+$")
 _TIMEOUT_S = 60
 _CHUNK = 1 << 20
@@ -146,7 +148,7 @@ def check_api_key(key: str | None) -> str:
     shape = (
         "a bfk_ key of the wrong length"
         if key.startswith("bfk_")
-        else "not a BenchFlow Hub or BenchHub key"
+        else "not a BenchFlow Hub or hosted-service key"
     )
     raise HostedError(
         f"the key {key_label(key)} is {shape}",
@@ -155,32 +157,81 @@ def check_api_key(key: str | None) -> str:
     )
 
 
+# What opening a link with O_NOFOLLOW raises: ELOOP on Linux and macOS, EMLINK on FreeBSD.
+_LINK_ERRNOS = frozenset({errno.ELOOP, errno.EMLINK})
+
+
+def _read_owner_only(path: Path, limit: int | None = None) -> bytes:
+    """The bytes of ``path`` (at most *limit*), a regular file of this user's that only its owner can
+    read or write (mode 600 or stricter), or :class:`HostedError` names it, with the fix.
+
+    The file is opened once, without following a link where the platform can refuse one
+    (``O_NOFOLLOW``), and without waiting on a FIFO (``O_NONBLOCK``); the check (``fstat``) and the read
+    use that descriptor, so a file or link swapped in after the check is never read."""
+    flags = os.O_RDONLY
+    for name in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC"):
+        flags |= getattr(os, name, 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in _LINK_ERRNOS:
+            raise HostedError(
+                f"the key file {path} is not a regular file",
+                hint="point at the file itself",
+                exit_code=2,
+            ) from None
+        raise HostedError(
+            f"cannot read the key file {path}: {exc.strerror}",
+            hint=f"write the key to that file with mode 600 (for the hub key, or set {KEY_ENV})",
+            exit_code=2,
+        ) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise HostedError(
+                f"the key file {path} is not a regular file",
+                hint="point at the file itself",
+                exit_code=2,
+            )
+        if info.st_mode & 0o077:
+            raise HostedError(
+                f"the key file {path} can be read by others (mode {stat.S_IMODE(info.st_mode):o})",
+                hint=f"chmod 600 {path}",
+                exit_code=2,
+            )
+        getuid = getattr(os, "getuid", None)
+        if getuid is not None and info.st_uid != getuid():
+            raise HostedError(
+                f"the key file {path} belongs to another user",
+                hint="use a key file of your own, with mode 600",
+                exit_code=2,
+            )
+        chunks: list[bytes] = []
+        size = 0
+        while limit is None or size < limit:
+            chunk = os.read(fd, 65536 if limit is None else min(65536, limit - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
+    except OSError as exc:
+        raise HostedError(
+            f"cannot read the key file {path}: {exc.strerror or exc}",
+            hint="write the key alone, as text",
+            exit_code=2,
+        ) from None
+    finally:
+        os.close(fd)
+
+
 def read_key_file(path: Path | str) -> str:
     """The key in ``path``, a regular file only its owner can read or write (mode 600 or stricter)."""
     path = Path(path).expanduser()
+    data = _read_owner_only(path, _KEY_FILE_MAX)
     try:
-        info = path.lstat()
-    except OSError as exc:
-        raise HostedError(
-            f"cannot read the key file {path}: {exc.strerror}",
-            hint=f"set {KEY_ENV}, or write the key to that file with mode 600",
-            exit_code=2,
-        ) from None
-    if not stat.S_ISREG(info.st_mode):
-        raise HostedError(
-            f"the key file {path} is not a regular file",
-            hint="point at the file itself",
-            exit_code=2,
-        )
-    if info.st_mode & 0o077:
-        raise HostedError(
-            f"the key file {path} can be read by others (mode {stat.S_IMODE(info.st_mode):o})",
-            hint=f"chmod 600 {path}",
-            exit_code=2,
-        )
-    try:
-        return path.read_bytes()[:_KEY_FILE_MAX].decode("utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+        return data.decode("utf-8").strip()
+    except UnicodeDecodeError:
         raise HostedError(
             f"cannot read the key file {path}",
             hint="write the key alone, as text",
@@ -219,11 +270,14 @@ def read_secret(source: str) -> str:
         value = sys.stdin.read()
     elif source.startswith("file:"):
         path = Path(source[5:]).expanduser()
+        # A model key is as secret as the hub key: owner-only, as read_key_file asks.
         try:
-            value = path.read_text(encoding="utf-8")
-        except OSError as exc:
+            value = _read_owner_only(path).decode("utf-8")
+        except UnicodeDecodeError:
             raise HostedError(
-                f"can't read {path}: {exc.strerror or exc}", exit_code=2
+                f"can't read {path}: it is not UTF-8 text",
+                hint="write the key alone, as text",
+                exit_code=2,
             ) from None
     elif source.startswith("env:"):
         value = os.environ.get(source[4:], "")
@@ -273,6 +327,56 @@ def redact(text: str, key: str | None) -> str:
             if len(secret) >= 8:
                 text = text.replace(secret, "***")
     return _KEY_SHAPED.sub("***", text)
+
+
+def normalize_endpoint(url: str) -> str:
+    """A model endpoint for a hosted run: https only, reachable from the internet.
+
+    The hosted service's workers call it from the service, so a CLIProxy on the user's own machine (localhost, a
+    private or link-local address) can't be reached, and plain http would send its key in the clear. A user name
+    or password in the URL would put a key on the command line; the key goes in ``--endpoint-key``.
+    """
+    import ipaddress
+
+    url = url.strip().rstrip("/")
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    shown = f"{parts.scheme}://{host}" if host else url.split("@")[-1]
+    bad = (
+        parts.scheme != "https"
+        or not host
+        or parts.username is not None
+        or parts.password is not None
+    )
+    if not bad:
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            bad = host == "localhost" or host.endswith(
+                (".localhost", ".local", ".internal")
+            )
+        else:
+            bad = not ip.is_global
+    if bad:
+        raise HostedError(
+            f"the endpoint must be https only, reachable from the internet: {shown} is not",
+            hint="the hosted workers call it from the service, so a CLIProxy on your own machine can't be reached; "
+            "give its public https:// address, and its key with --endpoint-key",
+            exit_code=2,
+        )
+    return url
+
+
+def check_secret_kind(kind: str, key: str | None) -> str:
+    """``kind``, or :class:`HostedError` before anything is sent when an account key (``bfk_``) can't store it."""
+    kind = kind.strip().lower()
+    if (key or "").startswith("bfk_") and kind not in KEY_KINDS:
+        raise HostedError(
+            f"an account key stores only these kinds: {', '.join(KEY_KINDS)} (not {kind!r})",
+            hint="pick one of them with --kind; nothing was sent",
+            exit_code=2,
+        )
+    return kind
 
 
 def normalize_url(url: str) -> str:
@@ -498,7 +602,7 @@ class HostedClient:
         return body
 
     def submit(self, env_id: str, **options: Any) -> dict[str, Any]:
-        """Queue a run of ``env_id``, a hub version id (``PKG-...``) or a BenchHub catalog id; the answer is
+        """Queue a run of ``env_id``, a hub version id (``PKG-...``) or the hosted service's catalog id; the answer is
         ``{"run_id", "warnings", "runtime"}``. ``options`` are :meth:`run_body`'s."""
         once = [s.get("value", "") for s in options.get("secrets_once") or []]
         answer = _masking(

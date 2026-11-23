@@ -1,0 +1,30 @@
+contract_version = "1.1"
+model_route = "agent"
+name = "marker-file"
+launch_cmd = "python3 /opt/marker_agent.py"
+install_cmd = '''
+cat > /opt/marker_agent.py <<'PYCODE'
+import json
+import sys
+from pathlib import Path
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request.get("method")
+    result = {}
+    if method == "initialize":
+        result = {"protocolVersion": 1, "agentCapabilities": {}}
+    elif method == "session/new":
+        result = {"sessionId": "marker"}
+    elif method == "session/prompt":
+        Path("/app/marker.txt").write_text("cobalt\n")
+        update = {"sessionUpdate": "agent_message_chunk",
+                  "content": {"type": "text", "text": "Wrote /app/marker.txt."}}
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update",
+                          "params": {"sessionId": "marker", "update": update}}), flush=True)
+        result = {"stopReason": "end_turn"}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+PYCODE
+'''

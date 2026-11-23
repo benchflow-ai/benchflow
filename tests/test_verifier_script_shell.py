@@ -291,15 +291,24 @@ def _daytona(image: LocalImage, *, compose: bool) -> Exec:
         return "true"
 
     sandbox._stage_proof = unproven
+    # An exec's env file: the same; the upload below makes its folder.
+    sandbox._exec_env_proof = unproven
+    sandbox._prepare_exec_env_folder = _no_op
     if compose:
         strategy = _DaytonaDinD.__new__(_DaytonaDinD)
         strategy._env = sandbox
 
         async def compose_exec(
-            parts, timeout_sec=None, cleanup_session=False, stdin_data=None
+            parts,
+            timeout_sec=None,
+            cleanup_session=False,
+            stdin_data=None,
+            stdin_file=None,
         ):
-            # [..., service, "sh", "-c", command] run inside the service; an
-            # env too large for one command on stdin.
+            # [..., service, "sh", "-c", command] run inside the service; the
+            # env from its file on the VM, or a staged command, on stdin.
+            if stdin_file is not None:
+                stdin_data = Path(image.local(stdin_file)).read_bytes()
             stdin = None if stdin_data is None else stdin_data.decode()
             return image.run(parts[-3:], timeout_sec, stdin=stdin)
 

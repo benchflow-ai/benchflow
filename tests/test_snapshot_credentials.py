@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -495,7 +496,7 @@ async def test_daytona_snapshot_sees_no_credentials_and_restore_puts_them_back(
     fs = _fs()
     captured: list[dict] = []
 
-    async def create_snapshot(name):
+    async def create_snapshot(name, **kwargs):
         captured.append(dict(fs.files))
 
     sandbox = DaytonaSandbox.__new__(DaytonaSandbox)
@@ -505,7 +506,13 @@ async def test_daytona_snapshot_sees_no_credentials_and_restore_puts_them_back(
         daytona_mod.SYSTEM_SHELL_EMPTY_VARS, ""
     )
     sandbox._sandbox = SimpleNamespace(
-        id="sb-1", _experimental_create_snapshot=create_snapshot, delete=AsyncMock()
+        id="sb-1",
+        _experimental_create_snapshot=create_snapshot,
+        delete=AsyncMock(),
+        # The toolbox exec that clears Daytona's session files first.
+        process=SimpleNamespace(
+            exec=AsyncMock(return_value=SimpleNamespace(exit_code=0))
+        ),
     )
     strategy = _DaytonaDirect(sandbox)
     sandbox._strategy = strategy
@@ -572,3 +579,72 @@ async def test_daytona_adopt_snapshot_remembers_the_live_credentials():
     await sandbox.adopt_snapshot(SandboxImage(provider="daytona", ref="bf-snap-kept"))
     assert fs.files["/root/.codex/auth.json"][0] == SECRET
     assert strategy._snapshot_credentials["bf-snap-kept"]
+
+
+# other stores: tools that keep a login or a token in a home.
+OTHER_CREDENTIAL_STORES = (
+    ".config/git/credentials",
+    ".kube/config",
+    ".pgpass",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".config/hub",
+    ".config/gcloud/credentials.db",
+)
+
+
+class PasswdFs(FakeFs):
+    """A container whose /etc/passwd names homes outside /root and /home/*."""
+
+    PASSWD_HOMES: ClassVar[dict[str, tuple[str, str]]] = {
+        "/app": ("1000", "1000"),
+        "/var/lib/svc": ("0", "0"),
+    }
+
+    def listing(self) -> str:
+        from benchflow.agents.credentials import CREDENTIAL_EVIDENCE_PATHS
+
+        homes = {**HOMES, **self.PASSWD_HOMES}
+        lines, seen = [], set()
+        for path, (content, uid, gid, mode) in sorted(self.files.items()):
+            home = max(
+                (h for h in homes if path.startswith(h + "/")), key=len, default=None
+            )
+            if home is None:
+                continue
+            rel = path[len(home) + 1 :]
+            if not any(
+                rel == c or rel.startswith(c + "/") for c in CREDENTIAL_EVIDENCE_PATHS
+            ):
+                continue
+            kind = "symbolic link" if content is None else "regular file"
+            lines.append(f"F:{uid}:{gid}:{mode}:{kind}:{path}")
+            seen.add(home)
+        for home in sorted(seen):
+            uid, gid = homes[home]
+            lines.append(f"H:{uid}:{gid}:755:directory:{home}")
+        return "\n".join(lines) + ("\n" if lines else "")
+
+
+@pytest.mark.parametrize("rel", OTHER_CREDENTIAL_STORES)
+@pytest.mark.parametrize("home", ["/home/agent", "/root", "/app", "/var/lib/svc"])
+async def test_the_other_stores_and_passwd_homes_never_enter_a_snapshot(home, rel):
+    """(other stores, homes outside /root and /home/*). A credential file of another common tool,
+    in any home /etc/passwd names (the agent user's home may be /app), is kept out of the snapshot and put back.
+    The listing reads /etc/passwd as root.
+
+    Mutants: a store left out of the inventory; homes only from /root and /home/*."""
+    owner = {**HOMES, **PasswdFs.PASSWD_HOMES}[home]
+    path = f"{home}/{rel}"
+    fs = PasswdFs(
+        {
+            path: (b"token EN816-SYNTHETIC", *owner, "600"),
+            "/root/notes.txt": (b"not a credential", "0", "0", "644"),
+        }
+    )
+    ops = FakeOps(fs)
+    stash = await scrub_credentials(ops)
+    assert [f.path for f in stash] == [path]
+    assert "/etc/passwd" in ops.commands[0], ops.commands[0][:300]
+    await put_back_credentials(ops, stash)
+    assert fs.files[path][0].endswith(b"EN816-SYNTHETIC")

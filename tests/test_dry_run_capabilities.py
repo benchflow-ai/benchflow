@@ -725,14 +725,14 @@ def test_a_matrix_entry_the_run_refuses_whole_gets_the_job_hint(
 ):
     """R632 round 2 (nit): an entry no route serves is refused before its job
     exists, by the dry run as by the run, not as an error each trial records
-    (codex-acp on DeepSeek, which serves no Responses API; the effort PRs let
-    Claude Code through on every provider's route)."""
+    (codex-acp on Z.ai's coding plan, which serves no Responses API; the
+    effort PRs let Claude Code through on every provider's route)."""
     import yaml
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake-not-a-key")
+    monkeypatch.setenv("ZAI_API_KEY", "fake-not-a-key")
     _task(tmp_path / "tasks", "plain")
     matrix = tmp_path / "matrix.yaml"
-    entry = {"agent": "codex-acp", "model": "deepseek/deepseek-v4-flash"}
+    entry = {"agent": "codex-acp", "model": "zai-coding/glm-5.3-flash"}
     matrix.write_text(yaml.safe_dump({"models": {"ds": entry}}))
     dry = bench("docker", "--matrix", str(matrix), "--dry-run", jobs="dry")
     run = bench("docker", "--matrix", str(matrix), jobs="run")

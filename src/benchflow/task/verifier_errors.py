@@ -28,11 +28,6 @@ class VerifierResult(BaseModel):
     rewards: dict[str, Any] | None = None
 
 
-class VerifierNetworkRefusedError(Exception):
-    """test.sh failed after the verifier's network refused it something: an ending of its own, unscored, so a policy never reads as the
-    solution's 0."""
-
-
 class NetworkPolicyBreachedError(Exception):
     """BenchFlow's network rules for the trial no longer held when proven
     again at the end of the agent's turn or of test.sh: a rule gone, a
@@ -80,6 +75,13 @@ class VerifierNetworkUnheldError(RuntimeError):
     rules could not be added, from BenchFlow's helper or at all, or were not
     proven. test.sh does not run open instead: an ending of its own,
     unscored."""
+
+
+class VerifierServiceHeldError(RuntimeError):
+    """The compose service test.sh runs in (``[verifier].service``) exited
+    after the start and did not start again, or waits in the hold again
+    after a restart: test.sh can't run there. A cause inside the task's
+    containers, so a failure that is scored 0 and flagged, never unscored."""
 
 
 class RewardFileEmptyError(Exception):

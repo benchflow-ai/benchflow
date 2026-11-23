@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import re
 from base64 import b32encode
@@ -15,6 +16,106 @@ from benchflow.sandbox._compose_teardown import image_ref_identity
 
 #: The one spelling BenchFlow gives every service that can run agent code.
 NO_NEW_PRIVILEGES = "no-new-privileges:true"
+
+
+# The oldest Docker Engine and Compose BenchFlow supports in full (
+#: the lead's ruling R7). Below them a trial under a network policy is refused
+#: before anything starts (service_cover.start_sandbox), `bench doctor` warns,
+#: and build-only services and ``models:`` do not resolve; open-network trials
+#: run.
+DOCKER_MINIMUM_ENGINE = (29, 0, 0)
+DOCKER_MINIMUM_COMPOSE = (2, 40, 0)
+DOCKER_MINIMUM_TEXT = "Docker Engine 29 and Docker Compose 2.40"
+_VERSION = re.compile(r"\s*v?(\d+)\.(\d+)(?:\.(\d+))?")
+#: Each daemon's versions, asked once per process (by the CLI flags and
+#: DOCKER_HOST/DOCKER_CONTEXT that address it).
+_DOCKER_VERSIONS: dict[tuple[str, ...], tuple[str | None, str | None]] = {}
+
+
+def _version_tuple(text: str | None) -> tuple[int, int, int] | None:
+    found = _VERSION.match(text or "")
+    if found is None:
+        return None
+    major, minor, patch = found.groups()
+    return int(major), int(minor), int(patch or 0)
+
+
+def docker_below_minimum(engine: str | None, compose: str | None) -> str | None:
+    """Why *engine* and *compose* are below :data:`DOCKER_MINIMUM_TEXT`, or
+    None when neither is (a version that cannot be read is not taken as
+    older)."""
+    old_engine = (v := _version_tuple(engine)) is not None and v < DOCKER_MINIMUM_ENGINE
+    old_compose = (
+        v := _version_tuple(compose)
+    ) is not None and v < DOCKER_MINIMUM_COMPOSE
+    if not (old_engine or old_compose):
+        return None
+    return (
+        f"Docker Engine {engine or 'unknown'} with Compose {compose or 'unknown'} "
+        f"is older than {DOCKER_MINIMUM_TEXT}, the oldest BenchFlow supports in full"
+    )
+
+
+async def docker_versions(sandbox: Any) -> tuple[str | None, str | None] | None:
+    """The Engine and Compose versions of the daemon *sandbox* starts on, once
+    per process and daemon; None for a sandbox that does not run on Docker."""
+    run = getattr(sandbox, "_run_docker_process", None)
+    flags = getattr(sandbox, "_docker_compose_global_args", None)
+    if not callable(run) or not callable(flags):
+        return None
+    args = [str(a) for a in flags()]
+    key = (
+        *args,
+        os.environ.get("DOCKER_HOST", ""),
+        os.environ.get("DOCKER_CONTEXT", ""),
+    )
+    if key in _DOCKER_VERSIONS:
+        return _DOCKER_VERSIONS[key]
+
+    async def ask(argv: list[str], what: str) -> str | None:
+        try:
+            result = await run(
+                argv, check=False, timeout_sec=30, what=what, separate_stderr=True
+            )
+        except Exception:
+            return None
+        out = (getattr(result, "stdout", "") or "").strip()
+        if getattr(result, "return_code", 1) != 0 or not out:
+            return None
+        return out.splitlines()[0].strip()
+
+    engine = await ask(
+        ["docker", *args, "version", "--format", "{{.Server.Version}}"],
+        "Docker daemon version",
+    )
+    compose = await ask(
+        ["docker", *args, "compose", "version", "--short"], "Docker Compose version"
+    )
+    _DOCKER_VERSIONS[key] = (engine, compose)
+    return engine, compose
+
+
+async def old_docker_policy_refusal(sandbox: Any, policy: str) -> str | None:
+    """Why a trial under the network *policy* is refused before anything
+    starts on *sandbox*'s daemon, or None. On Docker Engine 28 / Compose 2.38
+    main's image ENTRYPOINT ran before the policy held, and a connection a
+    process of it opened as root stayed open for the whole trial (
+    gap 3): BenchFlow refuses rather than run the trial outside its policy."""
+    versions = await docker_versions(sandbox)
+    if versions is None:
+        return None
+    old = docker_below_minimum(*versions)
+    if old is None:
+        return None
+    return (
+        f"sandbox startup refused: {old}. On it the task's network policy "
+        f"({policy}) does not hold main's image ENTRYPOINT from its first "
+        "instruction: a process it starts as root can open a connection before "
+        "the policy is in force and keep it for the whole trial. Upgrade Docker "
+        "(Docker's apt repository: docker-ce and docker-compose-plugin; on "
+        "GitHub Actions' ubuntu-24.04 runners, install them before running "
+        "BenchFlow); a trial with an open network runs on this Docker"
+    )
 
 
 def with_no_new_privileges(options: Any) -> list[Any]:
@@ -130,10 +231,12 @@ async def implicit_build_aliases(
         ["build", "--print", "--", *sorted(implicit)], timeout_sec=30
     )
     if result.return_code != 0:
-        raise ValueError("Compose could not describe implicit build outputs")
+        raise ValueError(
+            f"Compose could not describe implicit build outputs{_BUILD_ONLY_NOTE}"
+        )
     targets = json.loads(result.stdout or "{}").get("target")
     if not isinstance(targets, dict):
-        raise ValueError("Compose did not describe build targets")
+        raise ValueError(f"Compose did not describe build targets{_BUILD_ONLY_NOTE}")
     aliases: dict[str, list[str]] = {}
     for target in targets.values():
         service = target.get("labels", {}).get("com.docker.compose.service")
@@ -149,8 +252,15 @@ async def implicit_build_aliases(
             raise ValueError("Compose did not describe unique build outputs")
         aliases[service] = tags
     if aliases.keys() != implicit:
-        raise ValueError("Compose omitted implicit build outputs")
+        raise ValueError(f"Compose omitted implicit build outputs{_BUILD_ONLY_NOTE}")
     return aliases
+
+
+# Compose 2.38 does not describe a build-only service's output (gap 1).
+_BUILD_ONLY_NOTE = (
+    f" (a service with a build and no image needs {DOCKER_MINIMUM_TEXT} or newer:"
+    " `docker compose version`)"
+)
 
 
 def private_build_override(

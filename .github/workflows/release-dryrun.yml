@@ -1,0 +1,102 @@
+name: release-dryrun
+
+# Every step public-release.yml takes before it publishes, on the commit a
+# release tag will name, before anyone pushes the tag: the tree guard, the
+# version a tag would carry, the pinned bfx, the price snapshot, the build,
+# the checks of the distributions and the acceptance record's binding. It
+# never publishes. 0.10.0rc4's tag found its failures only after the push.
+# The leak gate needs its patterns, so it runs in leak-gate-preflight.yml on
+# the trunk and the rc branches, never on a pull request.
+
+on:
+  pull_request:
+    paths:
+      - ".github/release-acceptance/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit a release tag will name (the acceptance record's commit).
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || '' }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Public tree guard
+        run: uv run --no-project python tools/public_tree_guard.py .
+
+      - name: The version a tag would carry
+        id: version
+        run: |
+          v="$(uv run --no-project python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          TAG_NAME="v$v" uv run --with packaging --no-project python tools/release_version.py public-release
+
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
+      - name: Price snapshot is current
+        run: uv run --no-project python tools/check_price_snapshot.py
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Check distributions
+        run: uv run --with twine --no-project twine check dist/*
+
+      - name: Check bfx in distributions
+        run: uv run --no-project python tools/check_dist_bfx.py dist
+
+      - name: Require accepted source and exact distributions
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -f ".github/release-acceptance/$VERSION.json" ]; then
+            uv run --no-project python tools/check_release_acceptance.py dist
+          else
+            echo "::notice::no acceptance record for $VERSION yet; the record must name these bytes:"
+          fi
+          ( cd dist && sha256sum benchflow-* ) | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Gate receipts named by the record
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -f ".github/release-acceptance/$VERSION.json" ]; then
+            # No token here: this reports the gates the record names, and the
+            # publish checks them with GitHub.
+            uv run --with packaging --no-project python tools/check_gate_receipts.py
+          fi

@@ -11,9 +11,11 @@ only wires the call.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from benchflow.agent_router import AGENT_ALIAS_VERBS, register_agent_router
@@ -22,8 +24,23 @@ from benchflow.cli._shared import (
     _REQUIRES_AUTH_NOTE,
     _format_requires,
     console,
+    err_console,
     print_error,
 )
+
+
+def _apply_dotenv_agent_source() -> None:
+    """The ``.env`` keys that decide agent discovery (``BENCHFLOW_AGENTS_*``),
+    with ``bench run``'s precedence: an exported value wins (``.env``
+    named the agents folder for ``bench run`` but not for ``bench agents``).
+    Only these keys, so listing agents imports nothing a run needs."""
+    import os
+
+    from benchflow._dotenv import load_dotenv_env
+
+    for key, value in load_dotenv_env().items():
+        if key.startswith("BENCHFLOW_AGENTS_"):
+            os.environ.setdefault(key, value)
 
 
 def _first_sentence(text: str | None) -> str:
@@ -51,6 +68,48 @@ def register_agent(app: typer.Typer) -> None:
     # home is the single `bench eval adopt` command.
     register_agent_router(agent_app, verbs=AGENT_ALIAS_VERBS, deprecated_as="agent")
 
+    # Reached as `bench agents validate`; hidden here, so the 0.8 group keeps
+    # its own commands.
+    @agent_app.command("validate", hidden=True)
+    def agent_validate(
+        path: Annotated[
+            Path,
+            typer.Argument(help="A manifest.toml, or the agent folder that holds it"),
+        ],
+    ) -> None:
+        """Check an agent manifest against the contract, without Docker: its
+        contract_version, every key and its type, with the line of each problem."""
+        from benchflow.agents.manifest_check import check_manifest, manifest_identity
+
+        _apply_dotenv_agent_source()
+        manifest = path / "manifest.toml" if path.is_dir() else path
+        if not manifest.is_file():
+            print_error(
+                f"no manifest at {manifest.as_posix()}",
+                next_step="pass the agent's manifest.toml (agents/<name>/manifest.toml) "
+                "or its folder",
+            )
+            raise typer.Exit(2)
+        problems = check_manifest(manifest)
+        if problems:
+            for problem in problems:
+                err_console.print(
+                    escape(problem.text()), highlight=False, soft_wrap=True
+                )
+            print_error(
+                f"{manifest.as_posix()} is not a valid agent manifest "
+                f"({len(problems)} problem{'s' if len(problems) != 1 else ''})",
+                next_step="fix each line above, then run bench agents validate again",
+            )
+            raise typer.Exit(1)
+        identity = manifest_identity(manifest, manifest.parent.parent)
+        console.print(
+            f"[green]✓[/green] {escape(manifest.as_posix())}: valid; agent "
+            f"{escape(identity.text())}",
+            highlight=False,
+            soft_wrap=True,
+        )
+
     @agent_app.command("list")
     def agent_list() -> None:
         """List all registered agents."""
@@ -59,6 +118,8 @@ def register_agent(app: typer.Typer) -> None:
             manifest_catalog_for_listing,
         )
 
+        # The same .env a run reads names the agents folder.
+        _apply_dotenv_agent_source()
         catalog = manifest_catalog_for_listing()
 
         # Build reverse map: canonical name -> list of aliases
@@ -140,13 +201,16 @@ def register_agent(app: typer.Typer) -> None:
             )
 
         console.print(table)
+        # An invalid local manifest is one line of the catalog's warning:
+        # the agent, its first problem and its line.
+        warnings = catalog.warnings
         console.print(
             f"[dim]`bench agents <name>` shows one in full. {_REQUIRES_AUTH_NOTE}[/dim]"
         )
-        if catalog.warnings:
+        if warnings:
             print_error(
                 f"Agent catalog incomplete ({catalog.source}):\n  "
-                + "\n  ".join(catalog.warnings),
+                + "\n  ".join(warnings),
                 next_step="the agents listed above work; BENCHFLOW_AGENTS_SOURCE "
                 "names the catalog (off skips it)",
             )
@@ -170,6 +234,7 @@ def register_agent(app: typer.Typer) -> None:
             resolve_agent,
         )
 
+        _apply_dotenv_agent_source()
         try:
             cfg = resolve_agent(name)
         except KeyError as exc:
@@ -186,6 +251,19 @@ def register_agent(app: typer.Typer) -> None:
         )
 
         console.print(f"[bold]{cfg.name}[/bold]")
+        from benchflow.agents.remote_manifests import core_override
+
+        if (override := core_override(cfg.name)) is not None:
+            console.print(
+                f"  Source:      {override.manifest} ({override.sha256[:23]}), "
+                f"replacing the core agent ({override.differs_in[0]} and "
+                f"{len(override.differs_in) - 1} more differ)"
+                if len(override.differs_in) > 1
+                else f"  Source:      {override.manifest} ({override.sha256[:23]}), "
+                "replacing the core agent",
+                style="yellow",
+                soft_wrap=True,
+            )
         if aliases:
             console.print(f"  Aliases:     {', '.join(aliases)}")
         console.print(f"  Description: {cfg.description}")

@@ -372,7 +372,7 @@ def test_one_task_gets_the_heartbeat_at_any_concurrency(
 
 
 def test_report_paths_are_not_wrapped(tmp_path: Path, monkeypatch) -> None:
-    """At 80 columns the Artifacts/Summary paths split mid-path."""
+    """At 80 columns the results path split mid-path."""
     deep = tmp_path / ("a-rather-long-folder-name-" * 3)
     deep.mkdir()
     _task(deep)
@@ -396,9 +396,9 @@ def test_report_paths_are_not_wrapped(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     job = next(p for p in (deep / "jobs").iterdir() if p.is_dir())
     lines = result.output.splitlines()
-    assert any(line.endswith(f"{job}/summary.json") for line in lines), result.output
-    artifacts = next(line for line in lines if line.startswith("Artifacts:"))
-    assert artifacts.rstrip().endswith(f"{deep.name}/jobs/{job.name}"), artifacts
+    # The final screen's one path line, whole on one line.
+    results = next(line for line in lines if line.startswith("Results:"))
+    assert results.rstrip().endswith(f"{deep.name}/jobs/{job.name}/"), results
 
 
 def test_summary_says_whether_a_reviewer_ran(tmp_path: Path, monkeypatch) -> None:

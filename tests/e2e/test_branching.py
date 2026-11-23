@@ -2,8 +2,8 @@
 branch-tree export and the viewer's Lineage data.
 
 Oracle scenarios fork a task at its start state; the agent scenario forks a
-``claude-agent-acp`` run (scripted fake model, native route: branching
-refuses a provider runtime) after its first prompt.
+``claude-agent-acp`` run (scripted fake model, native route) after its
+first prompt.
 """
 
 from __future__ import annotations

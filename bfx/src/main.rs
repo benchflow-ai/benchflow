@@ -14,6 +14,8 @@
 //!   bfx serve --frames [JOURNAL]           the exec channel's helper
 //!   bfx serve --verdict JOURNAL PID        after a channel died
 //!   bfx launch -- PROGRAM [ARG...]         start the verifier's test.sh held
+//!   bfx hold --token TOKEN -- ARGV...      a held service's entrypoint (hold.rs)
+//!   bfx hold --ready TOKEN | --release TOKEN
 //!
 //! Commands: exec, kill, scan, tar-out, tar-in, mkdir, chown, chmod, clear,
 //! remove, write, walk, stat (see each module). One-shot `exec` replaces
@@ -33,6 +35,7 @@ mod exec;
 mod fsx;
 mod glob;
 mod harden;
+mod hold;
 mod kill;
 mod launch;
 mod ops;
@@ -61,7 +64,7 @@ pub fn self_sha256() -> Option<String> {
 }
 
 fn usage() -> i32 {
-    let _ = std::io::stderr().write_all(b"usage: bfx version | bfx <command> --json '<arguments>'|- | bfx serve [--journal JOURNAL | --frames [JOURNAL] | --verdict JOURNAL PID] | bfx launch -- PROGRAM [ARG...]\n");
+    let _ = std::io::stderr().write_all(b"usage: bfx version | bfx <command> --json '<arguments>'|- | bfx serve [--journal JOURNAL | --frames [JOURNAL] | --verdict JOURNAL PID] | bfx launch -- PROGRAM [ARG...] | bfx hold --token TOKEN -- ARGV... | bfx hold --ready|--release TOKEN\n");
     2
 }
 
@@ -122,6 +125,11 @@ fn one_shot(cmd: &str, text: &[u8]) -> i32 {
 
 fn run() -> i32 {
     let args: Vec<OsString> = std::env::args_os().collect();
+    // A held service's waiter installs its signal handlers before anything
+    // else, and keeps the descriptors its program inherits (hold.rs).
+    if args.get(1).map(|a| a.as_bytes()) == Some(&b"hold"[..]) {
+        return hold::main(&args);
+    }
     if let Err(why) = harden::startup() {
         let _ = std::io::stderr().write_all(format!("bfx: {why}\n").as_bytes());
         return 125;

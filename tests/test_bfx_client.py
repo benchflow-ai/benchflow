@@ -142,13 +142,39 @@ def test_docker_delivery_choice(monkeypatch):
     )
     with pytest.raises(ValueError):
         delivery.docker_mode(local_daemon=True, environ={delivery.DELIVERY_ENV: "copy"})
-    # Daytona native's per-call copy holds against any agent.
-    assert delivery.GUARANTEE[delivery.PER_CALL] == "any-agent"
     assert {k: v for k, v in delivery.GUARANTEE.items() if k != delivery.PER_CALL} == {
         "bind": "any-agent",
         "volume": "any-agent",
         "upload": "non-root-agent",
     }
+
+
+def test_the_guarantee_follows_the_launch():
+    """Z5. Who bfx holds against depends on how the backend starts
+    it, not only on where it sits: Docker starts it by argv (any agent, on a
+    read-only bind or volume); Daytona starts every command through the
+    image's shell, which a root agent can replace, so its per-call copy and
+    DinD's opt-in volume hold against a non-root agent only.
+
+    Mutants: per-call labelled any-agent again; the launch ignored."""
+    from benchflow.sandbox.daytona import DaytonaSandbox
+    from benchflow.sandbox.docker import DockerSandbox
+
+    assert delivery.GUARANTEE[delivery.PER_CALL] == "non-root-agent"
+    assert DockerSandbox.bfx_launch == "argv"
+    assert DaytonaSandbox.bfx_launch == "image-shell"
+
+    def guarantee(cls, mode):
+        box = object.__new__(cls)
+        box.bfx_delivery = mode
+        return box.bfx_guarantee
+
+    assert guarantee(DockerSandbox, "bind") == "any-agent"
+    assert guarantee(DockerSandbox, "volume") == "any-agent"
+    assert guarantee(DockerSandbox, None) is None
+    assert guarantee(DaytonaSandbox, "per-call") == "non-root-agent"
+    assert guarantee(DaytonaSandbox, "volume") == "non-root-agent"
+    assert guarantee(DaytonaSandbox, None) is None
 
 
 def test_compose_overlays_mount_read_only_and_never_copy_from_the_image():

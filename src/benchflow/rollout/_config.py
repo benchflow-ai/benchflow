@@ -177,6 +177,14 @@ class RolloutConfig:
     # it (or the task's own opt-out) the agent starts only once the block is
     # proven on.
     allow_cloud_metadata: bool = False
+    # A cloud credential file (the gcloud ADC) may be staged in the sandbox
+    # (``--allow-cloud-credential-file``); without it such a trial is refused
+    # before any sandbox (benchflow.agents.operator_credentials).
+    allow_cloud_credential_file: bool = False
+    # A model agent may start while the task's processes run in main beside
+    # an operator credential (``--allow-task-processes-with-credentials``).
+    allow_task_processes_with_credentials: bool = False
+    scoped_credentials: tuple[str, ...] = ()
     services: list[str] | None = None
     job_name: str | None = None
     rollout_name: str | None = None
@@ -378,6 +386,11 @@ class RolloutConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.task_path, Path):
             self.task_path = Path(self.task_path)
+        from benchflow.sandbox.cloud_metadata import strict_grant
+
+        # The run's grant of a task's cloud metadata opt-out: a quoted
+        # "false" from a config file or dict is no permission.
+        self.allow_cloud_metadata = strict_grant(self.allow_cloud_metadata)
         from benchflow._verifier_setup import validate_verifier_setup_timeout
 
         self.verifier_setup_timeout = validate_verifier_setup_timeout(

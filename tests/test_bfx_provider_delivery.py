@@ -58,7 +58,7 @@ def _version_line(arch: str) -> str:
 # ------------------------------------------------------------- the switch
 
 
-@pytest.mark.parametrize("backend", sorted(delivery.PROVIDER_DELIVERY))
+@pytest.mark.parametrize("backend", sorted(set(delivery.PROVIDER_DELIVERY) - {"modal"}))
 def test_providers_not_proven_live_deliver_only_when_switched_on(backend):
     assert backend not in delivery.PROVEN_LIVE
     assert delivery.provider_enabled(backend, {}) is False
@@ -67,11 +67,23 @@ def test_providers_not_proven_live_deliver_only_when_switched_on(backend):
     assert delivery.provider_enabled(backend, off) is False
 
 
+def test_modal_delivers_by_default_after_its_live_run():
+    """MR (R2, 11-18): Modal's route passed its live run in the benchflow
+    workspace (the oracle 1.0 verified; a non-root agent's link removed
+    before test.sh, 0.0 verified; root refused every write, remount and
+    cover of the volume), so it delivers without the switch; only
+    BENCHFLOW_BFX_DELIVERY=off turns it off.
+
+    Mutant: "modal" left out of PROVEN_LIVE."""
+    assert "modal" in delivery.PROVEN_LIVE
+    assert delivery.provider_enabled("modal", {}) is True
+    assert delivery.provider_enabled("modal", {delivery.DELIVERY_ENV: "off"}) is False
+
+
 def test_each_provider_has_its_delivery_and_guarantee():
     assert delivery.PROVIDER_DELIVERY == {
         "modal": "volume",
         "daytona-dind": "volume",
-        "daytona": "upload",
         "agentcore": "upload",
     }
     assert delivery.GUARANTEE["volume"] == "any-agent"
@@ -147,6 +159,39 @@ def _fake_modal(volume: FakeVolume, version="1.4.2"):
     return SimpleNamespace(__version__=version, Volume=Volume), names
 
 
+class BlockVolume(FakeVolume):
+    """A Volume read as modal 1.6.2 reads one: the file object's position
+    first (``tell``), then each block written at its offset (``seek``), the
+    second block before the first."""
+
+    def read_file_into_fileobj(self, path, fileobj):
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        data = self.files[path][0]
+        start = fileobj.tell()
+        half = len(data) // 2
+        fileobj.seek(start + half)
+        fileobj.write(data[half:])
+        fileobj.seek(start)
+        fileobj.write(data[:half])
+        return len(data)
+
+
+def test_m7_modal_reads_the_volume_back_as_its_sdk_writes_it(stand_in):
+    """M7 (found by the live run MR, 11-18): modal 1.6.2 reads a Volume file
+    into a file object by ``tell``, ``seek`` and out-of-order block writes. A
+    hashing sink with ``write`` alone could not take it, so every read-back
+    said the volume held nothing and every Modal sandbox lost bfx.
+
+    Mutant: the read-back into a write-only sink again."""
+    data = STAND_IN["x86_64"]
+    volume = BlockVolume({"bfx": (data, 0o555)})
+    modal, _ = _fake_modal(volume)
+    assert delivery._modal_digest(volume) == hashlib.sha256(data).hexdigest()
+    assert delivery.modal_volume(modal) is volume.read_only_view
+    assert volume.uploads == []
+
+
 def test_modal_fills_an_empty_volume_with_the_pinned_binary(stand_in):
     volume = FakeVolume({})
     modal, names = _fake_modal(volume)
@@ -206,10 +251,22 @@ async def test_modal_uses_the_volume_only_after_bfx_reports_the_pin(stand_in):
             calls.append((argv, kwargs))
             return Process()
 
+        async def read_bytes(path):
+            return b"Uid:\t0\t0\t0\t0\nCapBnd:\t00000000a80425fb\n"
+
+        async def write_bytes(data, path):
+            raise PermissionError(f"{path}: Read-only file system")
+
         box = object.__new__(ModalSandbox)
         box.logger = logging.getLogger("test")
         box.bfx_delivery = None
-        box._sandbox = SimpleNamespace(exec=SimpleNamespace(aio=exec_aio))
+        box._sandbox = SimpleNamespace(
+            exec=SimpleNamespace(aio=exec_aio),
+            filesystem=SimpleNamespace(
+                read_bytes=SimpleNamespace(aio=read_bytes),
+                write_bytes=SimpleNamespace(aio=write_bytes),
+            ),
+        )
         return box
 
     good = sandbox_with(_version_line("x86_64") + "\n")
@@ -302,11 +359,11 @@ async def test_deliver_upload_sets_the_flag_only_when_on_and_done(
 ):
     box = SimpleNamespace(bfx_delivery="stale", logger=logging.getLogger("test"))
     target = UploadTarget()
-    await delivery.deliver_upload(box, "daytona", target.upload, target.run_root)
+    await delivery.deliver_upload(box, "agentcore", target.upload, target.run_root)
     assert box.bfx_delivery is None and target.steps == []
 
     monkeypatch.setenv(delivery.PROVIDER_ENV, "on")
-    await delivery.deliver_upload(box, "daytona", target.upload, target.run_root)
+    await delivery.deliver_upload(box, "agentcore", target.upload, target.run_root)
     assert box.bfx_delivery == "upload"
 
     failing = UploadTarget(fail={"prepare"})
@@ -357,35 +414,37 @@ def test_the_finish_step_checks_the_folder_and_file_before_sealing():
 
 
 @pytest.mark.asyncio
-async def test_native_daytona_uploads_as_root_on_the_system_shell(
-    stand_in, providers_on, monkeypatch
-):
+async def test_native_daytona_has_one_bfx_route(stand_in, providers_on):
+    """Z7 (R6). Native Daytona's one route is per-call, planned before
+    the turn: even with the providers switch on, nothing is uploaded to /.bfx
+    at the start; a start or a restore forgets an earlier delivery (its folder
+    was in the sandbox before); and an "upload" delivery is never started
+    unchecked.
+
+    Mutant: "daytona" back in PROVIDER_DELIVERY, with its start-time upload."""
     from benchflow.sandbox import daytona_strategies
+    from benchflow.sandbox.daytona import DaytonaSandbox
 
-    route = object()
+    assert "daytona" not in delivery.PROVIDER_DELIVERY
 
-    async def system_route(env):
-        return route
-
-    monkeypatch.setattr(daytona_strategies, "system_shell_route", system_route)
-    target = UploadTarget()
-    seen = []
-
-    async def sandbox_exec(command, user=None, timeout_sec=None, route=None, **kw):
-        seen.append((user, route))
-        code, out = await target.run_root(command)
-        return SimpleNamespace(return_code=code, stdout=out, stderr="")
+    async def refused(*args, **kwargs):
+        raise AssertionError("no exec or upload at the start")
 
     env = SimpleNamespace(
-        bfx_delivery=None,
+        bfx_delivery="per-call",
+        _bfx_path="/run/benchflow-bfx-old/bfx",
         logger=logging.getLogger("test"),
-        _sandbox_exec=sandbox_exec,
-        _sdk_upload_file=target.upload,
+        _sandbox_exec=refused,
+        _sdk_upload_file=refused,
     )
     await daytona_strategies._deliver_bfx(env)
-    assert env.bfx_delivery == "upload"
-    assert seen and all(s == ("root", route) for s in seen)
-    assert target.uploaded == [(STAND_IN["x86_64"], SANDBOX_PATH)]
+    assert env.bfx_delivery is None and env._bfx_path is None
+
+    box = object.__new__(DaytonaSandbox)
+    box.bfx_delivery = "upload"
+    box.exec = refused
+    with pytest.raises(BfxUnavailable):
+        await box.bfx_call("scan", {"paths": ["/"]}, timeout_sec=5)
 
 
 @pytest.mark.asyncio

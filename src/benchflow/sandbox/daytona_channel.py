@@ -47,7 +47,7 @@ from benchflow.sandbox._exec_channel import (
     parse_journal,
 )
 from benchflow.sandbox._root_launch import terminal_env, typed_root_prelude
-from benchflow.sandbox.process.daytona import _watch_pty
+from benchflow.sandbox.process.daytona import _pty_closed_reason, _watch_pty
 
 CHUNK_SIZE = 16 * 1024
 START_TIMEOUT = 30.0
@@ -87,6 +87,15 @@ class _Pending:
 def frame(head: dict[str, Any]) -> bytes:
     data = json.dumps(head).encode()
     return struct.pack(">I", len(data)) + data
+
+
+def _closed(pty: Any) -> str:
+    """Why the PTY's websocket closed, as the SDK saw it: its close code, the
+    socket's error, the session's exit or error (Daytona's proxy
+    path can cut the websocket mid-answer, with 1006 or 1008, while the
+    helper lives on). It always starts "websocket closed"."""
+    said, _exit = _pty_closed_reason(pty)
+    return said if said.startswith("websocket closed") else f"websocket closed: {said}"
 
 
 def session_output(data: bytes) -> str:
@@ -217,7 +226,7 @@ class DaytonaChannel:
                 raise ChannelUnavailable("channel retired during startup")
             self.gone = _watch_pty(self.pty)
             if self.gone is not None:
-                self.gone.add_done_callback(lambda _: self.die("websocket closed"))
+                self.gone.add_done_callback(lambda _: self.die(_closed(self.pty)))
             self.counts.channel_send_requests += 1
             await self.pty.send_input(command + "\n")
             await asyncio.wait_for(asyncio.shield(self.ready), START_TIMEOUT)

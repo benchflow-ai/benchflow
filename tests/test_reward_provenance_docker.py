@@ -6,14 +6,14 @@ tests/test_grading_integrity_docker.py and tests/test_grader_access_docker.py
 check is strict's. What every mode keeps is the reward's provenance: the
 scored reward is the one test.sh wrote while it graded.
 
-Here test.sh writes nothing. The agent, as the sandbox's agent user, plants
-reward.txt = 0.5 and leaves a process that keeps rewriting it, or links
-reward.txt to the host's ip_forward (which reads 1); each task has a
-separate-verifier twin. The oracle, as root, plants 0.5 and leaves nothing
-running. In audit and in off every trial is unscored ("No reward file
-found"), never 0.5 or 1: the plant is cleared before test.sh, the agent user
-cannot write the root 0755 folder while test.sh runs, and the link is gone
-from the scored outputs.
+Here test.sh writes nothing. The agent, as the sandbox's agent user, tries to
+plant reward.txt = 0.5 and leaves a process that keeps trying to rewrite it,
+or tries to link reward.txt to the host's ip_forward (which reads 1); each
+task has a separate-verifier twin. /logs/verifier is root's 0755 from sandbox
+setup, so every one of those writes is refused. The oracle, as root, plants
+0.5 and leaves nothing running. In audit and in off every trial is unscored
+("No reward file found"), never 0.5 or 1: root's plant is cleared before
+test.sh.
 
 A root process the agent leaves running can still write the reward while
 test.sh runs in audit and off; the lead's 19:59Z ruling records that case
@@ -40,12 +40,12 @@ PLANT_SH = r"""#!/bin/bash
 echo 41 > "$PWD/answer.txt"
 case "$GI_VECTOR" in
 silent-file)
-  echo 0.5 > /logs/verifier/reward.txt && echo "live reward-txt"
+  if echo 0.5 2>/dev/null > /logs/verifier/reward.txt; then echo "live reward-txt"; else echo "refused reward-txt"; fi
   ( while :; do echo 0.5 > /logs/verifier/reward.txt 2>/dev/null; sleep 0.1; done ) </dev/null >/dev/null 2>&1 &
   sleep 0.3; kill -0 $! 2>/dev/null && echo "live survivor"
   ;;
 silent-link)
-  ln -s /proc/sys/net/ipv4/ip_forward /logs/verifier/reward.txt && echo "live reward-link"
+  if ln -s /proc/sys/net/ipv4/ip_forward /logs/verifier/reward.txt 2>/dev/null; then echo "live reward-link"; else echo "refused reward-link"; fi
   ;;
 esac
 """
@@ -122,16 +122,33 @@ def runs(tmp_path_factory) -> dict[str, dict[str, Path]]:
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_the_agents_plants_were_made(runs, mode):
-    """Each plant ran in the agent's own run (no fixture bug hides one)."""
+def test_the_agents_plants_ran_and_were_refused(runs, mode):
+    """Each plant ran in the agent's own run (no fixture bug hides one), and
+    each was refused: the agent user can't create a name in /logs/verifier,
+    root's 0755 from sandbox setup. With the verifier in the agent's
+    sandbox, the process left trying to rewrite reward.txt is the reward
+    provenance's record of the attempt: the agent's user was alive when
+    test.sh started, so the trial reads unverifiable (a separate verifier's
+    trial has no provenance verdict). Mutant: /logs/verifier left open to the
+    agent at setup."""
     expected = {
-        "silent-file": ("live reward-txt", "live survivor"),
-        "silent-link": ("live reward-link",),
+        "silent-file": ("refused reward-txt", "live survivor"),
+        "silent-link": ("refused reward-link",),
     }
     for name in AGENT_TASKS:
         said = (runs[mode][name] / "agent" / "script.txt").read_text()
         for marker in expected[name.removesuffix("-sep")]:
             assert marker in said, (mode, name, said)
+        assert "live reward-txt" not in said and "live reward-link" not in said, (
+            mode,
+            name,
+            said,
+        )
+    inputs = runs[mode]["silent-file"] / "integrity" / "verifier-inputs.json"
+    provenance = json.loads(inputs.read_text())["provenance"]
+    assert provenance["verdict"] == "unverifiable", (mode, provenance)
+    failed = [c["check"] for c in provenance["checks"] if not c["passed"]]
+    assert "agent-processes-at-test" in failed, (mode, failed)
 
 
 @pytest.mark.parametrize("mode", MODES)

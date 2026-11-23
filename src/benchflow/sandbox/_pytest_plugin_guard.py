@@ -559,7 +559,7 @@ def _image_bytes(path):
         raise _guard_error(exc, path) from exc
 
 
-_MANIFEST = []  # [files] once read: {path: (sha256, size)}, or None
+_MANIFEST = []  # [files] once read: {path: (sha256, size, own)}, or None
 
 
 def _private_file(path):
@@ -595,12 +595,18 @@ def _manifest():
 
 def _manifest_files(data):
     """The files of a manifest BenchFlow wrote (version 1), ``{path: (sha256,
-    size)}``, or None for any other schema."""
+    size, own)}``, or None for any other schema. *own*: a regular file the
+    walk recorded by its real path (not a link, nor a file it reached through
+    a folder link)."""
     listed = data.get("files") if data.get("version") == 1 else None
     if not isinstance(listed, dict):
         return None
     return {
-        str(key): (entry["sha256"], entry["size"])
+        str(key): (
+            entry["sha256"],
+            entry["size"],
+            not entry.get("link") and not entry.get("via"),
+        )
         for key, entry in listed.items()
         if isinstance(entry.get("sha256"), str) and type(entry.get("size")) is int
     }
@@ -641,10 +647,12 @@ def _outside_manifest(path):
 
 def _manifest_verdict(path):
     """What the image manifest says of *path*: ``"identical"`` (a regular file
-    with the size and sha256 it records there; a directory it records files
-    under), ``"changed"``, ``"new"`` (nothing recorded there), or None (no
-    manifest). Keys are paths as the walk found them, without following a
-    link, so *path* is looked up as spelled and must not be a link."""
+    with the size and sha256 it records there; a directory it records regular
+    files under by their real path), ``"changed"``, ``"new"`` (nothing recorded
+    there), or None (no manifest). Keys are paths as the walk found them, so
+    *path* is looked up as spelled and must not be a link. A link the walk
+    kept, or a file it reached through a folder link, makes no folder the
+    image's."""
     files = _manifest()
     if files is None or _outside_manifest(path):
         return None
@@ -652,7 +660,11 @@ def _manifest_verdict(path):
         st = os.lstat(path)
         if stat.S_ISDIR(st.st_mode):
             prefix = path.rstrip("/") + "/"
-            return "identical" if any(k.startswith(prefix) for k in files) else "new"
+            return (
+                "identical"
+                if any(k.startswith(prefix) and e[2] for k, e in files.items())
+                else "new"
+            )
         entry = files.get(path)
         if entry is None:
             return "new"

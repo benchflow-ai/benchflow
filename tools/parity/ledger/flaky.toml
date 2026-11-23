@@ -1,0 +1,7 @@
+# Tasks whose own test is flaky: a mismatch runs again alone up to `reruns` times, and one match is a flake.
+# Each entry needs evidence from at least three runs.
+
+[[flaky]]
+key = "svc-openthoughts-tblite/cpp-daemon-sighup-segfault"
+reruns = 3
+reason = "test_19 parses interleaved worker output; 0.10.0rc4: 0 under load, then 0, 1, 1 alone, 1 in both previews"

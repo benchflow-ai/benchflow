@@ -51,7 +51,7 @@ def test_internal_preview_skips_public_prerelease_versions(version: str) -> None
     ) == InternalPreviewDecision(publish=False)
 
 
-@pytest.mark.parametrize("version", ["0.5.1+local", "0.5.1rc1.dev0"])
+@pytest.mark.parametrize("version", ["0.5.1+local"])
 def test_internal_preview_rejects_ambiguous_versions(version: str) -> None:
     """Guards PR #621 against publishing ambiguous preview bases."""
     with pytest.raises(ReleaseVersionError, match="Internal preview releases"):

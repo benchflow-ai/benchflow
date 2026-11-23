@@ -25,6 +25,20 @@ import re
 from benchflow._utils.scoring import IMAGE_BUILD_HEADER, REGISTRY_AUTH_HEADER
 from benchflow.errors import UserError
 
+#: A build BuildKit never started. Its gateway forwarder gives a build 3 s to
+#: register before it answers the client's first call, Ping (moby/buildkit
+#: v0.26.2, control/gateway/gateway.go, lookupForwarder); a loaded daemon can
+#: register it later. No step ran, so building again is safe: a task build is
+#: retried on it (docker.py) and so is the metadata helper's. Another call's
+#: "no such job" can come after steps ran, and is not this.
+BUILDKIT_NEVER_STARTED = re.compile(r"forwarding Ping: no such job")
+
+
+def buildkit_never_started(message: str) -> bool:
+    """Whether a failed ``docker build`` is one BuildKit never started."""
+    return bool(BUILDKIT_NEVER_STARTED.search(message))
+
+
 # BuildKit reasons another attempt cannot change.
 _DETERMINISTIC = (
     re.compile(r"did not complete successfully: exit code: \d+"),

@@ -1,0 +1,190 @@
+{
+ "both-tables.toml": {
+  "error": "ValueError",
+  "message": "task config declares both 'environment' and 'sandbox' \u2014 they are the same section ('environment' is the legacy task.toml spelling); keep only 'sandbox'"
+ },
+ "config-mapping-environment": {
+  "error": "ValidationError",
+  "messages": [
+   "Value error, the 'environment' key was renamed to 'sandbox' \u2014 rename 'environment:' to 'sandbox:' (legacy task.toml imports convert '[environment]' automatically)"
+  ]
+ },
+ "environment-table.toml": {
+  "import_task_config_toml": {
+   "agent": {
+    "allowed_hosts": null,
+    "network_mode": null,
+    "prompt_prefix": null,
+    "timeout_sec": 300.0,
+    "token_budget": null,
+    "turn_budget": null,
+    "user": null
+   },
+   "artifacts": [],
+   "metadata": {
+    "author_name": "benchflow tests",
+    "category": "fixtures",
+    "difficulty": "easy"
+   },
+   "multi_step_reward_strategy": null,
+   "preference": {},
+   "reward": {},
+   "sandbox": {
+    "allow_cloud_metadata": false,
+    "allow_internet": false,
+    "allowed_hosts": null,
+    "blocked_hosts": null,
+    "blocked_urls": null,
+    "bugswarm_image_tag": null,
+    "build_timeout_sec": 600.0,
+    "cpus": 2,
+    "docker_image": null,
+    "env": {},
+    "gpu_types": null,
+    "gpus": 0,
+    "healthcheck": null,
+    "mcp_servers": [],
+    "memory_mb": 4096,
+    "network_mode": "no-network",
+    "os": "linux",
+    "require_cloud_metadata_block": false,
+    "setup_commands": [],
+    "setup_timeout_sec": null,
+    "skills_dir": null,
+    "storage_mb": 10240,
+    "tpu": null,
+    "workdir": null
+   },
+   "schema_version": "1.0",
+   "solution": {
+    "env": {},
+    "timeout_sec": null
+   },
+   "source": null,
+   "steps": null,
+   "task": null,
+   "verifier": {
+    "allowed_hosts": null,
+    "collect": [],
+    "env": {},
+    "hardening": {
+     "cleanup_conftests": true,
+     "cleanup_git": true
+    },
+    "judge": {
+     "context": "",
+     "input_dir": "/app",
+     "input_type": "deliverables",
+     "model": "claude-sonnet-5-5",
+     "rubric_path": "tests/rubric.toml"
+    },
+    "memory": {
+     "expected_skills": null
+    },
+    "network_mode": null,
+    "optional_tools": [],
+    "pytest_plugin_releases": [],
+    "pytest_plugins": [],
+    "required_tools": null,
+    "reward_range": null,
+    "sandbox": null,
+    "sandbox_mode": "separate",
+    "service": "main",
+    "setup_timeout_sec": null,
+    "submission_files": [],
+    "timeout_sec": 120.0,
+    "type": "test-script",
+    "user": null,
+    "workspace_recovery": false
+   }
+  },
+  "model_validate_toml": {
+   "agent": {
+    "allowed_hosts": null,
+    "network_mode": null,
+    "prompt_prefix": null,
+    "timeout_sec": 300.0,
+    "token_budget": null,
+    "turn_budget": null,
+    "user": null
+   },
+   "artifacts": [],
+   "metadata": {
+    "author_name": "benchflow tests",
+    "category": "fixtures",
+    "difficulty": "easy"
+   },
+   "multi_step_reward_strategy": null,
+   "preference": {},
+   "reward": {},
+   "sandbox": {
+    "allow_cloud_metadata": false,
+    "allow_internet": false,
+    "allowed_hosts": null,
+    "blocked_hosts": null,
+    "blocked_urls": null,
+    "bugswarm_image_tag": null,
+    "build_timeout_sec": 600.0,
+    "cpus": 2,
+    "docker_image": null,
+    "env": {},
+    "gpu_types": null,
+    "gpus": 0,
+    "healthcheck": null,
+    "mcp_servers": [],
+    "memory_mb": 4096,
+    "network_mode": "no-network",
+    "os": "linux",
+    "require_cloud_metadata_block": false,
+    "setup_commands": [],
+    "setup_timeout_sec": null,
+    "skills_dir": null,
+    "storage_mb": 10240,
+    "tpu": null,
+    "workdir": null
+   },
+   "schema_version": "1.0",
+   "solution": {
+    "env": {},
+    "timeout_sec": null
+   },
+   "source": null,
+   "steps": null,
+   "task": null,
+   "verifier": {
+    "allowed_hosts": null,
+    "collect": [],
+    "env": {},
+    "hardening": {
+     "cleanup_conftests": true,
+     "cleanup_git": true
+    },
+    "judge": {
+     "context": "",
+     "input_dir": "/app",
+     "input_type": "deliverables",
+     "model": "claude-sonnet-5-5",
+     "rubric_path": "tests/rubric.toml"
+    },
+    "memory": {
+     "expected_skills": null
+    },
+    "network_mode": null,
+    "optional_tools": [],
+    "pytest_plugin_releases": [],
+    "pytest_plugins": [],
+    "required_tools": null,
+    "reward_range": null,
+    "sandbox": null,
+    "sandbox_mode": "separate",
+    "service": "main",
+    "setup_timeout_sec": null,
+    "submission_files": [],
+    "timeout_sec": 120.0,
+    "type": "test-script",
+    "user": null,
+    "workspace_recovery": false
+   }
+  }
+ }
+}

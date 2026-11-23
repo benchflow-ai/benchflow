@@ -61,7 +61,7 @@ def test_eval_create_exits_nonzero_when_verifier_errors(tmp_path, monkeypatch):
     )
 
     assert result.exit_code == 1
-    assert "Score: 0/1" in result.output
+    assert "0/1 passed" in result.output  # the run's final screen
 
 
 def test_benchflow_metrics_pretty_prints_memory_score(tmp_path):

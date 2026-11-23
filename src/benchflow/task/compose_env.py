@@ -100,8 +100,9 @@ COMPOSE_CHECKED = (*COMPOSE_ON_HOST, "daytona")
 ALLOW_HOST_ACCESS_VAR = "BENCHFLOW_ALLOW_TASK_HOST_ACCESS"
 _HOST_REMEDY = (
     "A task's Compose files may reach only files in the task's folder (no "
-    "remote files, privileged containers, host namespaces, host devices or "
-    "added capabilities), and its benchflow-pre-compose.sh runs on this "
+    "remote files, privileged containers, host namespaces, a pid namespace "
+    "shared between services, host devices or added capabilities), and its "
+    "benchflow-pre-compose.sh runs on this "
     f"machine as you: edit the task, or set {ALLOW_HOST_ACCESS_VAR}=1 if you "
     "trust it with this machine"
 )
@@ -855,7 +856,114 @@ _SAFE_CAPABILITIES = frozenset(
 _NAMESPACE_KEYS = ("pid", "ipc", "network_mode", "userns_mode", "uts", "cgroup")
 
 
-def _host_settings(document: dict, project: str | None = None) -> Iterator[str]:
+#: The ``security_opt`` values that keep Docker's confinement of the
+#: container: ``no-new-privileges`` (on) and Docker's own AppArmor profile
+#: named explicitly (``apparmor=docker-default``, which real tasks set).
+_CONFINEMENT_KEPT = frozenset(
+    {
+        "no-new-privileges",
+        "no-new-privileges:true",
+        "no-new-privileges=true",
+        "apparmor=docker-default",
+        "apparmor:docker-default",
+    }
+)
+#: BenchFlow's own kept-service freezer's option on main
+#: (docker-compose-kept-freezer.yaml): admitted only there, where the run
+#: stacks that overlay; a task asking for it needs host access.
+_FREEZER_OPTIONS = frozenset({"writable-cgroups=true", "writable-cgroups:true"})
+
+
+def _confinement_kept(option: Any) -> bool:
+    """Whether a Compose ``security_opt`` leaves the kernel's confinement of
+    the container as Docker sets it (:data:`_CONFINEMENT_KEPT`). Every other
+    option (``no-new-privileges:false``, a seccomp profile, an AppArmor
+    profile, an SELinux label, ``systempaths``, ``mask``) changes it, so it
+    needs host access."""
+    return _plain_option(option) in _CONFINEMENT_KEPT
+
+
+def _plain_option(option: Any) -> str:
+    return str(option).strip().lower().replace(" ", "")
+
+
+def _namespace_owner(services: dict, name: str, key: str) -> str:
+    """The service whose own *key* (``pid`` or ``ipc``) namespace service
+    *name* ends up in, following ``service:`` links ("" for a loop or an
+    unknown service; ``container:`` and ``host`` are refused for every
+    service already)."""
+    seen: set[str] = set()
+    current = name
+    while True:
+        service = services.get(current)
+        value = service.get(key) if isinstance(service, dict) else None
+        if not isinstance(value, str) or not value.strip().startswith("service:"):
+            return current
+        target = value.strip().split(":", 1)[1].strip()
+        # main may be BenchFlow's own, not in the task's file.
+        if (
+            target in seen
+            or target == current
+            or (target not in services and target != "main")
+        ):
+            return ""
+        seen.add(current)
+        current = target
+
+
+def _shares_main_namespace(services: dict, key: str) -> list[str]:
+    """The services that share main's *key* namespace, whichever way the
+    join goes: one that joins main, main joining one, or both joining a
+    third. A shared pid namespace lets a service with SYS_PTRACE attach to
+    the agent's processes (their memory, the provider credentials in their
+    environment, its login files through /proc/<pid>/root); ipc shares
+    main's memory segments."""
+    owner = _namespace_owner(services, "main", key)
+    if not owner:
+        return []
+    return sorted(
+        name
+        for name in services
+        if name != "main" and _namespace_owner(services, name, key) == owner
+    )
+
+
+#: Why a pid namespace shared between services needs host access: its own
+#: reason, not the machine's (a refusal adds none of "which reaches ...").
+PEER_PID_REASON = (
+    "a process in either can signal the other's held waiter and release it "
+    "before its rules are in"
+)
+
+
+def _reaches(setting: str, where: str) -> str:
+    """*setting* as a refusal line: what it reaches, unless it says its own
+    reason (:data:`PEER_PID_REASON`)."""
+    return (
+        setting if PEER_PID_REASON in setting else f"{setting}, which reaches {where}"
+    )
+
+
+def pid_joins(services: dict) -> list[tuple[str, str]]:
+    """Every ``pid: service:<x>`` between services that main's pid namespace
+    is not part of (that one is named above): (service, the one it joins).
+    Every service waits in its hold until its rules are in, and a process in
+    a shared pid namespace could release a peer's hold early (any signal of
+    root's reaches it), so pid sharing between any services needs host access."""
+    shared = {"main", *_shares_main_namespace(services, "pid")}
+    found = []
+    for name, service in sorted(services.items()):
+        value = service.get("pid") if isinstance(service, dict) else None
+        if name in shared or not isinstance(value, str):
+            continue
+        if value.strip().startswith("service:"):
+            found.append((name, value.strip().split(":", 1)[1].strip()))
+    return found
+
+
+def _host_settings(
+    document: dict, project: str | None = None, *, freezer_main: bool = False
+) -> Iterator[str]:
     """What a Compose project's services set that hands a container this
     machine: root in a privileged container, or one with the host's PID
     namespace, reads the bench process's environment and mounts the host's
@@ -898,9 +1006,18 @@ def _host_settings(document: dict, project: str | None = None) -> Iterator[str]:
             if plain not in _SAFE_CAPABILITIES:
                 yield f"gives {where} the capability {capability}"
         for option in _as_list(service.get("security_opt")):
-            text = str(option).lower()
-            if "unconfined" in text or "disable" in text:
-                yield f"runs {where} with security_opt {option}"
+            if _confinement_kept(option) or (
+                freezer_main
+                and name == "main"
+                and _plain_option(option) in _FREEZER_OPTIONS
+            ):
+                continue
+            yield f"runs {where} with security_opt {option}"
+        runtime = service.get("runtime")
+        if runtime is not None and str(runtime).strip():
+            # The daemon's runtime confines the container (gVisor or Kata on
+            # a sandboxed host); a task's own (runc, nvidia) can leave it.
+            yield f"runs {where} under the container runtime {str(runtime).strip()}"
         for device in _as_list(service.get("devices")):
             shown = device.get("source") if isinstance(device, dict) else device
             yield f"gives {where} the host device {shown}"
@@ -926,6 +1043,15 @@ def _host_settings(document: dict, project: str | None = None) -> Iterator[str]:
                 yield f"builds {where} on the host network"
             for entitlement in _as_list(build.get("entitlements")):
                 yield f"builds {where} with the entitlement {entitlement}"
+    if isinstance(services, dict):
+        for key in ("pid", "ipc"):
+            for other in _shares_main_namespace(services, key):
+                yield f"shares main's {key} namespace with service {other}"
+        yield from (
+            f"shares service {target}'s pid namespace with service {name}, so "
+            + PEER_PID_REASON
+            for name, target in pid_joins(services)
+        )
     networks = document.get("networks")
     for key, network in networks.items() if isinstance(networks, dict) else ():
         if not isinstance(network, dict):
@@ -1118,6 +1244,9 @@ class _ProjectCheck:
     project: str | None = None
     machine: str = "this machine"
     field_name: str = f"environment/{COMPOSE_FILE}"
+    #: The run stacks BenchFlow's kept-service freezer, whose
+    #: ``writable-cgroups=true`` on main is BenchFlow's own.
+    kept_freezer_main: bool = False
     refused: list[TaskEnvRequest] = field(default_factory=list)
     read_paths: set[str] = field(default_factory=set, init=False)
 
@@ -1188,8 +1317,10 @@ class _ProjectCheck:
                         "volume mount", "mounts", self.mount_source(mount, volumes)
                     )
         self.refused += [
-            _host_refusal(self.field_name, f"{setting}, which reaches {self.machine}")
-            for setting in _host_settings(project, self.project)
+            _host_refusal(self.field_name, _reaches(setting, self.machine))
+            for setting in _host_settings(
+                project, self.project, freezer_main=self.kept_freezer_main
+            )
         ]
         self.mutable_sources(project)
         return self.refused
@@ -1422,18 +1553,39 @@ class _ProjectCheck:
         )
 
     def bfx_target(self, where: str, target: Any, kind: Any) -> None:
-        """Nothing but BenchFlow's own read-only helper mount sits at or
-        beneath /.bfx: a task's or operator's mount there would cover the
+        """Nothing but BenchFlow's own read-only helper mount sits at, beneath
+        or over /.bfx: a task's or operator's mount there would cover the
         program BenchFlow runs as root."""
         if not isinstance(target, str) or not target.startswith("/"):
             return
         target = _clean_path(target)
-        if target == _BFX_DIR or target.startswith(_BFX_DIR + "/"):
+        if target in ("/", _BFX_DIR) or target.startswith(_BFX_DIR + "/"):
             self.refuse(
                 f"mounts a {kind} mount at {target} for {where}; {_BFX_DIR} is "
-                "BenchFlow's own read-only folder, so nothing may be mounted at "
-                "or beneath it"
+                "BenchFlow's own read-only folder, so nothing may be mounted at, "
+                "beneath or over it"
             )
+
+    def file_mounts(self, where: str, service: dict) -> None:
+        """Secrets, configs and devices mount files too: where Compose puts
+        each (a secret's relative target under /run/secrets, a config's
+        under /, by its name when it has no target) is held to
+        :meth:`bfx_target`."""
+        for key, base in (("secrets", "/run/secrets"), ("configs", "/")):
+            for entry in _as_list(service.get(key)):
+                if not isinstance(entry, dict):
+                    entry = {"source": entry}
+                target = entry.get("target") or entry.get("source")
+                if isinstance(target, str) and not target.startswith("/"):
+                    target = posixpath.join(base, target)
+                self.bfx_target(where, target, key[:-1])
+        for entry in _as_list(service.get("devices")):
+            if isinstance(entry, dict):
+                target = entry.get("target") or entry.get("source")
+            else:
+                parts = str(entry).split(":")
+                target = parts[1] if len(parts) > 1 else parts[0]
+            self.bfx_target(where, target, "device")
 
     def service(self, where: str, service: dict) -> None:
         for volume in _as_list(service.get("volumes")):
@@ -1457,6 +1609,7 @@ class _ProjectCheck:
         # The short form `tmpfs: [PATH[:OPTIONS]]`.
         for entry in _as_list(service.get("tmpfs")):
             self.bfx_target(where, str(entry).partition(":")[0], "tmpfs")
+        self.file_mounts(where, service)
         # A Compose that keeps env and label files in the resolved project
         # reads them again at the run: they must be the task's.
         for key, what in (
@@ -1848,11 +2001,19 @@ class ComposeCheck:
 
 def _config_refusal(error: str | None, where: str = "") -> TaskEnvRequest:
     field_name = f"environment/{COMPOSE_FILE}"
+    note = ""
+    if error and re.search(r"\bmodels\b", error):
+        # Compose 2.38 cannot merge a task's ``models:`` list with BenchFlow's
+        # own files (gap 2); 2.40 resolves it, and BenchFlow refuses
+        # the models by name.
+        from benchflow.sandbox._compose_runtime import DOCKER_MINIMUM_TEXT
+
+        note = f" (a Compose `models:` list needs {DOCKER_MINIMUM_TEXT} or newer)"
     return TaskEnvRequest(
         field_name,
         "",
         None,
-        f"{field_name} does not resolve with docker compose config{where}: {error}",
+        f"{field_name} does not resolve with docker compose config{where}: {error}{note}",
         remedy=_CONFIG_REMEDY,
         # A variable with no value (``${VAR:?}``) or a file Compose refuses:
         # nothing reaches outside the task (the lead's ruling).
@@ -2276,6 +2437,7 @@ def project_check(
     project: str | None,
     read_only_binds: Iterable[tuple[Path | str, str]] = (),
     read_only_volumes: Iterable[tuple[str, str]] = (),
+    kept_freezer_main: bool = False,
 ) -> _ProjectCheck:
     """The check of a staged task's resolved project on docker or
     remote-docker: paths may be in the private task copy, *folders* (BenchFlow's
@@ -2300,6 +2462,7 @@ def project_check(
         remote_binds=remote,
         machine="the remote Docker host" if remote else "this machine",
         project=project,
+        kept_freezer_main=kept_freezer_main,
     )
 
 
@@ -3033,7 +3196,7 @@ def _static_dind_check(
                 )
             )
         refused += [
-            _host_refusal(field_name, f"{setting}, which reaches the sandbox's VM")
+            _host_refusal(field_name, _reaches(setting, "the sandbox's VM"))
             for setting in _host_settings(document)
         ]
         for name, service in services.items() if isinstance(services, dict) else ():
@@ -3129,6 +3292,8 @@ async def check_compose_in_vm(
     compose: list[str],
     project_dir: str,
     folders: Iterable[str],
+    *,
+    kept_freezer_main: bool = False,
 ) -> list[TaskEnvRequest]:
     """Check what Compose resolves inside a Daytona DinD sandbox's VM, before
      the task's pre-compose hook runs there and again before Compose builds
@@ -3161,6 +3326,7 @@ async def check_compose_in_vm(
         project_dir,
         tuple(_clean_path(f) for f in folders),
         machine="the sandbox's VM",
+        kept_freezer_main=kept_freezer_main,
     )
     paths = sorted(p for p in check.paths(project) if "\n" not in p)
     landed: dict[str, str] = {}

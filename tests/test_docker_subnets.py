@@ -585,9 +585,9 @@ async def test_a_refused_subnet_is_retried_with_the_next_free_one(
     assert not _subnet_of(second).overlaps(IPv4("172.18.0.0/28"))
     # `ps` finds the main container after `up` (6227141a).
     commands = [c[0] for c, _ in runner.calls if c[0] not in ("exec", "ps")]
-    # The half-made project is taken down before the second try (a first
-    # start has nothing to take down, U10).
-    assert commands == ["build", "up", "down", "up"]
+    # The half-made project is killed and taken down before the second try
+    # (a first start has nothing to take down, U10).
+    assert commands == ["build", "up", "kill", "down", "up"]
     await sandbox.stop(delete=True)
 
 

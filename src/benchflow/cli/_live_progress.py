@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING
 from rich.console import Group
 from rich.live import Live
 from rich.markup import escape
-from rich.table import Table
 from rich.text import Text
 
 from benchflow._utils import live_activity
@@ -328,8 +327,13 @@ class LiveEvalProgress:
             self,
             console=self._console,
             auto_refresh=True,
-            refresh_per_second=4,
-            transient=False,
+            # At most one repaint a second: the rows move in place,
+            # and a recording or a slow terminal is not flooded.
+            refresh_per_second=1,
+            # The run's end prints one row per trial and the footer
+            # (cli/_output/run_summary.py), the durable record; the live
+            # panel leaves the screen when it ends.
+            transient=True,
         )
         self._live.__enter__()
         return self
@@ -373,82 +377,76 @@ class LiveEvalProgress:
             header.append(f"  ·  {self._model}", style="dim")
         header.append(f"  ·  {self._sandbox}", style="dim")
 
-        # Progress bar + ETA (computed from this run's finish rate).
-        frac = (done / total) if total else 0.0
-        filled = int(frac * _BAR_WIDTH)
+        # One progress row: done of total, elapsed, what finished,
+        # what runs and what waits, a zero count left out, nothing "waiting"
+        # before the plan is known. No bar: a repaint then rewrites one short
+        # line, not a 30-cell bar, a counts row and a boxed table (the demo's
+        # paid run wrote 588 KB of redraws).
         bar = Text()
-        bar.append("━" * filled, style="green")
-        bar.append("━" * (_BAR_WIDTH - filled), style="grey37")
-        # ETA from THIS run's finish rate (completed excludes instant resumed).
+        bar.append(f"{done}/{total} done", style="bold")
+        bar.append(f" · {_fmt_dur(elapsed)}", style="dim")
+        if resumed:
+            bar.append(f" · {resumed} kept from before", style="dim")
         rate = completed / elapsed if elapsed > 0 and completed else 0.0
         eta = (to_run - completed) / rate if rate > 0 else None
-        bar.append(f"  {done}/{total}", style="bold")
-        bar.append(f" · {frac * 100:.0f}%", style="dim")
-        bar.append(f" · {_fmt_dur(elapsed)}", style="dim")
         if running and not queued:
-            # Every task left is running: the rate of the finished ones says
-            # nothing about them, and its ETA only grew while the last one
-            # ran (dogfood p5-15). Say how long the oldest has run instead.
+            # Every task left is running: the finished ones' rate says nothing
+            # about them, and its ETA only grew (dogfood p5-15). How long the
+            # oldest has run instead.
             oldest = time.monotonic() - min(running.values())
             bar.append(
                 f" · {len(running)} left, running {_fmt_dur(oldest)}", style="dim"
             )
         elif eta is not None:
             bar.append(f" · ETA {_fmt_dur(eta)}", style="dim")
-        if resumed:
-            bar.append(f" · {resumed} resumed", style="dim")
-
         counts = Text()
-        counts.append(f"✓ {passed} passed", style="green")
-        counts.append("   ")
-        counts.append(f"✗ {failed} failed", style="red" if failed else "dim")
-        counts.append("   ")
-        counts.append(f"⚠ {errored} errored", style="yellow" if errored else "dim")
-        counts.append("   ")
-        counts.append(
-            f"◷ {len(running)} stopped" if stopped else f"◷ {len(running)} running",
-            style="cyan",
-        )
-        counts.append("   ")
-        counts.append(f"⋯ {queued} queued", style="dim")
+        shown = [
+            (f"✓ {passed} passed", "green", passed),
+            (f"✗ {failed} failed", "red", failed),
+            (f"⚠ {errored} unscored", "yellow", errored),
+            (
+                f"◷ {len(running)} stopped" if stopped else f"◷ {len(running)} running",
+                "cyan",
+                len(running),
+            ),
+            (f"⋯ {queued} waiting", "dim", queued if total else 0),
+        ]
+        for text, style, n in shown:
+            if n:
+                counts.append("   " if counts else "")
+                counts.append(text, style=style)
+        if counts:
+            bar.append("   ")
+            bar.append_text(counts)
 
-        parts: list[RenderableType] = [header, bar, counts]
+        parts: list[RenderableType] = [header, bar]
 
         # ONE registry poll per running task per frame (each poll an O(1)
-        # counter read; see live_activity), shared by the running-now cells
-        # and the footer's live token sum — displayed rows are never polled
-        # twice, and cell vs footer can't read different snapshots within a
-        # frame.
+        # counter read; see live_activity), shared by the running rows and
+        # the footer's live token sum.
         snaps = {name: live_activity.activity(name) for name in running}
 
-        # "Running now" — cap rows so short terminals don't overflow.
+        # One row per running trial, in start order, plain text: task,
+        # elapsed, activity. Short terminals get "+N more".
         if running:
-            tbl = Table(
-                show_edge=True, show_header=True, header_style="dim", expand=False
-            )
-            tbl.add_column("running now", no_wrap=True)
-            tbl.add_column("elapsed", justify="right")
-            tbl.add_column("activity", no_wrap=True)
             now = time.monotonic()
-            for name in sorted(running, key=lambda n: running[n])[:_MAX_RUNNING_ROWS]:
-                # Text() so a task name containing Rich markup (`[` is legal in
-                # SkillsBench dir names) is rendered literally, not parsed as
-                # markup — a MarkupError here escapes __rich__ and aborts the
-                # CLI on live-context exit, violating this module's "a render
-                # bug can never perturb a run" contract. Same for the activity
-                # cell, which carries agent-authored tool titles.
+            names = sorted(running, key=lambda n: running[n])
+            width = min(40, max(len(n) for n in names[:_MAX_RUNNING_ROWS]))
+            for name in names[:_MAX_RUNNING_ROWS]:
                 cell = _activity_cell(snaps.get(name))
                 if self._control and cell == "installing agent…":
                     cell = "preparing sandbox…"
-                tbl.add_row(
-                    Text(name),
-                    _fmt_dur(now - running[name]),
-                    Text("stopped" if stopped else cell, style="dim"),
-                )
+                row = Text("  ")
+                # Text() so a task name with Rich markup in it (`[` is legal
+                # in SkillsBench dir names) renders literally; the activity
+                # cell carries agent-authored tool titles.
+                row.append(Text(name[:width].ljust(width)))
+                row.append(f"  {_fmt_dur(now - running[name]):>6}  ", style="dim")
+                row.append(Text("stopped" if stopped else cell, style="dim"))
+                parts.append(row)
             extra = len(running) - _MAX_RUNNING_ROWS
             if extra > 0:
-                tbl.add_row(f"… {extra} more", "", "")
-            parts.append(tbl)
+                parts.append(Text(f"  … {extra} more running", style="dim"))
 
         # Footer: pass-rate (excl errors) + token/cost economics. Tokens sum
         # the completed tasks' trusted telemetry PLUS the running rollouts'
@@ -497,10 +495,12 @@ class LiveEvalProgress:
             "dim",
         )
         footer.append(" · ")
+        # The final screen's grammar (cli/_output/run_summary.py): a cost
+        # below a cent keeps its digits, and a floor says so.
+        from benchflow.cli._output.run_summary import _usd
+
         footer.append(
-            (f"${cost:.2f}" + ("+ (floor)" if cost_partial else ""))
-            if covered
-            else "$—",
+            (("≥" if cost_partial else "") + _usd(cost)) if covered else "$—",
             style="dim",
         )
         if completed:
@@ -511,7 +511,9 @@ class LiveEvalProgress:
         from benchflow._utils import utilization
 
         report = utilization.latest()
-        if report is not None:
+        # Only a report with something to act on stays in the panel; the
+        # rest goes to the log (--verbose).
+        if report is not None and report[1]:
             line, warnings = report
             parts.append(
                 Text(

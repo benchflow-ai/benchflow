@@ -406,7 +406,9 @@ async def test_local_docker_keeps_the_users_own_docker_host(
     )
     paths = RolloutPaths(rollout_dir=tmp_path / "run")
     paths.mkdir()
-    sandbox = _create_sandbox_environment("docker", Task(task), task, "task__1", paths)
+    sandbox = _create_sandbox_environment(
+        "docker", Task(task), task, "task__1", paths, allow_cloud_metadata=True
+    )
     assert type(sandbox) is DockerSandbox
     await sandbox.start(force_build=True)
     await sandbox.exec("echo hi")

@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from benchflow._utils import staged_secrets
 from benchflow._utils.credential_names import (
     _AUTHORIZATION_NAMES,
     _COOKIE_NAMES,
@@ -5151,6 +5152,10 @@ def redact_trajectory_text_with_categories(text: str) -> tuple[str, dict[str, in
     detection that does not exist. The total replacement count is the sum of
     the returned values.
     """
+    # What BenchFlow staged in this trial goes first, whole and under its own
+    # name, before a pattern can take a token-shaped part of it; outside a
+    # trial nothing is registered (``_utils.staged_secrets``).
+    text = staged_secrets.mask(text)
     memo = _redaction_memo.get()
     cached = memo.get(text) if memo is not None else None
     if cached is not None:

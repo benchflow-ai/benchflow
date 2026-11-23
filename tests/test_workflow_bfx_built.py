@@ -57,7 +57,7 @@ def test_no_job_runs_pytest_without_bfx():
 
 
 def test_the_live_smoke_rollout_builds_the_pinned_bfx_from_the_pr_head():
-    """Guards EN-925 (PR #1251): integration-light's rollout-smoke had no bfx,
+    """Guards PR #1251: integration-light's rollout-smoke had no bfx,
     so its one model-agent trial was refused before the turn on every internal
     PR from 11-17 (PR #1244's run 44199910131, PR #1250's 44657087309)."""
     job = yaml.safe_load((WORKFLOW.parent / "integration-light.yml").read_text())[

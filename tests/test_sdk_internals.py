@@ -96,22 +96,39 @@ class TestResolveAgentEnv:
         assert result["BENCHFLOW_PROVIDER_API_KEY"] == "test-google-key"
 
     @pytest.mark.parametrize(
-        ("agent", "host_key"),
+        ("agent", "host_key", "model", "required"),
         [
-            pytest.param("codex-acp", "OPENAI_API_KEY", id="codex-openai-key"),
+            # Codex is refused on zai before its key is checked (zai serves
+            # no Responses API), so its row is on DeepSeek, which it runs.
+            pytest.param(
+                "codex-acp",
+                "OPENAI_API_KEY",
+                "deepseek/deepseek-flash",
+                "DEEPSEEK_API_KEY",
+                id="codex-openai-key",
+            ),
             pytest.param(
                 "claude-agent-acp",
                 "ANTHROPIC_AUTH_TOKEN",
+                "zai/glm-5",
+                "ZAI_API_KEY",
                 id="claude-auth-token",
             ),
-            pytest.param("gemini", "GOOGLE_API_KEY", id="gemini-google-key"),
+            pytest.param(
+                "gemini",
+                "GOOGLE_API_KEY",
+                "zai/glm-5",
+                "ZAI_API_KEY",
+                id="gemini-google-key",
+            ),
         ],
     )
     def test_cross_provider_host_native_key_does_not_bypass_required_key(
-        self, monkeypatch, tmp_path, agent, host_key
+        self, monkeypatch, tmp_path, agent, host_key, model, required
     ):
-        """Host-native keys for another provider must not satisfy zai auth."""
+        """Host-native keys for another provider must not satisfy its auth."""
         for key in (
+            "DEEPSEEK_API_KEY",
             "ZAI_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
@@ -125,8 +142,8 @@ class TestResolveAgentEnv:
         monkeypatch.setenv(host_key, "host-native-key")
         self._patch_expanduser(monkeypatch, tmp_path)
 
-        with pytest.raises(ValueError, match="ZAI_API_KEY required"):
-            self._resolve(agent=agent, model="zai/glm-5", agent_env={})
+        with pytest.raises(ValueError, match=f"{required} required"):
+            self._resolve(agent=agent, model=model, agent_env={})
 
     def test_auto_inherited_generic_bridge_key_does_not_bypass_required_key(
         self, monkeypatch, tmp_path

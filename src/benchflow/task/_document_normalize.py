@@ -23,6 +23,33 @@ class TaskDocumentParseError(ValueError, UserError):
     fault = "task"
 
 
+#: task.md's name for the ``sandbox:`` mapping until July 2026, when
+#: SkillsBench renamed it (9a1f4dd5); published tasks still use it, such as the
+#: 87 at its ``v1.1`` tag (b63b7b28).
+OLD_SANDBOX_KEY = "environment"
+BOTH_SANDBOX_KEYS_ERROR = (
+    "task.md declares both 'environment:' and 'sandbox:': they are the same "
+    "section ('environment:' is its name before July 2026); keep only 'sandbox:'"
+)
+
+
+def _read_old_sandbox_key(frontmatter: dict[str, Any]) -> None:
+    """Read a top-level ``environment:`` as ``sandbox:``, every key under it;
+    refuse a task.md that has both. task.toml's ``[environment]`` table is its
+    own format's name and is converted where task.toml is read."""
+    if OLD_SANDBOX_KEY not in frontmatter:
+        return
+    if "sandbox" in frontmatter:
+        raise TaskDocumentParseError(BOTH_SANDBOX_KEYS_ERROR)
+    # Renamed where it stands, so a normalized header keeps its order.
+    items = [
+        ("sandbox" if key == OLD_SANDBOX_KEY else key, value)
+        for key, value in frontmatter.items()
+    ]
+    frontmatter.clear()
+    frontmatter.update(items)
+
+
 def normalize_task_document_frontmatter(
     frontmatter: dict[str, Any],
     *,
@@ -31,6 +58,7 @@ def normalize_task_document_frontmatter(
     """Expand authoring shorthands and profiles into canonical frontmatter."""
 
     raw = deepcopy(frontmatter)
+    _read_old_sandbox_key(raw)
     profiles = _parse_authoring_profiles(raw)
     profile_defaults: dict[str, Any] = {}
     for profile in profiles:

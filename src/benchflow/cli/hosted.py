@@ -252,7 +252,7 @@ def _once(
 ) -> list[dict[str, str]]:
     """The run's own keys (--model-key, --endpoint): read here from where they are kept, sent with the run, never
     printed. A bad flag stops the command before anything is sent."""
-    from benchflow.hosted import KEY_KINDS, HostedError, read_secret
+    from benchflow.hosted import KEY_KINDS, HostedError, normalize_endpoint, read_secret
 
     out: list[dict[str, str]] = []
     try:
@@ -280,7 +280,7 @@ def _once(
                 {
                     "name": "ENDPOINT_URL",
                     "kind": "provider_base_url",
-                    "value": endpoint.strip(),
+                    "value": normalize_endpoint(endpoint),
                 }
             )
             out.append(
@@ -424,13 +424,22 @@ def register_hosted(app: typer.Typer) -> None:
         trials: _Trials = 1,
         concurrency: _Concurrency = 1,
         max_sandbox_seconds: _MaxSeconds = None,
+        max_cost_usd: _MaxCost = None,
+        output_json: Annotated[
+            bool,
+            typer.Option(
+                "--json", help="Print the service's JSON answer (the only output)"
+            ),
+        ] = False,
         hub: _Hub = None,
         key_file: _KeyFile = None,
     ) -> None:
-        """Ask what a run would likely take and whether it fits, without starting it (JSON)."""
+        """Ask what a run would likely take and whether it fits, without starting it (JSON).
+
+        It takes the run's selection and budget options, never its keys: an estimate sends none."""
         options = _run_options(
             agent, model, n_tasks, include, trials, concurrency, None,
-            max_sandbox_seconds, None,
+            max_sandbox_seconds, None, max_cost_usd=max_cost_usd,
         )  # fmt: skip
         with _service(hub, key_file) as client:
             typer.echo(json.dumps(client.estimate(version, **options), indent=2))
@@ -452,14 +461,21 @@ def register_hosted(app: typer.Typer) -> None:
             str, typer.Option("--kind", help="anthropic, deepseek, kimi, zai or mimo")
         ],
         source: _Source = "-",
+        output_json: _Json = False,
         hub: _Hub = None,
         key_file: _KeyFile = None,
     ) -> None:
         """Store a provider key for your runs (name it in a run with --secret NAME)."""
-        from benchflow.hosted import read_secret
+        from benchflow.hosted import check_secret_kind, read_secret
 
         with _service(hub, key_file) as client:
-            info = client.save_secret(name, kind.strip().lower(), read_secret(source))
+            kind = check_secret_kind(kind, client.key)
+            info = client.save_secret(name, kind, read_secret(source))
+            if output_json:
+                typer.echo(
+                    json.dumps({k: info.get(k) for k in ("name", "kind", "hint")})
+                )
+                return
             print_hint(
                 f"stored {info.get('name')} ({info.get('kind')}) {info.get('hint') or ''}".rstrip(),
                 style="green",
@@ -481,15 +497,31 @@ def register_hosted(app: typer.Typer) -> None:
             ),
         ],
         source: _Source = "-",
+        output_json: _Json = False,
         hub: _Hub = None,
         key_file: _KeyFile = None,
     ) -> None:
         """Store your own model endpoint with its key; the service sends a stored endpoint only the key stored with it."""
-        from benchflow.hosted import read_secret
+        from benchflow.hosted import normalize_endpoint, read_secret
 
         with _service(hub, key_file) as client:
-            answer = client.save_endpoint(name, url.strip(), read_secret(source))
-            names = [str(i.get("name")) for i in answer.get("items") or []]
+            answer = client.save_endpoint(
+                name, normalize_endpoint(url), read_secret(source)
+            )
+            items = answer.get("items") or []
+            if output_json:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "items": [
+                                {k: i.get(k) for k in ("name", "kind", "hint")}
+                                for i in items
+                            ]
+                        }
+                    )
+                )
+                return
+            names = [str(i.get("name")) for i in items]
             print_hint(f"stored {', '.join(names)}", style="green")
             print_hint(
                 "use it: bench hosted run <version> "
@@ -517,6 +549,7 @@ def register_hosted(app: typer.Typer) -> None:
     @secret_app.command("rm")
     def secret_rm(
         name: Annotated[str, typer.Argument(help="The stored key's name")],
+        output_json: _Json = False,
         hub: _Hub = None,
         key_file: _KeyFile = None,
     ) -> None:
@@ -529,6 +562,9 @@ def register_hosted(app: typer.Typer) -> None:
                     "workspace keeps; nothing was deleted",
                 )
                 raise typer.Exit(1)
+            if output_json:
+                typer.echo(json.dumps({"deleted": name}))
+                return
             print_hint(f"deleted {name}", style="green")
 
     @hosted_app.command("status")

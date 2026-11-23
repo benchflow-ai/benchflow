@@ -55,6 +55,10 @@ async def test_environment_setup_command_captures_directory_to_env(
     tmp_path, monkeypatch
 ):
     monkeypatch.delenv("CAPTURED_AUTH_B64", raising=False)
+    # 0.10.1: a capture writes only names the operator lists.
+    monkeypatch.setenv(
+        "BENCHFLOW_ALLOW_TASK_ENV", "CAPTURED_AUTH_B64,CAPTURE_DOTENV_PATH"
+    )
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text('OTHER=1\nCAPTURED_AUTH_B64="old"\n')
     monkeypatch.setenv("CAPTURE_DOTENV_PATH", str(dotenv_path))
@@ -101,6 +105,8 @@ async def test_environment_setup_command_captures_directory_to_env(
 async def test_environment_setup_host_lock_covers_capture(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCHFLOW_SETUP_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.delenv("LOCKED_CAPTURED_AUTH_B64", raising=False)
+    # 0.10.1: a capture writes only names the operator lists.
+    monkeypatch.setenv("BENCHFLOW_ALLOW_TASK_ENV", "LOCKED_CAPTURED_AUTH_B64")
 
     capture_active = False
     exec_started_during_capture = False

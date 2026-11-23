@@ -83,8 +83,14 @@ def _pathological(size: int) -> tuple[str, list[str]]:
 @pytest.mark.ceiling
 def test_a_pathological_file_leaks_nothing_and_counts_its_over_mask(monkeypatch):
     """At a budget of one unit (the file's views need about two), the budget runs
-    out before the planted lines; the default budget's run is measured in the PR."""
+    out before the planted lines; the default budget's run is measured in the PR.
+
+    The ceiling holds the call, not the process's first use (patterns compiled
+    on demand): run alone, that was about 3 s of the 9-10 s of CPU time it took
+    on a loaded build VM, against the ceiling's 10. As linear_rounds does, one
+    untimed call on a small file comes first."""
     monkeypatch.setattr(types, "_VIEW_BUDGET_UNITS", 1.0)
+    redact_trajectory_text_with_categories(_pathological(20_000)[0])
     text, keys = _pathological(500_000)
     out, categories = within_ceiling(redact_trajectory_text_with_categories, text)
     assert [k for k in keys if k in out] == []

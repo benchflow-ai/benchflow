@@ -437,13 +437,15 @@ async def test_a_snapshot_with_blanked_labels_stays(tmp_path):
     assert daemon.tags() == {"bf__hello:latest", "bf-snap-hello-1:latest"}
 
 
-async def test_kept_containers_stop_as_before(tmp_path):
+async def test_kept_containers_are_killed_then_stopped(tmp_path):
+    """Killed first (SIGKILL): a held service's stop signal could release
+    it. Then stopped as before, and kept."""
     sandbox, daemon = _docker_sandbox(tmp_path, keep_containers=True)
     daemon.built("sha256:main", "bf__hello:latest", "main")
 
     await sandbox.stop(delete=True)
 
-    assert daemon.compose_calls == [["stop", "-t", "5"]]
+    assert daemon.compose_calls == [["kill"], ["stop", "-t", "5"]]
     assert daemon.cli_calls == []
     assert daemon.tags() == {"bf__hello:latest"}
 
@@ -608,11 +610,19 @@ async def test_remote_docker_tears_down_with_the_same_commands(tmp_path, monkeyp
 
 
 async def test_daytona_dind_tears_down_with_the_same_commands():
+    from benchflow.sandbox.daytona_dind import VM_ROUTE
+
+    events: list[tuple] = []
+
+    async def remove_exec_traces(route=None):
+        events.append(("remove exec traces", route))
+
     strategy = _DaytonaDinD.__new__(_DaytonaDinD)
     env = SimpleNamespace(
         logger=logging.getLogger("test.compose.teardown"),
         _sandbox=object(),
-        _stop_sandbox=AsyncMock(),
+        _stop_sandbox=AsyncMock(side_effect=lambda *_: events.append(("delete",))),
+        _remove_exec_traces=remove_exec_traces,
         _client_manager=object(),
         session_id="dind-project",
     )
@@ -623,6 +633,7 @@ async def test_daytona_dind_tears_down_with_the_same_commands():
 
     async def vm_exec(command, cwd=None, env=None, timeout_sec=None, **kwargs):
         commands.append(command)
+        events.append(("compose",))
         return ExecResult(stdout="", stderr="", return_code=0)
 
     strategy._vm_exec = vm_exec
@@ -634,3 +645,6 @@ async def test_daytona_dind_tears_down_with_the_same_commands():
     assert _compose_subcommand(kill[1:]) == KILL
     assert _compose_subcommand(down[1:]) == DOWN
     env._stop_sandbox.assert_awaited_once()
+    # The VM's exec env and session files go after compose down (which reads
+    # the compose env's file) and before the delete.
+    assert events == [("compose",), ("remove exec traces", VM_ROUTE), ("delete",)]

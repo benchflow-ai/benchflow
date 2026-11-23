@@ -43,9 +43,9 @@ Common optional fields
                        is its OpenAI base without ``/v1``, plus ``/anthropic``).
 - ``endpoints``      ``{api_protocol: url}`` for providers that expose
                        multiple protocol surfaces (e.g. zai serves
-                       openai-responses, openai-completions, and
-                       anthropic-messages). Picked at runtime based on the
-                       agent's ``api_protocol``.
+                       openai-completions and anthropic-messages; deepseek
+                       serves openai-responses at its chat base). Picked at
+                       runtime based on the agent's ``api_protocol``.
 - ``models``           Optional list of model metadata dicts (id, name,
                        contextWindow, etc.) consumed by agent shims. ``id``
                        is required and must be unique within the provider.
@@ -277,9 +277,10 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="ZAI_API_KEY",
+        # No openai-responses: /responses answers 404 here, so Codex is
+        # refused before a job rather than failing on its first model call.
         endpoints={
             "openai-completions": "https://api.z.ai/api/paas/v4",
-            "openai-responses": "https://api.z.ai/api/paas/v4",
             "anthropic-messages": "https://api.z.ai/api/anthropic",
         },
         models=[
@@ -309,9 +310,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         api_protocol="openai-completions",
         auth_type="api_key",
         auth_env="ZAI_API_KEY",
+        # No openai-responses: /responses answers 404 here too.
         endpoints={
             "openai-completions": "https://api.z.ai/api/coding/paas/v4",
-            "openai-responses": "https://api.z.ai/api/coding/paas/v4",
             "anthropic-messages": "https://api.z.ai/api/anthropic",
         },
         models=[
@@ -385,6 +386,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # endpoint; default to it so bare ids resolve without DEEPSEEK_BASE_URL
         # (matches the shim default), while DEEPSEEK_BASE_URL still overrides.
         url_param_defaults={"base_url": "https://api.deepseek.com/v1"},
+        # The same base also serves the Responses API (custom tools included),
+        # which Codex speaks; DeepSeek documents it in its Codex guide.
+        endpoints={"openai-responses": "{base_url}"},
         model_prefixes=["deepseek"],
     ),
     "xiaomi": ProviderConfig(
@@ -398,6 +402,9 @@ PROVIDERS: dict[str, ProviderConfig] = {
         # ${XIAOMI_BASE_URL%/v1}/anthropic, so the claude agent runs MiMo
         # (REPORT B11; robouse's runs use that endpoint).
         url_param_strip_suffix={"base_url_root": ("base_url", "/v1")},
+        # No openai-responses: the token plan answers /responses, but refuses
+        # a custom tool (400 responses_feature_not_supported), which Codex
+        # sends every model its catalog lists (apply_patch).
         endpoints={"anthropic-messages": "{base_url_root}/anthropic"},
         model_prefixes=["xiaomi", "mimo"],
     ),

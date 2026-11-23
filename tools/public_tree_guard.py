@@ -15,7 +15,7 @@ holds goes public. It refuses:
   hyphen, the number, then the branch's words) names the key too. Only
   these teams count, as a whole word, then a hyphen and digits that end the
   number: ``CONF-1``, ``COVID-19``, ``[a-z]-9`` and ``gpt-oss-120b`` are not
-  keys;
+  keys, nor is a zero-padded number (``bn-bd-00018``);
 - in CHANGELOG.md and README.md, the public text a release ships and the
   docs site shows, any token shaped like a tracker key (capital letters, a
   hyphen, a number), unless it is a public name such as a CVE id, SHA-256 or
@@ -44,7 +44,9 @@ RELEASE_DIR = "release/"
 LINEAR_URL = re.compile(r"https?://(?:[\w-]+\.)?linear\.app\b", re.IGNORECASE)
 # Our tracker's team keys (Linear), current and archived, in any case: a
 # branch name spells the key in lower case (lead ruling on PR #146, M3).
-TRACKER_KEY = re.compile(r"\b(?i:EN|ENG|BEN3|BD|CEA|OSS)-\d+\b")
+# A tracker numbers issues from 1: a zero-padded number (a benchmark's
+# task id such as bn-bd-00018) is not a key.
+TRACKER_KEY = re.compile(r"\b(?i:EN|ENG|BEN3|BD|CEA|OSS)-[1-9]\d*\b")
 KEY_SHAPED = re.compile(r"\b([A-Z][0-9A-Z]{1,7})-\d+\b")
 # Where any key-shaped token is refused: the text a release ships for people
 # to read (the same files as the CHANGELOG guard of the 0.9 line).

@@ -426,8 +426,10 @@ def test_bench_run_help_stays_short_and_help_all_lists_the_rest() -> None:
     # 0.10 shows the six flags the run card names (--trials, --integrity,
     # --accept-deviations, the two budget caps, --keep-sandbox), with help cut
     # to a few lines each; adds --sandbox-setup-timeout (159 lines
-    # before it); its --integrity help names the faithful default (+3).
-    assert len(short.output.splitlines()) < 168
+    # before it); its --integrity help names the faithful default (+3), then
+    # its two outcomes, provenance_incomplete and integrity_unavailable (+9);
+    # --verbose and --json (+4 with their panel rows).
+    assert len(short.output.splitlines()) < 181
 
 
 # --- p5-9: one --harness help ------------------------------------------------

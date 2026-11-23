@@ -92,7 +92,10 @@ from benchflow._utils.reachable_write import (
     snapshot_tree,
 )
 from benchflow._utils.text import describe_exception
-from benchflow._utils.trial_warnings import recording_trial_warnings
+from benchflow._utils.trial_warnings import (
+    keep_trial_warnings,
+    recording_trial_warnings,
+)
 from benchflow.review.evidence import (
     WORKSPACE_MAX_BYTES,
     WORKSPACE_MAX_ENTRIES,
@@ -1924,6 +1927,8 @@ def _default_create(rollout: Any) -> CreateEnvironment:
     cfg = rollout._config
 
     def create(task: Any, context_path: Path, paths: RolloutPaths) -> Any:
+        from benchflow.rollout import metadata_granted
+
         sandbox = rollout._planes.create_environment(
             cfg.environment,
             task,
@@ -1932,6 +1937,12 @@ def _default_create(rollout: Any) -> CreateEnvironment:
             paths,
             preserve_agent_network=False,
             environment_manifest=None,
+            # The task's own opt-out, as the run granted it to the trial.
+            **(
+                {"allow_cloud_metadata": True}
+                if metadata_granted(getattr(rollout, "_isolation_opt_ins", None))
+                else {}
+            ),
         )
         return sandbox
 
@@ -1988,8 +1999,7 @@ def _default_verify(
                     agent_paths=(workspace,) if agent_paths is None else agent_paths,
                 )
             finally:
-                kept = vars(rollout).setdefault("_warnings", [])
-                kept.extend(w for w in warnings if w not in kept)
+                keep_trial_warnings(rollout, warnings)
         # The detector's record goes in the trial's own integrity folder too
         # a flag never changes the reward.
         inputs = getattr(env, "_benchflow_verifier_inputs", None)
@@ -2583,7 +2593,9 @@ class VerifierSandboxRun:
             return
         self.record["agent_sandbox_policy"] = proof.record()
         if not proof.proven:
-            self.agent_breach = policy_reproof.breach_error(proof)
+            # None where it flags only held services that restarted or
+            # exited (a one-shot service done at start-up), as in place.
+            self.agent_breach = await policy_reproof.with_held_restarts(env, proof)
 
     def check_plan(self) -> None:
         """Plan the verifier image from the task's files; :meth:`finish` raises

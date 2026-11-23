@@ -27,6 +27,7 @@ from pathlib import Path, PurePosixPath
 from string import Formatter
 from uuid import uuid4
 
+from benchflow._utils import staged_secrets
 from benchflow.agents.login_dirs import login_path
 from benchflow.agents.muse_config import validate_muse_model
 from benchflow.agents.registry import AGENTS, is_vertex_model
@@ -65,6 +66,29 @@ CREDENTIAL_EVIDENCE_PATHS = (
     ".docker/config.json",
     ".npmrc",
     ".pypirc",
+    # More stores of common tools: git's own
+    # credential file, kubeconfig, libpq, cargo, hub, gcloud's token stores,
+    # Azure, Terraform, Vault, rclone, Maven, boto/s3cmd, Hugging Face,
+    # GitHub Copilot.
+    ".config/git/credentials",
+    ".kube/config",
+    ".pgpass",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".config/hub",
+    ".config/gcloud/credentials.db",
+    ".config/gcloud/access_tokens.db",
+    ".config/gcloud/legacy_credentials",
+    ".azure",
+    ".terraform.d/credentials.tfrc.json",
+    ".vault-token",
+    ".config/rclone/rclone.conf",
+    ".m2/settings.xml",
+    ".boto",
+    ".s3cfg",
+    ".huggingface/token",
+    ".cache/huggingface/token",
+    ".config/github-copilot",
 )
 
 
@@ -238,6 +262,7 @@ async def place_credential(
     """
     if record is not None:
         record(path)
+    staged_secrets.register(posixpath.basename(path), content)
     await upload_credential(env, path, content, owner=owner)
 
 

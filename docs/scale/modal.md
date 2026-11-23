@@ -61,9 +61,9 @@ Modal accepts one GPU type per task; leave `gpu_types` out to take any.
 
 **The image's environment.** Modal sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `BLIS_NUM_THREADS`, `ORT_INTER_OP_NUM_THREADS` and `ORT_INTRA_OP_NUM_THREADS` to the CPU count, `PYTHONHASHSEED=0` and `PYTHONPATH=/pkg/:/root/` in every sandbox, over the image's own values. BenchFlow reads the image's values from the task's Dockerfile (its final stage and the stages that stage is built from), with the task's `env` over them, and gives them back: the thread counts and `PYTHONHASHSEED` when the sandbox is created, `PYTHONPATH` with every command. `PYTHONHASHSEED` and `PYTHONPATH` the image leaves unset are given empty, which Python reads as unset.
 
-Modal cannot unset a variable, so a thread count the image leaves unset keeps Modal's value; set it in the task's Dockerfile to choose it. Values a base image (`FROM`) sets are not read, and a task that names a prebuilt `docker_image` keeps Modal's values unless the task's `env` sets them. Each sandbox logs the names that keep Modal's.
+Modal cannot unset a variable, so a thread count the image leaves unset keeps Modal's value; set it in the task's Dockerfile to choose it. Values a base image (`FROM`) sets are not read: a `PYTHONPATH` only the base image sets is given empty, and `$PYTHONPATH` in an `ENV` reads as empty (an image built on Ascend CANN, which sets `PYTHONPATH` to its toolkit, loses it on Modal unless the task's Dockerfile or `env` sets it in full); and a task that names a prebuilt `docker_image` keeps Modal's values unless the task's `env` sets them. Each sandbox logs the names that keep Modal's.
 
-**Open-file and stack limits.** A Modal exec starts with an open-file limit of 1048576 and an unlimited stack; Docker's defaults are 1024 (hard 524288) and 8 MiB (hard unlimited), so glibc's default thread stack is 2 MiB on Modal and 8 MiB on Docker. Set `BENCHFLOW_MODAL_RLIMITS=1` to run every exec with Docker's limits, or `BENCHFLOW_MODAL_RLIMITS=nofile=SOFT:HARD,stack=SOFT:HARD` (the stack in bytes, `unlimited` allowed) for others. Each exec then runs behind `prlimit`, coreutils' `timeout` and `setpriv`, so the image needs util-linux and coreutils, and BenchFlow writes the limits to `/etc/security/limits.d/benchflow-rlimits.conf` for `su` and `runuser`. A sandbox that cannot hold them is refused at start: the image lacks those programs, its own `pam_limits` config sets one of the limits, or its `su` gives other limits. The setting is off by default.
+**Open-file and stack limits.** A Modal exec starts with an open-file limit of 1048576 and an unlimited stack; Docker's defaults are 1024 (hard 524288) and 8 MiB (hard unlimited), so glibc's default thread stack is 2 MiB on Modal and 8 MiB on Docker. Set `BENCHFLOW_MODAL_RLIMITS=1` to run every exec with Docker's limits, or `BENCHFLOW_MODAL_RLIMITS=nofile=SOFT:HARD,stack=SOFT:HARD` (the stack in bytes, `unlimited` allowed) for others. Each exec then runs behind `prlimit`, coreutils' `timeout` and `setpriv`, so the image needs util-linux and coreutils, and BenchFlow writes the limits to `/etc/security/limits.d/benchflow-rlimits.conf` for `su` and `runuser`. A sandbox that cannot hold them is refused at start: the image lacks those programs, its own `pam_limits` config sets one of the limits, or its `su` gives other limits. On BenchFlow's protected runtime kit (after the agent's turn has begun), root runs `prlimit`, `timeout` and `setpriv` only where the kit proved `/usr/bin` root's alone, and refuses the command otherwise. The setting is off by default.
 
 **What stays different.** The hostname is `modal` in every sandbox (Modal has no option to set it, and gVisor refuses `sethostname`); a task that needs an id per sandbox can read `/proc/sys/kernel/random/boot_id`. `/dev/shm` is sized from the host, and the kernel is gVisor's; Modal has no option for either.
 
@@ -71,23 +71,31 @@ Modal cannot unset a variable, so a thread count the image leaves unset keeps Mo
 
 Modal ends a sandbox when its lifetime runs out, whatever runs in it. BenchFlow gives each sandbox 24 hours (86400 s, Modal's longest). Set `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` to give less, in whole seconds from 60 to 86400; a sandbox left running after a crash then bills for that long at most.
 
-Before any sandbox, BenchFlow refuses a task whose budgets do not fit in the lifetime: the agent's `timeout_sec`, the verifier's `timeout_sec` (unless the verifier has a sandbox of its own), and the setup budgets (`setup_timeout_sec` in `[environment]`, 600 s when unset, and each setup command's `timeout_sec`).
+Before any sandbox, BenchFlow refuses a task whose budgets do not fit in the lifetime: the agent's `timeout_sec`, the verifier's `timeout_sec` (unless the verifier has a sandbox of its own), and the setup budgets (`setup_timeout_sec` in `[environment]`, 600 s when unset, and each setup command's `timeout_sec`). The check counts one agent turn and no agent install, and reads the task's own `timeout_sec`: a task with several turns or user rounds, or a run with `--timeout-multiplier`, can still outlive the lifetime it passed, and Modal then ends the sandbox ([below](#when-modal-ends-a-sandbox)).
 
 ## When Modal ends a sandbox
 
-Modal can end a sandbox on its own: when its lifetime runs out, when a process goes over its memory limit (Modal ends the whole sandbox, where Docker kills the one process), and when it evicts or preempts it. The trial then fails as an infrastructure error, with Modal's return code:
+Modal can end a sandbox on its own: when its lifetime runs out, when it evicts or preempts it, and when a process goes over its memory limit. BenchFlow asks Modal how the sandbox ended (its return code, and its status where Modal's client keeps one) and keeps the answer in the sandbox's `platform_end`.
+
+An eviction, a preemption or a terminate from outside the run fails the trial as an infrastructure error, which `retry_on_infra` reruns:
 
 ```text
-Sandbox not found: Modal ended the sandbox before BenchFlow stopped it (returncode 124: its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)); an exec failed with it
+Sandbox not found: Modal ended the sandbox before BenchFlow stopped it (returncode 137: Modal ended it (terminated: Sandbox terminated by user request): an eviction, a preemption or a terminate from outside this run); an exec failed with it
 ```
 
-124 is the lifetime; 137 is a kill (the memory limit, an eviction, a preemption, or a terminate from outside BenchFlow).
+A lifetime that runs out fails the trial with the reason, and is not rerun as an infrastructure error: a rerun would run the same budgets into the same lifetime. A task with several turns or user rounds can reach it after passing the check above:
+
+```text
+Modal ended the sandbox: its lifetime ran out (returncode 124, BENCHFLOW_MODAL_SANDBOX_TIMEOUT); an exec failed with it. A rerun would end the same way: give the sandbox a longer lifetime (at most 86400 s) or the task smaller budgets
+```
+
+A process over the memory limit makes Modal end the whole sandbox, where Docker kills that one process and the trial goes on. The trial fails with "Modal ended the sandbox: a process in it went over its memory limit", which is not an infrastructure error and is not rerun as one: the task's own processes used the memory.
 
 ## Limits
 
 Modal runs one container per sandbox, so a task with a `docker-compose.yaml` is refused before it starts. Of the network policies, `no-network` works; `allowlist` and `denylist` don't, and tasks that use them are refused.
 
-BenchFlow also refuses to start a sandbox where a system library is writable by anyone but root, since the verifier later runs as root there. On Modal, our half-life task's image hit this:
+BenchFlow also refuses to start a sandbox where a system library is writable by anyone but root, since the verifier later runs as root there. The Python Modal adds to an image without its own (`add_python`) used to trip this (its `libpython3.12.so` is group-writable); since 0.10.0 BenchFlow makes those three library files root's alone when it builds the Modal image, and such images start. A library the task's own image leaves writable still stops it, as our half-life task's image once did:
 
 ```text
 LoaderCustodyError: sandbox startup refused: BenchFlow could not seal its protected runtime: the system loader loads /usr/local/lib/libpython3.12.so (owner 0:0, mode -rwxrwxr-x), which is not root's alone, so it will not run root steps (the verifier's) after the agent's turn.

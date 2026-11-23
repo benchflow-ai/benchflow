@@ -12,6 +12,9 @@
 [python.error_category]
 kept_service_freezer = "refusal"
 integrity_unavailable = "refusal"
+# A model BenchFlow can't admit with web access restricted, refused before any
+# sandbox (the run's setup): unscored, never retried.
+restricted_model_refused = "refusal"
 runtime_sealing = "refusal"
 guard_timeout = "sandbox"
 phase_timeout = "sandbox"
@@ -74,6 +77,14 @@ network_policy_breached = "verifier_error"
 # The verifier's network could not be held (its rules not added or not
 # proven), so test.sh did not run, never open instead: unscored.
 verifier_network_unheld = "verifier_error"
+# BenchFlow could not check where the reward came from, after grading
+# (no record of the links from before the turn): unscored, never retried, the
+# same cause and family as the refusal before the turn in error_category.
+integrity_unavailable = "refusal"
+# a scored 0 by BenchFlow's provenance rule (rollout/_results.py writes
+# the category on the scored row, and summary.json counts it). Rust has no such
+# rule; it is the family of the verifier's hardening outcomes.
+provenance_incomplete = "verifier_hardening"
 
 # A Python refusal by the runtime capability check
 # (UnsupportedTaskFeatureError, src/benchflow/task/runtime_capabilities.py)

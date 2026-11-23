@@ -67,6 +67,11 @@ def exec_violations(source, filename="reader.py"):
         ):
             continue  # the captured provider's raw SDK, not sandbox.exec.
         if (
+            filename == "sandbox/daytona_exec_env.py"
+            and receiver == "sandbox._require_sandbox().process"
+        ):
+            continue  # the session scrub's toolbox exec: the provider's raw SDK.
+        if (
             filename in {"sandbox/modal_impl.py", "sandbox/process/modal.py"}
             and receiver == "self._sandbox"
             and isinstance(parent, ast.Attribute)
@@ -156,6 +161,21 @@ def test_channel_sdk_inventory_does_not_exempt_harness_readers():
         'async def read(self):\n    return await self.sandbox.exec("cat journal")',
         name,
     )
+
+
+def test_session_scrub_sdk_exception_does_not_exempt_harness_readers():
+    """The session scrub's toolbox exec is the provider's SDK; a BenchFlow
+    exec in the same file still has to take exec_raw."""
+    name = "sandbox/daytona_exec_env.py"
+    assert not exec_violations(
+        "async def scrub(sandbox):\n"
+        '    return await sandbox._require_sandbox().process.exec("rm -rf x")',
+        name,
+    )
+    for reader in ('sandbox.exec("cat x")', 'sandbox.process.exec("cat x")'):
+        assert exec_violations(
+            f"async def read(sandbox):\n    return await {reader}", name
+        )
 
 
 @pytest.mark.parametrize(

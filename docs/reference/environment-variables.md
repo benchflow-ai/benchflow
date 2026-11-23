@@ -17,7 +17,7 @@ No flag sets a variable for the verifier; put it in the task. A task's settings 
 
 ## Model keys and logins
 
-BenchFlow reads the usual credential variables from your shell and from `.env`: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `XIAOMI_API_KEY` and the other providers' keys. `BENCHFLOW_DOTENV_PATH` names another `.env` file. [Agents and models](../evaluate/agents.md#log-in-or-set-a-key) lists which agent reads which.
+BenchFlow reads the usual credential variables from your shell and from `.env`: `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `XIAOMI_API_KEY` and the other providers' keys. `BENCHFLOW_DOTENV_PATH` names another `.env` file. [Agents and models](../evaluate/agents.md#log-in-or-set-a-key) lists which agent reads which. No isolation switch comes from a `.env`, since the folder you run from may belong to the benchmark: names starting `BENCHFLOW_ALLOW_` or `BENCHFLOW_METADATA_` there are skipped, so export them in your shell instead (0.10.1).
 
 What the agent then sees depends on how its calls go out:
 
@@ -75,6 +75,7 @@ A `docker-compose.yaml` differs in one way: Compose runs with only the variables
 | `BENCHFLOW_MODAL_HARD_LIMITS=0` | give Modal the task's CPUs and memory as requests, without hard limits ([Modal](../scale/modal.md#how-a-modal-sandbox-compares-with-docker)) | hard limits |
 | `BENCHFLOW_MODAL_RLIMITS` | `1`: every Modal exec runs with Docker's open-file and stack limits; or `nofile=SOFT:HARD,stack=SOFT:HARD` ([Modal](../scale/modal.md#how-a-modal-sandbox-compares-with-docker)) | off |
 | `BENCHFLOW_MODAL_SANDBOX_TIMEOUT` | each Modal sandbox's lifetime in whole seconds, 60 to 86400; a task whose budgets do not fit is refused ([Modal](../scale/modal.md#sandbox-lifetime)) | `86400` |
+| `BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC` | seconds a Daytona checkpoint or branch snapshot may take ([Daytona](../scale/daytona.md#limits)) | `600` |
 | `BENCHFLOW_REMOTE_DOCKER_HOST` | the host for `--sandbox remote-docker` ([Sandboxes](../scale/sandboxes.md)) | `DOCKER_HOST` |
 | `BENCHFLOW_DOCKER_SUBNETS` | address ranges for trial networks, or `daemon` to leave them to Docker | chosen by BenchFlow |
 | `BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS` | extra Python packages for the model proxy | none |

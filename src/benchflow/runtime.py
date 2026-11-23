@@ -78,8 +78,15 @@ class Environment:
         planes: Any | None = None,
         *,
         jobs_dir: str | Path = "jobs",
+        allow_cloud_metadata: bool = False,
     ) -> Environment:
         """Create an environment and allocate its trial's artifact paths.
+
+        A task that asks to lift the cloud metadata block (its own
+        ``allow_cloud_metadata = true``) is refused unless
+        *allow_cloud_metadata* grants it, as ``--allow-cloud-metadata`` does;
+        the run's ``RuntimeConfig(allow_cloud_metadata=True)`` must grant it
+        too.
 
         Runs in this environment share its artifact directory, including
         ``result.json`` and verifier rewards. Choose ``jobs_dir`` here:
@@ -89,8 +96,10 @@ class Environment:
         from uuid import uuid4
 
         from benchflow.contracts import default_rollout_planes
+        from benchflow.sandbox.cloud_metadata import strict_grant
         from benchflow.task import RolloutPaths, Task
 
+        granted = strict_grant(allow_cloud_metadata)
         task_path = Path(task_path)
         task = Task(task_path)
         rollout_name = rollout_name or task_path.name
@@ -115,6 +124,8 @@ class Environment:
                 # block on this sandbox before it starts, only when the run's
                 # plan is armed (a non-root agent under an open network).
                 block_cloud_metadata=False,
+                # Named only when given, so planes that predate it still work.
+                **({"allow_cloud_metadata": True} if granted else {}),
             )
         except Exception:
             # create_environment failed (e.g. a missing optional sandbox SDK) —
@@ -329,10 +340,17 @@ class RuntimeConfig:
     usage_tracking: Any = None
     reviewer: ReviewerConfig = field(default_factory=ReviewerConfig)
     allow_cloud_metadata: bool = False
+    allow_cloud_credential_file: bool = False
+    allow_task_processes_with_credentials: bool = False
+    scoped_credentials: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         import warnings
 
+        from benchflow.sandbox.cloud_metadata import strict_grant
+
+        # The run's grant of a task's cloud metadata opt-out, read strictly.
+        self.allow_cloud_metadata = strict_grant(self.allow_cloud_metadata)
         # Whenever the caller passed one, at its default too
         # (RuntimeConfig(snapshot_policy="none"), DF-p4-upgrader-6); a copy
         # made by dataclasses.replace() keeps the unset default and is silent.
@@ -530,12 +548,22 @@ class Runtime:
             usage_tracking=config.usage_tracking,
             reviewer=config.reviewer,
             allow_cloud_metadata=config.allow_cloud_metadata,
+            allow_cloud_credential_file=config.allow_cloud_credential_file,
+            allow_task_processes_with_credentials=config.allow_task_processes_with_credentials,
+            scoped_credentials=config.scoped_credentials,
         )
 
         if config.timeout is None:
             _warn_if_old_default_timeout_mattered(self.env.task_path)
 
         rollout = await Rollout.create(trial_config)
+
+        # A task that asks to lift the cloud metadata block (or a setup
+        # capture) the run does not grant: refused before the caller's
+        # environment starts, as Rollout.setup would after it.
+        from benchflow.rollout import rollout_isolation_opt_ins
+
+        rollout_isolation_opt_ins(self.env.task, trial_config)
 
         # The rollout's setup refuses an agent that routes its own model calls
         # where it cannot run, but only after this sandbox starts below: refuse
@@ -575,6 +603,8 @@ class Runtime:
                 task=task,
                 custom_backend=True,
                 sandbox_instance=self.env.inner,
+                allow_cloud_credential_file=config.allow_cloud_credential_file,
+                scoped_credentials=config.scoped_credentials,
             )
 
         # If the caller has not started the Environment yet, do it now so
@@ -1091,6 +1121,9 @@ async def _run(
             usage_tracking=rc.usage_tracking,
             reviewer=rc.reviewer,
             allow_cloud_metadata=rc.allow_cloud_metadata,
+            allow_cloud_credential_file=rc.allow_cloud_credential_file,
+            allow_task_processes_with_credentials=rc.allow_task_processes_with_credentials,
+            scoped_credentials=rc.scoped_credentials,
         )
         check_rollout_config(rollout_config)
         if not _HOST_CHECKED.get():

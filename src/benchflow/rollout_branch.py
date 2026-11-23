@@ -381,11 +381,7 @@ async def branch(
             "Nested shared-rollout branches are not supported; fork with "
             "isolate_children=True and branch the child's own rollout"
         )
-    if rollout._usage_runtime is not None:
-        raise RuntimeError(
-            "Branching an active provider runtime needs a runtime fork contract; "
-            "use a native-subscription or provider-free rollout"
-        )
+    _require_runtime_handoff(rollout)
 
     parent = rollout._cursor
     # Any: the two runner forms are dispatched on pass_identity below.
@@ -433,28 +429,41 @@ async def branch(
     capture_started = loop.time()
     try:
         await rollout.disconnect()
-        if reuse_snapshot is not None:
-            # The sandbox's state at the cursor is already an image (an
-            # automatic checkpoint, or the kept checkpoint the trial started
-            # from): use it. Its credential files go with it for restores.
-            adopt = getattr(snap_sandbox, "adopt_snapshot", None)
-            if adopt is not None:
-                await adopt(reuse_snapshot)
-            parent.state[_SNAPSHOT_KEY] = StageSnapshot(
-                environment_ref=None, sandbox_ref=reuse_snapshot
-            )
-            event.record["snapshot"]["reused"] = True
-        elif composed:
-            await checkpoint_composed(
-                parent, environment=snap_env, sandbox=snap_sandbox
-            )
-        else:
-            await _checkpoint_branch(parent, rollout._environment)
+        await _hand_off_provider_runtime(rollout)
+        from benchflow.checkpoints import clock as checkpoint_clock
+
+        # The snapshot is checkpoint time: the host's hard deadline doesn't
+        # count it.
+        with checkpoint_clock(rollout, snap_sandbox):
+            if reuse_snapshot is not None:
+                # The sandbox's state at the cursor is already an image (an
+                # automatic checkpoint, or the kept checkpoint the trial
+                # started from): use it. Its credential files go with it for
+                # restores.
+                adopt = getattr(snap_sandbox, "adopt_snapshot", None)
+                if adopt is not None:
+                    await adopt(reuse_snapshot)
+                parent.state[_SNAPSHOT_KEY] = StageSnapshot(
+                    environment_ref=None, sandbox_ref=reuse_snapshot
+                )
+                event.record["snapshot"]["reused"] = True
+            elif composed:
+                await checkpoint_composed(
+                    parent, environment=snap_env, sandbox=snap_sandbox
+                )
+            else:
+                await _checkpoint_branch(parent, rollout._environment)
     except BaseException as exc:
         event.record["status"] = (
             "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
         )
         event.record["error"] = error_record(exc)
+        # What became of a snapshot the provider went on to make
+        # (sandbox.daytona_snapshot_create); one left to the sandbox's stop is
+        # named again there, in daytona-snapshot-leftovers.json.
+        leftover = getattr(exc, "benchflow_snapshot_leftover", None)
+        if isinstance(leftover, dict):
+            event.record["snapshot"]["leftover"] = dict(leftover)
         try:
             event.persist()
         except BaseException as artifact_error:
@@ -545,6 +554,11 @@ async def branch(
             event.persist()
             verify_calls = rollout._verify_calls
             rollout._resume_session_id = resume_id
+            # The child's proxy starts with none of the parent's before it, as
+            # an isolated child's or a --from-checkpoint child's does: its log
+            # holds its own calls only, and its budget counts from zero.
+            parent_runtimes = rollout._retired_usage_runtimes
+            rollout._retired_usage_runtimes = []
             try:
                 attempt = 1
                 while True:
@@ -601,6 +615,10 @@ async def branch(
                 child_failures.append(exc)
                 observation.update(status=child_status(exc), error=error_record(exc))
             finally:
+                # The parent's runtimes back, and only them: a proxy the child
+                # retired while it ran (a reconnect replaced it) is the child's
+                # and already stopped, never the parent's usage.
+                rollout._retired_usage_runtimes = parent_runtimes
                 rollout._resume_session_id = None
                 # An in-place child ends here, with no cleanup of its own: what
                 # main's metadata rules refused since its restore covered main
@@ -1033,6 +1051,11 @@ async def _run_isolated_children(
                         observation["cleanup_error"] = error_record(exc)
                         failure = failure or exc
                     phases["finalize"] = round(loop.time() - started, 3)
+                    # The child's own result.json prices its proxied calls from
+                    # its proxy's log; the native count above has no price
+                    # (the fork summary said "USD -" beside priced
+                    # children).
+                    observation["cost"].update(_child_result_cost(child_dir))
                     # The child's own sandbox, from setup to teardown.
                     observation["cost"]["sandbox_seconds"] = round(
                         loop.time() - sub_started, 3
@@ -1283,6 +1306,79 @@ async def _bounded_child_cleanup(
         else:
             rollout._branch_cleanup_unquiesced = True
             task.add_done_callback(_swallow_abandoned_outcome)
+
+
+def _child_result_cost(child_dir: Any) -> dict[str, Any]:
+    """An isolated child's tokens and USD from its own result.json, when it
+    priced them; else nothing (its native count stands)."""
+    import json
+    from pathlib import Path
+
+    if child_dir is None:
+        return {}
+    try:
+        result = json.loads((Path(child_dir) / "result.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    usage = result.get("agent_result") if isinstance(result, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    usd, tokens = usage.get("cost_usd"), usage.get("total_tokens")
+    if (
+        not isinstance(usd, int | float)
+        or isinstance(usd, bool)
+        or not math.isfinite(usd)
+    ):
+        return {}
+    found: dict[str, Any] = {"usd": float(usd)}
+    if isinstance(tokens, int) and not isinstance(tokens, bool):
+        found["tokens"] = tokens
+    if usage.get("usage_incomplete") is True:
+        found.update(usage_incomplete=True, cost_incomplete=True)
+    return found
+
+
+def _require_runtime_handoff(rollout: Any) -> None:
+    """Refuse, before anything is recorded, a fork whose parent model
+    runtime :func:`_hand_off_provider_runtime` cannot hand off: one that
+    keeps no controller-held agent env to start the children's proxies from
+    (a BenchFlow LiteLLM proxy always does)."""
+    runtime = rollout._usage_runtime
+    if runtime is None:
+        return
+    if (
+        getattr(runtime, "kind", None) != "litellm"
+        or getattr(runtime, "source_env", None) is None
+    ):
+        kind = getattr(runtime, "kind", None) or type(runtime).__name__
+        raise RuntimeError(
+            f"Cannot branch this rollout: its model runtime ({kind}) keeps no "
+            "agent env to start each child's own model proxy from. Branch a "
+            "rollout whose model calls go through BenchFlow's LiteLLM proxy, "
+            "or start the children from a kept checkpoint (bench branch "
+            "--from-checkpoint)"
+        )
+
+
+async def _hand_off_provider_runtime(rollout: Any) -> None:
+    """At the fork, stop the parent's model proxy and keep it with the
+    rollout's retired runtimes, as a Scene role switch does
+    (``Rollout.connect``): its calls stay in the trial's usage and a trial
+    budget counts on from them. The agent env goes back to the one the first
+    connect started from (the proxy's own env holds no upstream key), so each
+    child and the parent's continuation start their own proxy.
+
+    Runs after the agent disconnected and before the checkpoint, so an
+    in-sandbox proxy's log never enters the snapshot. A stop that fails
+    raises, and the runtime stays in the rollout for cleanup to import."""
+    runtime = rollout._usage_runtime
+    if runtime is None:
+        return
+    await rollout._planes.stop_provider_runtime(runtime)
+    rollout._retain_usage_runtime(runtime)
+    rollout._add_reported_models(runtime)
+    rollout._usage_runtime = None
+    rollout._agent_env = dict(runtime.source_env)
 
 
 def _child_usage_incomplete(rollout: Any, *, proxied: bool) -> str | None:

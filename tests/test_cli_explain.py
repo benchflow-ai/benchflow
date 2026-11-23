@@ -69,7 +69,8 @@ RUST_082_RUN_CODES = frozenset(
         "R901",
     ]
 )
-OWNERS = {"task", "agent", "model", "sandbox", "you", "benchflow"}
+# "unclassified": the `other` page, an error no category matched, whose owner BenchFlow can't tell.
+OWNERS = {"task", "agent", "model", "sandbox", "you", "benchflow", "unclassified"}
 
 
 def _bench(*args: str):
@@ -132,11 +133,31 @@ def test_a_page_is_found_by_any_case_and_by_its_category():
 
 def test_the_list_names_every_id_once():
     codes = [entry["code"] for entry in _listed()]
-    assert len(codes) == len(set(codes)) == len(failures.cause_keys())
+    every = (*failures.cause_keys(), *failures.scored_zero_keys())
+    assert len(codes) == len(set(codes)) == len(every)
     text = _bench("explain")
     assert text.exit_code == 0, text.output
     for code in codes:
         assert re.search(rf"^  {re.escape(code)} ", text.stdout, re.M), code
+
+
+def test_both_integrity_outcomes_have_a_page():
+    """rc4's summary named neither; `bench explain` had no page."""
+    unavailable = _page("integrity_unavailable")
+    assert unavailable["owner"] == "benchflow", unavailable
+    assert unavailable["title"] == "integrity check unavailable"
+    assert "refused before the agent's turn" in unavailable["body"], unavailable
+    zero = _page("provenance_incomplete")
+    assert zero["owner"] in OWNERS and zero["title"].startswith("scored 0"), zero
+    assert "never retried" in zero["body"], zero
+    text = _bench("explain")
+    assert text.exit_code == 0, text.output
+    heading = "Scored 0 by an integrity rule"
+    assert heading in text.stdout, text.stdout
+    after = text.stdout.split(heading, 1)[1]
+    assert re.search(r"^  provenance_incomplete ", after, re.M), text.stdout
+    errored = text.stdout.split("Errored:", 1)[1].split(heading, 1)[0]
+    assert "provenance_incomplete" not in errored, text.stdout
 
 
 def test_an_id_with_no_page_exits_2_with_a_next_step():

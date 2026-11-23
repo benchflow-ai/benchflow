@@ -1,0 +1,7 @@
+Task  Outcome  Reward  Cost     Tokens  Time
+0     passed        1  $0.0054  33,351   58s
+1     passed        1  $0.0054  33,351   58s
+
+Score       Model cost  Tokens  Wall time
+2/2 passed  $0.0108     66,702  2m 00s
+Results: jobs/2026-11-18__03-30-13/

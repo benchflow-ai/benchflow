@@ -1,6 +1,6 @@
 # Publishing a release
 
-This page is for maintainers. To install a stable or preview release, see [Install](../start/install.md).
+This page is for maintainers. To install a stable or preview release, see [Install](../start/install.md). The release owner works through the [Release checklist](./release-checklist.md).
 
 BenchFlow publishes two kinds of release to PyPI, both under the name `benchflow`:
 
@@ -9,6 +9,7 @@ BenchFlow publishes two kinds of release to PyPI, both under the name `benchflow
 | Stable | when a maintainer pushes a `vX.Y.Z` tag | `X.Y.Z` | `public-release.yml` |
 | Pre-release | when a maintainer pushes a `vX.Y.ZrcN` (or `aN`, `bN`) tag | `X.Y.ZrcN` | `public-release.yml` |
 | Preview | after every push to `main` whose tests and integration check pass | `X.Y.Z.devN` | `internal-preview-release.yml` |
+| Nightly | every night, from the trunk's head, when every nightly gate passed | `X.Y.Z.devYYYYMMDD` | `nightly.yml` |
 
 ## Version model
 
@@ -26,7 +27,7 @@ The preview build replaces `.dev0` with `.devN`, where N is the run number of th
 
 Previews sort before the stable release they lead to, so `pip install benchflow` still gets the latest stable.
 
-If `main` carries a final or a/b/rc version during a release, the preview workflow skips publishing. The tag-driven stable workflow handles that commit.
+If `main` carries a final or a/b/rc version during a release, the preview workflow skips publishing. The tag-driven stable workflow handles that commit. A release line that carries its next candidate with `.dev0` (`0.10.1rc1.dev0`) previews as that candidate's `.devN`.
 
 A pre-release such as `0.10.0rc2` goes through the same stable steps below, with its own acceptance record. pip installs it only when asked for it (`pip install --pre benchflow` or `benchflow==0.10.0rc2`), and its GitHub release is marked as a pre-release. `.dev` and local versions never publish through `public-release.yml`.
 
@@ -86,7 +87,7 @@ The commit leaves out `.github/release-acceptance/`: the tag's commit adds only 
 
 ## The release gate on a VM
 
-A release candidate's tests run on per-run VMs, and that gate is the release gate, with its receipts in the internal lab repository; the GitHub Actions CI that runs on pull requests into the release lines is in addition to it, never instead.
+The release gate is CI on the exact commit: the jobs below, on the version commit's pull request, its nightly run and the acceptance record's pull request ([The release gate in CI](#the-release-gate-in-ci)). The per-run VMs this section describes are the fallback, for a release whose CI can't run (an outage, a gate the runners can't hold yet), with their receipts in the internal lab repository. 0.10.0rc4 showed why the order matters: its VM gate passed, and its tag's own test jobs on GitHub then failed, because the VMs had the pinned bfx and the gate's Docker and the runners had neither.
 
 The gate runs on the rc branch's head after every merge, never on a pull request alone. Two pull requests can each pass their own suite and fail together once both are merged: git merged two cleanly, and the merged tree failed 81 tests because one removed an import the other used. So every leg runs the whole suite on the combined head, with `--rc-branch <rc branch>` naming the branch; the tested commit must be that branch's head (`origin/<rc branch>` as fetched into the checkout, and on GitHub when it answers). The receipt records the branch, its head and every pull request merged since the last rc (the highest version among the accepted records in `.github/release-acceptance/` whose source commit is an ancestor). A run on a pull request branch or a scratch merge may run, but its receipt says it is not a release gate and is never a PASS; `--combine`, which runs where GitHub answers, passes only when every leg gated the same head and GitHub's branch is still there. The static stage also checks the pages generated from the code on that head: the reference pages and the changelog page (`tools/docs_reference.py`), the error index (`tools/docs_errors.py`) and the CLI help golden (`tools/cli_help_golden.py`). A stale page fails the gate, and the receipt names the command that regenerates it. The gate has three legs (`tools/release_gate/legs.json`), each on its own VM, run in parallel:
 
@@ -128,6 +129,41 @@ Each leg runs as GitHub's runners do (uv's own Python, umask 022, the tests' fol
 A leg that leaves a stage out (`--skip`), runs a subset (including one sandbox of the matrix) or keeps its logs local reports INCOMPLETE, never PASS. No credential in the VM's environment variables reaches the tests; files in its home folder and its metadata server do, hence the narrow service account.
 
 Before a release reaches the public repository, `public-release.yml` runs `tools/public_tree_guard.py` on the tagged tree: it refuses a `release/` path, a linear.app URL, a key of one of our tracker's teams (`EN`, `ENG`, `BEN3`, `BD`, `CEA` or `OSS`, a hyphen and a number) anywhere in the tree, and in `CHANGELOG.md` and `README.md` any token shaped like a tracker key that is not a public name (`CVE`, `SHA`, `UTF`, ...). `tests/test_public_tree_guard.py` fails on a committed `release/` path or linear.app URL. Run the guard on the candidate before its gate, and clean what it finds (`tools/strip_internal_refs.py --write` rewrites comments and docstrings; it reports the rest), so the gate runs on the tree that is tagged.
+
+## The release gate in CI
+
+| Gate | Workflow and job | Runs | Blocks |
+| --- | --- | --- | --- |
+| Unit, lint, types, pip-audit, the Docker tiers | `test.yml` | every pull request, push, tag | the merge and the tag |
+| The grading-integrity matrix, without its flood rows, also as a run | `test.yml`: `grading-matrix`, `grading-matrix-run-defaults` (two shards each) | every pull request, tag | the merge and the tag |
+| The window check: the agent user's rules are in before the agent starts | `test.yml`: `window-check` (three runs per user) | every pull request, tag | the merge and the tag |
+| Gate 1 on a sample: the oracle against the reference framework's scores | `test.yml`: `oracle-parity` (12 tasks, 20 when grading changes) | every pull request, tag | the merge and the tag |
+| The public tree guard | `test.yml`: `public-tree-guard` | every pull request, tag | the merge and the tag |
+| Two builds, byte for byte | `test.yml`: `repro-build` | every pull request, tag | the merge and the tag |
+| What push protection would refuse | `secret-sweep.yml` | every pull request and push; by hand on the public push range | the merge; the push |
+| Every publish step but the publish | `release-dryrun.yml` | the acceptance record's pull request | the tag |
+| The leak gate with its real patterns | `leak-gate-preflight.yml` | trunk and rc pushes, nightly | the tag |
+| Gate 1 on every fetchable task, the floods, the full window set, a real-model dogfood | `nightly.yml` | every night | the cut |
+| `test.yml`'s jobs on the gate runners, for one commit | `gate-dispatch.yml` | by hand (`gh workflow run gate-dispatch.yml -f sha=<commit>`) | the tag, when GitHub's runners can't run a job |
+| The published bytes, from PyPI | `post-publish-verify.yml` | after each publish | the next release |
+
+`oracle-parity` draws its tasks from `tools/parity/corpus-g1.tsv`: the gate-1 tasks CI can fetch from their public sources at a pinned commit, never from BenchFlow's storage. It reads each mismatch with the classes of `tools/parity/tally.py` and the ledgers beside it (accepted differences, flaky tasks, must-show rules); a regression, a broken must-show or a changed reward blocks.
+
+A task in the `oracle-parity` sample that asks for more CPUs than the runner has is not run, and the table names it `RUNNER_CAPACITY`: it doesn't block a pull request, and it blocks the nightly, whose runners are sized for every task.
+
+When GitHub's runners can't run one of `test.yml`'s jobs on a candidate (too small, out of minutes, or a job longer than the hosted limit), the release owner runs `gate-dispatch.yml` on the candidate's commit. It is `test.yml`'s jobs step for step (`tools/ci/gen_gate_dispatch.py` writes it, and a test holds it to `test.yml`), on the runners named by `BF_GATE_RUNNER`, checking out the commit given and checking that it did. It runs only by hand: a pull request never reaches a self-hosted runner. Its run links stand for `test`'s in the acceptance record.
+
+`g1-full` and `matrix-floods` need larger machines than GitHub's runners (the floods write millions of names; the whole 404-task gate 1 is about 20 task-hours). They run on the gate runners named by the repository variable `BF_GATE_RUNNER`, and say so on every nightly run until those exist. `leak-gate-preflight` and the nightly dogfood read secrets, so they run only in their protected environments (`release-leak-gate`, `dogfood-models`), never on a pull request, and refuse to run when the environment isn't the protected one.
+
+`public-release.yml` waits for every job of `test.yml` on the tag and for the gate receipts the acceptance record names (`tools/check_gate_receipts.py`), then publishes.
+
+## Cadence
+
+- **Branches.** Until 0.10.0, one trunk, `next`, in the private repository: every change merges there through a pull request with the CI above. From 0.10.0 on, day-to-day work moves to public `main`, and the private repository keeps only fixes under embargo.
+- **Trains.** Every other Tuesday the release owner cuts an rc from the newest trunk commit whose nightly passed every job, not from the head. For 48 hours after the cut only fixes go in, each with a test that failed before it. A change that misses a cut waits for the next train: nothing holds a train but a gate's regression. A large integration lands behind a flag, or waits.
+- **What goes in.** Changes merged to the trunk before the cut, each with its CI green, its docs, `--help` and `bench explain` pages updated in the same pull request, and its unsupported cases written in its description (they go into the rc's capability boundaries).
+- **Final.** An rc that has been out seven days with no blocker filed and a green nightly dogfood becomes final at the next train, by a commit that changes the version alone (`tools/release_promote_check.py`): its gate runs stand for the final's.
+- **Nightly.** Every night `nightly.yml` builds the trunk as `X.Y.Z.devYYYYMMDD` (`tools/release_version.py nightly`), after its gates pass. From a public trunk it publishes to PyPI, where it sorts before the next release and `pip install benchflow` never takes it; from the private trunk it is kept as the run's artifact, since unreleased code doesn't go to PyPI.
 
 ## The constraints file
 

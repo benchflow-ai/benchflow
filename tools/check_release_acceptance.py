@@ -4,6 +4,10 @@ The record is committed after testing the frozen source and distributions. Only
 that record may differ between the accepted source and the release tag. This
 checks the binding; the referenced acceptance receipt and its results are
 reviewed separately. Nothing here creates or approves an acceptance record.
+
+Schema 2 adds ``gates``: the CI runs on the accepted source that make up the
+release gate, each as ``{"repo", "run_id", "head_sha"}``. This file checks
+their shape; ``tools/check_gate_receipts.py`` checks each run with GitHub.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -51,9 +56,11 @@ def check_release_acceptance(repo: Path, dist: Path) -> list[str]:
     record_path = repo / relative
     record = json.loads(record_path.read_text(), object_pairs_hook=_unique_object)
     if not isinstance(record, dict) or type(record.get("schema_version")) is not int:
-        raise ValueError("acceptance record must have schema_version 1")
-    if record["schema_version"] != 1 or record.get("version") != version:
+        raise ValueError("acceptance record must have schema_version 1 or 2")
+    if record["schema_version"] not in (1, 2) or record.get("version") != version:
         raise ValueError("acceptance schema or version does not match this release")
+    if record["schema_version"] == 2:
+        _check_gates(record.get("gates"))
     if record.get("status") != "accepted":
         raise ValueError("release acceptance is not complete")
     receipt = record.get("acceptance_receipt_sha256")
@@ -126,6 +133,26 @@ def check_release_acceptance(repo: Path, dist: Path) -> list[str]:
             raise ValueError(f"{name} differs from the accepted SHA-256")
         messages.append(f"{name}: matches accepted SHA-256 {actual}")
     return [f"Accepted source: {source}; receipt SHA-256: {receipt}", *messages]
+
+
+def _check_gates(gates: object) -> None:
+    """Schema 2's gate receipts, by shape: a name per gate run, each run named
+    by its repository, run id and the commit it ran on."""
+    if not isinstance(gates, dict) or not gates:
+        raise ValueError("a schema 2 record names its gate runs under gates")
+    for name, gate in gates.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]+", name):
+            raise ValueError(f"invalid gate name: {name!r}")
+        if not isinstance(gate, dict) or set(gate) != {"repo", "run_id", "head_sha"}:
+            raise ValueError(f"gate {name} must be repo, run_id and head_sha")
+        fields = cast("dict[str, object]", gate)
+        repo, run_id, head = fields["repo"], fields["run_id"], fields["head_sha"]
+        if not isinstance(repo, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            raise ValueError(f"gate {name}: invalid repository")
+        if type(run_id) is not int or run_id <= 0:
+            raise ValueError(f"gate {name}: invalid run id")
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise ValueError(f"gate {name}: head_sha must be a full commit SHA")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -83,7 +83,7 @@ Effort and sampling are in `llm_trajectory.jsonl` only for calls that went throu
 
 ## The run card (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 0.10.0rc2 prints a run card before every run, and with `--dry-run` it prints the card and stops. The same command as above:
 

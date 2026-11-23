@@ -95,6 +95,13 @@ def test_every_workflow_installs_the_uv_benchflow_pins() -> None:
             "in benchflow._uv_pin.UV_SHA256"
         )
         runner = str(job.get("runs-on"))
+        # A gate runner chosen by a repository variable (nightly.yml) falls back
+        # to GitHub's Ubuntu runner; the runner it names must be Linux x86_64
+        # too, since the checksum is that one.
+        chosen = re.fullmatch(
+            r"\$\{\{ vars\.[A-Z_]+ \|\| '(ubuntu-[\w.-]+)' \}\}", runner
+        )
+        runner = chosen.group(1) if chosen else runner
         assert runner.startswith("ubuntu-") and "arm" not in runner, (
             f"{where}: runs on {runner!r}; the checksum is the {RUNNER_TARGET} one"
         )
@@ -212,7 +219,13 @@ def test_the_test_check_passes_only_when_every_unit_leg_passed(
             **{
                 key: "success"
                 for key, value in step["env"].items()
-                if value == "${{ needs.unit-complete.result }}"
+                if value
+                in (
+                    "${{ needs.unit-complete.result }}",
+                    "${{ needs.grading-matrix.result }}",
+                    "${{ needs.grading-matrix-run-defaults.result }}",
+                    "${{ needs.deterministic-integration.result }}",
+                )
             },
         },
         check=False,
@@ -231,6 +244,9 @@ def test_required_check_rejects_partial_matrix_rerun(completion: str) -> None:
     context = {
         "${{ needs.unit.result }}": "success",
         "${{ needs.unit-complete.result }}": completion,
+        "${{ needs.grading-matrix.result }}": "success",
+        "${{ needs.grading-matrix-run-defaults.result }}": "success",
+        "${{ needs.deterministic-integration.result }}": "success",
     }
     env = {key: context[value] for key, value in step["env"].items()}
     done = subprocess.run(

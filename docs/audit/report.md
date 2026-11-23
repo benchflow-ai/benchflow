@@ -64,7 +64,7 @@ It also asks for your GitHub username and email (`--github-id`, `--email`), whic
 
 ## The report file (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 0.10 writes `report.md` into every job, next to `run-card.json`. One from an OpenCode trial on the repair-café task, written by 0.10.0rc1:
 

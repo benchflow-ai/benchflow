@@ -33,8 +33,22 @@ def install_identity(agent: str, harness: str = "acp") -> dict[str, str]:
     }
 
 
+def _agy_probe() -> str:
+    """agy is a pinned native binary, not an npm package: ask it, and hash it."""
+    from benchflow.agents.antigravity_config import AGY_BIN
+
+    b = shlex.quote(AGY_BIN)
+    return (
+        f"v=$({b} --version 2>/dev/null | head -n1 | tr -d '[:space:]'); "
+        f"s=$( (sha512sum {b} 2>/dev/null || shasum -a 512 {b} 2>/dev/null) | cut -d' ' -f1); "
+        'printf \'{"version": "%s", "sha512": "%s"}\\n\' "$v" "$s"'
+    )
+
+
 def probe_command(agent: str, harness: str = "acp") -> str | None:
     """Read installed metadata with the managed Node, never the task's Node."""
+    if agent.split()[0] == "antigravity":
+        return _agy_probe()
     packages = {
         "claude-agent-acp": [
             "@agentclientprotocol/claude-agent-acp",
@@ -115,10 +129,14 @@ async def probe_receipt(env: Any, agent: str, harness: str) -> dict[str, Any]:
         try:
             result = await exec_raw(env.exec, command, timeout_sec=30)
             observed = json.loads(result.stdout) if result.return_code == 0 else {}
+            if agent.split()[0] == "antigravity":
+                observed = _agy_roles(observed)
             for role in ROLES:
                 value = observed.get(role)
                 if isinstance(value, dict) and value.get("source") in (
                     "installed-package",
+                    "installed-binary",
+                    "bundled",
                     "unavailable",
                 ):
                     receipt[role] = value
@@ -127,6 +145,29 @@ async def probe_receipt(env: Any, agent: str, harness: str) -> dict[str, Any]:
     if harness == "native":
         receipt["adapter"] = {"version": None, "source": "not-applicable"}
     return receipt
+
+
+def _agy_roles(observed: Any) -> dict[str, Any]:
+    """The receipt's roles from agy's probe: the binary is the cli and the engine; the adapter is BenchFlow's own
+    ACP shim, so its version is BenchFlow's."""
+    from benchflow import __version__
+
+    version = observed.get("version") if isinstance(observed, dict) else None
+    if not isinstance(version, str) or not version:
+        return {}
+    binary = {"package": "agy", "version": version, "source": "installed-binary"}
+    sha = observed.get("sha512")
+    if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{128}", sha):
+        binary["sha512"] = sha
+    return {
+        "adapter": {
+            "package": "benchflow antigravity-acp-shim",
+            "version": __version__,
+            "source": "bundled",
+        },
+        "cli": binary,
+        "engine": dict(binary),
+    }
 
 
 def _pinned(package: str, recipe: str) -> list[str]:

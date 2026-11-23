@@ -1,6 +1,7 @@
 """Guards the Docker client lifetime at 363d815b."""
 
 import asyncio
+import contextlib
 import os
 import signal
 import sys
@@ -43,9 +44,10 @@ async def test_client_children_are_reaped_before_timeout_or_cancel_returns(
     owned = []
 
     def running(pid):
+        # A process can go between the open and the read of its stat file:
+        # the read then fails with ESRCH (ProcessLookupError). Gone either way.
         try:
             return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
-        # A process reaped between open() and read() fails the read with ESRCH.
         except (FileNotFoundError, ProcessLookupError):
             return False
 
@@ -69,7 +71,8 @@ async def test_client_children_are_reaped_before_timeout_or_cancel_returns(
         # Only dummy PIDs created by this test, in the throwaway container.
         for pid in owned:
             if running(pid):
-                os.kill(pid, signal.SIGKILL)
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)

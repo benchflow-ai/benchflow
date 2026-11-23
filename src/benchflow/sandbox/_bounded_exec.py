@@ -170,8 +170,14 @@ def shell_launch(shell: str, command: str, *, kit: bool = False) -> str:
 
 
 def bfx_delivered(env: Any) -> bool:
-    """Whether BenchFlow's pinned bfx is at ``/.bfx/bfx`` in *env*'s main."""
-    return getattr(env, "bfx_delivery", None) in ("bind", "volume", "upload")
+    """Whether BenchFlow's pinned bfx is at ``/.bfx/bfx`` in *env*'s main
+    for root's own scripts: delivered there, on a backend whose route is in
+    its scripts (``bfx_in_scripts``; a route that serves the walker alone is
+    not)."""
+    return (
+        getattr(env, "bfx_delivery", None) in ("bind", "volume", "upload")
+        and getattr(env, "bfx_in_scripts", True) is not False
+    )
 
 
 def bfx_sh(cmd: str, path: str, **args: Any) -> str:

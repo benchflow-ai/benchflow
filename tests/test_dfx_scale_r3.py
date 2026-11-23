@@ -323,7 +323,9 @@ async def test_rollout_wires_the_proxy_activity_into_the_session(tmp_path):
     rollout._resolved_prompts = ["hello"]
     seen = []
 
-    async def execute_prompts(client, session, prompts, timeout, *, idle_timeout):
+    async def execute_prompts(
+        client, session, prompts, timeout, *, idle_timeout, on_deadline=None
+    ):
         seen.append(session.model_request_activity())
         raise RuntimeError("stop after the wiring")
 

@@ -1,6 +1,6 @@
 # CLI and Python
 
-Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench eval compare`, `bench eval regrade`, `bench train convert`, `bench train stream`, and the Python that does the same. `sdk` is a name in the public `benchflow` package, `module` a function or field in one of its modules, and `cli` a flag with no Python equivalent, for the reason given. `bench run` takes the flags of `bench eval run`, some under shorter names: [Commands](./commands.md) has both, and [Python API](./python.md) every public name. A command or flag new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
+Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench eval compare`, `bench eval regrade`, `bench train convert`, `bench train stream`, and the Python that does the same. `sdk` is a name in the public `benchflow` package, `module` a function or field in one of its modules, and `cli` a flag with no Python equivalent, for the reason given. `bench run` takes the flags of `bench eval run`, some under shorter names: [Commands](./commands.md) has both, and [Python API](./python.md) every public name. A command or flag new since 0.9.3 has `(0.10)` after it.
 
 <!-- This page is generated from src/benchflow/cli_parity.py by tools/docs_reference.py; tests/test_cli_python_parity.py fails when a flag has no row or a Python target stops existing. To change it, change the table there, then run `uv run python tools/docs_reference.py --write`. -->
 
@@ -48,6 +48,9 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--accept-deviations` (0.10) | sdk | `benchflow.EvaluationConfig.accept_deviations` |  |
 | `--fresh-install` | sdk | `benchflow.EvaluationConfig.fresh_install` |  |
 | `--allow-cloud-metadata` | sdk | `benchflow.EvaluationConfig.allow_cloud_metadata` |  |
+| `--allow-cloud-credential-file` (0.10) | sdk | `benchflow.EvaluationConfig.allow_cloud_credential_file` |  |
+| `--scoped-credential` (0.10) | sdk | `benchflow.EvaluationConfig.scoped_credentials` | a list of names |
+| `--allow-task-processes-with-credentials` (0.10) | sdk | `benchflow.EvaluationConfig.allow_task_processes_with_credentials` |  |
 | `--integrity` | sdk | `benchflow.EvaluationConfig.integrity` |  |
 | `--verifier-sandbox` | sdk | `benchflow.EvaluationConfig.verifier_sandbox` |  |
 | `--quiet` | cli |  | console output only; Python reports through the logging module |
@@ -61,7 +64,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--codex-apps-policy` | sdk | `benchflow.EvaluationConfig.codex_apps_policy` |  |
 | `--sandbox-user` | sdk | `benchflow.EvaluationConfig.sandbox_user` |  |
 | `--sandbox-setup-timeout` | sdk | `benchflow.EvaluationConfig.sandbox_setup_timeout` |  |
-| `--verifier-setup-timeout` (unreleased) | sdk | `benchflow.EvaluationConfig.verifier_setup_timeout` |  |
+| `--verifier-setup-timeout` (0.10) | sdk | `benchflow.EvaluationConfig.verifier_setup_timeout` |  |
 | `--context-root` | sdk | `benchflow.EvaluationConfig.context_root` |  |
 | `--base-image-override` | sdk | `benchflow.EvaluationConfig.base_image_override` |  |
 | `--separate-verifier` | sdk | `benchflow.EvaluationConfig.separate_verifier` |  |
@@ -85,9 +88,9 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--reviewer-image` | sdk | `benchflow.ReviewerConfig.image` |  |
 | `--reviewer-agent-env` | sdk | `benchflow.ReviewerConfig.agent_env` |  |
 | `--reviewer-open-network` | sdk | `benchflow.ReviewerConfig.open_network` |  |
-| `--reviewer-pdf-tools` (unreleased) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
-| `--reviewer-submitted-file-rule` (unreleased) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
-| `--reviewer-criterion-evidence` (unreleased) | sdk | `benchflow.ReviewerConfig.criterion_evidence` |  |
+| `--reviewer-pdf-tools` (0.10) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
+| `--reviewer-submitted-file-rule` (0.10) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
+| `--reviewer-criterion-evidence` (0.10) | sdk | `benchflow.ReviewerConfig.criterion_evidence` |  |
 | `--agent-env` | sdk | `benchflow.EvaluationConfig.agent_env` |  |
 | `--allow-task-env` | module | `benchflow.task.env.allow_task_env(names)` | or BENCHFLOW_ALLOW_TASK_ENV=NAME,NAME in the environment |
 | `--include` | sdk | `benchflow.EvaluationConfig.include_tasks` |  |
@@ -118,7 +121,7 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--hf-prefix` | module | `benchflow.publish.huggingface.publish_folder_to_hf(path_in_repo)` |  |
 | `--hf-public-read-check` | module | `benchflow.publish.huggingface.publish_folder_to_hf(public_read_check)` |  |
 | `--publish-bucket` | module | `benchflow.publish.huggingface.publish_folder_to_bucket(bucket_id)` |  |
-| `--public` (unreleased) | module | `benchflow.publish.huggingface.publish_folder_to_hf(private)` | private=False; the same argument on publish_folder_to_bucket |
+| `--public` (0.10) | module | `benchflow.publish.huggingface.publish_folder_to_hf(private)` | private=False; the same argument on publish_folder_to_bucket |
 | `--eval-results-model` | module | `benchflow.publish.huggingface.open_eval_results_pr(model_repo)` |  |
 | `--eval-results-dataset` | module | `benchflow.publish.huggingface.open_eval_results_pr(dataset_id)` |  |
 | `--eval-results-task` | module | `benchflow.publish.huggingface.open_eval_results_pr(task_id)` |  |
@@ -160,6 +163,9 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--include` | sdk | `benchflow.branch(task_path)` | call bf.branch once per selected task |
 | `--jobs-dir` | sdk | `benchflow.branch(jobs_dir)` |  |
 | `--job-name` | sdk | `benchflow.branch(job_name)` |  |
+| `--allow-cloud-credential-file` (0.10) | sdk | `benchflow.branch(allow_cloud_credential_file)` |  |
+| `--allow-task-processes-with-credentials` (0.10) | sdk | `benchflow.branch(allow_task_processes_with_credentials)` |  |
+| `--scoped-credential` (0.10) | sdk | `benchflow.branch(scoped_credentials)` | a list of names |
 
 ## `bench eval metrics`
 
@@ -212,9 +218,9 @@ Each flag of `bench eval run`, `bench eval branch`, `bench eval metrics`, `bench
 | `--reviewer-image` (0.10) | sdk | `benchflow.ReviewerConfig.image` |  |
 | `--reviewer-agent-env` (0.10) | sdk | `benchflow.ReviewerConfig.agent_env` |  |
 | `--reviewer-open-network` (0.10) | sdk | `benchflow.ReviewerConfig.open_network` |  |
-| `--reviewer-pdf-tools` (unreleased) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
-| `--reviewer-submitted-file-rule` (unreleased) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
-| `--reviewer-criterion-evidence` (unreleased) | sdk | `benchflow.ReviewerConfig.criterion_evidence` |  |
+| `--reviewer-pdf-tools` (0.10) | sdk | `benchflow.ReviewerConfig.pdf_tools` |  |
+| `--reviewer-submitted-file-rule` (0.10) | sdk | `benchflow.ReviewerConfig.submitted_file_rule` |  |
+| `--reviewer-criterion-evidence` (0.10) | sdk | `benchflow.ReviewerConfig.criterion_evidence` |  |
 
 ## `bench train convert`
 

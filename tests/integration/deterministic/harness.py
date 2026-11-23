@@ -21,10 +21,9 @@ routes reach it:
   completions with token ids and logprobs shaped like vLLM or SGLang, and
   token capture is on, so ``llm_trajectory.jsonl`` carries per-call ids.
 - ``native`` (subscription route, ``ANTHROPIC_AUTH_TOKEN``): no proxy; Claude
-  Code calls ``ANTHROPIC_BASE_URL`` itself, the in-sandbox fake. Branching is
-  only allowed without a provider runtime (``rollout_branch``: "Branching an
-  active provider runtime needs a runtime fork contract"), so the branch
-  scenarios take this route.
+  Code calls ``ANTHROPIC_BASE_URL`` itself, the in-sandbox fake. Branch
+  scenarios run on this route and on ``proxy``: a fork hands the parent's
+  proxy off (``rollout_branch._hand_off_provider_runtime``).
 """
 
 from __future__ import annotations
@@ -665,6 +664,14 @@ def bench_command(
     ``model`` the route's model.
     """
     agent_env = route_env(route, sandbox, host_fake_url)
+    # The native route's fake is the task's environment-plane service in
+    # main: task code beside the agent's (dummy) token, which a run accepts
+    # with this flag (BenchFlow refuses it otherwise, where it can list main).
+    accept = (
+        ["--allow-task-processes-with-credentials"]
+        if route == "native" and sandbox == "docker"
+        else []
+    )
     args = [
         bench_executable(),
         *subcommand,
@@ -679,6 +686,7 @@ def bench_command(
         "--jobs-dir",
         str(jobs_dir),
         *agent_env_args(agent_env),
+        *accept,
         *extra,
     ]
     env = dict(os.environ)

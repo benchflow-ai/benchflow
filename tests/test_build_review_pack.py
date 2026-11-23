@@ -623,35 +623,139 @@ def test_cli_fails_closed_on_unreadable_matrix() -> None:
 
 
 # ------------------------------------------------------------------
-# Hardening summary surfaces the network policy (public-mode blocker).
+# V-NETWORK grades the policy each cell's trial ran under, from its records
+# (shapes as BenchFlow writes them), never the planner's label.
 # ------------------------------------------------------------------
 
+_ALLOWED = [
+    "eutils.ncbi.nlm.nih.gov",
+    "scholar.google.com",
+    "doi.org",
+    "api.crossref.org",
+]
 
-def test_hardening_summary_flags_public_network_on_sandbox_pr() -> None:
-    matrix = [
-        _cell(
-            "jax-computing-basics",
-            "openhands",
-            network_mode="public",
-            id="jax-public",
+
+def _network_trial(
+    root: Path,
+    cell_id: str,
+    *,
+    manifest: dict | None = None,
+    card: dict | None = None,
+    verifier: dict | None = None,
+) -> Path:
+    """A trial folder under ``<cell_id>/<job>/`` with the given network records."""
+    job = root / cell_id / "2026-11-21__12-00-00"
+    trial = job / "citation-check__0d83aff7"
+    (trial / "integrity").mkdir(parents=True)
+    (trial / "verifier").mkdir()
+    (trial / "result.json").write_text(json.dumps({"rewards": {"reward": 1.0}}))
+    if manifest is not None:
+        (trial / "integrity" / "manifest.json").write_text(json.dumps(manifest))
+    if card is not None:
+        (job / "run-card.json").write_text(json.dumps(card))
+    if verifier is not None:
+        (trial / "verifier" / "verifier-network.json").write_text(json.dumps(verifier))
+    return trial
+
+
+def _manifest(mode: str, hosts: list[str] | None = None) -> dict:
+    return {
+        "network": {
+            "agent_network_mode": mode,
+            "allowlist": hosts or [],
+            "provider_egress": "ProviderEgress",
+            "task_egress": "Allowlist" if mode == "allowlist" else "Full",
+        }
+    }
+
+
+def _network_line(cell: dict, verifier_or_sandbox_pr: bool = False, **records) -> str:
+    """The cell's V-NETWORK line in hardening_summary.md, over one trial."""
+    normalized = pack_mod.normalize_cell(cell)
+    with tempfile.TemporaryDirectory() as tmp:
+        trial = _network_trial(Path(tmp), normalized.id, **records)
+        slot = pack_mod.Slot(cell=normalized, rollouts=[trial])
+        md = pack_mod.hardening_summary_md(
+            [slot], [normalized], verifier_or_sandbox_pr=verifier_or_sandbox_pr
         )
-    ]
-    cells = [pack_mod.normalize_cell(c) for c in matrix]
-    md = pack_mod.hardening_summary_md(
-        slots=[], cells=cells, verifier_or_sandbox_pr=True
-    )
-    assert "V-NETWORK=fail" in md
-    assert "jax-public" in md
+    (line,) = [ln for ln in md.splitlines() if ln.startswith(f"- {normalized.id}: ")]
+    return line
 
 
-def test_hardening_summary_allowlist_variant_is_hardened() -> None:
-    raw = _cell("citation-check", "openhands", network_mode="allowlist", id="cit-allow")
-    raw["allowed_hosts"] = ["pubmed.ncbi.nlm.nih.gov", "scholar.google.com"]
-    cells = [pack_mod.normalize_cell(raw)]
-    md = pack_mod.hardening_summary_md(
-        slots=[], cells=cells, verifier_or_sandbox_pr=False
+def test_v_network_public_cell_is_not_graded_on_its_default_off_label() -> None:
+    # The lane's cells carry default-off, but each ran its task's public policy.
+    cell = _cell("jax-computing-basics", "openhands", id="jax-off")
+    records = {"manifest": _manifest("public"), "card": {"network": {"public": 1}}}
+    line = _network_line(cell, **records)
+    assert "V-NETWORK=quarantine" in line, line
+    assert "ran public, from integrity/manifest.json" in line, line
+    assert "lane runs no cell under a restricted network yet" in line, line
+    assert line.endswith("planned label default-off"), line
+    on_sandbox_pr = _network_line(cell, verifier_or_sandbox_pr=True, **records)
+    assert "V-NETWORK=fail" in on_sandbox_pr, on_sandbox_pr
+    assert "lane runs no cell under a restricted network yet" in on_sandbox_pr
+
+
+def test_v_network_no_network_cell_passes_from_each_record() -> None:
+    cell = _cell("jax-computing-basics", "openhands", id="jax-off")
+    by_manifest = _network_line(cell, manifest=_manifest("no-network"))
+    assert "V-NETWORK=pass" in by_manifest, by_manifest
+    assert "from integrity/manifest.json" in by_manifest, by_manifest
+    by_card = _network_line(cell, card={"network": {"no-network": 1}})
+    assert "V-NETWORK=pass" in by_card, by_card
+    assert "from the job's run-card.json" in by_card, by_card
+    by_verifier = _network_line(
+        cell, verifier={"mode": "no-network", "state": "held", "refused_packets": 0}
     )
-    assert "V-NETWORK=pass" in md
+    assert "V-NETWORK=pass" in by_verifier, by_verifier
+    assert "the verifier's network" in by_verifier, by_verifier
+
+
+def test_v_network_allowlist_cell_is_graded_on_its_recorded_hosts() -> None:
+    cell = _cell(
+        "citation-check", "openhands", network_mode="allowlist", id="cit-allow"
+    )
+    hosts = _network_line(
+        cell,
+        manifest=_manifest("allowlist", _ALLOWED),
+        card={"network": {"allowlist": 1}},
+    )
+    assert "V-NETWORK=pass" in hosts, hosts
+    assert "api.crossref.org" in hosts, hosts
+    # The run card records the mode alone: no hosts, so neither pass nor fail.
+    no_hosts = _network_line(cell, card={"network": {"allowlist": 1}})
+    assert "V-NETWORK=na" in no_hosts, no_hosts
+    assert "allowlist ran, hosts not recorded" in no_hosts, no_hosts
+    # The allowlist label on a cell that ran public is not a pass.
+    ran_public = _network_line(cell, manifest=_manifest("public"))
+    assert "V-NETWORK=quarantine" in ran_public, ran_public
+
+
+def test_v_network_without_a_record_is_na() -> None:
+    cell = _cell("jax-computing-basics", "openhands", id="jax-off")
+    assert "V-NETWORK=na — no record" in _network_line(cell)
+    # A job of several tasks names several modes: the card can't say which ran.
+    mixed = _network_line(cell, card={"network": {"no-network": 1, "public": 2}})
+    assert "V-NETWORK=na — no record" in mixed, mixed
+    normalized = pack_mod.normalize_cell(cell)
+    md = pack_mod.hardening_summary_md([], [normalized], verifier_or_sandbox_pr=True)
+    assert "jax-off: V-NETWORK=na — no rollout" in md, md
+
+
+def test_v_network_rollouts_that_disagree_are_na() -> None:
+    normalized = pack_mod.normalize_cell(
+        _cell("jax-computing-basics", "openhands", id="jax-off")
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        one = _network_trial(
+            Path(tmp) / "a", normalized.id, manifest=_manifest("no-network")
+        )
+        two = _network_trial(
+            Path(tmp) / "b", normalized.id, manifest=_manifest("public")
+        )
+        slot = pack_mod.Slot(cell=normalized, rollouts=[one, two])
+        md = pack_mod.hardening_summary_md([slot], [normalized], False)
+    assert "jax-off: V-NETWORK=na — its 2 rollouts ran under different networks" in md
 
 
 # ------------------------------------------------------------------

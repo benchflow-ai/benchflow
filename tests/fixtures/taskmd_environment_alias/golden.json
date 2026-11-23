@@ -1,0 +1,402 @@
+{
+ "multi-scene.md": {
+  "config": {
+   "agent": {
+    "allowed_hosts": null,
+    "network_mode": null,
+    "prompt_prefix": null,
+    "timeout_sec": 900.0,
+    "token_budget": null,
+    "turn_budget": null,
+    "user": null
+   },
+   "artifacts": [],
+   "metadata": {
+    "author_name": "benchflow",
+    "category": "multi-scene",
+    "difficulty": "medium",
+    "tags": [
+     "task-md",
+     "scenes"
+    ]
+   },
+   "multi_step_reward_strategy": null,
+   "preference": {},
+   "reward": {},
+   "sandbox": {
+    "allow_cloud_metadata": false,
+    "allow_internet": true,
+    "allowed_hosts": null,
+    "blocked_hosts": null,
+    "blocked_urls": null,
+    "bugswarm_image_tag": null,
+    "build_timeout_sec": 600.0,
+    "cpus": 2,
+    "docker_image": null,
+    "env": {},
+    "gpu_types": null,
+    "gpus": 0,
+    "healthcheck": null,
+    "mcp_servers": [],
+    "memory_mb": 4096,
+    "network_mode": "public",
+    "os": "linux",
+    "require_cloud_metadata_block": false,
+    "setup_commands": [],
+    "setup_timeout_sec": null,
+    "skills_dir": null,
+    "storage_mb": 10240,
+    "tpu": null,
+    "workdir": null
+   },
+   "schema_version": "1.3",
+   "solution": {
+    "env": {},
+    "timeout_sec": null
+   },
+   "source": null,
+   "steps": null,
+   "task": null,
+   "verifier": {
+    "allowed_hosts": null,
+    "collect": [],
+    "env": {},
+    "hardening": {
+     "cleanup_conftests": true,
+     "cleanup_git": true
+    },
+    "judge": {
+     "context": "",
+     "input_dir": "/app",
+     "input_type": "deliverables",
+     "model": "claude-sonnet-5-5",
+     "rubric_path": "tests/rubric.toml"
+    },
+    "memory": {
+     "expected_skills": null
+    },
+    "network_mode": null,
+    "optional_tools": [],
+    "pytest_plugin_releases": [],
+    "pytest_plugins": [],
+    "required_tools": null,
+    "reward_range": null,
+    "sandbox": null,
+    "sandbox_mode": null,
+    "service": "main",
+    "setup_timeout_sec": null,
+    "submission_files": [],
+    "timeout_sec": 180.0,
+    "type": "test-script",
+    "user": null,
+    "workspace_recovery": false
+   }
+  },
+  "frontmatter": {
+   "agent": {
+    "timeout_sec": 900
+   },
+   "agents": {
+    "roles": {
+     "executor": {
+      "agent": "claude-agent-acp",
+      "capabilities": [
+       "tool-use",
+       "code-edit"
+      ]
+     },
+     "planner": {
+      "agent": "claude-agent-acp",
+      "capabilities": [
+       "tool-use"
+      ]
+     },
+     "reviewer": {
+      "agent": "claude-agent-acp",
+      "capabilities": [
+       "tool-use",
+       "review"
+      ]
+     }
+    }
+   },
+   "metadata": {
+    "author_name": "benchflow",
+    "category": "multi-scene",
+    "difficulty": "medium",
+    "tags": [
+     "task-md",
+     "scenes"
+    ]
+   },
+   "sandbox": {
+    "cpus": 2,
+    "memory_mb": 4096
+   },
+   "scenes": [
+    {
+     "name": "plan",
+     "turns": [
+      {
+       "role": "planner"
+      }
+     ]
+    },
+    {
+     "name": "implement",
+     "turns": [
+      {
+       "role": "executor"
+      }
+     ]
+    },
+    {
+     "name": "review",
+     "turns": [
+      {
+       "role": "reviewer"
+      }
+     ]
+    }
+   ],
+   "schema_version": "1.3",
+   "verifier": {
+    "timeout_sec": 180
+   }
+  },
+  "instruction": "Refactor the tiny service so it keeps the same public behavior while splitting\nrequest parsing, business logic, and output formatting into separate modules."
+ },
+ "nested-environment-names.md": {
+  "config": {
+   "agent": {
+    "allowed_hosts": null,
+    "network_mode": null,
+    "prompt_prefix": null,
+    "timeout_sec": 300.0,
+    "token_budget": null,
+    "turn_budget": null,
+    "user": null
+   },
+   "artifacts": [],
+   "metadata": {
+    "author_name": "benchflow tests",
+    "environment": "lab",
+    "notes": {
+     "environment": "kept where it is"
+    }
+   },
+   "multi_step_reward_strategy": null,
+   "preference": {},
+   "reward": {},
+   "sandbox": {
+    "allow_cloud_metadata": false,
+    "allow_internet": false,
+    "allowed_hosts": null,
+    "blocked_hosts": null,
+    "blocked_urls": null,
+    "bugswarm_image_tag": null,
+    "build_timeout_sec": 600.0,
+    "cpus": 2,
+    "docker_image": null,
+    "env": {},
+    "gpu_types": null,
+    "gpus": 0,
+    "healthcheck": null,
+    "mcp_servers": [],
+    "memory_mb": 4096,
+    "network_mode": "no-network",
+    "os": "linux",
+    "require_cloud_metadata_block": false,
+    "setup_commands": [],
+    "setup_timeout_sec": null,
+    "skills_dir": null,
+    "storage_mb": 10240,
+    "tpu": null,
+    "workdir": null
+   },
+   "schema_version": "1.3",
+   "solution": {
+    "env": {},
+    "timeout_sec": null
+   },
+   "source": null,
+   "steps": null,
+   "task": null,
+   "verifier": {
+    "allowed_hosts": null,
+    "collect": [],
+    "env": {},
+    "hardening": {
+     "cleanup_conftests": true,
+     "cleanup_git": true
+    },
+    "judge": {
+     "context": "",
+     "input_dir": "/app",
+     "input_type": "deliverables",
+     "model": "claude-sonnet-5-5",
+     "rubric_path": "tests/rubric.toml"
+    },
+    "memory": {
+     "expected_skills": null
+    },
+    "network_mode": null,
+    "optional_tools": [],
+    "pytest_plugin_releases": [],
+    "pytest_plugins": [],
+    "required_tools": null,
+    "reward_range": null,
+    "sandbox": null,
+    "sandbox_mode": null,
+    "service": "main",
+    "setup_timeout_sec": null,
+    "submission_files": [],
+    "timeout_sec": 120.0,
+    "type": "test-script",
+    "user": null,
+    "workspace_recovery": false
+   }
+  },
+  "frontmatter": {
+   "agent": {
+    "timeout_sec": 300
+   },
+   "metadata": {
+    "author_name": "benchflow tests",
+    "environment": "lab",
+    "notes": {
+     "environment": "kept where it is"
+    }
+   },
+   "sandbox": {
+    "cpus": 2,
+    "memory_mb": 4096,
+    "network_mode": "no-network"
+   },
+   "schema_version": "1.3",
+   "verifier": {
+    "timeout_sec": 120
+   }
+  },
+  "instruction": "A nested `environment` key under another mapping is not the old top-level key."
+ },
+ "v11-shape.md": {
+  "config": {
+   "agent": {
+    "allowed_hosts": null,
+    "network_mode": null,
+    "prompt_prefix": null,
+    "timeout_sec": 1800.0,
+    "token_budget": null,
+    "turn_budget": null,
+    "user": null
+   },
+   "artifacts": [],
+   "metadata": {
+    "author_name": "Jiachen Li",
+    "category": "industrial-physical-systems",
+    "difficulty": "medium"
+   },
+   "multi_step_reward_strategy": null,
+   "preference": {},
+   "reward": {},
+   "sandbox": {
+    "allow_cloud_metadata": false,
+    "allow_internet": true,
+    "allowed_hosts": null,
+    "blocked_hosts": null,
+    "blocked_urls": null,
+    "bugswarm_image_tag": null,
+    "build_timeout_sec": 600.0,
+    "cpus": 1,
+    "docker_image": null,
+    "env": {},
+    "gpu_types": null,
+    "gpus": 0,
+    "healthcheck": null,
+    "mcp_servers": [],
+    "memory_mb": 2048,
+    "network_mode": "public",
+    "os": "linux",
+    "require_cloud_metadata_block": false,
+    "setup_commands": [],
+    "setup_timeout_sec": null,
+    "skills_dir": null,
+    "storage_mb": 5120,
+    "tpu": null,
+    "workdir": null
+   },
+   "schema_version": "1.3",
+   "solution": {
+    "env": {},
+    "timeout_sec": null
+   },
+   "source": null,
+   "steps": null,
+   "task": null,
+   "verifier": {
+    "allowed_hosts": null,
+    "collect": [],
+    "env": {},
+    "hardening": {
+     "cleanup_conftests": true,
+     "cleanup_git": true
+    },
+    "judge": {
+     "context": "",
+     "input_dir": "/app",
+     "input_type": "deliverables",
+     "model": "claude-sonnet-5-5",
+     "rubric_path": "tests/rubric.toml"
+    },
+    "memory": {
+     "expected_skills": null
+    },
+    "network_mode": null,
+    "optional_tools": [],
+    "pytest_plugin_releases": [],
+    "pytest_plugins": [],
+    "required_tools": null,
+    "reward_range": null,
+    "sandbox": null,
+    "sandbox_mode": null,
+    "service": "main",
+    "setup_timeout_sec": null,
+    "submission_files": [],
+    "timeout_sec": 1800.0,
+    "type": "test-script",
+    "user": null,
+    "workspace_recovery": false
+   }
+  },
+  "frontmatter": {
+   "agent": {
+    "timeout_sec": 1800.0
+   },
+   "metadata": {
+    "author_name": "Jiachen Li",
+    "category": "industrial-physical-systems",
+    "difficulty": "medium"
+   },
+   "sandbox": {
+    "build_timeout_sec": 600.0,
+    "cpus": 1,
+    "gpus": 0,
+    "memory_mb": 2048,
+    "network_mode": "public",
+    "os": "linux",
+    "storage_mb": 5120
+   },
+   "schema_version": "1.3",
+   "verifier": {
+    "hardening": {
+     "cleanup_conftests": true
+    },
+    "service": "main",
+    "timeout_sec": 1800.0,
+    "type": "test-script"
+   }
+  },
+  "instruction": "Do it."
+ }
+}

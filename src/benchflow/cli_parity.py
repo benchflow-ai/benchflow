@@ -105,6 +105,11 @@ EVAL_RUN: dict[str, Equivalent] = {
     "--accept-deviations": _sdk(f"{_EC}.accept_deviations"),
     "--fresh-install": _sdk(f"{_EC}.fresh_install"),
     "--allow-cloud-metadata": _sdk(f"{_EC}.allow_cloud_metadata"),
+    "--allow-cloud-credential-file": _sdk(f"{_EC}.allow_cloud_credential_file"),
+    "--scoped-credential": _sdk(f"{_EC}.scoped_credentials", "a list of names"),
+    "--allow-task-processes-with-credentials": _sdk(
+        f"{_EC}.allow_task_processes_with_credentials"
+    ),
     "--integrity": _sdk(f"{_EC}.integrity"),
     "--verifier-sandbox": _sdk(f"{_EC}.verifier_sandbox"),
     "--quiet": _cli("console output only; Python reports through the logging module"),
@@ -261,6 +266,11 @@ EVAL_BRANCH: dict[str, Equivalent] = {
     "--include": _sdk(f"{_BR}(task_path)", "call bf.branch once per selected task"),
     "--jobs-dir": _sdk(f"{_BR}(jobs_dir)"),
     "--job-name": _sdk(f"{_BR}(job_name)"),
+    "--allow-cloud-credential-file": _sdk(f"{_BR}(allow_cloud_credential_file)"),
+    "--allow-task-processes-with-credentials": _sdk(
+        f"{_BR}(allow_task_processes_with_credentials)"
+    ),
+    "--scoped-credential": _sdk(f"{_BR}(scoped_credentials)", "a list of names"),
 }
 
 _JOB = "benchflow.Job"

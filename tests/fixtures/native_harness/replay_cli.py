@@ -3,8 +3,10 @@
 
 Reads the prompt from stdin like the real CLIs and writes it to
 ``REPLAY_PROMPT_OUT`` and its arguments to ``REPLAY_ARGV_OUT`` (when set),
-prints ``REPLAY_SAMPLE`` without its last ``REPLAY_CUT`` lines (default 0),
-then either sleeps (``REPLAY_HANG=1``; with ``REPLAY_CHILD=1`` it first
+prints ``REPLAY_SAMPLE`` without its last ``REPLAY_CUT`` lines (default 0)
+(with ``REPLAY_REST_WHEN`` set, it prints those lines too once that file
+exists, as a CLI does when its held model call is finally answered), then
+either sleeps (``REPLAY_HANG=1``; with ``REPLAY_CHILD=1`` it first
 starts a ``sleep`` in its own session, as a detached tool process would be;
 with ``REPLAY_IGNORE_INT=1`` it ignores SIGINT, as a CLI stuck in a
 system call would), kills itself with signal ``REPLAY_SIGNAL``, or exits
@@ -37,6 +39,13 @@ def main() -> None:
     for line in lines[: len(lines) - cut]:
         sys.stdout.write(line)
         sys.stdout.flush()
+    rest_when = os.environ.get("REPLAY_REST_WHEN")
+    if rest_when and cut:
+        while not os.path.exists(rest_when):
+            time.sleep(0.05)
+        for line in lines[len(lines) - cut :]:
+            sys.stdout.write(line)
+            sys.stdout.flush()
     if os.environ.get("REPLAY_HANG") == "1":
         if os.environ.get("REPLAY_CHILD") == "1":
             subprocess.Popen(["sleep", "3600"], start_new_session=True)

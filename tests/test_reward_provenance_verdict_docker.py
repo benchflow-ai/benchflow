@@ -13,8 +13,9 @@ reward as written and its provenance ``unverifiable``.
 
 (c)1, a root agent's processes: a process a root agent left running can
 write the reward while test.sh runs; the reward stands, its provenance is
-``unverifiable`` with the processes listed. A root agent that leaves nothing,
-an agent user's run and the oracle's are ``verified``.
+``unverifiable`` with the processes listed, as is the oracle's (#1247). A
+root agent that leaves nothing, an agent user's run and an oracle that leaves
+nothing are ``verified``.
 """
 
 from __future__ import annotations
@@ -139,8 +140,17 @@ async def test_a_link_the_agent_made_into_the_reward_is_removed_and_flagged(
     assert all(f["after"]["removed"] is True for f in flags.values()), flags
     assert any("removed before test.sh" in w for w in warnings), warnings
     found = record["provenance"]
-    assert found["verdict"] == "verified", found
     assert found["links_checked"] is True, found
+    if image == "alpine":
+        # No Python in this image: the processes alive at grading are not
+        # listed, so the oracle's process check did not run, and only it
+        # (#1247: the oracle is checked as a root agent is).
+        assert found["verdict"] == "unverifiable", found
+        assert [
+            c["check"] for c in found["checks"] if not (c["ran"] and c["passed"])
+        ] == ["oracle-processes"], found
+        return
+    assert found["verdict"] == "verified", found
     assert all(c["ran"] and c["passed"] for c in found["checks"]), found
 
 
@@ -267,7 +277,27 @@ async def test_a_flood_of_names_does_not_hide_the_link(
     and the oracle's are scored and unverifiable."""
     from benchflow.sandbox import _verifier_links
 
-    monkeypatch.setattr(_verifier_links, "SCAN_MAX_ENTRIES", 5000)
+    # The cap applies to the walks after the record from before the turn: the
+    # image itself is over 5000 names, and a record that hits a cap is refused
+    # before the turn, which is not what this row tests.
+    real = _verifier_links._bfx_scan
+
+    async def capped(env, roots, timeout_sec):
+        if getattr(env, _verifier_links.INVENTORY, None) is None:
+            return await real(env, roots, timeout_sec)
+        return await env.bfx_call(
+            "scan",
+            {
+                "walks": [{"root": r, "depth": 4096} for r in roots],
+                "mounts": False,
+                "acl": False,
+                "max_bytes": 512 << 20,
+                "max_entries": 5000,
+            },
+            timeout_sec=timeout_sec,
+        )
+
+    monkeypatch.setattr(_verifier_links, "_bfx_scan", capped)
     test = (
         "#!/bin/sh\necho 0 > /logs/verifier/reward.txt\n"
         "echo 1 > /app/grade.log\nexit 0\n"
@@ -323,11 +353,11 @@ async def test_a_link_the_image_ships_is_left_alone(tmp_path, mode):
 async def test_a_link_re_made_during_grading_leaves_the_reward_unverifiable(
     tmp_path, mode
 ):
-    """The oracle's own processes are never marked: only the link is."""
+    """The link is marked, and the oracle's process that re-made it is listed (#1247)."""
     # ln without -f: it makes the link again only once it is gone. With -f,
     # GNU ln replaces a link that is there through a temporary link
     # (/app/CuXXXXXX) renamed over it, and the scan after grading found
-    # that one too (EN-925: ['/app/CuDodFlb', '/app/grade.log']).
+    # that one too (['/app/CuDodFlb', '/app/grade.log']).
     remake = (
         "setsid nohup bash -c 'while :; do ln -sn /logs/verifier/reward.txt "
         "/app/grade.log 2>/dev/null; sleep 0.05; done' </dev/null >/dev/null 2>&1 &\n"
@@ -341,7 +371,7 @@ async def test_a_link_re_made_during_grading_leaves_the_reward_unverifiable(
     assert found["verdict"] == "unverifiable", found
     assert [r["path"] for r in found["links_after_grading"]] == ["/app/grade.log"]
     assert any("was there after grading" in r for r in found["reasons"]), found
-    assert found["processes"] == [], found  # the oracle: never listed
+    assert any("ln -sn" in str(p["argv"] or "") for p in found["processes"]), found
     assert any("Reward provenance unverifiable" in w for w in warnings), warnings
 
 
@@ -415,24 +445,63 @@ async def test_a_root_agent_that_leaves_nothing_is_verified(
 
 
 @pytest.mark.parametrize("mode", MODES)
-async def test_the_oracles_live_process_is_never_marked(tmp_path, mode):
+async def test_the_oracles_live_process_leaves_the_reward_unverifiable(tmp_path, mode):
+    """#1247: the oracle's solve.sh left a process; it is listed, the reward
+    is kept."""
     task = _task(
         tmp_path, f"oracle-loop-{mode}", dockerfile=BASE, solve=LOOP, test=PASS_SH
     )
     result, record, _ = await _run(task, "oracle", mode, None)
     assert result.rewards == {"reward": 1.0}
     found = record["provenance"]
-    assert found["verdict"] == "verified" and found["processes"] == [], found
+    assert found["verdict"] == "unverifiable", found
+    assert any(
+        "while :; do sleep 0.2; done" in str(p["argv"] or "")
+        for p in found["processes"]
+    ), found
+    from benchflow.rollout._reward_provenance import ORACLE_PROCESSES
+
+    assert ORACLE_PROCESSES in found["reasons"], found
 
 
 @pytest.mark.parametrize("mode", MODES)
 async def test_an_agent_users_run_is_verified(tmp_path, mode):
+    """An agent that runs as its own user and leaves nothing running: `verified`,
+    rule S's answer in the record (none alive)."""
     task = _task(
-        tmp_path, f"user-loop-{mode}", dockerfile=BASE, solve="true\n", test=PASS_SH
+        tmp_path, f"user-clean-{mode}", dockerfile=BASE, solve="true\n", test=PASS_SH
     )
     result, record, _ = await _run(
-        task, _script(tmp_path, f"user-{mode}", LOOP), mode, "agent"
+        task,
+        _script(tmp_path, f"user-{mode}", "echo hi > /app/answer.txt\n"),
+        mode,
+        "agent",
     )
     assert result.rewards == {"reward": 1.0}
     found = record["provenance"]
     assert found["verdict"] == "verified" and found["root_agent"] is False, found
+    assert found["alive_at_test"]["alive"] is False, found
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_an_agent_users_live_process_keeps_the_reward_unverifiable(
+    tmp_path, mode
+):
+    """Rule S (C3): the agent user's process still alive when test.sh starts
+    could change what test.sh writes, so the reward test.sh wrote is kept and
+    reads `unverifiable` for that reason alone (it read `verified` before rule
+    S). `root-agent-processes` stays a root agent's check."""
+    from benchflow.sandbox import _agent_alive
+
+    task = _task(
+        tmp_path, f"user-loop-{mode}", dockerfile=BASE, solve="true\n", test=PASS_SH
+    )
+    result, record, _ = await _run(
+        task, _script(tmp_path, f"user-loop-{mode}", LOOP), mode, "agent"
+    )
+    assert result.rewards == {"reward": 1.0}
+    found = record["provenance"]
+    assert found["verdict"] == "unverifiable" and found["root_agent"] is False, found
+    assert found["reasons"] == [_agent_alive.ALIVE], found
+    assert found["alive_at_test"]["alive"] is True, found
+    assert "root-agent-processes" not in [c["check"] for c in found["checks"]], found

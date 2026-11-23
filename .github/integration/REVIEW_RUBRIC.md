@@ -151,20 +151,20 @@ The shared checkers (`agent_judge`, `check_results`, `scenarios`) read only the 
 
 ### Network
 
-Network has two checks. `V-NETWORK` checks what the task **declares**. `V-NETWORK-CONFORM` (planned) would check what the run **did**: that allowed hosts were reachable and others were blocked.
+Network has two checks. `V-NETWORK` checks the policy each trial **ran under**. `V-NETWORK-CONFORM` (planned) would check what the run **did**: that allowed hosts were reachable and others were blocked.
 
 #### `V-NETWORK`
 
-Deterministic, on the task config only. Reads the task's `network_mode`, `allowed_hosts`, `blocked_urls` and `blocked_hosts`.
+Deterministic, on each trial's records: its `integrity/manifest.json` (the agent's `network_mode` and allowed hosts), else its job's `run-card.json` (the mode), else `verifier/verifier-network.json` (the verifier's mode). Never on the planner's label, which `bench` does not get.
 
 | Result | When |
 |---|---|
 | pass | `no-network`; `allowlist` with hosts; `denylist` with URLs or hosts |
 | fail | `allowlist` with no hosts; `denylist` with nothing listed; `allowed_hosts` without `allowlist`; an unknown mode; `public` on a PR that touches the verifier or sandbox |
 | quarantine | `public` on any other PR (needs a person to sign off) |
-| na | no mode declared, so the runtime default `no-network` applies |
+| na | no rollout or no record; an `allowlist` or `denylist` run with no record of its lists; rollouts of one cell that ran under different networks |
 
-The builder takes each slot's expected mode from the matrix; there is no `bench run` flag for it. The example task is `docs/examples/task-md/real-skillsbench/citation-check-network/`.
+Each line in `hardening_summary.md` names the mode that ran, the record it came from and the planner's label. A `public` line also says that the cell ran its task's declared policy and that the lane runs no cell under a restricted network yet. Every lane task declares `public` today, so V-NETWORK reads `quarantine`, or `fail` on a verifier or sandbox PR, until a cell runs restricted. The allowlist example task is `docs/examples/task-md/real-skillsbench/citation-check-network/`.
 
 #### Planned: `V-NETWORK-CONFORM`
 

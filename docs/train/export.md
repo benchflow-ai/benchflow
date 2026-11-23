@@ -13,7 +13,7 @@ bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
 
 ## Export a job
 
-Convert the job folder your run printed on its `Artifacts:` line (ours was `jobs/opencode/2026-11-04__17-49-57`), then check the file:
+Convert the job folder your run printed on its `Results:` line (ours was `jobs/opencode/2026-11-04__17-49-57/`), then check the file:
 
 ```bash
 bench train convert jobs/opencode/2026-11-04__17-49-57 --out train/opencode.jsonl

@@ -1235,8 +1235,10 @@ async def test_kept_containers_are_stopped_not_deleted_before_the_transfer(
     await _trial(sc)
 
     composed = [e for e in sc.log if e.startswith("agent.compose")]
-    assert composed and all(" stop" in e for e in composed), composed
-    assert not any(" down" in e or " rm" in e or " kill" in e for e in composed)
+    # Killed first (a held service's stop signal could release it), then
+    # stopped; nothing is removed.
+    assert [e.split(" ", 2)[1] for e in composed] == ["kill", "stop"], composed
+    assert not any(" down" in e or " rm" in e for e in composed)
     assert sc.index(composed[0]) < _first_agent_bytes(sc), sc.log
     # The check after the stop asks only for running containers.
     assert listed and listed[0][:2] == ["ps", "-q"], listed

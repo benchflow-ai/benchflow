@@ -13,7 +13,10 @@ catalog document in ``vendor/x86_64-unknown-linux-musl/bin/codex`` (472,511
 bytes, sha256 719c75b77ed02c783263f8fe62532ecd0abc1d1ccf2c34b12e5d221d509995a1),
 with ``tools/codex_model_catalog.py``. A Codex pin bump must regenerate it:
 tests/test_effort_request.py fails while :data:`CODEX_CATALOG_VERSION`
-differs from the pin.
+differs from the pin. A model the bundled catalog lacks may be in a
+provider's published catalog that BenchFlow ships and hands Codex
+(``agents/codex_provider_catalogs``); :func:`codex_model_efforts` reads that
+one next.
 """
 
 from __future__ import annotations
@@ -44,12 +47,23 @@ CODEX_MODEL_EFFORTS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
-def codex_model_efforts(model: str | None) -> tuple[str, ...] | None:
+def codex_model_efforts(
+    model: str | None, *, provider_catalogs: bool = True
+) -> tuple[str, ...] | None:
     """The efforts the pinned Codex lists for *model* (a bare slug, or one
-    behind a provider prefix such as ``openai/``); None for a model its
-    catalog does not hold, whose efforts only the session can say."""
+    behind a provider prefix such as ``openai/``), else the efforts the
+    provider catalog BenchFlow ships for it lists
+    (``agents/codex_provider_catalogs``: ``deepseek/deepseek-flash`` takes
+    low, high and max), unless *provider_catalogs* is False; None for a model
+    neither holds, whose efforts only the session can say."""
     if not model:
         return None
     slug = model.rsplit("/", 1)[-1].split("[", 1)[0].strip().lower()
     entry = CODEX_MODEL_EFFORTS.get(slug)
-    return entry[1] if entry else None
+    if entry:
+        return entry[1]
+    if not provider_catalogs:
+        return None
+    from benchflow.agents.codex_provider_catalogs import catalog_efforts
+
+    return catalog_efforts(model)

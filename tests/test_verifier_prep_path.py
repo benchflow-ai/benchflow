@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -39,8 +40,12 @@ def backend(request, tmp_path, monkeypatch):
             if part == "-e":
                 key, value = parts[index + 1].split("=", 1)
                 extra[key] = value
-        # Docker's exec carries the env on stdin (main-sync b156).
-        return run(parts[-3:], extra, kwargs.get("stdin_data"))
+        # Docker's exec carries the env on stdin (main-sync b156); DinD's
+        # comes from its env file on the VM, which Compose passes on.
+        stdin = kwargs.get("stdin_data")
+        if kwargs.get("stdin_file"):
+            stdin = Path(kwargs["stdin_file"]).read_bytes()
+        return run(parts[-3:], extra, stdin)
 
     name = request.param
     if name in ("docker", "docker-compose", "remote-docker"):
@@ -54,7 +59,7 @@ def backend(request, tmp_path, monkeypatch):
         box._run_docker_compose_command = compose
     else:
         pytest.importorskip("daytona")
-        from benchflow.sandbox import _su
+        from benchflow.sandbox import _su, daytona_exec_env
         from benchflow.sandbox.daytona import (
             DaytonaSandbox,
             _DaytonaDinD,
@@ -64,6 +69,39 @@ def backend(request, tmp_path, monkeypatch):
 
         _load_daytona_sdk()
         box = DaytonaSandbox.__new__(DaytonaSandbox)
+        results = []
+
+        class Process:
+            async def create_session(self, session):
+                pass
+
+            async def execute_session_command(self, session, req, timeout=None):
+                results.append(run(["/bin/sh", "-c", req.command]))
+                return SimpleNamespace(cmd_id="dummy")
+
+        async def poll(*args, **kwargs):
+            return results.pop(0)
+
+        async def upload(data, path, timeout=None):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(data)
+
+        # An exec's env file, as the toolbox writes it, in a folder this
+        # user owns: nothing here can be root's, so its proof is a stub.
+        monkeypatch.setattr(daytona_exec_env, "STAGE_ROOT", str(tmp_path / "stage"))
+
+        async def unproven(route, files):
+            return "true"
+
+        async def env_folder(route, folder):
+            return None
+
+        box._sandbox = SimpleNamespace(
+            process=Process(), fs=SimpleNamespace(upload_file=upload)
+        )
+        box._poll_response = poll
+        box._exec_env_proof = unproven
+        box._prepare_exec_env_folder = env_folder
         if name == "dind":
             strategy = _DaytonaDinD.__new__(_DaytonaDinD)
             strategy._env = box
@@ -76,21 +114,6 @@ def backend(request, tmp_path, monkeypatch):
                 return command
 
             monkeypatch.setattr(_su, "su_command", same_uid)
-            results = []
-
-            class Process:
-                async def create_session(self, session):
-                    pass
-
-                async def execute_session_command(self, session, req, timeout=None):
-                    results.append(run(["/bin/sh", "-c", req.command]))
-                    return SimpleNamespace(cmd_id="dummy")
-
-            async def poll(*args, **kwargs):
-                return results.pop(0)
-
-            box._sandbox = SimpleNamespace(process=Process())
-            box._poll_response = poll
             strategy = _DaytonaDirect(box)
         box._strategy = strategy
     box.default_user = None

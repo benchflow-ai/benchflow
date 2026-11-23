@@ -79,8 +79,7 @@ def test_anything_but_that_bind_is_refused(check, volume):
     other.mkdir()
     refused = run([volume(harness, other)])
     assert refused and any(
-        "outside the task's folder" in (r.shown or "")
-        or "nothing may be mounted at or beneath it" in (r.shown or "")
+        "outside the task's folder" in (r.shown or "") or BENEATH in (r.shown or "")
         for r in refused
     )
 
@@ -173,10 +172,10 @@ def test_without_bfx_its_volume_is_an_external_volume(check):
     assert any("existing volume" in (r.shown or "") for r in refused)
 
 
-# M-1: nothing but BenchFlow's own read-only helper mount sits at or beneath
-# /.bfx, whatever the mount's kind and whoever declared it.
+# M-1: nothing but BenchFlow's own read-only helper mount sits at, beneath or
+# over /.bfx, whatever the mount's kind and whoever declared it.
 
-BENEATH = "nothing may be mounted at or beneath it"
+BENEATH = "nothing may be mounted at, beneath or over it"
 
 
 def _beneath(refused):
@@ -204,6 +203,64 @@ def test_a_task_bind_from_its_own_folder_at_or_beneath_bfx_is_refused(check, tar
 def test_any_other_kind_of_mount_beneath_bfx_is_refused(check, mount):
     run, harness, _ = check
     assert _beneath(run([_bind(harness, "/.bfx"), mount]))
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"secrets": [{"source": "s", "target": "/.bfx/bfx"}]},
+        {"secrets": [{"source": "s", "target": "../../.bfx/bfx"}]},
+        {"configs": [{"source": ".bfx"}]},
+        {"configs": [{"source": "c", "target": ".bfx/bfx"}]},
+        {"configs": [{"source": "c", "target": "/"}]},
+        {
+            "devices": [
+                {"source": "/dev/null", "target": "/.bfx/bfx", "permissions": "r"}
+            ]
+        },
+        {"devices": ["/dev/null:/.bfx/bfx:r"]},
+        {"volumes": [{"type": "volume", "source": "v", "target": "/"}]},
+        {"tmpfs": ["/"]},
+    ],
+    ids=[
+        "secret",
+        "secret-relative",
+        "config-by-name",
+        "config-relative",
+        "config-over",
+        "device",
+        "device-short",
+        "volume-over",
+        "tmpfs-over",
+    ],
+)
+def test_every_file_mount_kind_at_beneath_or_over_bfx_is_refused(check, service):
+    run, harness, _ = check
+    services = {
+        "main": {"volumes": [_bind(harness, "/.bfx")]},
+        "side": service,
+    }
+    refused = _beneath(run([], services=services))
+    assert refused and "service side" in (refused[0].shown or ""), refused
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"secrets": [{"source": "s", "target": "/run/secrets/s"}, {"source": "t"}]},
+        {"configs": [{"source": "c", "target": "/etc/app.conf"}, {"source": "d"}]},
+        {
+            "devices": [
+                {"source": "/dev/fuse", "target": "/dev/fuse", "permissions": "rwm"}
+            ]
+        },
+    ],
+    ids=["secrets", "configs", "devices"],
+)
+def test_file_mounts_elsewhere_are_not_refused_for_bfx(check, service):
+    run, harness, _ = check
+    services = {"main": {"volumes": [_bind(harness, "/.bfx")]}, "side": service}
+    assert not _beneath(run([], services=services))
 
 
 def test_the_short_tmpfs_form_beneath_bfx_is_refused(check):
@@ -335,7 +392,7 @@ async def test_the_bind_proof_runs_the_check_on_mains_inspect(monkeypatch):
                 **_inspected(_mount("bind", "/x", "/.bfx/bfx")),
             }
 
-        def _check_bfx_mounts(self, inspected):
+        def _check_bfx_mounts(self, inspected, service="main"):
             self.seen.append(inspected)
             raise RuntimeError("refused")
 

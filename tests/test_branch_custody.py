@@ -142,11 +142,13 @@ async def test_parent_state_evidence_and_fork_unique_bundles(
 
 
 async def test_active_provider_rejected_before_disconnect(tmp_path):
-    """PR #1046 port rejects live background writers without a fork contract."""
+    """PR #1046 port rejects live background writers it cannot hand off: a
+    runtime that is not BenchFlow's LiteLLM proxy (a branch hands that one
+    off; tests/test_branch_provider_runtime.py)."""
     rollout = rollout_for(tmp_path)
     runtime = object()
     rollout._usage_runtime = runtime
-    with pytest.raises(RuntimeError, match="runtime fork contract"):
+    with pytest.raises(RuntimeError, match="keeps no agent env"):
         await rollout.branch(2, AsyncMock(return_value=1))
     rollout.disconnect.assert_not_called()
     assert rollout._usage_runtime is runtime

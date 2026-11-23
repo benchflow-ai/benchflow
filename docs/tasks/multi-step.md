@@ -1,6 +1,6 @@
 # Multi-step tasks
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)). 0.9.2 refuses multi-step tasks with `UnsupportedTaskFeatureError: ... steps: multi-step tasks are not supported (one prompt per task)`.
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)). 0.9.2 refuses multi-step tasks with `UnsupportedTaskFeatureError: ... steps: multi-step tasks are not supported (one prompt per task)`.
 
 A multi-step task gives the agent its work in steps, in one sandbox. After each step, the step's own tests check the workspace, and a step that falls below its `min_reward` ends the task. Use it when the work has stages whose results the later stages build on, and you want to know which stage an agent failed. For several prompts that aren't graded one by one, use a [multi-turn task](./multi-turn.md).
 

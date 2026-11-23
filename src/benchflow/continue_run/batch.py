@@ -66,6 +66,9 @@ async def continue_batch(
     strict_divergence: bool = False,
     proxy_mode: str = "auto",
     runner: ContinueRunner = continue_run,
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: tuple[str, ...] = (),
 ) -> list[BatchContinueResult]:
     """Run ``benchflow continue`` over folders with rolling concurrency."""
     if concurrency < 1:
@@ -84,6 +87,9 @@ async def continue_batch(
                     require_timeout=require_timeout,
                     strict_divergence=strict_divergence,
                     proxy_mode=proxy_mode,
+                    allow_cloud_credential_file=allow_cloud_credential_file,
+                    allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+                    scoped_credentials=scoped_credentials,
                 )
             except Exception as exc:
                 return BatchContinueResult(folder=folder, ok=False, error=str(exc))

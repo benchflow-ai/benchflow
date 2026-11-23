@@ -77,7 +77,7 @@ from __future__ import annotations
 import posixpath
 import re
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -498,22 +498,45 @@ def _daemon_folders_present(ws: str) -> str:
 
 
 #: The sandbox attribute where ``setup_sandbox_user`` keeps, per workspace,
-#: the mode it had before a grant made it root's and sticky for a daemon
-#: folder in it; the first grant's mode, not a later grant's 1777.
+#: the mode it had before a grant made it root's and sticky (a daemon folder
+#: or a reserved folder in it); the first grant's mode, not a later grant's
+#: 1777.
 WORKSPACE_MODE_ATTR = "_benchflow_workspace_modes"
 _MODE_MARK = "benchflow-workspace-mode"
 
 
+def _sticky_grant_workspaces() -> tuple[str, ...]:
+    """The workspaces whose grant is always root's and sticky because they hold
+    a reserved folder (:func:`_reserved_in`) and may be granted at all: ``/opt``
+    (the runtime tree) and ``/usr/local`` (the loader's folders)."""
+    above: set[str] = set()
+    for reserved in (RUNTIME_ROOT, *_LOADER_TREES):
+        parts = reserved.strip("/").split("/")
+        above.update("/" + "/".join(parts[:n]) for n in range(1, len(parts)))
+    return tuple(
+        sorted(
+            ws
+            for ws in above
+            if _reserved_in(ws) and workspace_grant_problem(ws) is None
+        )
+    )
+
+
 def workspace_mode_probe(workspace: str) -> str:
     """sh, run before the grant: prints the workspace's mode on a line of its
-    own when the grant will keep a daemon folder in it (and make it 1777).
-    The mode is the folder's: a workspace that is a link (``/ws`` to
-    ``/data``) is read through it, as the grant's chmod is, never as the
-    link's own 777."""
+    own when the grant will make it root's and 1777: it keeps a daemon folder
+    in it, or it holds a reserved folder (``/opt``, ``/usr/local``: judged by
+    the folder the workspace resolves to, as the grant is). The mode is the
+    folder's: a workspace that is a link (``/ws`` to ``/data``) is read
+    through it, as the grant's chmod is, never as the link's own 777."""
     ws = "/" + workspace.strip("/")
+    q = shlex.quote(ws)
+    reserved = "|".join(map(shlex.quote, _sticky_grant_workspaces()))
     return (
-        f"if {_daemon_folders_present(ws)}; then "
-        f"printf '{_MODE_MARK} %s\\n' \"$(stat -L -c %a {shlex.quote(ws)})\"; fi"
+        f"if {_daemon_folders_present(ws)} || "
+        f'case "$(cd -P {q} 2>/dev/null && pwd -P)" in {reserved}) true;; '
+        "*) false;; esac; then "
+        f"printf '{_MODE_MARK} %s\\n' \"$(stat -L -c %a {q})\"; fi"
     )
 
 
@@ -525,18 +548,144 @@ def granted_mode(stdout: str) -> tuple[str, str | None]:
     return (head + "\n", found.group(1)) if found else (stdout, None)
 
 
+#: The mode recorded for a workspace whose read before the grant could not be
+#: made (#1249, N1): its steps act on what the folder is (root's and sticky
+#: from the grant, or not), and strict has no image mode to give back.
+UNKNOWN_MODE = ""
+
+
+def restored_mode(mode: str) -> int:
+    """The mode :func:`restore_mode_command` gives a workspace recorded with
+    *mode*: the image's, sticky when group or others may write."""
+    bits = int(mode, 8) & 0o7777
+    if bits & 0o022:
+        bits |= 0o1000
+    return bits
+
+
 def restore_mode_command(modes: dict[str, str]) -> str:
     """sh, as root before test.sh: each workspace in *modes* gets its mode
     back, sticky when group or others may write, so the daemon folder stays
-    in place. test.sh then sees the workspace as on a sandbox without one."""
+    in place. test.sh then sees the workspace as on a sandbox without one.
+    A workspace recorded with no mode (:data:`UNKNOWN_MODE`) is left as it
+    is."""
     parts = []
     for ws, mode in sorted(modes.items()):
-        bits = int(mode, 8) & 0o7777
-        if bits & 0o022:
-            bits |= 0o1000
+        if not re.fullmatch(r"[0-7]{1,4}", mode or ""):
+            continue
         q = shlex.quote(ws)
-        parts.append(f"if [ -d {q} ] && [ ! -L {q} ]; then chmod {bits:o} {q}; fi")
-    return " && ".join(parts)
+        parts.append(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then chmod {restored_mode(mode):o} {q}; fi"
+        )
+    return " && ".join(parts) or "true"
+
+
+#: The line :func:`show_modes_command` prints per workspace:
+#: ``BF workspace-mode <octal mode> <owner uid> <path>``.
+SHOWN_MODE = "BF workspace-mode"
+
+#: The sandbox attribute set when a step took group and other write from the
+#: recorded workspaces (:func:`close_granted_command`), so the next agent turn
+#: gets the grant's 1777 back first (``lockdown.reopen_granted_workspaces``).
+WORKSPACE_CLOSED_ATTR = "_benchflow_workspace_closed"
+
+#: The mode the grant gives a workspace it makes root's and sticky.
+GRANTED_MODE = 0o1777
+
+
+def _granted_sticky(q: str) -> str:
+    """sh test: the (quoted) folder *q* is a folder, not a link, root's and
+    sticky, as the grant leaves a workspace it keeps root's."""
+    return (
+        f'[ -d {q} ] && [ ! -L {q} ] && case "$(stat -c %u:%a {q} 2>/dev/null)" '
+        "in 0:1???) true;; *) false;; esac"
+    )
+
+
+def show_modes_command(paths: Iterable[str]) -> str:
+    """sh: one :data:`SHOWN_MODE` line per folder in *paths* that is a folder
+    and not a link, with its mode and owner as ``stat`` reads them. Exits 0."""
+    parts = []
+    for path in sorted(paths):
+        q = shlex.quote(path)
+        parts.append(
+            f"if [ -d {q} ] && [ ! -L {q} ]; then "
+            f"printf '{SHOWN_MODE} %s %s\\n' \"$(stat -c '%a %u' {q})\" {q}; fi"
+        )
+    return "{ " + "; ".join(parts) + "; true; }"
+
+
+def close_granted_command(modes: dict[str, str]) -> str:
+    """sh, as root before root's own scripts (a root ``solve.sh``; a root
+    ``test.sh`` in integrity audit and off): each workspace in *modes* that is
+    root's and sticky, as the grant made it, loses group and other write (the
+    grant's 1777 becomes 1755, root's and sticky still), then its mode is shown
+    (:func:`show_modes_command`). ``fs.protected_regular`` only stops root's
+    ``O_CREAT`` open of another user's file in a sticky folder others or the
+    group may write, so root can rewrite the agent's files in place again,
+    while the agent user, a kept service running as it and a ``runuser`` step
+    of solve.sh keep reading, traversing and appending (the image's own mode,
+    700 for ``/root``, would take that too). It acts on what the folder is, so
+    a workspace recorded with no mode is handled the same. It never fails by
+    itself: :func:`shown_modes_problem` judges what it shows."""
+    chmods = "; ".join(
+        f"if {_granted_sticky(q)}; then chmod go-w {q}; fi"
+        for q in map(shlex.quote, sorted(modes))
+    )
+    return f"{{ {chmods}; true; }}; {show_modes_command(modes)}"
+
+
+def reopen_granted_command(modes: dict[str, str]) -> str:
+    """sh, as root after :func:`close_granted_command`, before the agent user's
+    next turn (or after a root ``solve.sh``): each workspace in *modes* that is
+    still root's and sticky gets the grant's 1777 back, then its mode is
+    shown."""
+    chmods = "; ".join(
+        f"if {_granted_sticky(q)}; then chmod {GRANTED_MODE:o} {q}; fi"
+        for q in map(shlex.quote, sorted(modes))
+    )
+    return f"{{ {chmods}; true; }}; {show_modes_command(modes)}"
+
+
+def shown_modes(stdout: str) -> dict[str, tuple[int, int]]:
+    """The modes and owners :func:`show_modes_command` printed in *stdout*, by
+    path."""
+    found: dict[str, tuple[int, int]] = {}
+    for line in stdout.splitlines():
+        hit = re.fullmatch(
+            rf"{SHOWN_MODE} ([0-7]{{1,4}}) ([0-9]+) (/.*)", line.rstrip("\r")
+        )
+        if hit:
+            found[hit.group(3)] = (int(hit.group(1), 8), int(hit.group(2)))
+    return found
+
+
+def granted_closed(mode: int, uid: int) -> bool:
+    """A workspace :func:`close_granted_command` took group and other write
+    from, or one the grant did not leave root's and sticky (nothing to take)."""
+    return not (uid == 0 and mode & 0o1000 and mode & 0o022)
+
+
+def granted_reopened(mode: int, uid: int) -> bool:
+    """A workspace :func:`reopen_granted_command` gave the grant's 1777 back,
+    or one the grant did not leave root's and sticky."""
+    return uid != 0 or not mode & 0o1000 or mode == GRANTED_MODE
+
+
+def shown_modes_problem(
+    stdout: str, paths: Iterable[str], accept: Callable[[int, int], bool]
+) -> str | None:
+    """Why the modes shown in *stdout* are not what was asked for each of
+    *paths* (``accept(mode, uid)`` judges one), or None. A path whose mode is
+    not shown is a problem: nothing shows the step took."""
+    shown = shown_modes(stdout)
+    for path in sorted(paths):
+        if path not in shown:
+            return f"{path}'s mode was not shown"
+        mode, uid = shown[path]
+        if not accept(mode, uid):
+            return f"{path} is {mode:o}, uid {uid}'s"
+    return None
 
 
 def _grant_command(ws: str, owner: str, reserved: list[str], held: list[str]) -> str:

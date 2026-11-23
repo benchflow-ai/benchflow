@@ -54,7 +54,7 @@ def _check(monkeypatch, *, ran: bool, before=(), after=()):
     calls = []
 
     def record(links, step):
-        async def fake(env, *, timeout_sec=None):
+        async def fake(env, *, timeout_sec=None, **_kwargs):
             calls.append(step)
             return {
                 "ran": ran,

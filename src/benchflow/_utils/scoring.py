@@ -209,9 +209,11 @@ VERIFIER_DEP_INSTALL = "verifier_dep_install"
 # scores 0 (rollout/_setup.py), the raw number kept in result.json's
 # reward_out_of_range_info.
 VERIFIER_REWARD_OUT_OF_RANGE = "reward_out_of_range"
-# test.sh failed after the verifier's network policy refused it packets
-# (benchflow.sandbox.verifier_network): unscored, out of the mean,
-# never retried (another attempt meets the same policy). Read head-anchored:
+# Before 0.10.1, test.sh failing after the verifier's network policy refused
+# it packets (benchflow.sandbox.verifier_network) ended the trial unscored, out
+# of the mean, never retried; a result.json written then still reads so. Since
+# then such a trial is scored as test.sh says and flagged
+# (``verifier_network_refused`` in result.json). Read head-anchored:
 # BenchFlow's own words, never test.sh's.
 VERIFIER_NETWORK_REFUSED = "verifier_network_refused"
 _VERIFIER_NETWORK_REFUSED_HEAD = "verifier network refused: "
@@ -250,7 +252,8 @@ def is_network_policy_breach(verifier_error: str | None) -> bool:
 
 
 def is_verifier_network_refusal(verifier_error: str | None) -> bool:
-    """Whether *verifier_error* is the ending "verifier network refused"."""
+    """Whether *verifier_error* is the ending "verifier network refused" (a
+    result.json written before 0.10.1)."""
     return isinstance(verifier_error, str) and verifier_error.startswith(
         _VERIFIER_NETWORK_REFUSED_HEAD
     )
@@ -328,6 +331,46 @@ PROVENANCE_INCOMPLETE_ZERO = VERIFIER_SCORED_ZERO + "provenance incomplete: "
 INTEGRITY_UNAVAILABLE = "integrity_unavailable"
 INTEGRITY_UNAVAILABLE_HEADER = "integrity checks unavailable before the turn: "
 INTEGRITY_UNAVAILABLE_VERIFIER = "integrity checks unavailable: "
+#: The hold's refusal of a start where BenchFlow's waiter (bfx) is not
+#: delivered (sandbox._inert_bootstrap.no_waiter_refusal): its head and its
+#: cause. The same before-the-turn outcome as an integrity refusal: no score,
+#: never retried. Any other refusal of a cover keeps its own class.
+HOLD_REFUSAL_HEAD = "sandbox startup refused: BenchFlow holds "
+HOLD_WITHOUT_BFX = (
+    "bfx is not delivered on this host (no pinned bfx for its architecture, "
+    "or BENCHFLOW_BFX_DELIVERY=off)"
+)
+
+#: The head of a held ending (``VerifierOutputsHeldError``, its text
+#: ``verifier_core._OUTPUTS_HELD``): another user's processes kept writing in
+#: the output folder while it was cleared or closed. The verifier's failure,
+#: counted, never retried or recovered. Matched at the start only: its detail
+# carries the sandbox's stderr, which names the agent's own files.
+OUTPUTS_HELD_HEAD = (
+    "verifier crashed: VerifierOutputsHeldError: agent processes kept writing in "
+    "/logs/verifier"
+)
+
+
+def verifier_ending_is_final(
+    verifier_error: str | None, verifier_error_category: str | None
+) -> bool:
+    """Whether an attempt's verifier ending makes it the trial's result
+    whatever its agent-side error (R-812): the output folder held by the
+    agent's processes, or a reward's provenance check the run defeated.
+    Another attempt would give the agent a second turn."""
+    if verifier_error_category == PROVENANCE_INCOMPLETE:
+        return True
+    return isinstance(verifier_error, str) and verifier_error.removeprefix(
+        "[solver-preserved] "
+    ).startswith(OUTPUTS_HELD_HEAD)
+
+
+#: A model BenchFlow can't admit with web access restricted (no hosted web
+#: search or retrieval it can confirm), refused before any sandbox: the run's
+#: setup, never the sandbox's. Unscored, never retried.
+RESTRICTED_MODEL_REFUSED = "restricted_model_refused"
+_RESTRICTED_MODEL_CLASSES = ("restrictedmodelrefused: ", "runtimeerror: ")
 
 
 def provenance_incomplete(row: Mapping[str, Any]) -> bool:
@@ -374,6 +417,7 @@ ERROR_CATEGORIES = frozenset(
         UNSUPPORTED_TASK_FEATURE,
         TASK_REFUSED,
         INTEGRITY_UNAVAILABLE,
+        RESTRICTED_MODEL_REFUSED,
         IMAGE_BUILD,
         REGISTRY_AUTH,
         TASK_CONFIG,
@@ -429,6 +473,7 @@ ENDING_KEEPS_REWARD: dict[str, bool] = {
     UNSUPPORTED_TASK_FEATURE: False,
     TASK_REFUSED: False,
     INTEGRITY_UNAVAILABLE: False,
+    RESTRICTED_MODEL_REFUSED: False,
     IMAGE_BUILD: False,
     REGISTRY_AUTH: False,
     TASK_CONFIG: False,
@@ -608,6 +653,16 @@ def _classify_error(error: str) -> str | None:
         INTEGRITY_UNAVAILABLE_HEADER
     ):
         return INTEGRITY_UNAVAILABLE
+    if (
+        head.removeprefix("servicecovererror: ").startswith(HOLD_REFUSAL_HEAD.lower())
+        and HOLD_WITHOUT_BFX.lower() in head
+    ):
+        return INTEGRITY_UNAVAILABLE
+    refused = head
+    for prefix in _RESTRICTED_MODEL_CLASSES:
+        refused = refused.removeprefix(prefix)
+    if refused.startswith("refused ") and "with web access restricted" in refused[:300]:
+        return RESTRICTED_MODEL_REFUSED
     if head.startswith(_DISK_FULL_HEADS) or head.startswith(DISK_FULL_MARKER):
         return DISK_FULL
     if head.removeprefix(_TRIAL_BUDGET_CLASS).startswith(_TRIAL_BUDGET_HEADER):
@@ -632,6 +687,10 @@ def _classify_error(error: str) -> str | None:
         return PHASE_TIMEOUT
     if lower.startswith(CLEANUP_FAILED_HEADER):
         return INFRA_ERROR
+    # A refused model key leads the error it ends (rollout._usage
+    # PROVIDER_REFUSED_KEY): before the agent's own wrapping of it.
+    if lower.startswith("the model provider refused the key"):
+        return PROVIDER_AUTH
     # First: the evidence quoted after it may contain any other marker.
     if lower.startswith("agent integration failure"):
         return AGENT_INTEGRATION
@@ -750,6 +809,12 @@ _UNRECOVERABLE_STARTUP_RES = (
     ),
     re.compile(
         r"sandbox startup refused: main joins the network namespace of service "
+    ),
+    # A held service's mounts land on BenchFlow's bfx, or one inside another
+    # (sandbox._held_mounts): the task's files and image say so.
+    re.compile(
+        r"sandbox startup refused: (?:in service '[^']*', (?:the mount at |"
+        r"/\.bfx(?:/bfx)? is not )|\S+ has mounts at or beneath /\.bfx)"
     ),
     re.compile(
         r"sandbox startup refused: the task's network policy \([^)]*\) needs "
@@ -1024,6 +1089,11 @@ def classify_verifier_error(verifier_error: str | None) -> str | None:
     if ending.startswith(INTEGRITY_UNAVAILABLE_VERIFIER):
         # BenchFlow could not check the reward's provenance. Never retried.
         return INTEGRITY_UNAVAILABLE
+    if ending.startswith(OUTPUTS_HELD_HEAD):
+        # The agent's processes held the output folder: the verifier's
+        # failure, before any phrase in the detail (sandbox stderr naming the
+        # agent's own files) can read as infrastructure.
+        return VERIFIER_FAILED
     if ending.startswith(_NETWORK_POLICY_BREACHED_HEAD):
         # BenchFlow's own words: its rules no longer held. Never retried.
         return NETWORK_POLICY_BREACHED
@@ -1415,10 +1485,29 @@ def score_summary_fields(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]
         # Unscored trials the plugin guard refused: failures in the
         # error-excluding score and the mean reward.
         "guard_refusals": refused,
-        # Trials that ended "verifier network refused": unscored, 0 in
-        # mean_reward; any of them flags the job (the run card says so).
+        # Trials whose test.sh the verifier's network refused something:
+        # scored as test.sh says and flagged (result.json's
+        # verifier_network_refused), or, written before 0.10.1, ended
+        # "verifier network refused" (unscored, 0 in mean_reward). Any of them
+        # flags the job (the run card says so).
         "verifier_network_refusals": sum(
-            1 for row in rows if is_verifier_network_refusal(row.get("verifier_error"))
+            1
+            for row in rows
+            if row.get("verifier_network_refused")
+            or is_verifier_network_refusal(row.get("verifier_error"))
+        ),
+        # Trials with a held compose service that Docker restarted, or that
+        # exited after start-up and did not start again: scored as test.sh
+        # says, each flagged for a read; the run card counts them. A one-shot
+        # service done at start-up is the task's own shape, not counted.
+        "held_restarts": sum(1 for row in rows if row.get("held_after_restart")),
+        "held_exits": sum(
+            1
+            for row in rows
+            if any(
+                isinstance(e, dict) and e.get("phase") != "start-up"
+                for e in row.get("held_exited") or []
+            )
         ),
         # Trials that ended "network policy breached": BenchFlow's
         # network rules no longer held; unscored, 0 in mean_reward, and any of

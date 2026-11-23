@@ -308,7 +308,7 @@ class TestVerifierDirWipe:
                 c
                 for c in env.exec.call_args_list
                 if "find /logs/verifier -mindepth 1" in c.args[0]
-                and "chmod 777 /logs/verifier" in c.args[0]
+                and "chmod 755 /logs/verifier" in c.args[0]
             ),
             None,
         )

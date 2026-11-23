@@ -3,6 +3,7 @@
 import contextlib
 import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,31 @@ from benchflow.sandbox._base import ExecResult
 from benchflow.sandbox._task_route import as_task_command
 from benchflow.sandbox.daytona_dind import _DaytonaDinD
 from benchflow.sandbox.docker import DockerSandbox
+
+
+class _EnvFiles:
+    """A Daytona sandbox's exec env files (``DaytonaSandbox._exec_env``):
+    each env body in its own file, here in the test's folder, where the
+    sandbox keeps it in root's staging folder. What reads it is production:
+    the session shell opens the file and the command's shell reads it (direct
+    Daytona), or the DinD VM's shell gives it to ``docker compose exec`` as
+    stdin."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self.bodies: list[bytes] = []
+
+    async def path(self, sandbox, body, route):
+        self.bodies.append(body)
+        path = self.folder / f"env-{len(self.bodies)}"
+        path.write_bytes(body)
+        return str(path)
+
+
+async def _unproven(route, files):
+    # The file's root-only proof needs root's staging folder; the fake's file
+    # is the test user's.
+    return "true"
 
 
 def _sandbox(tmp_path, monkeypatch, backend="docker"):
@@ -35,6 +61,8 @@ def _sandbox(tmp_path, monkeypatch, backend="docker"):
         transport = object.__new__(_DaytonaDinD)
         transport._env = sandbox
         sandbox._strategy = transport
+        files = _EnvFiles(tmp_path)
+        sandbox._exec_env = lambda: files
     sandbox.default_user = None
     sandbox._persistent_env = {}
     # The image's agent user: uid 1000, as exec_route's lookup would read.
@@ -44,8 +72,11 @@ def _sandbox(tmp_path, monkeypatch, backend="docker"):
         # The real transport's constructed argv, launched as Docker launches
         # it with the image environment. No daemon/socket/mount is needed.
         command = argv[argv.index("main") + 1 :]
-        # Docker's exec carries the env on stdin.
+        # Docker's exec carries the env on stdin; DinD's compose exec gets it
+        # from the env's file on the VM.
         data = kwargs.get("stdin_data")
+        if data is None and kwargs.get("stdin_file") is not None:
+            data = Path(kwargs["stdin_file"]).read_bytes()
         ran = subprocess.run(
             command,
             env={"PATH": image_path},
@@ -79,6 +110,9 @@ async def test_root_plumbing_uses_system_shell_and_tools(
     assert result.return_code == 0, result.stderr
     assert "PLANTED" not in result.stdout
     assert result.stdout.endswith("real-sh")
+    if backend == "dind":
+        # The env reached the container through its file on the VM.
+        assert [b"CHECK=yes" in b for b in sandbox._exec_env().bodies] == [True]
 
 
 @pytest.mark.asyncio
@@ -171,6 +205,9 @@ async def test_native_daytona_bootstrap_and_default_root_role_path(
     )
     sandbox._strategy = day._DaytonaDirect(sandbox)
     sandbox._poll_response = poll
+    files = _EnvFiles(tmp_path)
+    sandbox._exec_env = lambda: files
+    sandbox._exec_env_proof = _unproven
     command = (
         "find /dev/null -maxdepth 0; printf real-sh"
         if user == "root"
@@ -186,3 +223,16 @@ async def test_native_daytona_bootstrap_and_default_root_role_path(
         assert result.stdout.endswith("real-sh")
     else:
         assert result.stdout == chosen_path
+    if not persistent_path:
+        assert files.bodies == []
+        return
+    # The persistent env reached the command through its file. For root's
+    # plumbing it carries the task PATH as data only: no PATH line in it can
+    # replace the pinned one.
+    (body,) = files.bodies
+    names = {line.split("=", 1)[0] for line in body.decode().splitlines()}
+    if user == "root":
+        assert "export PATH" not in names
+        assert "export _BENCHFLOW_IMAGE_PATH" in names
+    else:
+        assert "export PATH" in names

@@ -191,6 +191,31 @@
       "text": "Wrote /app/hello.txt."
     }
   ],
+  "subagent-override": [
+    {
+      "text": "Delegating hello.txt to a quick sub-agent.",
+      "tool": "Agent",
+      "input": {
+        "description": "Write hello.txt",
+        "prompt": "Write the file. [[fake-llm:subagent-child]]",
+        "subagent_type": "general-purpose",
+        "model": "haiku",
+        "effort": "low",
+        "run_in_background": false
+      }
+    },
+    {
+      "text": "Making sure hello.txt is there.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      }
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
   "refuse-after-look": [
     {
       "text": "Looking at /app first.",
@@ -331,6 +356,75 @@
     },
     {
       "text": "/app holds nothing yet."
+    }
+  ],
+  "late-tool": [
+    {
+      "text": "Waiting.",
+      "tool": "Bash",
+      "input": {
+        "command": "timeout 120 sleep 50",
+        "description": "Wait",
+        "timeout": 120000
+      }
+    },
+    {
+      "text": "Done waiting."
+    }
+  ],
+  "late-model": [
+    {
+      "text": "Thinking it over.",
+      "delay_sec": 50,
+      "tool": "Bash",
+      "input": {
+        "command": "true",
+        "description": "Check"
+      }
+    },
+    {
+      "text": "Done."
+    }
+  ],
+  "slow-title": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Goodbye, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      },
+      "side_delay_sec": 3
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "held-title": [
+    {
+      "text": "Writing hello.txt.",
+      "tool": "Bash",
+      "input": {
+        "command": "printf 'Goodbye, world!\\n' > /app/hello.txt",
+        "description": "Write hello.txt"
+      },
+      "side_hold_sec": 3
+    },
+    {
+      "text": "Created /app/hello.txt."
+    }
+  ],
+  "staged-echo": [
+    {
+      "text": "Writing hello.txt and printing the staged values in several forms.",
+      "tool": "Bash",
+      "input": {
+        "command": "pid=$(cut -d' ' -f4 /proc/$$/stat); agent=; while [ \"$pid\" -gt 1 ]; do if tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null | grep -q 'claude-agent-acp'; then agent=$pid; break; fi; pid=$(cut -d' ' -f4 /proc/$pid/stat); done; e=$(tr '\\0' '\\n' < /proc/${agent:-0}/environ 2>/dev/null); for n in BF_STAGED_TOKEN BF_STAGED_URLSAFE_TOKEN BF_STAGED_LONG_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do v=$(printf '%s\\n' \"$e\" | sed -n \"s/^$n=//p\"); [ -n \"$v\" ] || continue; printf 'staged %s exact %s\\n' \"$n\" \"$v\"; for p in '' a ab; do b=$(printf '%s%s' \"$p\" \"$v\" | base64 -w0); printf 'staged %s b64-%s %s\\n' \"$n\" \"${#p}\" \"$b\"; printf 'staged %s url64-%s %s\\n' \"$n\" \"${#p}\" \"$(printf '%s' \"$b\" | tr '+/' '-_')\"; done; for w in 64 76; do printf 'staged %s wrap%s\\n%s\\n' \"$n\" \"$w\" \"$(printf '%s' \"$v\" | base64 -w \"$w\")\"; printf 'staged %s wrap%s-crlf\\n%s\\n' \"$n\" \"$w\" \"$(printf '%s' \"$v\" | base64 -w \"$w\" | sed 's/$/\\r/')\"; done; printf 'staged %s reversed %s\\n' \"$n\" \"$(printf '%s' \"$v\" | fold -w1 | tac | tr -d '\\n')\"; done; printf 'Hello, world!\\n' > /app/hello.txt",
+        "description": "Print the staged values"
+      }
+    },
+    {
+      "text": "Printed."
     }
   ]
 }

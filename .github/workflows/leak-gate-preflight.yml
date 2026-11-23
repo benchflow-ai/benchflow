@@ -1,0 +1,118 @@
+name: leak-gate-preflight
+
+# The release leak gate (tools/release_leak_gate.py) on the trunk and the rc
+# branches, days before a tag, with the real patterns: a finding shows here,
+# with drafted exceptions (rule, member, value and file hashes; never a value),
+# instead of stopping the publish. The patterns name what must not ship, so
+# they live only in the protected `release-leak-gate` environment (deployment
+# branches: next, rc/*, v* tags), never on a pull request.
+#
+# Until an admin creates that environment, sets RELEASE_LEAK_GATE_ENV=protected
+# in it and RELEASE_LEAK_GATE_READY=1 as a repository variable, the gate job
+# never starts (a reference to a missing environment would create it
+# unprotected) and `not-set-up` says so on every run.
+
+on:
+  push:
+    branches: [next, 'rc/*']
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit to build and gate.
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  not-set-up:
+    if: vars.RELEASE_LEAK_GATE_READY != '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The leak gate's environment isn't set up
+        run: |
+          echo "::warning::leak gate NOT run: the protected release-leak-gate environment is not set up. An admin creates it (deployment branches next, rc/*, v*; secrets RELEASE_LEAK_PATTERNS and RELEASE_LEAK_ALLOWLIST; variable RELEASE_LEAK_GATE_ENV=protected), then sets the repository variable RELEASE_LEAK_GATE_READY=1."
+
+  leak-gate:
+    if: vars.RELEASE_LEAK_GATE_READY == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-leak-gate
+    steps:
+      - name: Refuse to run outside the protected environment
+        env:
+          RELEASE_LEAK_GATE_ENV: ${{ vars.RELEASE_LEAK_GATE_ENV }}
+          HAS_PATTERNS: ${{ secrets.RELEASE_LEAK_PATTERNS != '' }}
+          HAS_ALLOWLIST: ${{ secrets.RELEASE_LEAK_ALLOWLIST != '' }}
+        run: |
+          if [ "$RELEASE_LEAK_GATE_ENV" != protected ]; then
+            echo "::error::release-leak-gate is not the protected environment (its variable RELEASE_LEAK_GATE_ENV is not 'protected'); refusing to read the leak patterns"
+            exit 1
+          fi
+          if [ "$HAS_PATTERNS" != true ] || [ "$HAS_ALLOWLIST" != true ]; then
+            echo "::error::release-leak-gate needs both RELEASE_LEAK_PATTERNS and RELEASE_LEAK_ALLOWLIST (an empty one is {\"version\": 1, \"exceptions\": []})"
+            exit 1
+          fi
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          ref: ${{ inputs.ref || '' }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal \
+            --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 scripts/build_bfx.sh
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Install the leak scanners (pinned)
+        run: tools/install_leak_scanners.sh "$RUNNER_TEMP/leak-scanners"
+
+      - name: Leak gate on the wheel, the sdist and the docs
+        env:
+          RELEASE_LEAK_PATTERNS: ${{ secrets.RELEASE_LEAK_PATTERNS }}
+          RELEASE_LEAK_ALLOWLIST: ${{ secrets.RELEASE_LEAK_ALLOWLIST }}
+        run: |
+          umask 077
+          cfg="$RUNNER_TEMP/leak-gate"
+          mkdir -p "$cfg"
+          printf '%s' "$RELEASE_LEAK_PATTERNS" > "$cfg/patterns.json"
+          printf '%s' "$RELEASE_LEAK_ALLOWLIST" > "$cfg/allowlist.json"
+          uv run --no-project python tools/release_leak_gate.py \
+            --patterns "$cfg/patterns.json" --allowlist "$cfg/allowlist.json" \
+            --scanners "$RUNNER_TEMP/leak-scanners" --propose "$RUNNER_TEMP/proposal.json" \
+            dist/*.whl dist/*.tar.gz docs=docs
+
+      - name: Upload the drafted exceptions (hashes only)
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        with:
+          name: leak-gate-proposal
+          path: ${{ runner.temp }}/proposal.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -38,10 +38,21 @@ jobs:
     runs-on: ubuntu-latest
     # The unit suite takes 60-90 min on this runner (the test workflow's
     # unit legs; a 45-min run here had reached half of it). 45 cancelled
-    # every run before it ended.
-    timeout-minutes: 180
+    # every run before it ended, and on 0.10.0's release commit the 3.13 leg
+    # ran out 180 (a hang that the daytona pin then fixed) while 3.12 filled
+    # the disk: 360 is GitHub's limit for a hosted job, and a hang still ends.
+    timeout-minutes: 360
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+
+      # A fresh resolve with no cache downloads every wheel; 0.10.0's 3.12 leg
+      # filled the runner's disk and lost its own log ("No space left on
+      # device" writing _diag). The runner's unused SDKs go first.
+      - name: Free the runner's disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          df -h /
 
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
@@ -56,6 +67,18 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
 
+      # The wheel the script builds carries bfx only if the checkout has it,
+      # and git ignores src/benchflow/_bfx/bin: without it every held Docker
+      # start in the suite is refused. Build the pinned x86_64 binary from
+      # source as the release does; the build stops on any other bytes.
+      - name: Install the bfx toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' bfx/rust-toolchain.toml)"
+          rustup toolchain install "$channel" --profile minimal --target x86_64-unknown-linux-musl
+
+      - name: Build bfx (pinned)
+        run: BFX_REQUIRE_PIN=1 BFX_ARCHES=x86_64 scripts/build_bfx.sh
+
       # The script prints the resolved typer and click; the whole resolve is
       # in $FRESH_RESOLVE_DIR/freeze.txt, uploaded below.
       - name: Fresh resolve and unit suite
@@ -67,7 +90,7 @@ jobs:
 
       - name: Upload the resolved versions
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: fresh-resolve-freeze-${{ matrix.python-version }}
           path: ${{ runner.temp }}/fresh-resolve/freeze.txt

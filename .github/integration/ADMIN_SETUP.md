@@ -131,6 +131,6 @@ a pre-existing on-host `auth.json`. If none resolve, L3 fails closed to
 - The L3 final verdict is `worst(deterministic, codex)`: codex can only make the
   verdict stricter, never upgrade a deterministic `not mergeable`.
 - Actions are SHA-pinned. `actions/download-artifact`
-  (`d3f86a106a0bac45b974a628896c90dbdf5c8093`, v4.3.0) and
-  `actions/github-script` (`60a0d83039c74a4aee543508d2ffcb1c3799cdea`, v7.0.1)
+  (`37930b1c2abaa49bbe596cd826c3c89aef350131`, v7.0.0) and
+  `actions/github-script` (`ed597411d8f924073f98dfc5c65a23a2325f34cd`, v8.0.0)
   are new surface relative to L0/L1's existing pins — re-verify on bump.

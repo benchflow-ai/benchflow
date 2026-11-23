@@ -58,8 +58,16 @@ SETTINGS: dict[str, list[str]] = {
     "checkpoint_keep": ["--checkpoints", "every-prompt", "--checkpoint-keep", "5"],
     "keep_sandbox": ["--keep-sandbox", "on-failure"],
     "accept_deviations": ["--accept-deviations", "a test"],
+    # The pin holds the calls to the run's effort, so it comes with one.
+    "effort_pin": ["-e", "high", "--effort-pin"],
     "fresh_install": ["--fresh-install"],
     "allow_cloud_metadata": ["--allow-cloud-metadata"],
+    "allow_cloud_credential_file": ["--allow-cloud-credential-file"],
+    "allow_task_processes_with_credentials": [
+        "--allow-task-processes-with-credentials"
+    ],
+    # The folder's environment sets the variable: a name the run can scope.
+    "scoped_credential": ["--scoped-credential", "ANTHROPIC_API_KEY"],
     # audit is the default: strict is the flag that changes a setting.
     "integrity": ["--integrity", "strict"],
     "retry_from_checkpoint": [
@@ -162,6 +170,8 @@ NOT_SETTINGS: dict[str, str] = {
     "restart_changed": "the job's folder (Evaluation(restart_changed=))",
     "dry_run": "prints the plan",
     "quiet": "console output",
+    "verbose": "console output (the long footer and debug logs)",
+    "json_out": "console output (one JSON result on stdout)",
     "help_all": "help",
     "fail_under": "a CI gate on the result",
     "fail_on": "a CI gate on the result",

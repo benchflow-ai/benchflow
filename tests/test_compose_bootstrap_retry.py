@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from benchflow._bfx import delivery as bfx_delivery
 from benchflow.sandbox import _inert_bootstrap as bootstrap
 from benchflow.sandbox._docker_sweep import release_project
 from benchflow.sandbox.docker import DockerSandbox
@@ -68,6 +69,17 @@ async def test_subnet_retry_prepares_and_releases_every_service(
     """Guards a1a5c818: a retry must keep the native peer and the bind barrier."""
     (tmp_path / "Dockerfile").write_text("FROM trusted")
     env = DockerSandbox(tmp_path, "retry", "retry", None, SandboxConfig())
+    # Held services wait in BenchFlow's waiter (bfx), so this start delivers
+    # it: the harness volume, already filled, in every container's inspect.
+    volume = "benchflow-bfx-retry"
+
+    async def prepare_bfx():
+        env.bfx_delivery = bfx_delivery.VOLUME
+        env._bfx_source = volume
+        env._bfx_arch = None
+
+    env._prepare_bfx = prepare_bfx
+    monkeypatch.setattr(bootstrap, "_watch_exits", AsyncMock())
     project = {"services": {"main": {}, "peer": {}}}
     records = {}
     prepared = []
@@ -99,7 +111,14 @@ async def test_subnet_retry_prepares_and_releases_every_service(
             "Image": "trusted",
             "State": {"Running": False, "ExitCode": 0},
             "Config": copy.deepcopy(original),
-            "Mounts": [],
+            "Mounts": [
+                {
+                    "Type": "volume",
+                    "Name": volume,
+                    "Destination": "/.bfx",
+                    "RW": False,
+                }
+            ],
         }
         return cid
 
@@ -146,9 +165,22 @@ async def test_subnet_retry_prepares_and_releases_every_service(
         return ExecResult(return_code=0, stdout=output, stderr="")
 
     async def cli(args, **kwargs):
-        if args[0] == "kill":
-            assert proved, "guarded command ran before the bind proof"
-            released.add(args[-1])
+        # A Docker kill would cancel the restart policy: the release is the
+        # waiter's own, by its token, once it is ready.
+        assert args[0] != "kill"
+        if args == ["volume", "inspect", volume]:
+            # The harness volume: a plain local one, nothing of the host's.
+            answer = [{"Name": volume, "Driver": "local", "Options": None}]
+            return ExecResult(return_code=0, stdout=json.dumps(answer), stderr="")
+        if args[:3] == ["exec", "-u", "0"] and args[4:6] == [bootstrap.WAITER, "hold"]:
+            cid, verb, token = args[3], args[6], args[7]
+            service = records[cid]["Config"]["Labels"]["com.docker.compose.service"]
+            assert token == env._hold_tokens[service]
+            if verb == "--release":
+                assert proved, "guarded command ran before the bind proof"
+                released.add(cid)
+            else:
+                assert verb == "--ready"
         return ExecResult(return_code=0, stdout="", stderr="")
 
     async def proof():

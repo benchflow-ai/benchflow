@@ -299,8 +299,8 @@ def test_the_parse_error_is_named_without_the_task_files_path(tmp_path: Path):
     broken = tasks / "citation-check"
     broken.mkdir(parents=True)
     (broken / "task.md").write_text(
-        "---\nschema_version: '1.3'\nenvironment:\n  cpus: 1\n---\n# x\n\n"
-        "## prompt\n\nDo it.\n"
+        "---\nschema_version: '1.3'\nenvironment:\n  cpus: 1\nsandbox:\n  cpus: 2\n"
+        "---\n# x\n\n## prompt\n\nDo it.\n"
     )
     job = Evaluation(
         tasks_dir=tasks,
@@ -310,7 +310,7 @@ def test_the_parse_error_is_named_without_the_task_files_path(tmp_path: Path):
     with pytest.raises(EmptyTaskSelectionError) as caught:
         asyncio.run(job.run())
     hint = caught.value.hint
-    assert "'environment' key was renamed" in hint, hint
+    assert "declares both 'environment:' and 'sandbox:'" in hint, hint
     assert str(broken / "task.md") not in hint
     assert str(broken / "task.md") not in str(caught.value)
 

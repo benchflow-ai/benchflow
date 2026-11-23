@@ -51,6 +51,15 @@ EXEC_BUILDERS = {
         "DockerSandbox.bfx_tar_out": "bfx by absolute path, argv only, no shell",
         "DockerSandbox.bfx_session": "bfx by absolute path, argv only, no shell",
     },
+    # The hold's waiter: readiness and release are bfx's
+    # own `hold --ready|--release`, so nothing of the image runs.
+    "sandbox/_inert_bootstrap.py": {
+        "_waiter": "bfx by absolute path, argv only, no shell",
+    },
+    # The bind proof reads each target's dev:ino through `bfx stat`.
+    "sandbox/_bind_targets.py": {
+        "_bfx_targets": "bfx by absolute path, argv only, no shell",
+    },
     "sandbox/apple_container.py": {
         "AppleContainerSandbox.exec": "the backend's exec: route.shell",
         "AppleContainerSandbox.start": "start probe: the system shell's builtin",

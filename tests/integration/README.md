@@ -284,7 +284,7 @@ Two routes reach the fake; the harness (`deterministic/harness.py`) sets them up
 | `proxy` (BenchFlow's API-key route) | `ANTHROPIC_API_KEY=<dummy>`, `BENCHFLOW_PROVIDER_BASE_URL=<fake>` | agent → BenchFlow's LiteLLM proxy → fake. Records provider usage, cost and `trajectory/llm_trajectory.jsonl`. | `bench eval run` scenarios, checkpoint retry |
 | `native` (subscription route) | `ANTHROPIC_AUTH_TOKEN=<dummy>`, `ANTHROPIC_BASE_URL=http://127.0.0.1:8911` | agent → fake, no proxy. Usage comes from ACP; no price. | branch scenarios |
 
-The LiteLLM proxy runs inside the sandbox on Daytona and on the host on Docker. The fake must run where the proxy runs, so on Docker the harness also starts the same fake on the host for the `proxy` route. Branching refuses a rollout that has a provider runtime ("Branching an active provider runtime needs a runtime fork contract"), which is why the branch scenarios use the `native` route. Before each run the harness resolves the agent env and refuses a route that would upload host credentials (`~/.claude/.credentials.json`) or miss the fake.
+The LiteLLM proxy runs inside the sandbox on Daytona and on the host on Docker. The fake must run where the proxy runs, so on Docker the harness also starts the same fake on the host for the `proxy` route. A fork hands the parent's proxy off (it stops before the checkpoint and stays in the trial's usage; each child and the parent's continuation start their own), so branch scenarios run on both routes: `native`, and `proxy` for an API-key model. Before each run the harness resolves the agent env and refuses a route that would upload host credentials (`~/.claude/.credentials.json`) or miss the fake.
 
 ### Scenarios
 

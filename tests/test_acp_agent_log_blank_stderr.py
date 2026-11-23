@@ -1,4 +1,4 @@
-"""Guards EN-925: an agent's blank stderr at close writes no agent log.
+"""An agent's blank stderr at close writes no agent log.
 
 ``ContainerTransport.close()`` terminates ``docker compose exec -i`` right
 after closing its stdin, and a terminated ``docker compose exec`` prints a

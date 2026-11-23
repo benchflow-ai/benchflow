@@ -107,6 +107,7 @@ from benchflow._utils.scoring import (
     retry_category,
     score_summary_fields,
     scored_trial_count,
+    verifier_ending_is_final,
 )
 from benchflow._utils.source_provenance import summary_source_fields
 from benchflow._utils.start_pacing import PACE_ABOVE_CONCURRENCY, StartPacer
@@ -117,6 +118,12 @@ from benchflow._warm_pool import (
     warm_pool_size,
 )
 from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.operator_credentials import (
+    CLOUD_FILE_SETTING,
+    TASK_PROCESSES_SETTING,
+    literal_grant,
+    scoped_names,
+)
 from benchflow.budget import (
     CANCELLED_BUDGET_RECORD,
     JOB_BUDGET_RECORDS,
@@ -145,6 +152,7 @@ from benchflow.loop_strategies import (
 from benchflow.models import RolloutResult
 from benchflow.review.options import ReviewerConfig
 from benchflow.run_checks import RunChecks
+from benchflow.sandbox.cloud_metadata import strict_grant
 from benchflow.skill_policy import (
     SKILL_MODE_NO_SKILL,
     SKILL_MODE_SELF_GEN,
@@ -587,6 +595,13 @@ def _check_run_config_values(raw: dict, *, at: Callable[..., str]) -> None:
                 if isinstance(value, str)
                 else f"give {key} a list of strings",
             )
+    pin = raw.get("effort_pin")
+    if pin is not None and not isinstance(pin, bool):
+        raise RunConfigValueError(
+            f"{at('effort_pin')}effort_pin: {pin!r} is not true or false",
+            hint="write effort_pin: true to pin every model call's reasoning effort "
+            "to the run's (what --effort-pin sets)",
+        )
     _whole_number(raw, "concurrency", least=1, at=at)
     _whole_number(raw, "build_concurrency", least=1, at=at)
     _whole_number(raw, "n_tasks", least=1, at=at)
@@ -961,14 +976,15 @@ _USAGE_KEYS = frozenset(
 RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
     {
         "agent", "agent_env", "agent_env_keys", "agent_idle_timeout",
-        "agent_idle_timeout_sec", "allow_cloud_metadata",
+        "agent_idle_timeout_sec", "allow_cloud_credential_file", "allow_task_processes_with_credentials", "scoped_credentials",
+        "allow_cloud_metadata",
         "base_image_override", "budget",
         "build_concurrency", "checkpoint_keep", "checkpoints", "codex_apps_policy",
         "concurrency", "config_override", "context_root", "dataset_name",
         "dataset_task_digests", "dataset_version", "environment",
         "environment_manifest", "exclude", "extra_instruction", "freeze_workspace",
         "fresh_install", "harness", "include", "integrity", "job_mode", "jobs_dir",
-        "keep_sandbox", "accept_deviations",
+        "keep_sandbox", "accept_deviations", "effort_pin",
         "loop_strategy", "max_retries", "model", "n_tasks", "prompts",
         "reasoning_effort", "retry", "retry_from_checkpoint", "retry_prompt",
         "retry_resume_session", "reviewer", "sample_seed", "sandbox_locked_paths",
@@ -984,7 +1000,7 @@ LEGACY_RUN_CONFIG_KEYS: frozenset[str] = _USAGE_KEYS | frozenset(
     {
         "agents", "datasets", "environment", "orchestrator", "n_attempts",
         "jobs_dir", "agent_idle_timeout", "agent_idle_timeout_sec",
-        "allow_cloud_metadata",
+        "allow_cloud_credential_file", "allow_task_processes_with_credentials", "scoped_credentials", "allow_cloud_metadata",
         "base_image_override", "codex_apps_policy", "context_root",
         "fresh_install", "harness", "integrity", "reasoning_effort", "reviewer",
         "sandbox_locked_paths", "sandbox_setup_timeout", "sandbox_user",
@@ -1741,6 +1757,12 @@ _RESUME_SETTINGS = (
     "sandbox_locked_paths",
     # The agent could reach the cloud metadata endpoints.
     "allow_cloud_metadata",
+    # A cloud credential file could be staged in the sandbox.
+    "allow_cloud_credential_file",
+    # A task process could run beside an operator credential in the sandbox.
+    "allow_task_processes_with_credentials",
+    # The operator's own scoped credentials ask nothing of main.
+    "scoped_credentials",
     "verifier_sandbox",
     "base_image_override",
     # Where the verifier runs and what crosses into it (0.7.11's flags).
@@ -2513,6 +2535,13 @@ def _job_record_changes(
         if key not in recorded:
             continue
         old, new = recorded[key], current.get(key)
+        if (
+            key == "scoped_credentials"
+            and isinstance(old, list)
+            and isinstance(new, list)
+        ):
+            # A set of names: the same names in another order are the same.
+            old, new = sorted(set(old)), sorted(set(new))
         if key == "config_override":
             # Stored without its secret-looking values, with the form compared
             # and the paths withheld beside it (overlay_record); an older job
@@ -3101,6 +3130,13 @@ class EvaluationConfig:
     # The agent may reach the cloud metadata endpoints under an open network
     # (``--allow-cloud-metadata``): no block, recorded per trial.
     allow_cloud_metadata: bool = False
+    # A cloud credential file (the gcloud ADC) may be staged in the sandbox
+    # (``--allow-cloud-credential-file``); without it such a run is refused.
+    allow_cloud_credential_file: bool = False
+    # A model agent may start while the task's processes run in main beside
+    # an operator credential (``--allow-task-processes-with-credentials``).
+    allow_task_processes_with_credentials: bool = False
+    scoped_credentials: tuple[str, ...] = ()
     agent_idle_timeout: int | None = 600
     # The run set agent_idle_timeout (--agent-idle-timeout, a config's
     # agent_idle_timeout_sec, a job's record) instead of taking BenchFlow's
@@ -3249,6 +3285,9 @@ class EvaluationConfig:
 
     def __post_init__(self):
         from benchflow._verifier_setup import validate_verifier_setup_timeout
+
+        # The run's grant of a task's cloud metadata opt-out, read strictly.
+        self.allow_cloud_metadata = strict_grant(self.allow_cloud_metadata)
 
         self.verifier_setup_timeout = validate_verifier_setup_timeout(
             self.verifier_setup_timeout, where="verifier_setup_timeout"
@@ -3569,7 +3608,10 @@ def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
     """Every rollout an earlier run of this job left: the result of each
     attempt that wrote one (``result.json``, else the solver snapshot a
     reviewed or interrupted attempt keeps), cancellation spend receipts,
-    and how many legacy interrupted folders have no spend record."""
+    for an attempt that left neither (its run stopped mid-turn: a host reset
+    or a killed process) what its logs show it spent (:func:`~benchflow._utils.attempt_salvage.salvaged_attempt`),
+    and how many interrupted folders have no spend record at all."""
+    from benchflow._utils.attempt_salvage import salvaged_attempt
     from benchflow._utils.result_paths import iter_task_result_paths
     from benchflow.jobs import _interrupted
 
@@ -3625,6 +3667,10 @@ def _recorded_attempts(job_dir: Path) -> tuple[list[dict[str, Any]], int]:
         if any(parent in cancelled for parent in folder.parents):
             continue
         receipt = with_cancelled_budget(folder)
+        if receipt is None and folder.parent == job_dir:
+            # Evaluation attempts live directly below the job; a folder deeper
+            # down (a branch child of an interrupted trial) is not one.
+            receipt = salvaged_attempt(folder)
         if receipt is None:
             without_receipt += 1
         else:
@@ -3654,12 +3700,26 @@ def _spend_all_attempts(job_dir: Path) -> dict[str, Any]:
     """summary.json's ``spend_all_attempts`` (:func:`attempt_spend_summary`)
     from every attempt the job folder records; None when a record of one
     cannot be read (a resume refuses the job then too)."""
+    from benchflow._utils.attempt_salvage import SALVAGED_KEY
+
     try:
-        attempts, _ = _recorded_attempts(job_dir)
+        attempts, unrecorded = _recorded_attempts(job_dir)
     except ValueError as exc:
         logger.warning("summary.json has no spend_all_attempts: %s", exc)
         return {"spend_all_attempts": None}
-    return attempt_spend_summary(attempts)
+    salvaged = sum(1 for row in attempts if row.get(SALVAGED_KEY))
+    if salvaged or unrecorded:
+        logger.warning(
+            "%s: %d attempt(s) ended with no result or receipt (their run "
+            "stopped mid-turn: a host reset or a killed process): %d counted "
+            "from the logs they left, a floor; %d with no record of what they "
+            "spent",
+            job_dir,
+            salvaged + unrecorded,
+            salvaged,
+            unrecorded,
+        )
+    return attempt_spend_summary(attempts, unrecorded=unrecorded)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -3872,6 +3932,9 @@ def _config_from_record(
         )
     for name in ("exclude_tasks", "include_tasks"):
         kwargs[name] = set(raw.get(name) or [])
+    for name in (CLOUD_FILE_SETTING, TASK_PROCESSES_SETTING):
+        kwargs[name] = literal_grant(raw.get(name), where=name)
+    kwargs["scoped_credentials"] = scoped_names(raw.get("scoped_credentials"))
     # The record keeps the overlay the job ran with, minus the values that
     # look secret; those come from the caller's environment, as agent_env's
     # do. A resume that needs them and has none stops here.
@@ -4151,6 +4214,9 @@ class Evaluation:
             "skip_install": cfg.skip_agent_install,
             "fresh_install": cfg.fresh_install,
             "allow_cloud_metadata": cfg.allow_cloud_metadata,
+            "allow_cloud_credential_file": cfg.allow_cloud_credential_file,
+            "allow_task_processes_with_credentials": cfg.allow_task_processes_with_credentials,
+            "scoped_credentials": list(cfg.scoped_credentials),
             "agent_idle_timeout_sec": cfg.agent_idle_timeout,
             "context_root": cfg.context_root,
             "base_image_override": cfg.base_image_override,
@@ -4394,6 +4460,11 @@ class Evaluation:
         )
 
         agent_env_raw = raw.get("agent_env", {})
+        if raw.get("effort_pin"):
+            # The run's switch rides its agent env (benchflow.effort_pin).
+            from benchflow.effort_pin import EFFORT_PIN_ENV, SWITCH_ON
+
+            agent_env_raw = {**(agent_env_raw or {}), EFFORT_PIN_ENV: SWITCH_ON}
         exclude = set(raw.get("exclude", []))
         include = set(raw.get("include", []))
         sandbox_user = raw.get("sandbox_user", "agent")
@@ -4444,7 +4515,16 @@ class Evaluation:
             verifier_setup_timeout=raw.get("verifier_setup_timeout"),
             skip_agent_install=bool(raw.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
-            allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
+            allow_cloud_metadata=strict_grant(raw.get("allow_cloud_metadata")),
+            allow_cloud_credential_file=literal_grant(
+                raw.get("allow_cloud_credential_file"),
+                where="allow_cloud_credential_file",
+            ),
+            allow_task_processes_with_credentials=literal_grant(
+                raw.get("allow_task_processes_with_credentials"),
+                where="allow_task_processes_with_credentials",
+            ),
+            scoped_credentials=scoped_names(raw.get("scoped_credentials")),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -4753,7 +4833,16 @@ class Evaluation:
             verifier_setup_timeout=raw.get("verifier_setup_timeout"),
             skip_agent_install=bool(agent_cfg.get("skip_install", False)),
             fresh_install=bool(raw.get("fresh_install", False)),
-            allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
+            allow_cloud_metadata=strict_grant(raw.get("allow_cloud_metadata")),
+            allow_cloud_credential_file=literal_grant(
+                raw.get("allow_cloud_credential_file"),
+                where="allow_cloud_credential_file",
+            ),
+            allow_task_processes_with_credentials=literal_grant(
+                raw.get("allow_task_processes_with_credentials"),
+                where="allow_task_processes_with_credentials",
+            ),
+            scoped_credentials=scoped_names(raw.get("scoped_credentials")),
             agent_idle_timeout=raw.get(
                 "agent_idle_timeout_sec", raw.get("agent_idle_timeout", 600)
             ),
@@ -5661,6 +5750,11 @@ class Evaluation:
         rollout_config.keep_sandbox = cfg.keep_sandbox
         rollout_config.fresh_install = cfg.fresh_install
         rollout_config.allow_cloud_metadata = cfg.allow_cloud_metadata
+        rollout_config.allow_cloud_credential_file = cfg.allow_cloud_credential_file
+        rollout_config.allow_task_processes_with_credentials = (
+            cfg.allow_task_processes_with_credentials
+        )
+        rollout_config.scoped_credentials = cfg.scoped_credentials
         rollout_config.integrity = cfg.integrity
         rollout_config.verifier_sandbox = effective_verifier_sandbox(
             cfg.verifier_sandbox, cfg.separate_verifier
@@ -5732,6 +5826,20 @@ class Evaluation:
             retryable_verifier_error = cfg.retry.should_retry_verifier_error(
                 result.verifier_error
             )
+            if (retryable_agent_error or retryable_verifier_error) and (
+                verifier_ending_is_final(
+                    result.verifier_error,
+                    getattr(result, "verifier_error_category", None),
+                )
+            ):
+                # R-812: the agent's processes held the output folder, or the
+                # run defeated a check of the reward's provenance. Another
+                # attempt would give the agent a second turn (F4, F29, Q2).
+                logger.info(
+                    f"Not retrying {task_dir.name}: its verifier ended held or "
+                    "with its provenance incomplete"
+                )
+                break
             if (retryable_agent_error or retryable_verifier_error) and getattr(
                 result, "model_refusal", None
             ):
@@ -6823,6 +6931,13 @@ class Evaluation:
             # Not a preflight check: the CLI builds Evaluation(preflight=False),
             # and this refusal must hold there too, before the job folder exists.
             self._check_verifier_sandbox_plan()
+            # So is a task that asks to lift the cloud metadata block on a run
+            # that does not grant it.
+            self._check_task_metadata_opt_ins()
+            # So is a run that would stage a cloud credential file in a
+            # selected task's sandbox without the operator's flag.
+            self._check_cloud_credential_files()
+            self._check_scoped_credentials()
             self._settle_auto_job_name()
             # A job resumed without an idle limit keeps the one it ran with,
             # before the card shows it.
@@ -6898,6 +7013,12 @@ class Evaluation:
         show = {"benchflow_show_live": True}
         for line in card_lines(card, job_dir):
             logger.info(line, extra=show)
+        from benchflow.agents.remote_manifests import core_override
+
+        if (override := core_override(self._config.agent)) is not None:
+            # Never a silent swap: a run of a core agent's name that a local
+            # manifest replaced says so before it starts.
+            logger.warning(override.text(), extra=show)
         findings = reference_findings(card)
         if findings:
             logger.warning(
@@ -6908,6 +7029,28 @@ class Evaluation:
         from benchflow.sandbox.agent_user import start_lines
 
         for line in start_lines(card.get("agent_user") or {}, card["agent"]["name"]):
+            logger.warning(line, extra=show)
+        # The cloud metadata block a task asked to lift and the run granted.
+        from benchflow.sandbox.cloud_metadata import (
+            run_start_lines as metadata_start_lines,
+        )
+
+        for line in metadata_start_lines(card.get("cloud_metadata")):
+            logger.warning(line, extra=show)
+        for task_name, replaced in (card.get("operator_network") or {}).items():
+            logger.warning(
+                f"The run's config override sets the sandbox's network, so for "
+                f"{task_name} it replaces the task's {', '.join(replaced)}: the "
+                "operator's network holds in every phase",
+                extra=show,
+            )
+
+        # The operator's credentials the tasks' trials stage in the sandbox.
+        from benchflow.agents.operator_credentials import (
+            run_start_lines as credential_start_lines,
+        )
+
+        for line in credential_start_lines(card.get("operator_credentials")):
             logger.warning(line, extra=show)
         context = card.get("context") or {}
         if context.get("under_half"):
@@ -6935,6 +7078,7 @@ class Evaluation:
         usage: dict[str, Any] | None = None,
         verifier_network_refusals: int | None = None,
         network_policy_breaches: int | None = None,
+        held_services: dict[str, int] | None = None,
     ) -> None:
         """Add the run's checks, the scoring rule's figures and the trials'
         tokens and cost (summary.json's) to run-card.json
@@ -6950,8 +7094,8 @@ class Evaluation:
         if usage is not None:
             checks = {**checks, "usage": usage}
         if verifier_network_refusals:
-            # Trials whose tests the verifier's network refused: the
-            # job is flagged, on the card and in its log.
+            # Trials whose test.sh the verifier's network refused
+            # something: the job is flagged, on the card and in its log.
             checks = {
                 **checks,
                 "verifier_network_refusals": verifier_network_refusals,
@@ -6960,6 +7104,14 @@ class Evaluation:
                     "verifier_network_refused",
                 ],
             }
+        held = {k: v for k, v in (held_services or {}).items() if v}
+        if held:
+            # Trials with a held compose service that restarted or exited
+            # after start-up: scored, and the job is flagged on the card.
+            checks = dict(
+                checks, warnings=[*(checks.get("warnings") or []), "held_service"]
+            )
+            checks.update(held)
         if network_policy_breaches:
             # Trials whose network rules no longer held: the job is
             # flagged, on the card and in its log.
@@ -7131,6 +7283,97 @@ class Evaluation:
             config_override=cfg.config_override,
             environment_manifest=cfg.environment_manifest,
         )
+
+    def _check_task_metadata_opt_ins(self) -> None:
+        """Refuse, before any job folder or sandbox exists, a run whose
+        selected tasks ask to lift the cloud metadata block (their own
+        ``allow_cloud_metadata = true`` or ``metadata.x-allow-cloud-metadata``)
+        when the run does not grant it (``allow_cloud_metadata``,
+        ``--allow-cloud-metadata``): one error names every such task, its key
+        and the flag. A task can't lift the block by itself."""
+        from benchflow.sandbox.cloud_metadata import (
+            opt_in_refusal,
+            strict_grant,
+            task_dirs_opt_ins,
+        )
+
+        cfg = self._config
+        if strict_grant(cfg.allow_cloud_metadata):
+            return
+        asked = task_dirs_opt_ins(self._get_task_dirs(), cfg.config_override)
+        if asked:
+            raise opt_in_refusal(asked)
+
+    def _check_scoped_credentials(self) -> None:
+        """Refuse, before any job folder or sandbox exists, a
+        ``--scoped-credential`` name the run can't scope: one its resolved
+        agent env doesn't set, or one staged as a file (a login file, the
+        cloud credential file). Each trial's plan gate checks again."""
+        from benchflow.agents import operator_credentials as oc
+        from benchflow.agents.env import resolve_agent_env
+        from benchflow.agents.registry import is_scripted_agent
+
+        cfg = self._config
+        # getattr: a stand-in config names only what its caller reads.
+        scoped = oc.scoped_names(getattr(cfg, oc.SCOPED_SETTING, None))
+        agent = getattr(cfg, "agent", None)
+        if not scoped or not agent or is_scripted_agent(agent):
+            return
+        agent_env = dict(cfg.agent_env or {})
+        with contextlib.suppress(Exception):
+            agent_env = resolve_agent_env(cfg.agent, cfg.model, dict(agent_env))
+        oc.refuse_unscopable(
+            scoped, cfg.agent, cfg.model, agent_env, task_name="the run"
+        )
+
+    def _check_cloud_credential_files(self) -> None:
+        """Refuse, before any job folder or sandbox exists, a run that would
+        stage a cloud credential file (the gcloud ADC) in a selected task's
+        sandbox without ``allow_cloud_credential_file``
+        (``--allow-cloud-credential-file``): the Gemini CLI's own Vertex
+        route, or a Vertex model through the proxy in the sandbox (Daytona,
+        Modal, a task's restricted network). The error names the task, the
+        flag and the proxy on the host. Each trial's plan gate checks again
+        with its resolved environment (``validate_task_plan``)."""
+        from benchflow.agents import operator_credentials as oc
+        from benchflow.agents.registry import is_scripted_agent
+        from benchflow.task.runtime_view import TaskRuntimeView
+
+        cfg = self._config
+        # getattr: a stand-in config names only what its caller reads.
+        allowed = oc.literal_grant(
+            getattr(cfg, oc.CLOUD_FILE_SETTING, False), where=oc.CLOUD_FILE_SETTING
+        )
+        oc.literal_grant(
+            getattr(cfg, oc.TASK_PROCESSES_SETTING, False),
+            where=oc.TASK_PROCESSES_SETTING,
+        )
+        agent = getattr(cfg, "agent", None)
+        # A scripted agent (oracle, nop, script:) stages no credential.
+        if allowed or not agent or is_scripted_agent(agent):
+            return
+        from benchflow.agents.env import resolve_agent_env
+
+        agent_env = dict(cfg.agent_env or {})
+        # Resolved as a trial resolves it: an explicitly passed slot is the
+        # raw command's own (run_card._operator_credentials does the same).
+        with contextlib.suppress(Exception):
+            agent_env = resolve_agent_env(cfg.agent, cfg.model, dict(agent_env))
+        for task_dir in self._get_task_dirs():
+            try:
+                entries = oc.task_entries(
+                    TaskRuntimeView.from_task_dir(task_dir).config,
+                    agent=cfg.agent,
+                    model=cfg.model,
+                    agent_env=agent_env,
+                    environment=cfg.environment,
+                    sandbox_user=cfg.sandbox_user,
+                )
+            except Exception:  # the trial's own gate reports a task that won't load
+                continue
+            oc.refuse_cloud_credential_file(
+                entries, task_name=task_dir.name, allowed=False
+            )
 
     def _check_before_run(self) -> None:
         """The checks bf.run and ``bench eval run`` make before a job exists.
@@ -7802,6 +8045,11 @@ class Evaluation:
             usage={key: summary.get(key) for key in RUN_CARD_USAGE_FIELDS},
             verifier_network_refusals=_refusal_count(summary),
             network_policy_breaches=_breach_count(summary),
+            held_services={
+                key: count
+                for key in ("held_restarts", "held_exits")
+                if isinstance(count := summary.get(key), int)
+            },
         )
         # The job's report: per-task bars with intervals, tries, time, tokens
         # and the sampling the requests carried (benchflow.report).
@@ -7996,7 +8244,8 @@ _STOCK_RUN_SINGLE_TASK = Evaluation._run_single_task
 
 
 def _refusal_count(summary: dict[str, Any]) -> int:
-    """summary.json's count of trials that ended "verifier network refused"."""
+    """summary.json's count of trials whose test.sh the verifier's network
+    refused something (``verifier_network_refusals``)."""
     count = summary.get("verifier_network_refusals")
     return count if isinstance(count, int) else 0
 

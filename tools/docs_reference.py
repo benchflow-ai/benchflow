@@ -3,16 +3,17 @@
 - ``docs/reference/commands.md``: every ``bench`` command, with its arguments
   and options, from the live Typer app. The options ``--help`` leaves out have
   a table of their own, the commands ``bench --help`` hides are listed at the
-  end, and a command or option the 0.9.2 release did not have
-  (``tools/cli_baseline_0.9.2.json``) is labelled ``(0.10)`` when 0.10.0rc3
-  has it (``tools/cli_baseline_0.10.0rc3.json``) and ``(unreleased)`` when no
-  release has it yet.
+  end, and a command or option the current release did not have
+  (``tools/cli_baseline_<BASELINE_RELEASE>.json``) is labelled ``(0.10)`` when
+  the current pre-release has it (``tools/cli_baseline_<PRE_RELEASE>.json``)
+  and ``(unreleased)`` when no release has it yet.
 - ``docs/reference/python.md``: every name in ``benchflow.__all__``, with its
   signature (or fields) and the first paragraph of its docstring. A name,
-  field or argument the 0.9.2 release did not have
-  (``tools/reference_baseline_0.9.2.json``) is labelled ``(0.10)`` or
-  ``(unreleased)`` the same way (``tools/reference_baseline_0.10.0rc3.json``),
-  here and on the next two pages.
+  field or argument the current release did not have
+  (``tools/reference_baseline_<BASELINE_RELEASE>.json``) is labelled ``(0.10)``
+  or ``(unreleased)`` the same way
+  (``tools/reference_baseline_<PRE_RELEASE>.json``), here and on the next two
+  pages.
 - ``docs/reference/cli-python.md``: the tables of ``benchflow.cli_parity``,
   each flag with the Python that does the same.
 - ``docs/reference/files.md``: the ``task.md`` header (``TaskConfig``'s
@@ -21,6 +22,25 @@
   top-level fields.
 - ``docs/versions/changelog.md``: ``CHANGELOG.md``, its links to old docs
   pages moved to their new pages with ``docs/redirects.json``.
+
+What "released" means: a version PyPI serves, as ``tools/published_releases.json``
+records it (each wheel's name and SHA-256 as PyPI lists them, and the hash of
+each baseline made from it). A version that was tagged but never published
+(0.10.0rc4) is not released. The labels compare with two of them:
+
+- ``BASELINE_RELEASE``, the newest final release in the record;
+- ``PRE_RELEASE``, the newest pre-release in the record no newer than this
+  tree's own version (``CURRENT``, read from ``pyproject.toml``).
+
+At a release's cut the tree is a final version newer than every final one in
+the record (``RELEASING``): it is the release. What ``BASELINE_RELEASE`` lacks
+is labelled ``(0.10)``, everything in the tree ships, so nothing is labelled
+``(unreleased)``, and the changelog calls ``CURRENT`` the current release.
+
+Each one's baselines are made from its published wheel, installed in a clean
+venv with that release's constraints file, and their hashes go in the record:
+a baseline and its version change together. ``--check-published`` asks PyPI
+and exits 1 when it serves a release newer than the record names.
 
 The pages are rendered in a fresh interpreter with the fixed environment
 ``tools/cli_help_golden.py`` uses, so they come out the same on every machine.
@@ -35,20 +55,21 @@ from, then regenerate on a build VM with the test environment and read
 
 ``--dump-inventory PATH`` writes every command (hidden ones included) and the
 names of its options, as JSON, for the CLI the running interpreter imports.
-Run with a release's own environment (a venv with that release installed from
-PyPI with its constraints file), it makes the baseline the labels come from::
+Run with a release's own environment (a venv with that release's published
+wheel installed, with its constraints file), it makes the baseline the labels
+come from::
 
-    /path/to/0.9.2/venv/bin/python tools/docs_reference.py \\
-        --dump-inventory tools/cli_baseline_0.9.2.json
+    /path/to/0.10.0rc5/venv/bin/python tools/docs_reference.py \\
+        --dump-inventory tools/cli_baseline_0.10.0rc5.json
 
 ``--dump-names PATH --schemas DIR`` does the same for the Python and files
 pages: the public names with their fields or arguments, the task.md, run
 config and job config keys, and the fields of the schema files in ``DIR``
 (that release's ``docs/reference/schemas``)::
 
-    /path/to/0.9.2/venv/bin/python tools/docs_reference.py \\
-        --dump-names tools/reference_baseline_0.9.2.json \\
-        --schemas /path/to/v0.9.2-checkout/docs/reference/schemas
+    /path/to/0.10.0rc5/venv/bin/python tools/docs_reference.py \\
+        --dump-names tools/reference_baseline_0.10.0rc5.json \\
+        --schemas /path/to/v0.10.0rc5-checkout/docs/reference/schemas
 """
 
 from __future__ import annotations
@@ -56,6 +77,7 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
+import functools
 import inspect
 import json
 import os
@@ -90,21 +112,95 @@ CHANGELOG = REPO / "CHANGELOG.md"
 # Every old docs page and the page it moved to; the changelog's links to old
 # pages are rewritten with it.
 REDIRECTS = REPO / "docs" / "redirects.json"
-# The commands and options of the last release, and the label of what is new
-# since. Remake the file with --dump-inventory from that release's tree.
-BASELINE = REPO / "tools" / "cli_baseline_0.9.2.json"
-BASELINE_RELEASE = "0.9.2"
+# The releases PyPI serves (see the module docstring).
+PUBLISHED = REPO / "tools" / "published_releases.json"
+PYPI_JSON = "https://pypi.org/pypi/benchflow/json"
+
+
+def _project_version() -> str:
+    import tomllib
+
+    return tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"]
+
+
+def published_releases() -> dict[str, dict[str, str]]:
+    """The record: each published version, with its wheel and baselines' hashes."""
+    return json.loads(PUBLISHED.read_text(encoding="utf-8"))["releases"]
+
+
+def released_baselines(current: str) -> tuple[str, str]:
+    """``(BASELINE_RELEASE, PRE_RELEASE)``: the newest published final release,
+    and the newest published pre-release no newer than ``current``."""
+    from packaging.version import Version
+
+    versions = [Version(v) for v in published_releases()]
+    finals = [v for v in versions if not v.is_prerelease]
+    pres = [v for v in versions if v.is_prerelease and v <= Version(current)]
+    return str(max(finals)), str(max(pres))
+
+
+def newer_on_pypi(
+    pypi: dict[str, Any], recorded: set[str] | Sequence[str]
+) -> list[str]:
+    """The versions PyPI serves files for that are newer than every recorded
+    one (nightly ``.dev`` builds aside): the record, and the baselines, are
+    behind."""
+    from packaging.version import InvalidVersion, Version
+
+    newest = max(Version(v) for v in recorded)
+    out = []
+    for name, files in (pypi.get("releases") or {}).items():
+        try:
+            v = Version(name)
+        except InvalidVersion:
+            continue
+        if files and not v.is_devrelease and v > newest and name not in recorded:
+            out.append(name)
+    return sorted(out, key=Version)
+
+
+def releasing(current: str) -> bool:
+    """Whether ``current`` is a final release newer than every published final
+    one: the tree is the release being cut."""
+    from packaging.version import Version
+
+    version = Version(current)
+    finals = [Version(v) for v in published_releases() if not Version(v).is_prerelease]
+    return (
+        not version.is_prerelease
+        and not version.is_devrelease
+        and version > max(finals)
+    )
+
+
+# This tree's version, and the two releases the labels compare with.
+CURRENT = _project_version()
+BASELINE_RELEASE, PRE_RELEASE = released_baselines(CURRENT)
+RELEASING = releasing(CURRENT)
+# What a label's sentence adds after "has `(0.10)` after it".
+_WHEN = (
+    ""
+    if RELEASING
+    else f" when {PRE_RELEASE} has it, or `(unreleased)` when no release has it yet"
+)
 NEW_LABEL = "0.10"
-# The prerelease the NEW_LABEL items shipped in: what it lacks too is in no
-# release yet, and is labelled NEXT_LABEL instead.
-PRE_BASELINE = REPO / "tools" / "cli_baseline_0.10.0rc3.json"
-PRE_RELEASE = "0.10.0rc3"
 NEXT_LABEL = "unreleased"
-# The same release's public Python names and their fields, its task.md and
-# run config keys, and its schema files' fields: what the Python and files
-# pages list beyond them is labelled too. Remake it with --dump-names.
-NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.9.2.json"
-PRE_NAMES_BASELINE = REPO / "tools" / "reference_baseline_0.10.0rc3.json"
+# The release the hand-written notes on what it does differently were checked
+# on (_CHANGED_SINCE, _RUNS_FROM, _RELEASE_DEFAULTS and the commands page's
+# note on `--help`), with its published wheel. When the record moves
+# BASELINE_RELEASE on, tests/test_docs_reference_published.py fails until they
+# are checked again on the new one.
+NOTES_CHECKED_ON = "0.9.3"
+# The commands and options of each: what the current release lacks is
+# labelled NEW_LABEL when the pre-release has it, NEXT_LABEL when it lacks it
+# too. Remake each with --dump-inventory from that release's published wheel.
+BASELINE = REPO / "tools" / f"cli_baseline_{BASELINE_RELEASE}.json"
+PRE_BASELINE = REPO / "tools" / f"cli_baseline_{PRE_RELEASE}.json"
+# The same releases' public Python names and their fields, their task.md and
+# run config keys, and their schema files' fields: what the Python and files
+# pages list beyond them is labelled too. Remake each with --dump-names.
+NAMES_BASELINE = REPO / "tools" / f"reference_baseline_{BASELINE_RELEASE}.json"
+PRE_NAMES_BASELINE = REPO / "tools" / f"reference_baseline_{PRE_RELEASE}.json"
 _SCHEMAS_FROM = "_BENCHFLOW_DOCS_REFERENCE_SCHEMAS"
 REGENERATE = "uv run python tools/docs_reference.py --write"
 _CHILD = "_BENCHFLOW_DOCS_REFERENCE_CHILD"
@@ -230,22 +326,27 @@ def inventory() -> dict[str, list[str]]:
 # Options the baseline release has but that do more since; said in the row, since
 # the option itself is not new. Found by comparing every option's help in 0.9.1
 # and 0.10.0rc1 (the others that changed only say the same thing in other words;
-# 0.9.2's commands and options are 0.9.1's), then 0.9.2's with 0.10.0rc2's.
+# 0.9.2's commands and options are 0.9.1's), then 0.9.2's with 0.10.0rc2's,
+# and again on 0.9.3 (whose commands and options are 0.9.2's): a dry run of
+# a task prints the plan and nothing on stderr.
 _CHANGED_SINCE = {
-    ("bench run", "--dry-run"): "In 0.9.2 it prints the plan only, with no run card.",
+    (
+        "bench run",
+        "--dry-run",
+    ): f"In {NOTES_CHECKED_ON} it prints the plan only, with no run card.",
     (
         "bench eval run",
         "--dry-run",
-    ): "In 0.9.2 it prints the plan only, with no run card.",
+    ): f"In {NOTES_CHECKED_ON} it prints the plan only, with no run card.",
     (
         "bench eval create",
         "--dry-run",
-    ): "In 0.9.2 it prints the plan only, with no run card.",
+    ): f"In {NOTES_CHECKED_ON} it prints the plan only, with no run card.",
     ("bench train convert", "--format"): (
-        "0.9.2 writes prime-sft, trl-sft and branch-tree only."
+        f"{NOTES_CHECKED_ON} writes prime-sft, trl-sft and branch-tree only."
     ),
     ("bench train validate", "--format"): (
-        "0.9.2 and 0.10.0rc2 check prime-sft, trl-sft and branch-tree rows only."
+        f"{NOTES_CHECKED_ON} and 0.10.0rc2 check prime-sft, trl-sft and branch-tree rows only."
     ),
 }
 
@@ -256,6 +357,24 @@ def _tier(in_release: bool, in_prerelease: bool) -> str:
     if in_release:
         return ""
     return f" ({NEW_LABEL})" if in_prerelease else f" ({NEXT_LABEL})"
+
+
+@functools.cache
+def _pre_inventory() -> dict[str, list[str]]:
+    """The pre-release's commands and options; at a release's cut, this tree's
+    own, since all of it ships."""
+    if RELEASING:
+        return json.loads(json.dumps(inventory()))
+    return json.loads(PRE_BASELINE.read_text(encoding="utf-8"))
+
+
+@functools.cache
+def _pre_names() -> dict[str, Any]:
+    """The pre-release's names, keys and schema fields; at a release's cut,
+    this tree's own."""
+    if RELEASING:
+        return json.loads(json.dumps(names_inventory(SCHEMAS)))
+    return json.loads(PRE_NAMES_BASELINE.read_text(encoding="utf-8"))
 
 
 # Defaults the stable release has that the 0.10 line changed (0.10.0rc2 has the new ones): (public name,
@@ -290,7 +409,7 @@ def _new_arguments(since: _Since, name: str, params) -> list[str]:
 def _labels() -> _Labels:
     return _Labels(
         json.loads(BASELINE.read_text(encoding="utf-8")),
-        json.loads(PRE_BASELINE.read_text(encoding="utf-8")),
+        _pre_inventory(),
     )
 
 
@@ -401,7 +520,7 @@ class _Since:
 
     def __init__(self) -> None:
         self.base = json.loads(NAMES_BASELINE.read_text(encoding="utf-8"))
-        self.pre = json.loads(PRE_NAMES_BASELINE.read_text(encoding="utf-8"))
+        self.pre = _pre_names()
 
     @staticmethod
     def _label(known: list[str] | None, pre: list[str] | None, item: str) -> str:
@@ -521,9 +640,9 @@ def _commands_page() -> str:
         "Each `bench` command and flag has its type, default and help here; `benchflow` is "
         "the same command as `bench`. "
         f"A command or flag new since {BASELINE_RELEASE} has `({NEW_LABEL})` after its "
-        f"name when {PRE_RELEASE} has it, or `({NEXT_LABEL})` when no release has it yet; the options `--help` leaves out have a table of their own under their "
+        f"name{_WHEN}; the options `--help` leaves out have a table of their own under their "
         f"command, and [the commands `bench --help` hides](#{_slug(hidden_section)}) come last. "
-        f"Which options `--help` leaves out follows {PRE_RELEASE}: 0.9.2's `bench run --help` also leaves out "
+        f"Which options `--help` leaves out follows {CURRENT if RELEASING else PRE_RELEASE}: {NOTES_CHECKED_ON}'s `bench run --help` also leaves out "
         "`--trials`, `--max-cost-usd`, `--max-tokens` and `--integrity`, which its `--help-all` lists. "
         "To see the commands at work, start with the [Quick start](../start/quick-start.md) "
         "and [Run a benchmark](../evaluate/run-a-benchmark.md); a run config's keys are in "
@@ -757,8 +876,7 @@ def _python_page() -> str:
         "Each public name in the `benchflow` package (`benchflow.__all__`) has its signature "
         "or fields, the methods BenchFlow defines on it, and the first paragraph of "
         "its docstring. A name, field, argument or method new "
-        f"since {BASELINE_RELEASE} has `({NEW_LABEL})` after it when {PRE_RELEASE} has it, "
-        f"or `({NEXT_LABEL})` when no release has it yet.",
+        f"since {BASELINE_RELEASE} has `({NEW_LABEL})` after it{_WHEN}.",
         "",
         _GENERATED.format(
             source="docstring or signature in the code", regenerate=REGENERATE
@@ -904,8 +1022,7 @@ def _cli_python_page() -> str:
             "for the reason given. `bench run` takes the flags of `bench eval run`, some "
             "under shorter names: [Commands](./commands.md) has both, and "
             "[Python API](./python.md) every public name. A command or flag new since "
-            f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it when {PRE_RELEASE} has it, "
-            f"or `({NEXT_LABEL})` when no release has it yet.",
+            f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it{_WHEN}.",
             "",
             "<!-- This page is generated from src/benchflow/cli_parity.py by "
             "tools/docs_reference.py; tests/test_cli_python_parity.py fails when a "
@@ -1107,18 +1224,28 @@ def _section_heading(path: str) -> str:
 
 # What a release reads but does not run: said beside the key, since the
 # key itself is not new. Checked by running a multi-step task on 0.9.2 and
-# 0.10.0rc2, and by checking a task.md that sets `verifier.type` on 0.9.2.
+# 0.10.0rc2, and by checking a task.md that sets `verifier.type` on 0.9.2;
+# both again on 0.9.3, which refuses them the same way.
 _RUNS_FROM = {
-    ("", "steps"): "0.9.2 reads this key but refuses to run a task that has it "
+    (
+        "",
+        "steps",
+    ): f"{NOTES_CHECKED_ON} reads this key but refuses to run a task that has it "
     "(`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc2.",
     ("", "multi_step_reward_strategy"): "Used only by a task with `steps`, which "
     "runs on 0.10.0rc2.",
-    ("verifier", "type"): "In `task.md`, 0.9.2's `bench check` and `bench run` refuse "
+    (
+        "verifier",
+        "type",
+    ): f"In `task.md`, {NOTES_CHECKED_ON}'s `bench check` and `bench run` refuse "
     "`llm-judge` (no runnable verifier entrypoint); a verifier document grades with a model "
     "instead ([LLM judge](../tasks/llm-judge.md)).",
-    ("verifier", "judge"): "Read only with `type: llm-judge`, which 0.9.2 refuses in "
+    (
+        "verifier",
+        "judge",
+    ): f"Read only with `type: llm-judge`, which {NOTES_CHECKED_ON} refuses in "
     "`task.md` ([LLM judge](../tasks/llm-judge.md)).",
-    ("verifier.judge", "model"): "0.9.2 defaults to `claude-sonnet-4-6`.",
+    ("verifier.judge", "model"): f"{NOTES_CHECKED_ON} defaults to `claude-sonnet-4-6`.",
 }
 
 
@@ -1276,8 +1403,7 @@ def _task_md_part() -> list[str]:
         "instruction is below it. Each table below is one key's settings, with the type, "
         "default and description the code gives them. A key is optional unless the table "
         "says required, and a key the header doesn't know is refused. A key new since "
-        f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it when {PRE_RELEASE} has it, "
-        f"or `({NEXT_LABEL})` when no release has it yet.",
+        f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it{_WHEN}.",
         "",
         "| Key | Type | Default | Description |",
         "|---|---|---|---|",
@@ -1484,9 +1610,7 @@ def _run_config_part() -> list[str]:
     loader = _Loader()
     since = _Since()
     run_flags = json.loads(BASELINE.read_text(encoding="utf-8")).get("bench eval run")
-    pre_flags = json.loads(PRE_BASELINE.read_text(encoding="utf-8")).get(
-        "bench eval run"
-    )
+    pre_flags = _pre_inventory().get("bench eval run")
 
     def new_flag(flag: str) -> str:
         return since._label(run_flags, pre_flags, flag)
@@ -1553,8 +1677,7 @@ def _run_config_part() -> list[str]:
         "`sandbox` is read as `environment`; and a key not in this table is refused, "
         "with the closest one. The flag column names the flag that sets the same "
         "thing, and the help is that flag's. A key new since "
-        f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it when {PRE_RELEASE} has it, "
-        f"or `({NEXT_LABEL})` when no release has it yet.",
+        f"{BASELINE_RELEASE} has `({NEW_LABEL})` after it{_WHEN}.",
         "",
         "| Key | Flag | Default | Help |",
         "|---|---|---|---|",
@@ -1624,8 +1747,7 @@ def _schemas_part() -> list[str]:
         "",
         "The JSON documents BenchFlow writes, one section per schema file in "
         "[`schemas/`](./schemas/), with each document's top-level fields. A schema or "
-        f"field new since {BASELINE_RELEASE} has `({NEW_LABEL})` after it when {PRE_RELEASE} "
-        f"has it, or `({NEXT_LABEL})` when no release has it yet.",
+        f"field new since {BASELINE_RELEASE} has `({NEW_LABEL})` after it{_WHEN}.",
     ]
     for path in sorted(SCHEMAS.glob("*.json")):
         schema = json.loads(path.read_text(encoding="utf-8"))
@@ -1895,10 +2017,15 @@ def _changelog_page() -> str:
     )
     return (
         "# Changelog\n\n"
-        f"What changed in each BenchFlow release: {BASELINE_RELEASE} is the current release, and "
-        f"{PRE_RELEASE} the current release candidate. Under `[0.10.0rc1]` are the changes its wheel has; the "
+        "What changed in each BenchFlow release: "
+        + (
+            f"{CURRENT} is the current release, and {BASELINE_RELEASE} the one before it."
+            if RELEASING
+            else f"{BASELINE_RELEASE} is the current release, and {PRE_RELEASE} the current release candidate."
+        )
+        + " Under `[0.10.0rc1]` are the changes its wheel has; the "
         f"ones CHANGELOG.md also lists there but that came after the wheel are {where}. "
-        f"[What's in {PRE_RELEASE}](./0.10.md) walks through what 0.10 adds.\n\n"
+        f"[What's in {CURRENT if RELEASING else PRE_RELEASE}](./0.10.md) walks through what 0.10 adds.\n\n"
         "<!-- This page is generated from the repository's CHANGELOG.md by "
         "tools/docs_reference.py; to change it, change that file, then run "
         f"`{REGENERATE}`. -->\n\n" + _mdx_safe(body, PAGES["changelog"]) + "\n"
@@ -2057,6 +2184,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     group.add_argument("--write", action="store_true", help="write the pages")
     group.add_argument("--check", action="store_true", help="exit 1 if a page is stale")
     group.add_argument(
+        "--check-published",
+        action="store_true",
+        help="exit 1 when PyPI serves a release newer than tools/published_releases.json",
+    )
+    group.add_argument(
         "--dump-inventory",
         metavar="PATH",
         type=Path,
@@ -2077,6 +2209,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="the schema files of the release --dump-names describes",
     )
     args = parser.parse_args(argv)
+    if args.check_published:
+        import urllib.request
+
+        with urllib.request.urlopen(PYPI_JSON, timeout=30) as answer:
+            newer = newer_on_pypi(json.loads(answer.read()), set(published_releases()))
+        for version in newer:
+            print(
+                f"PyPI serves benchflow {version}, newer than tools/published_releases.json: "
+                "record it, make its baselines from its wheel, and regenerate the pages"
+            )
+        return 1 if newer else 0
     if args.dump_inventory:
         args.dump_inventory.write_text(_child("inventory"), encoding="utf-8")
         return 0

@@ -385,11 +385,16 @@ class TestCreateEnvironment:
 
         calls = {}
 
+        class FakeBuilt:
+            def run_commands(self, *commands):
+                calls.setdefault("run_commands", []).extend(commands)
+                return self
+
         class FakeImage:
             @staticmethod
             def from_dockerfile(path, **kwargs):
                 calls["from_dockerfile"] = {"path": path, **kwargs}
-                return "image"
+                return FakeBuilt()
 
         class FakeLookup:
             @staticmethod

@@ -232,3 +232,106 @@ async def test_a_path_the_solution_env_sets_is_kept(tmp_path: Path) -> None:
     solve = env.exec.call_args_list[0]
     assert solve.args[0].startswith("bash /solution/solve.sh")
     assert solve.kwargs["env"]["PATH"] == "/opt/tool/bin:/usr/bin:/bin"
+
+
+def _receipt_env(shown: dict[str, str]) -> MagicMock:
+    """An env whose receipt reads answer as a sandbox would: the workspace
+    step's ``BF workspace-mode`` line (*shown*: the mode by the step's chmod),
+    every other command answering 0 with no output."""
+    from benchflow.sandbox._exec_receipt import encode_receipt, unwrap_receipt_command
+
+    env = _env()
+
+    async def answers(cmd, **kwargs):
+        unwrapped = unwrap_receipt_command(cmd)
+        if unwrapped is None:
+            return MagicMock(return_code=0, stdout="")
+        inner, nonce = unwrapped
+        out = "".join(
+            f"BF workspace-mode {mode} 0 /root\n"
+            for chmod, mode in shown.items()
+            if chmod in inner
+        )
+        return MagicMock(
+            return_code=0, stdout=encode_receipt(out.encode(), 0, nonce), stderr=""
+        )
+
+    env.exec = AsyncMock(side_effect=answers)
+    return env
+
+
+@pytest.mark.asyncio
+async def test_a_root_oracle_gets_the_granted_workspace_mode_back_first(
+    tmp_path: Path,
+) -> None:
+    """#1249: a workspace the grant made sticky loses group and other write
+    before a root solve.sh and gets the grant's 1777 back after it; an oracle
+    that runs as the task's [agent].user keeps the grant (row A2's unit)."""
+    from benchflow._runtime_tree import WORKSPACE_MODE_ATTR
+    from benchflow.rollout._setup import _run_oracle
+
+    env = _receipt_env({"chmod go-w /root": "1755", "chmod 1777 /root": "1777"})
+    setattr(env, WORKSPACE_MODE_ATTR, {"/root": "700"})
+    await _run_oracle(env, _task(tmp_path / "root"), timeout=30)
+    commands = [c.args[0] for c in env.exec.call_args_list]
+    solve = next(i for i, c in enumerate(commands) if "solve.sh" in c)
+    assert "chmod go-w /root" in "\n".join(commands[:solve])
+    assert "chmod 1777 /root" in "\n".join(commands[solve + 1 :])
+    assert "chmod 700" not in "\n".join(commands)
+
+    env = _receipt_env({"chmod go-w /root": "1755", "chmod 1777 /root": "1777"})
+    setattr(env, WORKSPACE_MODE_ATTR, {"/root": "700"})
+    await _run_oracle(
+        env, _task(tmp_path / "user", '[agent]\nuser = "agent"\n'), timeout=30
+    )
+    assert not any("chmod go-w /root" in c.args[0] for c in env.exec.call_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shown",
+    [{}, {"chmod go-w /root": "1777"}],
+    ids=["nothing-shown", "still-1777"],
+)
+async def test_a_root_oracles_restore_that_does_not_take_is_a_trial_error(
+    tmp_path: Path, shown: dict[str, str]
+) -> None:
+    """Row A1's check: the step before a root solve.sh shows the mode it
+    left; none shown, or group and other write still there, fails the oracle
+    before solve.sh runs, never a quiet 0, and the grant's mode is still
+    asked back.
+
+    Mutant: ignore what the step shows."""
+    from benchflow._runtime_tree import WORKSPACE_MODE_ATTR
+    from benchflow.rollout._setup import _run_oracle
+
+    env = _receipt_env(shown)
+    setattr(env, WORKSPACE_MODE_ATTR, {"/root": "700"})
+    with pytest.raises(
+        RuntimeError, match=r"Verifier hardening failed: .* before solve\.sh"
+    ):
+        await _run_oracle(env, _task(tmp_path), timeout=30)
+    commands = [c.args[0] for c in env.exec.call_args_list]
+    assert not any("solve.sh" in c for c in commands)
+    assert "chmod 1777 /root" in commands[-1]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_user_oracle_gets_the_grant_back_after_a_verify(
+    tmp_path: Path,
+) -> None:
+    """Row S4 (unit): an oracle that runs as the task's [agent].user, after a
+    step's verify took group and other write (a multi-step task), gets the
+    grant's 1777 back before its solve.sh.
+
+    Mutant: no re-open for an [agent].user oracle."""
+    from benchflow._runtime_tree import WORKSPACE_CLOSED_ATTR
+    from benchflow.rollout._setup import _run_oracle
+
+    env = _receipt_env({"chmod 1777 /root": "1777"})
+    setattr(env, WORKSPACE_CLOSED_ATTR, {"/root": "700"})
+    await _run_oracle(env, _task(tmp_path, '[agent]\nuser = "agent"\n'), timeout=30)
+    commands = [c.args[0] for c in env.exec.call_args_list]
+    solve = next(i for i, c in enumerate(commands) if "solve.sh" in c)
+    assert "chmod 1777 /root" in "\n".join(commands[:solve])
+    assert getattr(env, WORKSPACE_CLOSED_ATTR) is None

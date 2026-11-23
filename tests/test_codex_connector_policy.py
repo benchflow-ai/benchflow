@@ -363,6 +363,9 @@ asyncio.run(main())
         env={
             **os.environ,
             "BENCHFLOW_AGENTS_DIR": str(manifest.parent),
+            # A differing core-named manifest applies only when asked for by
+            # name; the policy must still refuse its launcher.
+            "BENCHFLOW_AGENTS_OVERRIDE_CORE": "1",
             "PYTHONPATH": str(PACKAGE_ROOT.parent),
         },
         capture_output=True,

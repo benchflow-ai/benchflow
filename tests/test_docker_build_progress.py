@@ -61,6 +61,34 @@ async def test_a_slow_build_is_announced_with_a_heartbeat_and_its_time(
 
 
 @pytest.mark.asyncio
+async def test_a_slow_build_that_fails_never_says_it_was_built(
+    tmp_path, monkeypatch, caplog
+):
+    """Release loop run b33: the build failed and the log still said "Built the
+    task image for perf-f-task in 11 s"."""
+    monkeypatch.setattr(d, "_BUILD_ANNOUNCE_AFTER_SEC", 0.05, raising=False)
+    monkeypatch.setattr(d, "_BUILD_HEARTBEAT_SEC", 0.05, raising=False)
+    env = sandbox(tmp_path, "docker")
+
+    async def failing_build(args, check=True, timeout_sec=None):
+        await asyncio.sleep(0.2)
+        raise RuntimeError("Docker compose command failed: no space for this test")
+
+    env._run_docker_compose_command = failing_build
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError):
+        await env._run_docker_compose_build()
+
+    messages = _messages(caplog)
+    name = env.environment_name
+    assert not [m for m in messages if m.startswith("Built the task image")], messages
+    assert any(
+        m.startswith(f"The task image for {name} did not build (after ")
+        for m in messages
+    ), messages
+    assert getattr(env, "image_build", "") == ""
+
+
+@pytest.mark.asyncio
 async def test_a_cached_rebuild_stays_quiet(tmp_path, caplog):
     env = sandbox(tmp_path, "docker")
 

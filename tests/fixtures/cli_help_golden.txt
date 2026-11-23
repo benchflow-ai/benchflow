@@ -31,13 +31,14 @@
 ╭─ This machine ───────────────────────────────────────────────────────────────────────────────────╮
 │ doctor          Check this machine can run evals: Python/uv, sandbox, agent credentials,         │
 │                 network.                                                                         │
-│ agents          List the agents, or show one in detail.                                          │
+│ agents          List the agents, show one in detail, or validate a manifest.                     │
 │ explain         Explain why a trial has no score: what happened, whose problem, what next.       │
 │ cache           List or clean what BenchFlow keeps: cached layers, build records, snapshots.     │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ More ───────────────────────────────────────────────────────────────────────────────────────────╮
 │ eval            Run agents on tasks (smoke, run) and read the results (metrics, view, inspect,   │
 │                 compare).                                                                        │
+│ resume          Finish an interrupted job from its folder: rerun only the unfinished tasks.      │
 │ tasks           Task authoring commands.                                                         │
 │ agent           Agent management commands.                                                       │
 │ review          Grade finished rollouts against a rubric with a reviewer agent.                  │
@@ -96,53 +97,77 @@
 │ *    task_dir      PATH  Task directory or folder of tasks [required]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --level                   [schema|structural|runtime-capabil  Validation level: schema,          │
-│                           ity|publication-grade|acceptance|a  structural, runtime-capability,    │
-│                           cceptance-live|equivalence]         publication-grade, acceptance,     │
-│                                                               acceptance-live, or equivalence    │
-│                                                               (runs the oracle in --sandbox,     │
-│                                                               then grades wrong and              │
-│                                                               value-equivalent variants of its   │
-│                                                               output)                            │
-│                                                               [default: structural]              │
-│ --sandbox                 TEXT                                Validate runtime semantics for     │
-│                                                               docker, remote-docker, daytona,    │
-│                                                               modal, apple-container, or         │
-│                                                               agentcore (default: a sandbox that │
-│                                                               can run the task: docker, or modal │
-│                                                               for a task that asks for GPUs)     │
-│ --report-output           PATH                                Write the acceptance-live report   │
-│                                                               to this host path instead of the   │
-│                                                               task-declared report path; with    │
-│                                                               --level equivalence, write the     │
-│                                                               battery's JSON report here         │
-│ --no-report-write                                             Validate acceptance-live without   │
-│                                                               writing the declared report or its │
-│                                                               .sha256 sidecar (report-only       │
-│                                                               dogfood; leaves the task package   │
-│                                                               unmodified). Takes precedence over │
-│                                                               --report-output.                   │
-│ --allow-task-env          TEXT                                Let tasks read this variable of    │
-│                                                               your environment (a ${NAME} env    │
-│                                                               value, or their                    │
-│                                                               docker-compose.yaml); repeatable.  │
-│                                                               A task reading an unnamed one is   │
-│                                                               refused; ${NAME:-default} gets the │
-│                                                               default                            │
-│ --verifier-sandbox        TEXT                                With separate: also check what     │
-│                                                               `bench run --verifier-sandbox      │
-│                                                               separate` checks before it starts  │
-│                                                               (on --sandbox, default docker),    │
-│                                                               with the same refusals, and name   │
-│                                                               where the verifier image comes     │
-│                                                               from                               │
-│ --agent                   TEXT                                Agent to validate, as for eval run │
-│                                                               [default: claude-agent-acp]        │
-│ --model                   TEXT                                Model to validate, as for eval run │
-│ --sandbox-user            TEXT                                Agent user to validate, as for     │
-│                                                               eval run                           │
-│                                                               [default: agent]                   │
-│ --help                                                        Show this message and exit.        │
+│ --level                              [schema|structural|runtime-c  Validation level: schema,     │
+│                                      apability|publication-grade|  structural,                   │
+│                                      acceptance|acceptance-live|e  runtime-capability,           │
+│                                      quivalence]                   publication-grade,            │
+│                                                                    acceptance, acceptance-live,  │
+│                                                                    or equivalence (runs the      │
+│                                                                    oracle in --sandbox, then     │
+│                                                                    grades wrong and              │
+│                                                                    value-equivalent variants of  │
+│                                                                    its output)                   │
+│                                                                    [default: structural]         │
+│ --sandbox                            TEXT                          Validate runtime semantics    │
+│                                                                    for docker, remote-docker,    │
+│                                                                    daytona, modal,               │
+│                                                                    apple-container, or agentcore │
+│                                                                    (default: a sandbox that can  │
+│                                                                    run the task: docker, or      │
+│                                                                    modal for a task that asks    │
+│                                                                    for GPUs)                     │
+│ --report-output                      PATH                          Write the acceptance-live     │
+│                                                                    report to this host path      │
+│                                                                    instead of the task-declared  │
+│                                                                    report path; with --level     │
+│                                                                    equivalence, write the        │
+│                                                                    battery's JSON report here    │
+│ --no-report-write                                                  Validate acceptance-live      │
+│                                                                    without writing the declared  │
+│                                                                    report or its .sha256 sidecar │
+│                                                                    (report-only dogfood; leaves  │
+│                                                                    the task package unmodified). │
+│                                                                    Takes precedence over         │
+│                                                                    --report-output.              │
+│ --allow-task-env                     TEXT                          Let tasks read this variable  │
+│                                                                    of your environment (a        │
+│                                                                    ${NAME} env value, or their   │
+│                                                                    docker-compose.yaml);         │
+│                                                                    repeatable. A task reading an │
+│                                                                    unnamed one is refused;       │
+│                                                                    ${NAME:-default} gets the     │
+│                                                                    default                       │
+│ --verifier-sandbox                   TEXT                          With separate: also check     │
+│                                                                    what `bench run               │
+│                                                                    --verifier-sandbox separate`  │
+│                                                                    checks before it starts (on   │
+│                                                                    --sandbox, default docker),   │
+│                                                                    with the same refusals, and   │
+│                                                                    name where the verifier image │
+│                                                                    comes from                    │
+│ --agent                              TEXT                          Agent to validate, as for     │
+│                                                                    eval run                      │
+│                                                                    [default: claude-agent-acp]   │
+│ --model                              TEXT                          Model to validate, as for     │
+│                                                                    eval run                      │
+│ --sandbox-user                       TEXT                          Agent user to validate, as    │
+│                                                                    for eval run                  │
+│                                                                    [default: agent]              │
+│ --allow-cloud-credential-file                                      Let a cloud credential file   │
+│                                                                    (the gcloud application       │
+│                                                                    default credentials) be       │
+│                                                                    staged in the sandbox: the    │
+│                                                                    Gemini CLI's own Vertex       │
+│                                                                    route, or a Vertex model      │
+│                                                                    through a proxy that runs in  │
+│                                                                    the sandbox. Each trial       │
+│                                                                    records it. Without it such a │
+│                                                                    run is refused before it      │
+│                                                                    starts; the proxy on the host │
+│                                                                    (Docker, `public`) keeps the  │
+│                                                                    file out of the sandbox and   │
+│                                                                    needs no flag                 │
+│ --help                                                             Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -270,6 +295,10 @@
 │                                                                   run card would refuse the run  │
 │ --quiet                          -q                               Print only warnings, errors    │
 │                                                                   and the final score            │
+│ --verbose                                                         The full scoring footer and    │
+│                                                                   debug logs too                 │
+│ --json                                                            One JSON result on stdout; all │
+│                                                                   else on stderr                 │
 │ --config,--run-config                                    PATH     YAML run-config file (the      │
 │                                                                   whole run spec)                │
 │ --source-repo                                            TEXT     GitHub repo of the tasks as    │
@@ -298,7 +327,16 @@
 │                                                                   sample, 17-19% of honest       │
 │                                                                   reference runs score 0 in      │
 │                                                                   strict because of what strict  │
-│                                                                   transfers) or off. Verdict:    │
+│                                                                   transfers) or off. In audit    │
+│                                                                   and off, a non-root agent      │
+│                                                                   scores 0 when its reward check │
+│                                                                   doesn't complete               │
+│                                                                   (provenance_incomplete), and a │
+│                                                                   trial where bfx can't run is   │
+│                                                                   refused before the agent's     │
+│                                                                   turn (integrity_unavailable);  │
+│                                                                   `bench explain` has both.      │
+│                                                                   Verdict:                       │
 │                                                                   integrity/claim_verdict.json.  │
 │ --max-cost-usd                                           FLOAT    Job budget in USD, judges'     │
 │                                                                   included, checked between      │
@@ -327,7 +365,7 @@
 │ --help                                                            Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
                                                                                                     
- 89 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
+ 93 more run settings (run configs, budgets, hosted environments, checkpoints, publishing): bench   
  run --help-all                                                                                     
                                                                                                     
 
@@ -527,6 +565,59 @@
 │ --agent-env                                         TEXT                  Agent env var          │
 │                                                                           (KEY=VALUE);           │
 │                                                                           repeatable             │
+│ --allow-cloud-credenti…                                                   Let a cloud credential │
+│                                                                           file (the gcloud       │
+│                                                                           application default    │
+│                                                                           credentials) be staged │
+│                                                                           in the sandbox: the    │
+│                                                                           Gemini CLI's own       │
+│                                                                           Vertex route, or a     │
+│                                                                           Vertex model through a │
+│                                                                           proxy that runs in the │
+│                                                                           sandbox. Each trial    │
+│                                                                           records it. Without it │
+│                                                                           such a run is refused  │
+│                                                                           before it starts; the  │
+│                                                                           proxy on the host      │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps the file out of  │
+│                                                                           the sandbox and needs  │
+│                                                                           no flag                │
+│ --allow-task-processes…                                                   Start a model agent    │
+│                                                                           whose operator         │
+│                                                                           credentials go into    │
+│                                                                           the sandbox (a         │
+│                                                                           subscription login,    │
+│                                                                           its own API key, or a  │
+│                                                                           key the proxy in the   │
+│                                                                           sandbox holds) while   │
+│                                                                           the task's own         │
+│                                                                           processes run in main, │
+│                                                                           where they could read  │
+│                                                                           them. Each trial       │
+│                                                                           records it. Without it │
+│                                                                           such a trial is        │
+│                                                                           refused before         │
+│                                                                           anything is staged;    │
+│                                                                           the proxy on the host  │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps an API key out   │
+│                                                                           of the sandbox         │
+│ --scoped-credential                                 TEXT                  Name a credential      │
+│                                                                           variable that is this  │
+│                                                                           run's own (a per-run   │
+│                                                                           token, not one of your │
+│                                                                           logins or keys):       │
+│                                                                           repeatable. It still   │
+│                                                                           goes into the sandbox  │
+│                                                                           and each trial records │
+│                                                                           it, but a task process │
+│                                                                           in main is not refused │
+│                                                                           for it. Refused before │
+│                                                                           the run starts when    │
+│                                                                           the agent's env does   │
+│                                                                           not set it, or when it │
+│                                                                           is staged as a file    │
 │ --include                                           TEXT                  Only these task names; │
 │                                                                           repeatable             │
 │ --jobs-dir                                          PATH                  Output directory       │
@@ -707,12 +798,13 @@
 
 ==> bench agents --help <==
                                                                                                     
- Usage: bench agents [OPTIONS] [NAME]                                                               
+ Usage: bench agents [OPTIONS] [NAME] [PATH]                                                        
                                                                                                     
- List the agents, or show one in detail.                                                            
+ List the agents, show one in detail, or validate a manifest.                                       
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│   name      [NAME]  Show this agent in detail                                                    │
+│   name      [NAME]  Show this agent in detail; or validate <manifest.toml>                       │
+│   path      [PATH]  With validate: the manifest.toml (or its folder) to check                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                                      │
@@ -1069,11 +1161,51 @@
 │ --allow-cloud-metadata                                          Let the agent reach the cloud    │
 │                                                                 metadata endpoints under an open │
 │                                                                 network (no block; each trial    │
-│                                                                 records the opt-out). Without    │
-│                                                                 it, or the task's                │
-│                                                                 allow_cloud_metadata = true, the │
-│                                                                 agent starts only once the block │
-│                                                                 is proven on                     │
+│                                                                 records the opt-out), and grant  │
+│                                                                 a task's own                     │
+│                                                                 allow_cloud_metadata key, which  │
+│                                                                 lifts the block for every        │
+│                                                                 process of its trials. Without   │
+│                                                                 it the agent starts only once    │
+│                                                                 the block is proven on, and a    │
+│                                                                 task that sets that key is       │
+│                                                                 refused before it starts         │
+│ --allow-cloud-credential-file                                   Let a cloud credential file (the │
+│                                                                 gcloud application default       │
+│                                                                 credentials) be staged in the    │
+│                                                                 sandbox: the Gemini CLI's own    │
+│                                                                 Vertex route, or a Vertex model  │
+│                                                                 through a proxy that runs in the │
+│                                                                 sandbox. Each trial records it.  │
+│                                                                 Without it such a run is refused │
+│                                                                 before it starts; the proxy on   │
+│                                                                 the host (Docker, `public`)      │
+│                                                                 keeps the file out of the        │
+│                                                                 sandbox and needs no flag        │
+│ --allow-task-processes-with-cr…                                 Start a model agent whose        │
+│                                                                 operator credentials go into the │
+│                                                                 sandbox (a subscription login,   │
+│                                                                 its own API key, or a key the    │
+│                                                                 proxy in the sandbox holds)      │
+│                                                                 while the task's own processes   │
+│                                                                 run in main, where they could    │
+│                                                                 read them. Each trial records    │
+│                                                                 it. Without it such a trial is   │
+│                                                                 refused before anything is       │
+│                                                                 staged; the proxy on the host    │
+│                                                                 (Docker, `public`) keeps an API  │
+│                                                                 key out of the sandbox           │
+│ --scoped-credential                      TEXT                   Name a credential variable that  │
+│                                                                 is this run's own (a per-run     │
+│                                                                 token, not one of your logins or │
+│                                                                 keys): repeatable. It still goes │
+│                                                                 into the sandbox and each trial  │
+│                                                                 records it, but a task process   │
+│                                                                 in main is not refused for it.   │
+│                                                                 Refused before the run starts    │
+│                                                                 when the agent's env does not    │
+│                                                                 set it, or when it is staged as  │
+│                                                                 a file                           │
 │ --integrity                              TEXT                   audit (default: test.sh as       │
 │                                                                 written, the agent's actions     │
 │                                                                 checked), strict (also a         │
@@ -1082,7 +1214,15 @@
 │                                                                 sample, 17-19% of honest         │
 │                                                                 reference runs score 0 in strict │
 │                                                                 because of what strict           │
-│                                                                 transfers) or off. Verdict:      │
+│                                                                 transfers) or off. In audit and  │
+│                                                                 off, a non-root agent scores 0   │
+│                                                                 when its reward check doesn't    │
+│                                                                 complete                         │
+│                                                                 (provenance_incomplete), and a   │
+│                                                                 trial where bfx can't run is     │
+│                                                                 refused before the agent's turn  │
+│                                                                 (integrity_unavailable); `bench  │
+│                                                                 explain` has both. Verdict:      │
 │                                                                 integrity/claim_verdict.json.    │
 │ --verifier-sandbox                       TEXT                   task (default: each task's own   │
 │                                                                 choice) or separate: every       │
@@ -1586,11 +1726,51 @@
 │ --allow-cloud-metadata                                          Let the agent reach the cloud    │
 │                                                                 metadata endpoints under an open │
 │                                                                 network (no block; each trial    │
-│                                                                 records the opt-out). Without    │
-│                                                                 it, or the task's                │
-│                                                                 allow_cloud_metadata = true, the │
-│                                                                 agent starts only once the block │
-│                                                                 is proven on                     │
+│                                                                 records the opt-out), and grant  │
+│                                                                 a task's own                     │
+│                                                                 allow_cloud_metadata key, which  │
+│                                                                 lifts the block for every        │
+│                                                                 process of its trials. Without   │
+│                                                                 it the agent starts only once    │
+│                                                                 the block is proven on, and a    │
+│                                                                 task that sets that key is       │
+│                                                                 refused before it starts         │
+│ --allow-cloud-credential-file                                   Let a cloud credential file (the │
+│                                                                 gcloud application default       │
+│                                                                 credentials) be staged in the    │
+│                                                                 sandbox: the Gemini CLI's own    │
+│                                                                 Vertex route, or a Vertex model  │
+│                                                                 through a proxy that runs in the │
+│                                                                 sandbox. Each trial records it.  │
+│                                                                 Without it such a run is refused │
+│                                                                 before it starts; the proxy on   │
+│                                                                 the host (Docker, `public`)      │
+│                                                                 keeps the file out of the        │
+│                                                                 sandbox and needs no flag        │
+│ --allow-task-processes-with-cr…                                 Start a model agent whose        │
+│                                                                 operator credentials go into the │
+│                                                                 sandbox (a subscription login,   │
+│                                                                 its own API key, or a key the    │
+│                                                                 proxy in the sandbox holds)      │
+│                                                                 while the task's own processes   │
+│                                                                 run in main, where they could    │
+│                                                                 read them. Each trial records    │
+│                                                                 it. Without it such a trial is   │
+│                                                                 refused before anything is       │
+│                                                                 staged; the proxy on the host    │
+│                                                                 (Docker, `public`) keeps an API  │
+│                                                                 key out of the sandbox           │
+│ --scoped-credential                      TEXT                   Name a credential variable that  │
+│                                                                 is this run's own (a per-run     │
+│                                                                 token, not one of your logins or │
+│                                                                 keys): repeatable. It still goes │
+│                                                                 into the sandbox and each trial  │
+│                                                                 records it, but a task process   │
+│                                                                 in main is not refused for it.   │
+│                                                                 Refused before the run starts    │
+│                                                                 when the agent's env does not    │
+│                                                                 set it, or when it is staged as  │
+│                                                                 a file                           │
 │ --integrity                              TEXT                   audit (default: test.sh as       │
 │                                                                 written, the agent's actions     │
 │                                                                 checked), strict (also a         │
@@ -1599,7 +1779,15 @@
 │                                                                 sample, 17-19% of honest         │
 │                                                                 reference runs score 0 in strict │
 │                                                                 because of what strict           │
-│                                                                 transfers) or off. Verdict:      │
+│                                                                 transfers) or off. In audit and  │
+│                                                                 off, a non-root agent scores 0   │
+│                                                                 when its reward check doesn't    │
+│                                                                 complete                         │
+│                                                                 (provenance_incomplete), and a   │
+│                                                                 trial where bfx can't run is     │
+│                                                                 refused before the agent's turn  │
+│                                                                 (integrity_unavailable); `bench  │
+│                                                                 explain` has both. Verdict:      │
 │                                                                 integrity/claim_verdict.json.    │
 │ --verifier-sandbox                       TEXT                   task (default: each task's own   │
 │                                                                 choice) or separate: every       │
@@ -2213,34 +2401,85 @@
 │                        [required]                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                                      PATH     Directory holding the task source      │
-│                                                           (instruction + verifier). Required     │
-│                                                           unless the recorded task_path still    │
-│                                                           exists on disk.                        │
-│ --model                                          TEXT     Override the live-continuation model   │
-│                                                           (default: the original run's model).   │
-│ --timeout                                        INTEGER  Wall-clock budget for the              │
-│                                                           continuation, in seconds (default: the │
-│                                                           original run's timeout).               │
-│ --output                                         PATH     Output jobs dir for the new run        │
-│                                                           (default: <orig-parent>/continued).    │
-│ --require-timeout      --no-require-timeout               Refuse runs whose recorded status is   │
-│                                                           not a timeout.                         │
-│                                                           [default: no-require-timeout]          │
-│ --strict-divergence    --no-strict-divergence             Abort if replay leaves the original    │
-│                                                           rails (message-count mismatch) instead │
-│                                                           of warning.                            │
-│                                                           [default: no-strict-divergence]        │
-│ --replay-only          --no-replay-only                   Rebuild the env via replay and stop at │
-│                                                           the cut-point (no live model needed) — │
-│                                                           useful for testing.                    │
-│                                                           [default: no-replay-only]              │
-│ --proxy-mode                                     TEXT     Replay proxy placement: auto, host, or │
-│                                                           sandbox. Auto uses sandbox-local       │
-│                                                           replay for Daytona/Modal and host      │
-│                                                           replay for Docker.                     │
-│                                                           [default: auto]                        │
-│ --help                                                    Show this message and exit.            │
+│ --tasks-dir                                                PATH     Directory holding the task   │
+│                                                                     source (instruction +        │
+│                                                                     verifier). Required unless   │
+│                                                                     the recorded task_path still │
+│                                                                     exists on disk.              │
+│ --model                                                    TEXT     Override the                 │
+│                                                                     live-continuation model      │
+│                                                                     (default: the original run's │
+│                                                                     model).                      │
+│ --timeout                                                  INTEGER  Wall-clock budget for the    │
+│                                                                     continuation, in seconds     │
+│                                                                     (default: the original run's │
+│                                                                     timeout).                    │
+│ --output                                                   PATH     Output jobs dir for the new  │
+│                                                                     run (default:                │
+│                                                                     <orig-parent>/continued).    │
+│ --require-timeout                --no-require-timeout               Refuse runs whose recorded   │
+│                                                                     status is not a timeout.     │
+│                                                                     [default:                    │
+│                                                                     no-require-timeout]          │
+│ --strict-divergence              --no-strict-divergence             Abort if replay leaves the   │
+│                                                                     original rails               │
+│                                                                     (message-count mismatch)     │
+│                                                                     instead of warning.          │
+│                                                                     [default:                    │
+│                                                                     no-strict-divergence]        │
+│ --replay-only                    --no-replay-only                   Rebuild the env via replay   │
+│                                                                     and stop at the cut-point    │
+│                                                                     (no live model needed) —     │
+│                                                                     useful for testing.          │
+│                                                                     [default: no-replay-only]    │
+│ --proxy-mode                                               TEXT     Replay proxy placement:      │
+│                                                                     auto, host, or sandbox. Auto │
+│                                                                     uses sandbox-local replay    │
+│                                                                     for Daytona/Modal and host   │
+│                                                                     replay for Docker.           │
+│                                                                     [default: auto]              │
+│ --allow-cloud-credential-file                                       Let a cloud credential file  │
+│                                                                     (the gcloud application      │
+│                                                                     default credentials) be      │
+│                                                                     staged in the sandbox: the   │
+│                                                                     Gemini CLI's own Vertex      │
+│                                                                     route, or a Vertex model     │
+│                                                                     through a proxy that runs in │
+│                                                                     the sandbox. Each trial      │
+│                                                                     records it. Without it such  │
+│                                                                     a run is refused before it   │
+│                                                                     starts; the proxy on the     │
+│                                                                     host (Docker, `public`)      │
+│                                                                     keeps the file out of the    │
+│                                                                     sandbox and needs no flag    │
+│ --allow-task-processes-with-…                                       Start a model agent whose    │
+│                                                                     operator credentials go into │
+│                                                                     the sandbox (a subscription  │
+│                                                                     login, its own API key, or a │
+│                                                                     key the proxy in the sandbox │
+│                                                                     holds) while the task's own  │
+│                                                                     processes run in main, where │
+│                                                                     they could read them. Each   │
+│                                                                     trial records it. Without it │
+│                                                                     such a trial is refused      │
+│                                                                     before anything is staged;   │
+│                                                                     the proxy on the host        │
+│                                                                     (Docker, `public`) keeps an  │
+│                                                                     API key out of the sandbox   │
+│ --scoped-credential                                        TEXT     Name a credential variable   │
+│                                                                     that is this run's own (a    │
+│                                                                     per-run token, not one of    │
+│                                                                     your logins or keys):        │
+│                                                                     repeatable. It still goes    │
+│                                                                     into the sandbox and each    │
+│                                                                     trial records it, but a task │
+│                                                                     process in main is not       │
+│                                                                     refused for it. Refused      │
+│                                                                     before the run starts when   │
+│                                                                     the agent's env does not set │
+│                                                                     it, or when it is staged as  │
+│                                                                     a file                       │
+│ --help                                                              Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2256,35 +2495,90 @@
 │                      [required]                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                                      PATH                  Directory holding task    │
-│                                                                        sources; required unless  │
-│                                                                        recorded task_path        │
-│                                                                        exists.                   │
-│ --model                                          TEXT                  Override                  │
-│                                                                        live-continuation model.  │
-│ --timeout                                        INTEGER               Wall-clock budget per     │
-│                                                                        continuation.             │
-│ --output                                         PATH                  Output jobs dir for       │
-│                                                                        continued runs.           │
-│ --concurrency                                    INTEGER RANGE [x>=1]  Maximum number of         │
-│                                                                        continuation runs in      │
-│                                                                        flight.                   │
-│                                                                        [default: 100]            │
-│ --limit                                          INTEGER               Limit discovered timeout  │
-│                                                                        folders.                  │
-│ --strict-divergence    --no-strict-divergence                          Abort a run if replay     │
-│                                                                        leaves the original       │
-│                                                                        rails.                    │
-│                                                                        [default:                 │
-│                                                                        no-strict-divergence]     │
-│ --proxy-mode                                     TEXT                  Replay proxy placement:   │
-│                                                                        auto, host, or sandbox.   │
-│                                                                        For PR5 Daytona runs, use │
-│                                                                        the default auto or       │
-│                                                                        sandbox.                  │
-│                                                                        [default: auto]           │
-│ --help                                                                 Show this message and     │
-│                                                                        exit.                     │
+│ --tasks-dir                                         PATH                  Directory holding task │
+│                                                                           sources; required      │
+│                                                                           unless recorded        │
+│                                                                           task_path exists.      │
+│ --model                                             TEXT                  Override               │
+│                                                                           live-continuation      │
+│                                                                           model.                 │
+│ --timeout                                           INTEGER               Wall-clock budget per  │
+│                                                                           continuation.          │
+│ --output                                            PATH                  Output jobs dir for    │
+│                                                                           continued runs.        │
+│ --concurrency                                       INTEGER RANGE [x>=1]  Maximum number of      │
+│                                                                           continuation runs in   │
+│                                                                           flight.                │
+│                                                                           [default: 100]         │
+│ --limit                                             INTEGER               Limit discovered       │
+│                                                                           timeout folders.       │
+│ --strict-divergence       --no-strict-divergence                          Abort a run if replay  │
+│                                                                           leaves the original    │
+│                                                                           rails.                 │
+│                                                                           [default:              │
+│                                                                           no-strict-divergence]  │
+│ --proxy-mode                                        TEXT                  Replay proxy           │
+│                                                                           placement: auto, host, │
+│                                                                           or sandbox. For PR5    │
+│                                                                           Daytona runs, use the  │
+│                                                                           default auto or        │
+│                                                                           sandbox.               │
+│                                                                           [default: auto]        │
+│ --allow-cloud-credent…                                                    Let a cloud credential │
+│                                                                           file (the gcloud       │
+│                                                                           application default    │
+│                                                                           credentials) be staged │
+│                                                                           in the sandbox: the    │
+│                                                                           Gemini CLI's own       │
+│                                                                           Vertex route, or a     │
+│                                                                           Vertex model through a │
+│                                                                           proxy that runs in the │
+│                                                                           sandbox. Each trial    │
+│                                                                           records it. Without it │
+│                                                                           such a run is refused  │
+│                                                                           before it starts; the  │
+│                                                                           proxy on the host      │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps the file out of  │
+│                                                                           the sandbox and needs  │
+│                                                                           no flag                │
+│ --allow-task-processe…                                                    Start a model agent    │
+│                                                                           whose operator         │
+│                                                                           credentials go into    │
+│                                                                           the sandbox (a         │
+│                                                                           subscription login,    │
+│                                                                           its own API key, or a  │
+│                                                                           key the proxy in the   │
+│                                                                           sandbox holds) while   │
+│                                                                           the task's own         │
+│                                                                           processes run in main, │
+│                                                                           where they could read  │
+│                                                                           them. Each trial       │
+│                                                                           records it. Without it │
+│                                                                           such a trial is        │
+│                                                                           refused before         │
+│                                                                           anything is staged;    │
+│                                                                           the proxy on the host  │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps an API key out   │
+│                                                                           of the sandbox         │
+│ --scoped-credential                                 TEXT                  Name a credential      │
+│                                                                           variable that is this  │
+│                                                                           run's own (a per-run   │
+│                                                                           token, not one of your │
+│                                                                           logins or keys):       │
+│                                                                           repeatable. It still   │
+│                                                                           goes into the sandbox  │
+│                                                                           and each trial records │
+│                                                                           it, but a task process │
+│                                                                           in main is not refused │
+│                                                                           for it. Refused before │
+│                                                                           the run starts when    │
+│                                                                           the agent's env does   │
+│                                                                           not set it, or when it │
+│                                                                           is staged as a file    │
+│ --help                                                                    Show this message and  │
+│                                                                           exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2483,6 +2777,59 @@
 │ --agent-env                                         TEXT                  Agent env var          │
 │                                                                           (KEY=VALUE);           │
 │                                                                           repeatable             │
+│ --allow-cloud-credenti…                                                   Let a cloud credential │
+│                                                                           file (the gcloud       │
+│                                                                           application default    │
+│                                                                           credentials) be staged │
+│                                                                           in the sandbox: the    │
+│                                                                           Gemini CLI's own       │
+│                                                                           Vertex route, or a     │
+│                                                                           Vertex model through a │
+│                                                                           proxy that runs in the │
+│                                                                           sandbox. Each trial    │
+│                                                                           records it. Without it │
+│                                                                           such a run is refused  │
+│                                                                           before it starts; the  │
+│                                                                           proxy on the host      │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps the file out of  │
+│                                                                           the sandbox and needs  │
+│                                                                           no flag                │
+│ --allow-task-processes…                                                   Start a model agent    │
+│                                                                           whose operator         │
+│                                                                           credentials go into    │
+│                                                                           the sandbox (a         │
+│                                                                           subscription login,    │
+│                                                                           its own API key, or a  │
+│                                                                           key the proxy in the   │
+│                                                                           sandbox holds) while   │
+│                                                                           the task's own         │
+│                                                                           processes run in main, │
+│                                                                           where they could read  │
+│                                                                           them. Each trial       │
+│                                                                           records it. Without it │
+│                                                                           such a trial is        │
+│                                                                           refused before         │
+│                                                                           anything is staged;    │
+│                                                                           the proxy on the host  │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps an API key out   │
+│                                                                           of the sandbox         │
+│ --scoped-credential                                 TEXT                  Name a credential      │
+│                                                                           variable that is this  │
+│                                                                           run's own (a per-run   │
+│                                                                           token, not one of your │
+│                                                                           logins or keys):       │
+│                                                                           repeatable. It still   │
+│                                                                           goes into the sandbox  │
+│                                                                           and each trial records │
+│                                                                           it, but a task process │
+│                                                                           in main is not refused │
+│                                                                           for it. Refused before │
+│                                                                           the run starts when    │
+│                                                                           the agent's env does   │
+│                                                                           not set it, or when it │
+│                                                                           is staged as a file    │
 │ --include                                           TEXT                  Only these task names; │
 │                                                                           repeatable             │
 │ --jobs-dir                                          PATH                  Output directory       │
@@ -2575,7 +2922,7 @@
  runs them again.                                                                                   
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    job_dir      PATH  The job folder to finish [required]                                      │
+│ *    job_dir      PATH  The job folder to finish, or latest (the newest under ./jobs) [required] │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
 │ --agent-env              TEXT     KEY=VALUE for the agent (repeatable); values that look secret  │
@@ -2602,6 +2949,34 @@
 │ --json          Print the benchflow.branch-view/1 documents (a JSON list, one per branched       │
 │                 trial); see docs/train/environment.md.                                           │
 │ --help          Show this message and exit.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench resume --help <==
+                                                                                                    
+ Usage: bench resume [OPTIONS] JOB_DIR                                                              
+                                                                                                    
+ Finish an interrupted job from its folder: rerun only the unfinished tasks.                        
+                                                                                                    
+ Reads the tasks directory and config the job recorded in evaluation.json                           
+ (no agent_env value that looks secret, so pass those again with                                    
+ --agent-env), then runs the tasks with no finished result. A job that is still running is          
+ refused. Exit codes as for bench eval run; 2 when the folder is not a job,                         
+ or when its trials ran with other settings or task files than this                                 
+ resume has (an --agent-env value, an edited task): --restart-changed                               
+ runs them again.                                                                                   
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    job_dir      PATH  The job folder to finish, or latest (the newest under ./jobs) [required] │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --agent-env              TEXT     KEY=VALUE for the agent (repeatable); values that look secret  │
+│                                   are never stored in the job                                    │
+│ --concurrency            INTEGER  Override the job's concurrency                                 │
+│ --restart-changed                 When the job's trials ran with other settings or task files    │
+│                                   than this resume, set them aside in <job>/.set-aside/ and run  │
+│                                   them again (default: refuse)                                   │
+│ --help                            Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2715,53 +3090,77 @@
 │ *    task_dir      PATH  Task directory or folder of tasks [required]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --level                   [schema|structural|runtime-capabil  Validation level: schema,          │
-│                           ity|publication-grade|acceptance|a  structural, runtime-capability,    │
-│                           cceptance-live|equivalence]         publication-grade, acceptance,     │
-│                                                               acceptance-live, or equivalence    │
-│                                                               (runs the oracle in --sandbox,     │
-│                                                               then grades wrong and              │
-│                                                               value-equivalent variants of its   │
-│                                                               output)                            │
-│                                                               [default: structural]              │
-│ --sandbox                 TEXT                                Validate runtime semantics for     │
-│                                                               docker, remote-docker, daytona,    │
-│                                                               modal, apple-container, or         │
-│                                                               agentcore (default: a sandbox that │
-│                                                               can run the task: docker, or modal │
-│                                                               for a task that asks for GPUs)     │
-│ --report-output           PATH                                Write the acceptance-live report   │
-│                                                               to this host path instead of the   │
-│                                                               task-declared report path; with    │
-│                                                               --level equivalence, write the     │
-│                                                               battery's JSON report here         │
-│ --no-report-write                                             Validate acceptance-live without   │
-│                                                               writing the declared report or its │
-│                                                               .sha256 sidecar (report-only       │
-│                                                               dogfood; leaves the task package   │
-│                                                               unmodified). Takes precedence over │
-│                                                               --report-output.                   │
-│ --allow-task-env          TEXT                                Let tasks read this variable of    │
-│                                                               your environment (a ${NAME} env    │
-│                                                               value, or their                    │
-│                                                               docker-compose.yaml); repeatable.  │
-│                                                               A task reading an unnamed one is   │
-│                                                               refused; ${NAME:-default} gets the │
-│                                                               default                            │
-│ --verifier-sandbox        TEXT                                With separate: also check what     │
-│                                                               `bench run --verifier-sandbox      │
-│                                                               separate` checks before it starts  │
-│                                                               (on --sandbox, default docker),    │
-│                                                               with the same refusals, and name   │
-│                                                               where the verifier image comes     │
-│                                                               from                               │
-│ --agent                   TEXT                                Agent to validate, as for eval run │
-│                                                               [default: claude-agent-acp]        │
-│ --model                   TEXT                                Model to validate, as for eval run │
-│ --sandbox-user            TEXT                                Agent user to validate, as for     │
-│                                                               eval run                           │
-│                                                               [default: agent]                   │
-│ --help                                                        Show this message and exit.        │
+│ --level                              [schema|structural|runtime-c  Validation level: schema,     │
+│                                      apability|publication-grade|  structural,                   │
+│                                      acceptance|acceptance-live|e  runtime-capability,           │
+│                                      quivalence]                   publication-grade,            │
+│                                                                    acceptance, acceptance-live,  │
+│                                                                    or equivalence (runs the      │
+│                                                                    oracle in --sandbox, then     │
+│                                                                    grades wrong and              │
+│                                                                    value-equivalent variants of  │
+│                                                                    its output)                   │
+│                                                                    [default: structural]         │
+│ --sandbox                            TEXT                          Validate runtime semantics    │
+│                                                                    for docker, remote-docker,    │
+│                                                                    daytona, modal,               │
+│                                                                    apple-container, or agentcore │
+│                                                                    (default: a sandbox that can  │
+│                                                                    run the task: docker, or      │
+│                                                                    modal for a task that asks    │
+│                                                                    for GPUs)                     │
+│ --report-output                      PATH                          Write the acceptance-live     │
+│                                                                    report to this host path      │
+│                                                                    instead of the task-declared  │
+│                                                                    report path; with --level     │
+│                                                                    equivalence, write the        │
+│                                                                    battery's JSON report here    │
+│ --no-report-write                                                  Validate acceptance-live      │
+│                                                                    without writing the declared  │
+│                                                                    report or its .sha256 sidecar │
+│                                                                    (report-only dogfood; leaves  │
+│                                                                    the task package unmodified). │
+│                                                                    Takes precedence over         │
+│                                                                    --report-output.              │
+│ --allow-task-env                     TEXT                          Let tasks read this variable  │
+│                                                                    of your environment (a        │
+│                                                                    ${NAME} env value, or their   │
+│                                                                    docker-compose.yaml);         │
+│                                                                    repeatable. A task reading an │
+│                                                                    unnamed one is refused;       │
+│                                                                    ${NAME:-default} gets the     │
+│                                                                    default                       │
+│ --verifier-sandbox                   TEXT                          With separate: also check     │
+│                                                                    what `bench run               │
+│                                                                    --verifier-sandbox separate`  │
+│                                                                    checks before it starts (on   │
+│                                                                    --sandbox, default docker),   │
+│                                                                    with the same refusals, and   │
+│                                                                    name where the verifier image │
+│                                                                    comes from                    │
+│ --agent                              TEXT                          Agent to validate, as for     │
+│                                                                    eval run                      │
+│                                                                    [default: claude-agent-acp]   │
+│ --model                              TEXT                          Model to validate, as for     │
+│                                                                    eval run                      │
+│ --sandbox-user                       TEXT                          Agent user to validate, as    │
+│                                                                    for eval run                  │
+│                                                                    [default: agent]              │
+│ --allow-cloud-credential-file                                      Let a cloud credential file   │
+│                                                                    (the gcloud application       │
+│                                                                    default credentials) be       │
+│                                                                    staged in the sandbox: the    │
+│                                                                    Gemini CLI's own Vertex       │
+│                                                                    route, or a Vertex model      │
+│                                                                    through a proxy that runs in  │
+│                                                                    the sandbox. Each trial       │
+│                                                                    records it. Without it such a │
+│                                                                    run is refused before it      │
+│                                                                    starts; the proxy on the host │
+│                                                                    (Docker, `public`) keeps the  │
+│                                                                    file out of the sandbox and   │
+│                                                                    needs no flag                 │
+│ --help                                                             Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -2940,6 +3339,21 @@
 │                                score its fresh output, instead of the recorded                   │
 │                                parity_experiment.json                                            │
 │ --help                         Show this message and exit.                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+==> bench agent validate --help <==
+                                                                                                    
+ Usage: bench agent validate [OPTIONS] PATH                                                         
+                                                                                                    
+ Check an agent manifest against the contract, without Docker: its contract_version, every key and  
+ its type, with the line of each problem.                                                           
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    path      PATH  A manifest.toml, or the agent folder that holds it [required]               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -4206,8 +4620,8 @@
  Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub.    
                                                                                                     
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
-│ *    job_dir      PATH  A job folder (jobs/<job>) holding one finished run, or the run           │
-│                         (jobs/<job>/<time>)                                                      │
+│ *    job_dir      PATH  A job folder (jobs/<job>) holding one finished run, the run              │
+│                         (jobs/<job>/<time>), or latest                                           │
 │                         [required]                                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
@@ -4459,6 +4873,8 @@
                                                                                                     
  Ask what a run would likely take and whether it fits, without starting it (JSON).                  
                                                                                                     
+ It takes the run's selection and budget options, never its keys: an estimate sends none.           
+                                                                                                    
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
 │ *    version      TEXT  The hub version to run, e.g. PKG-TERMINALBENCH-2-0 [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -4475,6 +4891,10 @@
 │                                                      to fit its sandbox cap)                     │
 │                                                      [default: 1]                                │
 │ --max-sandbox-seconds          INTEGER RANGE [x>=1]  Stop the run past this much sandbox time    │
+│ --max-cost-usd                 FLOAT RANGE [x>=0.0]  The run's model budget: the service refuses │
+│                                                      its model calls past it (its own count)     │
+│ --json                                               Print the service's JSON answer (the only   │
+│                                                      output)                                     │
 │ --hub                          TEXT                  The hosted service's address (default:      │
 │                                                      $BENCHFLOW_HOSTED_URL)                      │
 │ --key-file                     PATH                  A file holding the key, mode 600 (default:  │
@@ -4666,6 +5086,7 @@
 │ *  --kind            TEXT  anthropic, deepseek, kimi, zai or mimo [required]                     │
 │    --from            TEXT  Where the value is: file:PATH, env:VAR or - (stdin, the default)      │
 │                            [default: -]                                                          │
+│    --json                  Print the service's JSON answer                                       │
 │    --hub             TEXT  The hosted service's address (default: $BENCHFLOW_HOSTED_URL)         │
 │    --key-file        PATH  A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then   │
 │                            ~/.config/benchflow/hub-key)                                          │
@@ -4688,6 +5109,7 @@
 │                            [required]                                                            │
 │    --from            TEXT  Where the value is: file:PATH, env:VAR or - (stdin, the default)      │
 │                            [default: -]                                                          │
+│    --json                  Print the service's JSON answer                                       │
 │    --hub             TEXT  The hosted service's address (default: $BENCHFLOW_HOSTED_URL)         │
 │    --key-file        PATH  A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then   │
 │                            ~/.config/benchflow/hub-key)                                          │
@@ -4720,6 +5142,7 @@
 │ *    name      TEXT  The stored key's name [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --json                  Print the service's JSON answer                                          │
 │ --hub             TEXT  The hosted service's address (default: $BENCHFLOW_HOSTED_URL)            │
 │ --key-file        PATH  A file holding the key, mode 600 (default: $BENCHFLOW_HUB_KEY, then      │
 │                         ~/.config/benchflow/hub-key)                                             │
@@ -4994,34 +5417,85 @@
 │                        [required]                                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                                      PATH     Directory holding the task source      │
-│                                                           (instruction + verifier). Required     │
-│                                                           unless the recorded task_path still    │
-│                                                           exists on disk.                        │
-│ --model                                          TEXT     Override the live-continuation model   │
-│                                                           (default: the original run's model).   │
-│ --timeout                                        INTEGER  Wall-clock budget for the              │
-│                                                           continuation, in seconds (default: the │
-│                                                           original run's timeout).               │
-│ --output                                         PATH     Output jobs dir for the new run        │
-│                                                           (default: <orig-parent>/continued).    │
-│ --require-timeout      --no-require-timeout               Refuse runs whose recorded status is   │
-│                                                           not a timeout.                         │
-│                                                           [default: no-require-timeout]          │
-│ --strict-divergence    --no-strict-divergence             Abort if replay leaves the original    │
-│                                                           rails (message-count mismatch) instead │
-│                                                           of warning.                            │
-│                                                           [default: no-strict-divergence]        │
-│ --replay-only          --no-replay-only                   Rebuild the env via replay and stop at │
-│                                                           the cut-point (no live model needed) — │
-│                                                           useful for testing.                    │
-│                                                           [default: no-replay-only]              │
-│ --proxy-mode                                     TEXT     Replay proxy placement: auto, host, or │
-│                                                           sandbox. Auto uses sandbox-local       │
-│                                                           replay for Daytona/Modal and host      │
-│                                                           replay for Docker.                     │
-│                                                           [default: auto]                        │
-│ --help                                                    Show this message and exit.            │
+│ --tasks-dir                                                PATH     Directory holding the task   │
+│                                                                     source (instruction +        │
+│                                                                     verifier). Required unless   │
+│                                                                     the recorded task_path still │
+│                                                                     exists on disk.              │
+│ --model                                                    TEXT     Override the                 │
+│                                                                     live-continuation model      │
+│                                                                     (default: the original run's │
+│                                                                     model).                      │
+│ --timeout                                                  INTEGER  Wall-clock budget for the    │
+│                                                                     continuation, in seconds     │
+│                                                                     (default: the original run's │
+│                                                                     timeout).                    │
+│ --output                                                   PATH     Output jobs dir for the new  │
+│                                                                     run (default:                │
+│                                                                     <orig-parent>/continued).    │
+│ --require-timeout                --no-require-timeout               Refuse runs whose recorded   │
+│                                                                     status is not a timeout.     │
+│                                                                     [default:                    │
+│                                                                     no-require-timeout]          │
+│ --strict-divergence              --no-strict-divergence             Abort if replay leaves the   │
+│                                                                     original rails               │
+│                                                                     (message-count mismatch)     │
+│                                                                     instead of warning.          │
+│                                                                     [default:                    │
+│                                                                     no-strict-divergence]        │
+│ --replay-only                    --no-replay-only                   Rebuild the env via replay   │
+│                                                                     and stop at the cut-point    │
+│                                                                     (no live model needed) —     │
+│                                                                     useful for testing.          │
+│                                                                     [default: no-replay-only]    │
+│ --proxy-mode                                               TEXT     Replay proxy placement:      │
+│                                                                     auto, host, or sandbox. Auto │
+│                                                                     uses sandbox-local replay    │
+│                                                                     for Daytona/Modal and host   │
+│                                                                     replay for Docker.           │
+│                                                                     [default: auto]              │
+│ --allow-cloud-credential-file                                       Let a cloud credential file  │
+│                                                                     (the gcloud application      │
+│                                                                     default credentials) be      │
+│                                                                     staged in the sandbox: the   │
+│                                                                     Gemini CLI's own Vertex      │
+│                                                                     route, or a Vertex model     │
+│                                                                     through a proxy that runs in │
+│                                                                     the sandbox. Each trial      │
+│                                                                     records it. Without it such  │
+│                                                                     a run is refused before it   │
+│                                                                     starts; the proxy on the     │
+│                                                                     host (Docker, `public`)      │
+│                                                                     keeps the file out of the    │
+│                                                                     sandbox and needs no flag    │
+│ --allow-task-processes-with-…                                       Start a model agent whose    │
+│                                                                     operator credentials go into │
+│                                                                     the sandbox (a subscription  │
+│                                                                     login, its own API key, or a │
+│                                                                     key the proxy in the sandbox │
+│                                                                     holds) while the task's own  │
+│                                                                     processes run in main, where │
+│                                                                     they could read them. Each   │
+│                                                                     trial records it. Without it │
+│                                                                     such a trial is refused      │
+│                                                                     before anything is staged;   │
+│                                                                     the proxy on the host        │
+│                                                                     (Docker, `public`) keeps an  │
+│                                                                     API key out of the sandbox   │
+│ --scoped-credential                                        TEXT     Name a credential variable   │
+│                                                                     that is this run's own (a    │
+│                                                                     per-run token, not one of    │
+│                                                                     your logins or keys):        │
+│                                                                     repeatable. It still goes    │
+│                                                                     into the sandbox and each    │
+│                                                                     trial records it, but a task │
+│                                                                     process in main is not       │
+│                                                                     refused for it. Refused      │
+│                                                                     before the run starts when   │
+│                                                                     the agent's env does not set │
+│                                                                     it, or when it is staged as  │
+│                                                                     a file                       │
+│ --help                                                              Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -5038,35 +5512,90 @@
 │                      [required]                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
-│ --tasks-dir                                      PATH                  Directory holding task    │
-│                                                                        sources; required unless  │
-│                                                                        recorded task_path        │
-│                                                                        exists.                   │
-│ --model                                          TEXT                  Override                  │
-│                                                                        live-continuation model.  │
-│ --timeout                                        INTEGER               Wall-clock budget per     │
-│                                                                        continuation.             │
-│ --output                                         PATH                  Output jobs dir for       │
-│                                                                        continued runs.           │
-│ --concurrency                                    INTEGER RANGE [x>=1]  Maximum number of         │
-│                                                                        continuation runs in      │
-│                                                                        flight.                   │
-│                                                                        [default: 100]            │
-│ --limit                                          INTEGER               Limit discovered timeout  │
-│                                                                        folders.                  │
-│ --strict-divergence    --no-strict-divergence                          Abort a run if replay     │
-│                                                                        leaves the original       │
-│                                                                        rails.                    │
-│                                                                        [default:                 │
-│                                                                        no-strict-divergence]     │
-│ --proxy-mode                                     TEXT                  Replay proxy placement:   │
-│                                                                        auto, host, or sandbox.   │
-│                                                                        For PR5 Daytona runs, use │
-│                                                                        the default auto or       │
-│                                                                        sandbox.                  │
-│                                                                        [default: auto]           │
-│ --help                                                                 Show this message and     │
-│                                                                        exit.                     │
+│ --tasks-dir                                         PATH                  Directory holding task │
+│                                                                           sources; required      │
+│                                                                           unless recorded        │
+│                                                                           task_path exists.      │
+│ --model                                             TEXT                  Override               │
+│                                                                           live-continuation      │
+│                                                                           model.                 │
+│ --timeout                                           INTEGER               Wall-clock budget per  │
+│                                                                           continuation.          │
+│ --output                                            PATH                  Output jobs dir for    │
+│                                                                           continued runs.        │
+│ --concurrency                                       INTEGER RANGE [x>=1]  Maximum number of      │
+│                                                                           continuation runs in   │
+│                                                                           flight.                │
+│                                                                           [default: 100]         │
+│ --limit                                             INTEGER               Limit discovered       │
+│                                                                           timeout folders.       │
+│ --strict-divergence       --no-strict-divergence                          Abort a run if replay  │
+│                                                                           leaves the original    │
+│                                                                           rails.                 │
+│                                                                           [default:              │
+│                                                                           no-strict-divergence]  │
+│ --proxy-mode                                        TEXT                  Replay proxy           │
+│                                                                           placement: auto, host, │
+│                                                                           or sandbox. For PR5    │
+│                                                                           Daytona runs, use the  │
+│                                                                           default auto or        │
+│                                                                           sandbox.               │
+│                                                                           [default: auto]        │
+│ --allow-cloud-credent…                                                    Let a cloud credential │
+│                                                                           file (the gcloud       │
+│                                                                           application default    │
+│                                                                           credentials) be staged │
+│                                                                           in the sandbox: the    │
+│                                                                           Gemini CLI's own       │
+│                                                                           Vertex route, or a     │
+│                                                                           Vertex model through a │
+│                                                                           proxy that runs in the │
+│                                                                           sandbox. Each trial    │
+│                                                                           records it. Without it │
+│                                                                           such a run is refused  │
+│                                                                           before it starts; the  │
+│                                                                           proxy on the host      │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps the file out of  │
+│                                                                           the sandbox and needs  │
+│                                                                           no flag                │
+│ --allow-task-processe…                                                    Start a model agent    │
+│                                                                           whose operator         │
+│                                                                           credentials go into    │
+│                                                                           the sandbox (a         │
+│                                                                           subscription login,    │
+│                                                                           its own API key, or a  │
+│                                                                           key the proxy in the   │
+│                                                                           sandbox holds) while   │
+│                                                                           the task's own         │
+│                                                                           processes run in main, │
+│                                                                           where they could read  │
+│                                                                           them. Each trial       │
+│                                                                           records it. Without it │
+│                                                                           such a trial is        │
+│                                                                           refused before         │
+│                                                                           anything is staged;    │
+│                                                                           the proxy on the host  │
+│                                                                           (Docker, `public`)     │
+│                                                                           keeps an API key out   │
+│                                                                           of the sandbox         │
+│ --scoped-credential                                 TEXT                  Name a credential      │
+│                                                                           variable that is this  │
+│                                                                           run's own (a per-run   │
+│                                                                           token, not one of your │
+│                                                                           logins or keys):       │
+│                                                                           repeatable. It still   │
+│                                                                           goes into the sandbox  │
+│                                                                           and each trial records │
+│                                                                           it, but a task process │
+│                                                                           in main is not refused │
+│                                                                           for it. Refused before │
+│                                                                           the run starts when    │
+│                                                                           the agent's env does   │
+│                                                                           not set it, or when it │
+│                                                                           is staged as a file    │
+│ --help                                                                    Show this message and  │
+│                                                                           exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 

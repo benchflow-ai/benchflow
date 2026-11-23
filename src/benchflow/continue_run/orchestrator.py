@@ -21,6 +21,7 @@ forwarder request-building, trajectory stitching) are pure and unit-tested.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -30,8 +31,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from benchflow._utils import staged_secrets
 from benchflow._utils.result_metadata import final_metrics_from_agent_result
 from benchflow._utils.text import describe_exception
+from benchflow.agents import operator_credentials
 from benchflow.continue_run.replay_proxy import ReplayProxy, ReplayRouter
 from benchflow.continue_run.run_folder import (
     RunFolder,
@@ -55,7 +58,7 @@ logger = logging.getLogger(__name__)
 # of a real provider. The model name is irrelevant (the proxy serves by index),
 # but litellm needs an ``openai/`` prefix to treat LLM_BASE_URL as an
 # OpenAI-compatible endpoint.
-_REPLAY_API_KEY = "sk-runtime-replay"
+_REPLAY_API_KEY = operator_credentials.REPLAY_API_KEY
 _REPLAY_MODEL = "openai/replay"
 # Providers whose replay and model proxies must run inside the sandbox. This is
 # the same placement contract used by the normal LiteLLM runtime.
@@ -174,8 +177,13 @@ def build_rollout_config(
     timeout: int | None,
     output_dir: str | Path,
     rollout_name: str,
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: tuple[str, ...] = (),
 ) -> Any:
     """Assemble the RolloutConfig that re-runs the task through the proxy.
+    The operator's two credential flags are this continuation's own (the
+    recorded trial's config.json keeps neither).
 
     Imported lazily so ``benchflow.continue_run`` stays importable without
     pulling the full rollout stack (keeps unit tests light).
@@ -198,6 +206,13 @@ def build_rollout_config(
         if name in recorded
     }
     settings["skip_agent_install"] = recorded.get("skip_install", False)
+    settings["allow_cloud_credential_file"] = allow_cloud_credential_file is True
+    settings["allow_task_processes_with_credentials"] = (
+        allow_task_processes_with_credentials is True
+    )
+    settings["scoped_credentials"] = operator_credentials.scoped_names(
+        scoped_credentials
+    )
     settings["skill_mode"] = recorded.get("skill_mode", "no-skill")
     skills = recorded.get("requested_skills_dir")
     if not skills and recorded.get("skill_source") == "custom_runtime":
@@ -269,6 +284,15 @@ def build_rollout_config(
                 "with the original configuration"
             )
 
+    from benchflow.sandbox.cloud_metadata import refuse_opt_in_for_command
+
+    # A continue takes no grant: a task asking to lift the cloud metadata
+    # block is refused here, saying which command can run it.
+    refuse_opt_in_for_command(
+        [Path(task_path)],
+        command="bench eval continue",
+        config_override=settings.get("config_override"),
+    )
     return RolloutConfig.from_legacy(
         **settings,
         task_path=task_path,
@@ -670,13 +694,21 @@ async def continue_run(
     strict_divergence: bool = False,
     replay_only: bool = False,
     proxy_mode: str = "auto",
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: tuple[str, ...] = (),
 ) -> ContinueResult:
     """Resume ``folder`` to completion via record-replay + live continuation.
 
     ``model`` overrides the live-continuation model (tests pass
     ``gemini-3.5-flash-lite``); defaults to the original run's model.
     ``replay_only`` skips the live leg (rebuild-and-stop) — useful for testing
-    the replay without provider credentials.
+    the replay without provider credentials. The two ``allow_*`` flags are
+    ``bench eval run``'s: with the live model's proxy in the sandbox
+    (``proxy_mode`` sandbox, the default on Daytona and Modal) its key, or a
+    Vertex model's cloud credential file, goes into the sandbox.
+    ``scoped_credentials`` (``--scoped-credential``) name the live model's
+    own credentials that ask nothing of main; each must be one its env sets.
     """
     run = load_run_folder(folder, require_timeout=require_timeout)
     # Refuse before starting either replay proxy or resolving live credentials.
@@ -702,21 +734,70 @@ async def continue_run(
     out_root = Path(output_dir) if output_dir else run.path.parent / "continued"
     rollout_name = continued_rollout_name(run)
 
+    grants = {
+        "allow_cloud_credential_file": allow_cloud_credential_file is True,
+        "allow_task_processes_with_credentials": (
+            allow_task_processes_with_credentials is True
+        ),
+        "scoped_credentials": operator_credentials.scoped_names(scoped_credentials),
+    }
+    if grants["scoped_credentials"] and live_model is not None:
+        from benchflow.agents.env import resolve_agent_env
+
+        # The names are the live model's: checked on its env, before anything.
+        operator_credentials.refuse_unscopable(
+            grants["scoped_credentials"],
+            "openhands",
+            live_model,
+            resolve_agent_env("openhands", live_model, {}),
+            task_name=run.task_name,
+        )
     if resolved_proxy_mode == "sandbox":
         if live_model is None:
             raise RunFolderError(
                 "no live-continuation model: the run recorded no model and "
                 "--model was not given."
             )
-        return await _continue_run_with_sandbox_proxy(
-            run,
-            task_path=task_path,
-            live_model=live_model,
-            timeout=timeout,
-            output_dir=out_root,
-            rollout_name=rollout_name,
-            strict_divergence=strict_divergence,
+        # Where the live model's proxy runs in the sandbox (Daytona, Modal), a
+        # Vertex model's cloud credential file is refused before anything starts.
+        operator_credentials.refuse_cloud_credential_file(
+            operator_credentials.in_sandbox(
+                "openhands",
+                live_model,
+                {},
+                proxy_in_sandbox=operator_credentials.proxy_in_sandbox(
+                    run.environment, force_sandbox_local=False
+                ),
+            ),
+            task_name=run.task_name,
+            allowed=grants["allow_cloud_credential_file"],
         )
+        # This route drives the trial's steps itself, not through run(): it
+        # runs inside the trial's registry, as run() does
+        # (_utils.staged_secrets); nothing in it runs a rollout's run().
+        with staged_secrets.trial_registry() as staged:
+            try:
+                continued = await _continue_run_with_sandbox_proxy(
+                    run,
+                    task_path=task_path,
+                    live_model=live_model,
+                    timeout=timeout,
+                    output_dir=out_root,
+                    rollout_name=rollout_name,
+                    strict_divergence=strict_divergence,
+                    **grants,
+                )
+            except BaseException:
+                # A trial that raised gets its record too, in the folder the
+                # route gives it.
+                staged_secrets.write_trial_record(
+                    out_root / rollout_name, staged, agent=run.agent
+                )
+                raise
+            staged_secrets.write_trial_record(
+                continued.rollout_dir, staged, agent=run.agent
+            )
+        return continued
 
     router = ReplayRouter(
         run.exchanges,
@@ -727,38 +808,45 @@ async def continue_run(
     bind_host, advertise_host = _host_proxy_binding(run.environment)
     proxy = ReplayProxy(router, host=bind_host, advertise_host=advertise_host).start()
 
-    try:
-        from benchflow.rollout import Rollout
+    # The trial's registry (_utils.staged_secrets), bound for the rollout
+    # before its run() and held while the trajectory is stitched after it:
+    # run() keeps it (owner=), so what run() staged is masked there too.
+    with contextlib.ExitStack() as trial:
+        try:
+            from benchflow.rollout import Rollout
 
-        config = build_rollout_config(
-            run,
-            task_path=task_path,
-            live_model=live_model,
-            agent_env=build_agent_env(proxy.base_url),
-            timeout=timeout if timeout is not None else run.timeout_sec,
-            output_dir=out_root,
-            rollout_name=rollout_name,
+            config = build_rollout_config(
+                run,
+                task_path=task_path,
+                live_model=live_model,
+                agent_env=build_agent_env(proxy.base_url),
+                timeout=timeout if timeout is not None else run.timeout_sec,
+                output_dir=out_root,
+                rollout_name=rollout_name,
+                **grants,
+            )
+            rollout = await Rollout.create(config)
+            staged = trial.enter_context(staged_secrets.trial_registry(owner=rollout))
+            result = await rollout.run()
+            rollout_dir = Path(rollout._rollout_dir or (out_root / rollout_name))
+        finally:
+            proxy.stop()
+
+        stitched_path = write_stitched_trajectory(
+            rollout_dir,
+            run.path / "trajectory" / "llm_trajectory.jsonl",
+            router.live_exchanges,
         )
-        rollout = await Rollout.create(config)
-        result = await rollout.run()
-        rollout_dir = Path(rollout._rollout_dir or (out_root / rollout_name))
-    finally:
-        proxy.stop()
-
-    stitched_path = write_stitched_trajectory(
-        rollout_dir,
-        run.path / "trajectory" / "llm_trajectory.jsonl",
-        router.live_exchanges,
-    )
-    update_continued_metadata(
-        rollout_dir,
-        live_model=live_model,
-        usage=summarize_llm_trajectory_usage(
-            stitched_path,
-            n_recorded=run.n_recorded_exchanges,
-        ),
-        environment=run.environment,
-    )
+        update_continued_metadata(
+            rollout_dir,
+            live_model=live_model,
+            usage=summarize_llm_trajectory_usage(
+                stitched_path,
+                n_recorded=run.n_recorded_exchanges,
+            ),
+            environment=run.environment,
+        )
+        staged_secrets.write_trial_record(rollout_dir, staged, agent=config.agent)
 
     return ContinueResult(
         rollout_dir=rollout_dir,
@@ -779,8 +867,14 @@ async def _continue_run_with_sandbox_proxy(
     output_dir: Path,
     rollout_name: str,
     strict_divergence: bool,
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: tuple[str, ...] = (),
 ) -> ContinueResult:
-    """Run continuation with replay and provider proxies inside the sandbox."""
+    """Run continuation with replay and provider proxies inside the sandbox.
+    The live model's proxy holds the operator's key there: the trial checks
+    it as a connection does (Rollout._before_staging) before that proxy
+    starts."""
     from benchflow.providers.runtime import (
         ensure_litellm_runtime,
         stop_provider_runtime,
@@ -795,6 +889,9 @@ async def _continue_run_with_sandbox_proxy(
         timeout=timeout if timeout is not None else run.timeout_sec,
         output_dir=output_dir,
         rollout_name=rollout_name,
+        allow_cloud_credential_file=allow_cloud_credential_file,
+        allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+        scoped_credentials=scoped_credentials,
     )
     rollout = await Rollout.create(config)
     replay_proxy: SandboxReplayProxy | None = None
@@ -836,6 +933,20 @@ async def _continue_run_with_sandbox_proxy(
         await rollout.install_agent()
 
         provider_env = rollout._planes.resolve_agent_env("openhands", live_model, {})
+        held = rollout._disallow_web_tools or rollout._egress_denylist is not None
+        # Before the live model's proxy gets its key: refused, recorded and
+        # said as a connection's, and main quiet. One placement for both: the
+        # backend's (in the sandbox on Daytona and Modal, on the host on Docker).
+        await Rollout._before_staging(
+            rollout,
+            "openhands",
+            live_model,
+            provider_env,
+            held=held,
+            force_sandbox_local=False,
+            # The scoped names are the live model's (checked on its env).
+            scoped_reference=provider_env,
+        )
         provider_env, provider_runtime = await ensure_litellm_runtime(
             agent="openhands",
             agent_env=provider_env,
@@ -845,8 +956,8 @@ async def _continue_run_with_sandbox_proxy(
             session_id=rollout_name,
             usage_tracking="required",
             sandbox=rollout.env,
-            disallow_web_tools=rollout._disallow_web_tools
-            or rollout._egress_denylist is not None,
+            force_sandbox_local=False,
+            disallow_web_tools=held,
         )
         replay_proxy = await SandboxReplayProxy.start(
             sandbox=rollout.env,

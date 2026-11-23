@@ -34,7 +34,11 @@ from pathlib import Path
 from typing import Any
 
 from benchflow._utils.pricing import TokenSlice, anthropic_slice
-from benchflow.rollout._cost import INCOMPLETE_MIRROR, LIST_PRICE_SOURCE
+from benchflow.rollout._cost import (
+    INCOMPLETE_MIRROR,
+    INCOMPLETE_SHORT_LOG,
+    LIST_PRICE_SOURCE,
+)
 from benchflow.usage_tracking import (
     COST_SOURCE_LIST_PRICE,
     USAGE_SESSION_LOG,
@@ -59,6 +63,13 @@ TOKEN_FIELDS = (
     "n_cache_write_1h_tokens",
     "total_tokens",
 )
+# The kinds a session log can be short of, and their names in a reason.
+_KINDS = {
+    "n_input_tokens": "input",
+    "n_output_tokens": "output",
+    "n_cache_read_tokens": "cache-read",
+    "n_cache_creation_tokens": "cache-write",
+}
 _USAGE_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -239,26 +250,135 @@ def claude_stream_usage(path: Path) -> dict[str, Any] | None:
     }
 
 
+#: ``usage_details.token_count.counted_from``: Claude Code's own per-model
+#: totals (its ``cost-state`` lines), or the logged responses.
+COUNTED_FROM_TOTALS = "claude-code-totals"
+COUNTED_FROM_RESPONSES = "responses"
+#: What a Claude Code session-log count covers (benchflow-ai/benchflow#1241):
+#: the end-of-turn report counts the main session only.
+SCOPE_ALL = "main session, subagents and Claude Code's side calls"
+SCOPE_LOGGED = "main session and subagents"
+SCOPE_MAIN = "main session only"
+
+
+def _scope(usages: list[dict[str, Any]]) -> dict[str, Any]:
+    totals = _totals(usages)
+    return {
+        "responses": len(usages),
+        **{field: totals[field] for field in TOKEN_FIELDS},
+    }
+
+
+def _covered_slices(
+    usages: list[tuple[str, dict[str, Any]]], counts: dict[str, dict[str, int]]
+) -> list[TokenSlice]:
+    """What to price for a count taken from Claude Code's totals: each
+    logged response as it was logged (its prompt picks a long-prompt tier,
+    its 1-hour cache writes their rate), and per model what the totals count
+    beyond its logged responses, at the base tier."""
+    from benchflow._utils.pricing import TokenSlice
+
+    slices = [anthropic_slice(model, usage) for model, usage in usages]
+    for model, c in counts.items():
+        mine = [piece for piece in slices if piece.model == model]
+        rest = TokenSlice(
+            model=model,
+            input=max(c["input"] - sum(p.input for p in mine), 0),
+            output=max(c["output"] - sum(p.output for p in mine), 0),
+            cache_read=max(c["cache_read"] - sum(p.cache_read for p in mine), 0),
+            cache_write=max(c["cache_write"] - sum(p.cache_write for p in mine), 0),
+            web_searches=max(c["web_searches"] - sum(p.web_searches for p in mine), 0),
+        )
+        if (
+            rest.input
+            or rest.output
+            or rest.cache_read
+            or rest.cache_write
+            or rest.web_searches
+        ):
+            slices.append(rest)
+    return slices
+
+
 def claude_session_usage(folder: Path) -> dict[str, Any] | None:
     """The tokens of the Claude Code session logs under ``folder`` (the
-    trial's ``agent/claude-sessions/``), each response once, subagents'
-    included; None when they hold no response."""
+    trial's ``agent/claude-sessions/``), subagents' included; None when they
+    hold no response.
+
+    When each session's last ``cost-state`` counts at least every logged
+    response of each kind, Claude Code's own totals are the count: they add
+    the calls Claude Code makes for itself (a title, a compaction summary, a
+    web fetch's digest), which no response line logs, and the output a
+    response's lines logged before it ended (on MiMo a line can log a third
+    of the response's output). Otherwise the logged responses, each once.
+    ``main`` and ``subagents`` split the logged responses; ``unlogged`` is
+    what Claude Code's totals count beyond them.
+    """
     from benchflow._utils.reachable_write import ReachablePath
-    from benchflow._utils.session_cost import _read
+    from benchflow._utils.session_cost import covers, read_scoped, stated_counts
 
     logs: list[Path | ReachablePath] = (
         list(sorted(folder.rglob("*.jsonl"))) if folder.is_dir() else []
     )
-    _states, responses = _read(logs)
+    states, responses, subagent_usages = read_scoped(logs)
     usages = [(model, usage) for rs in responses.values() for model, usage in rs]
     if not usages:
         return None
-    totals = _totals(usage for _model, usage in usages)
-    if not totals["total_tokens"]:
+    logged = _totals(usage for _model, usage in usages)
+    if not logged["total_tokens"]:
         return None
+    in_subagent = {id(usage) for usage in subagent_usages}
+    split = {
+        "main": _scope([u for _m, u in usages if id(u) not in in_subagent]),
+        "subagents": _scope([u for _m, u in usages if id(u) in in_subagent]),
+    }
+    counts = stated_counts(states)
+    if covers(states, responses) and {m for m, _u in usages} <= set(counts):
+        fresh = sum(c["input"] for c in counts.values())
+        output = sum(c["output"] for c in counts.values())
+        read = sum(c["cache_read"] for c in counts.values())
+        write = sum(c["cache_write"] for c in counts.values())
+        # The 5-minute/1-hour split is the responses' when the totals add
+        # no cache write to theirs; otherwise unknown.
+        exact = write == logged["n_cache_creation_tokens"]
+        totals = {
+            "n_input_tokens": fresh,
+            "n_output_tokens": output,
+            "n_cache_read_tokens": read,
+            "n_cache_creation_tokens": write,
+            "n_cache_write_5m_tokens": logged["n_cache_write_5m_tokens"]
+            if exact
+            else None,
+            "n_cache_write_1h_tokens": logged["n_cache_write_1h_tokens"]
+            if exact
+            else None,
+            "total_tokens": fresh + output + read + write,
+        }
+        unlogged = {
+            field: _int(totals[field]) - _int(logged[field])
+            for field in (
+                "n_input_tokens",
+                "n_output_tokens",
+                "n_cache_read_tokens",
+                "n_cache_creation_tokens",
+                "total_tokens",
+            )
+        }
+        return {
+            **totals,
+            "responses": len(usages),
+            "counted_from": COUNTED_FROM_TOTALS,
+            "scope": SCOPE_ALL,
+            **split,
+            "unlogged": unlogged,
+            "slices": _covered_slices(usages, counts),
+        }
     return {
-        **totals,
+        **logged,
         "responses": len(usages),
+        "counted_from": COUNTED_FROM_RESPONSES,
+        "scope": SCOPE_LOGGED,
+        **split,
         "slices": [anthropic_slice(model, usage) for model, usage in usages],
     }
 
@@ -404,9 +524,27 @@ def salvage_from_stream_log(rollout: Any) -> None:
 
 
 def salvage_from_session_log(rollout: Any) -> None:
-    """Count a Claude Code trial from the session log teardown copied into
-    ``agent/claude-sessions/``, when a turn ended without its report or
-    nothing was counted (an ACP prompt cut off by its timeout)."""
+    """Count a Claude Code trial over ACP from the session log teardown
+    copied into ``agent/claude-sessions/``.
+
+    The end-of-turn report (ACP's ``PromptResponse.usage``) counts the main
+    session only: a subagent's calls, and the calls Claude Code makes for
+    itself, are left out (benchflow-ai/benchflow#1241). Whenever the log
+    was copied, its count (:func:`claude_session_usage`) is the trial's.
+
+    A log can count fewer tokens of a kind than the reports did (its lines
+    can be written before a response ends; MiMo's log a fraction of the
+    output), so it is short of that kind (``short_of``). Then the reports
+    stay, the log's count beside them in ``usage_details.token_count``; or,
+    when a turn ended without its report, each kind is the larger of the
+    two counts, as each counts some of the calls only. Either way the count
+    is marked incomplete (``INCOMPLETE_SHORT_LOG``, through
+    :func:`~benchflow.rollout._cost.mark_incomplete_usage`), and a cost
+    priced from the log reads ``cost_incomplete``. Without a log, a turn that
+    ends before its report keeps the running cost Claude Code last sent over
+    ACP, if any. ``usage_details.token_count.scope`` names what the count
+    covers.
+    """
     try:
         metrics = getattr(rollout, "_usage_metrics", None) or {}
         paths = getattr(rollout, "_rollout_paths", None)
@@ -414,36 +552,124 @@ def salvage_from_session_log(rollout: Any) -> None:
             paths is None
             or not _claude_only(rollout)
             or _shares_another_rollouts_turns(rollout)
-            or not _needs_salvage(rollout, metrics)
+            or metrics.get("usage_source") == USAGE_SOURCE_PROVIDER_RESPONSE
+            or getattr(rollout, "_usage_salvaged", False)
         ):
             return
         from benchflow.rollout._session_log import session_log_root
 
         counted = claude_session_usage(session_log_root(rollout) / CLAUDE_SESSIONS)
         if counted is None:
-            _cost_from_usage_update(rollout)
+            if _needs_salvage(rollout, metrics):
+                _cost_from_usage_update(rollout)
+            _label_scope(rollout)
             return
-        _replace_usage(
-            rollout,
-            counted,
-            source=USAGE_SESSION_LOG,
-            detail={
-                "source": SESSION_TOKENS_SOURCE,
-                "path": CLAUDE_SESSIONS,
-                "responses": counted["responses"],
-            },
+        detail = {
+            "source": SESSION_TOKENS_SOURCE,
+            "path": CLAUDE_SESSIONS,
+            "responses": counted["responses"],
+            "counted_from": counted["counted_from"],
+            "scope": counted["scope"],
+            "main": counted["main"],
+            "subagents": counted["subagents"],
+            **({"unlogged": counted["unlogged"]} if "unlogged" in counted else {}),
+        }
+        # Of each kind, a log that counts less than the reports did (its
+        # lines can be written before a response ends, and log less output
+        # than it had) is short of that kind.
+        short = (
+            [
+                field
+                for field in _KINDS
+                if _int(counted.get(field)) < _int(metrics.get(field))
+            ]
+            if is_token_usage_available(metrics)
+            else []
         )
+        if short and not _needs_salvage(rollout, metrics):
+            # Every turn reported: the reports stay, the log's count beside
+            # them, and the cost priced from the log is short of them.
+            details = dict(metrics.get("usage_details") or {})
+            details["token_count"] = {
+                "source": "end_of_turn",
+                "scope": SCOPE_MAIN,
+                "session_log": {
+                    **detail,
+                    **{field: counted.get(field) for field in TOKEN_FIELDS},
+                    "short_of": short,
+                },
+            }
+            rollout._usage_metrics = {**metrics, "usage_details": details}
+            _short_log_incomplete(rollout, short)
+            logger.info(
+                "Claude Code's session log counts fewer %s than its end-of-turn "
+                "reports: the reports stay",
+                ", ".join(short),
+            )
+            return
+        if short:
+            # A turn ended without its report: the turns that reported and
+            # the log each count some of the calls. Each kind is the larger.
+            counted = _at_least_reported(counted, metrics, short)
+            detail["short_of"] = short
+        _replace_usage(rollout, counted, source=USAGE_SESSION_LOG, detail=detail)
         placed = getattr(rollout, "_mirror_placed", None) or {}
         if placed.get(Path(CLAUDE_SESSIONS).name) is False:
             # The copy made while the turns ran had not caught up.
             rollout._usage_incomplete_reason = INCOMPLETE_MIRROR
+        if short:
+            _short_log_incomplete(rollout, short)
         logger.info(
-            "Tokens counted from Claude Code's session log: %d tokens in %d responses",
+            "Tokens counted from Claude Code's session log: %d tokens in %d "
+            "responses (%d in subagents), from %s",
             counted["total_tokens"],
             counted["responses"],
+            counted["subagents"]["responses"],
+            counted["counted_from"],
         )
     except Exception as exc:  # never fail the rollout over a count
         logger.info("Could not count Claude Code's session log: %s", exc)
+
+
+def _at_least_reported(
+    counted: dict[str, Any], metrics: dict[str, Any], short: list[str]
+) -> dict[str, Any]:
+    """The log's count with each kind in *short* raised to the reports'.
+    A cache write raised from the reports has no 5-minute/1-hour split."""
+    raised = {**counted, **{field: _int(metrics.get(field)) for field in short}}
+    if "n_cache_creation_tokens" in short:
+        raised["n_cache_write_5m_tokens"] = None
+        raised["n_cache_write_1h_tokens"] = None
+    raised["total_tokens"] = sum(_int(raised.get(field)) for field in _KINDS)
+    return raised
+
+
+def _short_log_incomplete(rollout: Any, short: list[str]) -> None:
+    """Have :func:`~benchflow.rollout._cost.mark_incomplete_usage` mark the
+    count: the log is short of the reported kinds *short*. A reason already
+    given (a copy that had not caught up) is kept, this one after it."""
+    names = [_KINDS[field] for field in short]
+    kinds = " and ".join([", ".join(names[:-1]), names[-1]] if names[:-1] else names)
+    reason = INCOMPLETE_SHORT_LOG.format(kinds=kinds)
+    held = getattr(rollout, "_usage_incomplete_reason", None)
+    rollout._usage_incomplete_reason = f"{held}; {reason}" if held else reason
+
+
+def _label_scope(rollout: Any) -> None:
+    """With no session log to count, name what an end-of-turn count covers:
+    Claude Code's main session only (benchflow-ai/benchflow#1241)."""
+    metrics = getattr(rollout, "_usage_metrics", None) or {}
+    if not is_token_usage_available(metrics) or metrics.get("usage_source") not in (
+        USAGE_SOURCE_AGENT_NATIVE_ACP,
+        "end_of_turn",
+    ):
+        return
+    details = dict(metrics.get("usage_details") or {})
+    count = dict(details.get("token_count") or {})
+    count.setdefault("source", "end_of_turn")
+    count.setdefault("scope", SCOPE_MAIN)
+    details["token_count"] = count
+    rollout._usage_metrics = {**metrics, "usage_details": details}
 
 
 def _cost_from_usage_update(rollout: Any) -> None:
@@ -451,8 +677,17 @@ def _cost_from_usage_update(rollout: Any) -> None:
     cost Claude Code last sent over ACP (a ``usage_update``'s ``cost``), if
     any: its own list-price estimate. Its tokens stay unknown; ACP's
     ``usage_update`` carries how full the context is, not a count."""
+    from benchflow._utils.session_cost import claude_code_prices
+    from benchflow.rollout._cost import _fallback_model
+
     metrics = getattr(rollout, "_usage_metrics", None) or {}
     if metrics.get("cost_usd") is not None or is_token_usage_available(metrics):
+        return
+    env = getattr(rollout, "_agent_env", None) or {}
+    model = _fallback_model(rollout) or str(env.get("ANTHROPIC_MODEL") or "")
+    if model and not claude_code_prices(model):
+        # Claude Code's running cost of another provider's model is at its
+        # default rate, not the model's (benchflow-ai/benchflow#1240).
         return
     update = getattr(rollout, "_last_usage_update", None) or {}
     cost = update.get("cost") if isinstance(update, dict) else None

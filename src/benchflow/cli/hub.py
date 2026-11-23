@@ -118,7 +118,7 @@ def register_hub(app: typer.Typer) -> None:
         job_dir: Annotated[
             Path,
             typer.Argument(
-                help="A job folder (jobs/<job>) holding one finished run, or the run (jobs/<job>/<time>)"
+                help="A job folder (jobs/<job>) holding one finished run, the run (jobs/<job>/<time>), or latest"
             ),
         ],
         hub: Annotated[
@@ -138,7 +138,9 @@ def register_hub(app: typer.Typer) -> None:
     ) -> None:
         """Push a finished run (traces, results, an embodied trial's record and video) to a BenchFlow Hub."""
         from benchflow.cli import _hub_client
+        from benchflow.cli._output.latest import resolve
 
+        job_dir = resolve(job_dir)
         exit_if_missing(
             job_dir,
             next_step="pass a job folder under ./jobs (or --jobs-dir) that bench run wrote",

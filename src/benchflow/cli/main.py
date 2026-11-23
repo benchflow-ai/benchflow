@@ -49,11 +49,14 @@ from benchflow.cli._lazy import (
 )
 from benchflow.cli._options import (
     AgentOption,
+    AllowCloudCredentialFileOption,
     AllowCloudMetadataOption,
     AllowTaskEnvOption,
+    AllowTaskProcessesWithCredentialsOption,
     FreshInstallOption,
     HarnessOption,
     ModelOption,
+    ScopedCredentialOption,
     SkillModeOption,
 )
 from benchflow.cli.reviewer_options import (
@@ -226,7 +229,7 @@ _ROOT_LAYOUT: tuple[LazyCommand | str, ...] = (
         "agents",
         f"{_CLI}.new_verbs",
         "register_agents",
-        "List the agents, or show one in detail.",
+        "List the agents, show one in detail, or validate a manifest.",
         rich_help_panel=_MACHINE,
     ),
     LazyCommand(
@@ -244,6 +247,13 @@ _ROOT_LAYOUT: tuple[LazyCommand | str, ...] = (
         rich_help_panel=_MACHINE,
     ),
     "eval",
+    LazyCommand(
+        "resume",
+        f"{_CLI}.results",
+        "register_eval_resume",
+        "Finish an interrupted job from its folder: rerun only the unfinished tasks.",
+        rich_help_panel=_MORE,
+    ),
     LazyCommand(
         "tasks",
         f"{_CLI}.tasks",
@@ -1838,8 +1848,23 @@ def eval_run(
             ),
         ),
     ] = None,
+    effort_pin: Annotated[
+        bool,
+        typer.Option(
+            "--effort-pin",
+            hidden=True,
+            help=(
+                "Pin every model call's reasoning effort to the run's (--effort) in "
+                "BenchFlow's model proxy, a sub-agent's included; each rewrite is "
+                "counted in the trial's model-calls.json (effort_rewrites)."
+            ),
+        ),
+    ] = False,
     fresh_install: FreshInstallOption = False,
     allow_cloud_metadata: AllowCloudMetadataOption = False,
+    allow_cloud_credential_file: AllowCloudCredentialFileOption = False,
+    allow_task_processes_with_credentials: AllowTaskProcessesWithCredentialsOption = False,
+    scoped_credential: ScopedCredentialOption = None,
     integrity: Annotated[
         str | None,
         typer.Option(
@@ -1848,7 +1873,11 @@ def eval_run(
                 "audit (default: test.sh as written, the agent's actions checked), "
                 "strict (also a hardened separate verifier; "
                 + STRICT_EXPERIMENTAL
-                + ") or off. Verdict: integrity/claim_verdict.json."
+                + ") or off. In audit and off, a non-root agent scores 0 when its "
+                "reward check doesn't complete (provenance_incomplete), and a trial "
+                "where bfx can't run is refused before the agent's turn "
+                "(integrity_unavailable); `bench explain` has both. "
+                "Verdict: integrity/claim_verdict.json."
             ),
         ),
     ] = None,
@@ -2411,6 +2440,7 @@ def eval_run(
     from benchflow.cli.eval_artifacts import run_matrix_eval
     from benchflow.cli.new_verbs import idle_seconds
     from benchflow.cli.reviewer_options import reviewer_from_cli, reviewer_idle_timeout
+    from benchflow.effort_pin import EFFORT_PIN_ENV, SWITCH_ON
 
     _apply_dotenv_to_process_env()
     _apply_allow_task_env(allow_task_env)
@@ -2480,6 +2510,9 @@ def eval_run(
         accept_deviations=accept_deviations,
         fresh_install=fresh_install,
         allow_cloud_metadata=allow_cloud_metadata,
+        allow_cloud_credential_file=allow_cloud_credential_file,
+        allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+        scoped_credentials=tuple(scoped_credential or ()),
         integrity=integrity,
         verifier_sandbox=verifier_sandbox,
         retry_from_checkpoint=retry_from_checkpoint,
@@ -2512,7 +2545,11 @@ def eval_run(
         skill_creator_dir=skill_creator_dir,
         self_gen_no_internet=self_gen_no_internet,
         loop_strategy=loop_strategy,
-        agent_env=_parse_agent_env(agent_env),
+        agent_env=_parse_agent_env(
+            [*(agent_env or []), f"{EFFORT_PIN_ENV}={SWITCH_ON}"]
+            if effort_pin
+            else agent_env
+        ),
         reviewer=reviewer_from_cli(
             agent=reviewer_agent,
             model=reviewer_model,
@@ -3099,7 +3136,6 @@ def run_batch_eval(
     )
     from benchflow.cli._shared import (
         RUN_FAILED_NEXT,
-        _report_eval_result,
         console,
         print_error,
         report_stopped,
@@ -3212,7 +3248,9 @@ def run_batch_eval(
     job_name = getattr(result, "job_name", None)
     job_dir = Path(plan.output_jobs_dir) / job_name if job_name else None
     postprocess_eval_artifacts(plan, task_collection_dir, eval_config, job_dir)
-    _report_eval_result(result, job_dir)
+    from benchflow.cli._output.report import print_run_result
+
+    print_run_result(result, job_dir)
     if not plan.request.matrix_trial:
         _finish_run(plan.request, result, job_dir)
     return result
@@ -3631,7 +3669,6 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         from benchflow.cli._errors import expected_error_parts
         from benchflow.cli._shared import (
             RUN_FAILED_NEXT,
-            _report_eval_result,
             print_error,
             report_stopped,
             stopped_run_result,
@@ -3671,7 +3708,9 @@ def _run_config_file_eval(plan: "EvalPlan") -> None:
         # The artifact flags (--run-config-out, --task-manifest-out, ...) apply to
         # a --config run too.
         postprocess_eval_artifacts(plan, j._tasks_dir, j._config, job_dir)
-        _report_eval_result(result, job_dir)
+        from benchflow.cli._output.report import print_run_result
+
+        print_run_result(result, job_dir)
         return result, job_dir
 
     req = plan.request
@@ -4270,13 +4309,19 @@ def _model_calls_row(job: Any) -> str | None:
     ]
     if cut:
         parts.append(f"{sum(cut)} cut at the output cap")
-    for key, label in (
-        ("refused_calls", "refused"),
-        ("http_errors", "provider errors"),
-    ):
-        count = sum(t.get(key) or 0 for t in totals)
-        if count:
-            parts.append(f"{count} {label}")
+    # The model's own refusals (a summary from before 0.10.1 counted only
+    # those in refused_calls), then the model gateway's, by reason.
+    refused = sum(
+        t.get("model_refused_calls", t.get("refused_calls")) or 0 for t in totals
+    )
+    if refused:
+        parts.append(f"{refused} refused")
+    gateway = _gateway_refusals_text(totals)
+    if gateway:
+        parts.append(gateway)
+    errors = sum(t.get("http_errors") or 0 for t in totals)
+    if errors:
+        parts.append(f"{errors} provider errors")
     sources = Counter(
         t["source"] if isinstance(t.get("source"), str) else "mixed" for t in totals
     )
@@ -4284,6 +4329,64 @@ def _model_calls_row(job: Any) -> str | None:
         "from " + ", ".join(f"{name} ({n})" for name, n in sorted(sources.items()))
     )
     return "; ".join(parts)
+
+
+def _gateway_refusals_text(totals: list[dict[str, Any]]) -> str | None:
+    """The requests BenchFlow's model gateway refused over the trials'
+    model-calls.json, by reason, with the models a model_not_served
+    refusal asked for; None when it refused none."""
+    from collections import Counter
+
+    gateway_reasons = ("model_not_served", "trial_budget_spent")
+    reasons: Counter[str] = Counter()
+    models: Counter[str] = Counter()
+    for figures in totals:
+        by_reason = figures.get("refusals_by_reason")
+        for reason, count in (by_reason if isinstance(by_reason, dict) else {}).items():
+            if reason in gateway_reasons and isinstance(count, int):
+                reasons[reason] += count
+        asked = figures.get("models_refused")
+        for model, count in (asked if isinstance(asked, dict) else {}).items():
+            if isinstance(count, int):
+                models[str(model)] += count
+    if not reasons:
+        return None
+    named = []
+    if reasons["model_not_served"]:
+        named.append(
+            "model not served: "
+            + ", ".join(f"{model} x{n}" for model, n in sorted(models.items()))
+        )
+    if reasons["trial_budget_spent"]:
+        named.append(f"trial budget spent: {reasons['trial_budget_spent']}")
+    return f"{sum(reasons.values())} refused by the model gateway ({'; '.join(named)})"
+
+
+def _efforts_row(job: Any) -> str | None:
+    """The reasoning efforts the job's requests went upstream at, from each
+    trial's model-calls.json (efforts_used), when they used more than one
+    level; None otherwise (benchflow#1246)."""
+    import json as _json
+    from collections import Counter
+
+    from benchflow.trajectories.model_calls import SUMMARY_FILE
+
+    used: Counter[str] = Counter()
+    for trial in getattr(job, "trials", None) or []:
+        try:
+            figures = _json.loads((Path(trial.path) / SUMMARY_FILE).read_text())
+        except (OSError, ValueError):
+            continue
+        levels = figures.get("efforts_used") if isinstance(figures, dict) else None
+        for level, count in (levels if isinstance(levels, dict) else {}).items():
+            if isinstance(count, int):
+                used[str(level)] += count
+    if len(used) < 2:
+        return None
+    return (
+        ", ".join(f"{level} {n}" for level, n in used.most_common())
+        + " requests (each trial's model-calls.json: efforts_used)"
+    )
 
 
 # bench eval metrics' pooled figures, none of which a folder of several
@@ -4736,6 +4839,9 @@ def eval_metrics(
     calls = _model_calls_row(job)
     if calls:
         table.add_row("Model calls", escape(calls))
+    efforts = _efforts_row(job)
+    if efforts:
+        table.add_row("Efforts used", escape(efforts))
     if rates is not None:
         table.add_row("Success rule", escape(rates.success_rule))
         for label, value in rates.rows():

@@ -45,12 +45,6 @@ PAGE = ROOT / "docs" / "reference" / "errors.md"
 # The fix for each message whose code gives none: section, key, message (as the page shows it), fix.
 FIXES = ROOT / "tools" / "docs_errors_fixes.tsv"
 REGENERATE = "uv run python tools/docs_errors.py --write"
-# Each release's messages, by section, as --dump-texts writes them from that release's source with that
-# release's interpreter: a message 0.9.2 lacks is labelled (0.10) when 0.10.0rc3 prints it, else (unreleased).
-BASELINES = {
-    "0.9.2": ROOT / "tools" / "errors_baseline_0.9.2.json",
-    "0.10.0rc3": ROOT / "tools" / "errors_baseline_0.10.0rc3.json",
-}
 
 _HOLE = "…"
 
@@ -1037,26 +1031,54 @@ def texts() -> dict[str, list[str] | None]:
     return out
 
 
+def _releases() -> tuple[str, str]:
+    """The release and the pre-release the labels compare with: the reference
+    pages' own, from tools/published_releases.json (tools/docs_reference.py)."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from tools.docs_reference import BASELINE_RELEASE, PRE_RELEASE
+
+    return BASELINE_RELEASE, PRE_RELEASE
+
+
+def _releasing() -> bool:
+    """At a release's cut (tools/docs_reference.py's RELEASING) every message in this tree ships: one the
+    release lacks is labelled (0.10), never (unreleased)."""
+    from tools.docs_reference import RELEASING
+
+    return RELEASING
+
+
+def baseline_paths() -> dict[str, Path]:
+    """Each of those releases' messages, by section, as --dump-texts writes
+    them with the release's published wheel installed in a clean venv, from
+    that wheel's own source: a message the release lacks is labelled (0.10)
+    when the pre-release prints it, else (unreleased). Read only to render,
+    so an older tree can still dump its texts."""
+    return {v: ROOT / "tools" / f"errors_baseline_{v}.json" for v in _releases()}
+
+
 @functools.cache
 def _baselines() -> tuple[dict, dict] | None:
     import json
 
-    if not all(path.exists() for path in BASELINES.values()):
+    paths = baseline_paths()
+    if not all(path.exists() for path in paths.values()):
         return None
     return tuple(
-        json.loads(path.read_text(encoding="utf-8")) for path in BASELINES.values()
+        json.loads(path.read_text(encoding="utf-8")) for path in paths.values()
     )
 
 
 def _since(section: str, text: str) -> str:
-    """` (0.10)` or ` (unreleased)` for a message 0.9.2 doesn't print; nothing for one it does."""
+    """` (0.10)` or ` (unreleased)` for a message the release doesn't print; nothing for one it does."""
     pair = _baselines()
     if pair is None or pair[0].get(section) is None or pair[1].get(section) is None:
         return ""
     t = _norm(text or "")
     if t in pair[0][section]:
         return ""
-    return " (0.10)" if t in pair[1][section] else " (unreleased)"
+    return " (0.10)" if _releasing() or t in pair[1][section] else " (unreleased)"
 
 
 def render(fixes: _Fixes | None = None) -> str:
@@ -1069,6 +1091,7 @@ def render(fixes: _Fixes | None = None) -> str:
     r = refusals()
     v = verifier_messages()
     w = warnings_logged()
+    release, pre_release = _releases()
     out = [
         "# Error messages",
         "",
@@ -1077,8 +1100,13 @@ def render(fixes: _Fixes | None = None) -> str:
         "filled in at run time. To find out why a trial failed, start with "
         "[When a trial fails](../evaluate/failed-trials.md).",
         "",
-        "These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 doesn't print "
-        "has `(0.10)` after it when 0.10.0rc3 prints it, or `(unreleased)` when no release does yet.",
+        "These messages come from BenchFlow's source on the 0.10 line. A message "
+        f"{release} doesn't print has `(0.10)` after it"
+        + (
+            "."
+            if _releasing()
+            else f" when {pre_release} prints it, or `(unreleased)` when no release does yet."
+        ),
         "",
         "<!-- This page is generated from the code by tools/docs_errors.py, so it lists what this "
         f"version prints. To change it, change the message in the code, then run `{REGENERATE}`. -->",
