@@ -45,7 +45,8 @@ async def test_client_children_are_reaped_before_timeout_or_cancel_returns(
     def running(pid):
         try:
             return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
-        except FileNotFoundError:
+        # A process reaped between open() and read() fails the read with ESRCH.
+        except (FileNotFoundError, ProcessLookupError):
             return False
 
     try:

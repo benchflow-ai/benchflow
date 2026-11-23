@@ -768,42 +768,48 @@ def llm_calls(trial_dir: Path) -> list[dict[str, Any]]:
 
     ``main`` calls carry tools (Claude Code's agent loop); ``side`` calls do
     not (session-title generation and similar). Ids and timestamps dropped.
+    A call the proxy saw cut also has ``stream_interrupted`` (its reason).
     """
     path = trial_dir / "trajectory" / "llm_trajectory.jsonl"
     if not path.is_file():
         return []
     calls = []
     for row in read_jsonl(path):
-        request = (row.get("request") or {}).get("body") or {}
-        response = (row.get("response") or {}).get("body") or {}
-        if isinstance(response.get("output"), list):
-            calls.append(_responses_call(request, response))
-            continue
-        usage = response.get("usage") or {}
-        choice = (response.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        tool_calls = message.get("tool_calls") or []
-        calls.append(
-            {
-                "kind": "main" if request.get("tools") else "side",
-                "n_messages": len(request.get("messages") or []),
-                "finish_reason": choice.get("finish_reason"),
-                "text": message.get("content"),
-                "tool_calls": [
-                    {
-                        "id": tc.get("id"),
-                        "name": (tc.get("function") or {}).get("name"),
-                        "arguments": json.loads(
-                            (tc.get("function") or {}).get("arguments") or "{}"
-                        ),
-                    }
-                    for tc in tool_calls
-                ],
-                "input_tokens": usage.get("prompt_tokens"),
-                "output_tokens": usage.get("completion_tokens"),
-            }
-        )
+        calls.append(_call(row))
+        cut = (row.get("metadata") or {}).get("stream_interrupted")
+        if cut:
+            calls[-1]["stream_interrupted"] = cut
     return calls
+
+
+def _call(row: dict[str, Any]) -> dict[str, Any]:
+    """One captured exchange in :func:`llm_calls`' shape."""
+    request = (row.get("request") or {}).get("body") or {}
+    response = (row.get("response") or {}).get("body") or {}
+    if isinstance(response.get("output"), list):
+        return _responses_call(request, response)
+    usage = response.get("usage") or {}
+    choice = (response.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    tool_calls = message.get("tool_calls") or []
+    return {
+        "kind": "main" if request.get("tools") else "side",
+        "n_messages": len(request.get("messages") or []),
+        "finish_reason": choice.get("finish_reason"),
+        "text": message.get("content"),
+        "tool_calls": [
+            {
+                "id": tc.get("id"),
+                "name": (tc.get("function") or {}).get("name"),
+                "arguments": json.loads(
+                    (tc.get("function") or {}).get("arguments") or "{}"
+                ),
+            }
+            for tc in tool_calls
+        ],
+        "input_tokens": usage.get("prompt_tokens"),
+        "output_tokens": usage.get("completion_tokens"),
+    }
 
 
 def _responses_call(

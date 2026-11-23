@@ -47,6 +47,11 @@ async def _reaped_child() -> asyncio.subprocess.Process:
         stderr=asyncio.subprocess.STDOUT,
     )
     await process.communicate()
+    # communicate() can return while the transport's connection_lost callback
+    # is still queued (the exit is seen after the pipe's EOF). Until it runs,
+    # terminate() reaches Popen, which skips a child it knows has exited and
+    # raises nothing. The callback is already scheduled: one loop turn runs it.
+    await asyncio.sleep(0)
     return process
 
 
