@@ -17,12 +17,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from benchflow._types import Role, Scene
 from benchflow._utils import timing_spans
+from benchflow._utils.aware_time import aware
 from benchflow._utils.config_redaction import (
     _SECRET_ENV_SUBSTRINGS as _SECRET_ENV_SUBSTRINGS,
 )
@@ -48,6 +49,7 @@ from benchflow._utils.scoring import (
     AGENT_INTEGRATION,
     API_ERROR,
     IDLE_TIMEOUT,
+    PROVIDER_AUTH,
     PROVIDER_STALL,
     classify_error,
     classify_verifier_error,
@@ -70,6 +72,7 @@ from benchflow.models import RolloutResult, TrajectorySource
 from benchflow.review.outcome import ScoringResult
 from benchflow.review.persistence import write_json_atomic
 from benchflow.rewards.validation import reward_lenient_from_env
+from benchflow.rollout._usage import PROVIDER_REFUSED_KEY
 from benchflow.run_checks import (
     harness_ending,
     read_calls,
@@ -202,6 +205,7 @@ def _write_config(
     from benchflow.acp.selection import selected_acp_transport
     from benchflow.agents.install import effective_install_timeout
     from benchflow.agents.registry import MODEL_ROUTE_AGENT, agent_routes_own_model
+    from benchflow.agents.remote_manifests import agent_source
 
     artifact_source = artifact_source_provenance(source_provenance)
     recorded_task_path = (
@@ -220,6 +224,9 @@ def _write_config(
         "benchflow_version": __version__,
         "task_path": recorded_task_path,
         "agent": agent,
+        # A local manifest that replaced the core agent of this name
+        # (BENCHFLOW_AGENTS_OVERRIDE_CORE): its path and SHA-256.
+        **({"agent_source": source} if (source := agent_source(agent)) else {}),
         "model": model,
         **({"model_route": MODEL_ROUTE_AGENT} if agent_routes_own_model(agent) else {}),
         "reasoning_effort": reasoning_effort,
@@ -504,11 +511,18 @@ def _build_rollout_result(
     branches: dict[str, Any] | None = None,
     verifier_isolation: tuple[str, str] | None = None,
     cloud_metadata: dict[str, Any] | None = None,
+    isolation_opt_ins: list[dict[str, Any]] | None = None,
+    operator_network: list[str] | None = None,
+    held_after_restart: list[dict[str, Any]] | None = None,
+    held_exited: list[dict[str, Any]] | None = None,
+    verifier_network_refused: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
     trial_budget: dict[str, Any] | None = None,
     host_ptrace_scope: int | str | None = None,
     agent_user: dict[str, Any] | None = None,
+    sandbox_account: dict[str, Any] | None = None,
     test_sh_preflight: dict[str, Any] | None = None,
+    operator_credentials: dict[str, Any] | None = None,
 ) -> RolloutResult:
     """Build RolloutResult and write result.json, timing.json, prompts.json, trajectory.
 
@@ -551,7 +565,9 @@ def _build_rollout_result(
             runtime_skills_dir=None,
             declared_sandbox_skills_dir=None,
         )
-    finished_at = datetime.now()
+    finished_at = datetime.now(UTC)
+    # The rollout's own clock is naive local time; the result holds both times aware.
+    started_at = aware(started_at)
     n_skill_invocations = count_skill_invocations(trajectory)
     # A script agent stopped at its time limit has no error text (its
     # workspace is graded as it stands), and is still a timeout.
@@ -564,6 +580,9 @@ def _build_rollout_result(
         ) or classify_error(error)
         if classify_error(error) == "invalid_provider_response":
             error_category = "invalid_provider_response"
+        if error is not None and error.startswith(PROVIDER_REFUSED_KEY):
+            # Over the integration diagnostic an idle agent left: the key.
+            error_category = PROVIDER_AUTH
         if error is not None and error.startswith(PROVIDER_STALL):
             # Over the timeout diagnostic it ended with: the provider's error.
             error_category = API_ERROR
@@ -593,6 +612,7 @@ def _build_rollout_result(
         n_cache_write_tokens = n_cache_creation_tokens
     n_cache_creation_tokens = n_cache_write_tokens
     from benchflow.agents.registry import is_scripted_agent
+    from benchflow.agents.remote_manifests import agent_source
 
     if no_usage_reason is None and is_scripted_agent(agent):
         # An oracle, a nop or a script made no model call: nothing to count.
@@ -751,6 +771,7 @@ def _build_rollout_result(
         "rewards": result.rewards,
         "agent": result.agent,
         "agent_name": result.agent_name,
+        **({"agent_source": source} if (source := agent_source(result.agent)) else {}),
         # Which build of BenchFlow wrote it: version, source commit and
         # whether that tree had uncommitted changes (benchflow.build_info).
         "benchflow_build": benchflow_build(),
@@ -828,10 +849,20 @@ def _build_rollout_result(
         # The task's own harness user beside the one BenchFlow ran the agent
         # as, in every record; nothing here changed who ran it.
         "agent_user": agent_user,
+        # The sandbox user's uid where /logs/verifier is the host's own folder
+        # (local Docker): kept off the uid BenchFlow runs as (#1247);
+        # ``moved_off_host_uid`` when it would otherwise have had it. None
+        # elsewhere.
+        "sandbox_account": sandbox_account,
         # What test.sh needs, resolved before the agent's turn as the
         # verifier runs it (task/test_sh_preflight.py); None when unchecked.
         "test_sh_preflight": test_sh_preflight,
     }
+    if operator_credentials:
+        # The operator's credentials this trial staged in its sandbox, by
+        # kind, route, names and where (never a value), and what the run's
+        # flags let in (benchflow.agents.operator_credentials); absent when none.
+        result_data["operator_credentials"] = operator_credentials
     result.model_refusal = result_data["model_refusal"]
     # The finding of a trial the writer withheld as an integration failure,
     # as result.json records it (benchflow.integration_health).
@@ -845,6 +876,30 @@ def _build_rollout_result(
         # The cloud metadata block's state, and the run's opt-out when it
         # made one; cloud-metadata.json has the whole record.
         result_data["cloud_metadata"] = cloud_metadata
+    if isolation_opt_ins:
+        # Each isolation weakening the task asked for and the run granted,
+        # with the task's key and the run's flag; absent when none.
+        result_data["isolation_opt_ins"] = list(isolation_opt_ins)
+    if operator_network:
+        # The task's phase network keys the run's config override replaced:
+        # the operator's sandbox network held in every phase.
+        result_data["operator_network"] = {
+            "by": "--config-override",
+            "replaced": list(operator_network),
+        }
+    if held_after_restart:
+        # A compose service Docker restarted after the start, waiting in the
+        # hold since: which, when and why; absent when none.
+        result_data["held_after_restart"] = list(held_after_restart)
+    if held_exited:
+        # A held compose service whose container exited and did not start
+        # again: which, its exit status, and when (start-up, the agent's
+        # turn or test.sh); absent when none.
+        result_data["held_exited"] = list(held_exited)
+    if verifier_network_refused:
+        # What test.sh's network refused it, with its exit and whether it
+        # passed; the score is test.sh's (its warning flags it for a read).
+        result_data["verifier_network_refused"] = dict(verifier_network_refused)
     if warnings:
         # What the trial ran without or around, by name, never a value
         # (benchflow._utils.trial_warnings); absent when there is none.

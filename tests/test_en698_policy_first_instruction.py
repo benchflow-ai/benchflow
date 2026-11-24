@@ -82,11 +82,43 @@ def test_a_model_agent_asks_for_the_services_only():
     assert not hasattr(box, "_start_hold_mode")
 
 
-def test_an_open_network_asks_for_nothing():
+class _CoveringBox(SimpleNamespace):
+    """A backend that puts rules into its compose services (Docker)."""
+
+    async def metadata_service_targets(self, **_k):
+        return []
+
+
+def test_an_open_network_holds_every_service_for_its_metadata_rule():
+    """0.10.1: under an open network every service waits until its cloud
+    metadata rule is in (its start-up code ran first on 0.10.0); main's
+    every-process hold stays a restricted policy's."""
+    from benchflow.sandbox.service_cover import ask_start_holds
+
+    box = _CoveringBox()
+    ask_start_holds(box, _task_config(), None, every_process=True)
+    assert box._hold_every_service is True
+    assert box._start_cover["mode"] == "public" and box._start_cover["metadata"] is True
+    assert not hasattr(box, "_start_hold_mode")
+
+
+def test_an_open_network_holds_nothing_where_no_rule_goes_into_the_services():
+    """Daytona's DinD puts no rule into a task's services (the 0.10.1 notes):
+    under an open network nothing would be waited for, so nothing is held."""
     from benchflow.sandbox.service_cover import ask_start_holds
 
     box = SimpleNamespace()
     ask_start_holds(box, _task_config(), None, every_process=True)
+    assert vars(box) == {}
+
+
+def test_an_open_network_with_the_task_s_opt_out_asks_for_nothing():
+    from benchflow.sandbox.service_cover import ask_start_holds
+
+    box = SimpleNamespace()
+    ask_start_holds(
+        box, _task_config(allow_cloud_metadata=True), None, every_process=True
+    )
     assert vars(box) == {}
 
 
@@ -478,7 +510,7 @@ async def test_r1_runs_before_the_first_launch_under_a_policy(
     agent itself left)."""
     seen: list[object] = []
 
-    async def scan(env):
+    async def scan(env, **_kwargs):
         seen.append(env)
 
     monkeypatch.setattr(lockdown, "refuse_task_processes", scan)

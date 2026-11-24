@@ -11,11 +11,15 @@ in a container of BenchFlow's own that joins main's network namespace
 same rules land in the same namespace, and nothing is installed in main.
 
 - The image (:data:`HELPER_DOCKERFILE`: a pinned Alpine with pinned iptables,
-  iptables-legacy and nftables) is built by this process, once per Docker
-  daemon, beside the first sandbox start and with no build cache, and run by
-  the image ID that build gave: never an image found under a tag or a label,
-  which a task's Compose file can give an image of its own, nor a cached step
-  a task's build may have imported.
+  iptables-legacy and nftables) is the release's prebuilt one when it pins one
+  (:data:`HELPER_IMAGE`): pulled by its digest, once per Docker daemon, beside
+  the first sandbox start, checked (that digest among its RepoDigests, this
+  recipe's labels, the daemon's platform) and run by the image ID the check
+  read. Otherwise, and
+  whenever the pull fails or the pulled image is not this recipe's, this
+  process builds it with no build cache and runs the image ID that build gave.
+  Never an image found under a tag or a label, which a task's Compose file can
+  give an image of its own, nor a cached step a task's build may have imported.
 - The helper holds NET_ADMIN and NET_RAW and nothing else (no new
   privileges, a read-only root, tmpfs without exec) and shares only the
   network namespace with main: the agent can neither see nor signal its
@@ -58,6 +62,7 @@ from benchflow.sandbox._exec_receipt import (
     read_receipt,
     receipt_command,
 )
+from benchflow.sandbox.image_build import buildkit_never_started
 
 logger = logging.getLogger("benchflow")
 
@@ -72,14 +77,15 @@ HELPER_BASE = (
 #: on fails the build, and Docker then refuses every start that needs a rule
 #: in main's namespace: every task that keeps the cloud metadata block
 #: (``DockerSandbox._decide_rules_by_helper``). A pin the repository drops is
-#: moved here (openssl 3.5.9-r0 to 3.5.9-r1 on 18 November 2026).
+#: moved here (openssl 3.5.9-r0 to 3.5.9-r1 on 18 November 2026, python3
+#: 3.14.10-r1 to 3.14.10-r2 on 23 November 2026).
 #: iptables-legacy gives the script's tool choice the same fallback root has
 #: in a Debian main, for hosts where nf_tables does not work.
 HELPER_PACKAGES = (
     # The verifier phase's egress proxy runs in its own container from this
     # image (_egress_container): its Python and the OpenSSL it mints
     # leaf certificates with.
-    "python3=3.14.10-r1",
+    "python3=3.14.10-r2",
     "openssl=3.5.9-r1",
     "iptables=1.8.13-r0",
     "iptables-legacy=1.8.13-r0",
@@ -102,6 +108,17 @@ HELPER_RECIPE = hashlib.sha256(HELPER_DOCKERFILE.encode()).hexdigest()[:16]
 HELPER_TAG = f"benchflow-helper:metadata-{HELPER_RECIPE}"
 HELPER_LABEL = "benchflow.helper"
 HELPER_RECIPE_LABEL = "benchflow.helper.recipe"
+#: The release's prebuilt image of this recipe, every architecture, named by
+#: its index digest on a public registry ("" until a release pins one). A
+#: digest names one content, so no task can give another image this name.
+HELPER_IMAGE = ""
+#: The recipe :data:`HELPER_IMAGE` was built from. The pull happens only while
+#: it is :data:`HELPER_RECIPE`: a changed recipe builds here until a new image
+#: is pinned with it.
+HELPER_IMAGE_RECIPE = ""
+#: ``0`` never pulls the prebuilt image (a host with no registry access): this
+#: process builds it.
+PULL_ENV = "BENCHFLOW_METADATA_HELPER_PULL"
 #: ``0`` keeps the block's install in main (the helper never runs). A root
 #: agent's main then keeps NET_RAW, so every root agent on Docker is refused
 #: unless the run opts out of the block.
@@ -113,9 +130,21 @@ _HELPER_LIFETIME_SEC = 1800
 # their timeouts).
 _BLOCK_MARGIN_SEC = 300
 _BUILD_SEC = 300
+# The prebuilt image's pull; a registry that never answers takes Docker about
+# 90 s to give up on.
+_PULL_SEC = 60
+# One docker call of the helper's (run, inspect, tag, rm) on a host whose
+# load fits its CPUs; _run_sec() gives a loaded host longer.
 _RUN_SEC = 60
+# The most _run_sec() multiplies _RUN_SEC by.
+_RUN_LOAD_CAP = 4.0
+# How often a start that got no answer is looked for after its remove.
+_LATE_POLL_SEC = 2.0
 # A failed build is tried again after this long (a mirror that was down).
 _RETRY_BUILD_SEC = 600
+# A build BuildKit never started is tried again after each of these, then
+# refused with every try's reason (image_build.buildkit_never_started).
+_BUILD_RETRY_DELAYS_SEC = (2.0, 5.0)
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 
@@ -158,11 +187,29 @@ def _clock() -> float:
     return time.monotonic()
 
 
-# Per daemon: the image ID this process's build gave, or the time and
-# reason a build failed.
+def _run_sec() -> float:
+    """The bound for one of the helper's docker calls. A busy daemon answers
+    a ``docker run`` or ``inspect`` later while it still works: on VM 3, at a
+    1-minute load of 50-90 on 32 vCPUs, the helper's start outlasted a fixed
+    60 s. So :data:`_RUN_SEC` while the load fits the CPUs, and in
+    step with the load per CPU beyond that, up to :data:`_RUN_LOAD_CAP`
+    times. An unreadable load keeps :data:`_RUN_SEC`."""
+    try:
+        per_cpu = os.getloadavg()[0] / (os.cpu_count() or 1)
+    except (AttributeError, OSError):
+        return float(_RUN_SEC)
+    return _RUN_SEC * min(max(per_cpu, 1.0), _RUN_LOAD_CAP)
+
+
+# Per daemon: the image ID this process's build gave, or, after a build
+# failed, when another may run and why it failed.
 _READY: dict[str, str] = {}
 _FAILED: dict[str, tuple[float, str]] = {}
 _BUILD_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+# Per daemon: no pull of the prebuilt image before this time (one failed).
+_PULL_FAILED: dict[str, float] = {}
+# Per daemon: where the image in _READY came from (pulled, built or recorded).
+_SOURCE: dict[str, str] = {}
 
 
 #: Where the IDs of helper images BenchFlow built are kept, one file per
@@ -198,6 +245,13 @@ def recorded_image(daemon_id: str) -> str | None:
     """The image ID a build recorded for ``daemon_id`` and this recipe, or
     None: no record, or one in a folder or file that is not this user's
     alone (a link included), or one that names another daemon or recipe."""
+    found = _recorded(daemon_id)
+    return found[0] if found else None
+
+
+def _recorded(daemon_id: str) -> tuple[str, str] | None:
+    """(the recorded image ID, where it came from: "pulled" or "built"), as
+    :func:`recorded_image` reads it; a record without a source is a build."""
     folder = state_dir()
     try:
         if not _private(os.lstat(folder), stat.S_IFDIR):
@@ -227,12 +281,13 @@ def recorded_image(daemon_id: str) -> str | None:
         or not _IMAGE_ID.fullmatch(image)
     ):
         return None
-    return image
+    return image, "pulled" if data.get("source") == "pulled" else "built"
 
 
-def record_image(daemon_id: str, image: str) -> None:
-    """Keep ``image``, built here with no cache, for later processes: a new
-    0600 file swapped in whole, in a 0700 folder of this user's."""
+def record_image(daemon_id: str, image: str, source: str = "built") -> None:
+    """Keep ``image`` (built here with no cache, or the prebuilt one pulled by
+    its digest and checked: ``source``) for later processes: a new 0600 file
+    swapped in whole, in a 0700 folder of this user's."""
     folder = state_dir()
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     st = os.lstat(folder)
@@ -253,7 +308,15 @@ def record_image(daemon_id: str, image: str) -> None:
     )
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump({"daemon": daemon_id, "recipe": HELPER_RECIPE, "image": image}, f)
+            json.dump(
+                {
+                    "daemon": daemon_id,
+                    "recipe": HELPER_RECIPE,
+                    "image": image,
+                    "source": source,
+                },
+                f,
+            )
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -264,7 +327,7 @@ def record_image(daemon_id: str, image: str) -> None:
 async def _daemon_id(docker: DockerRun) -> str:
     """The daemon's own ID (``docker info``), "" when it cannot be read."""
     with contextlib.suppress(Exception):
-        result = await docker(["info", "--format", "{{.ID}}"], timeout=_RUN_SEC)
+        result = await docker(["info", "--format", "{{.ID}}"], timeout=_run_sec())
         found = (result.stdout or "").strip()
         if result.return_code == 0 and re.fullmatch(r"[A-Za-z0-9:_-]{8,200}", found):
             return found
@@ -288,7 +351,7 @@ async def _still_ours(docker: DockerRun, image: str) -> bool:
                 "}}",
                 image,
             ],
-            timeout=_RUN_SEC,
+            timeout=_run_sec(),
         )
         return result.return_code == 0 and (result.stdout or "").strip() == (
             f"{image}\tmetadata\t{HELPER_RECIPE}"
@@ -296,8 +359,127 @@ async def _still_ours(docker: DockerRun, image: str) -> bool:
     return False
 
 
+_PULL_FORMAT = (
+    "{{.Id}}\t{{json .RepoDigests}}\t{{index .Config.Labels "
+    f'"{HELPER_LABEL}"'
+    "}}\t{{index .Config.Labels "
+    f'"{HELPER_RECIPE_LABEL}"'
+    "}}\t{{.Os}}/{{.Architecture}}"
+)
+_PLATFORM = re.compile(r"[a-z0-9_]+/[a-z0-9_]+")
+
+
+async def _daemon_platform(docker: DockerRun) -> str:
+    """The daemon's ``os/arch`` in Go's names, as an image's ``.Os`` and
+    ``.Architecture`` give them (``docker version``); "" when unread."""
+    with contextlib.suppress(Exception):
+        result = await docker(
+            ["version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"],
+            timeout=_run_sec(),
+        )
+        found = (result.stdout or "").strip()
+        if result.return_code == 0 and _PLATFORM.fullmatch(found):
+            return found
+    return ""
+
+
+def _pull_wanted(daemon: str) -> bool:
+    """Whether to pull the prebuilt image for ``daemon`` now: a release pins
+    one for this recipe, the pull is not switched off, and no pull failed
+    within :data:`_RETRY_BUILD_SEC`."""
+    return (
+        bool(HELPER_IMAGE)
+        and HELPER_IMAGE_RECIPE == HELPER_RECIPE
+        and os.environ.get(PULL_ENV, "").strip() != "0"
+        and _clock() >= _PULL_FAILED.get(daemon, 0.0)
+    )
+
+
+async def _pull_image(docker: DockerRun, daemon: str) -> str | None:
+    """The prebuilt image's ID on this daemon, or None (the local build
+    serves). Pulled by :data:`HELPER_IMAGE`'s digest, then inspected by that
+    same reference: its ID must be one, the digest reference must be among its
+    RepoDigests, its labels must be this recipe's, and its platform must be
+    the daemon's (an image of another architecture starts, then dies at its
+    first exec). Anything else is refused and never run. A failed pull or a
+    refused image is not tried again for :data:`_RETRY_BUILD_SEC`."""
+    try:
+        result = await asyncio.wait_for(
+            docker(["pull", "--quiet", HELPER_IMAGE], timeout=_PULL_SEC),
+            # A backstop: the docker call's own timeout ends the pull first.
+            _PULL_SEC + 2,
+        )
+        why = (
+            ""
+            if result.return_code == 0
+            else _last_line(result.stderr or result.stdout or "")
+            or f"exit {result.return_code}"
+        )
+    except Exception as exc:
+        why = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    if why:
+        _PULL_FAILED[daemon] = _clock() + _RETRY_BUILD_SEC
+        logger.info(
+            "The metadata firewall helper's prebuilt image was not pulled (%s); "
+            "building it here",
+            why,
+        )
+        return None
+    out = ""
+    with contextlib.suppress(Exception):
+        result = await docker(
+            ["image", "inspect", "--format", _PULL_FORMAT, HELPER_IMAGE],
+            timeout=_run_sec(),
+        )
+        if result.return_code == 0:
+            out = result.stdout or ""
+    fields = out.strip().split("\t")
+    image, digests, label, recipe, platform = (
+        fields if len(fields) == 5 else ("", "", "", "", "")
+    )
+    try:
+        names = json.loads(digests) if digests else []
+    except ValueError:
+        names = []
+    problem = (
+        "it has no image ID"
+        if not _IMAGE_ID.fullmatch(image)
+        else "the pinned digest is not among its RepoDigests"
+        if not isinstance(names, list) or HELPER_IMAGE not in names
+        else "its labels are not this recipe's"
+        if (label, recipe) != ("metadata", HELPER_RECIPE)
+        else ""
+    )
+    if not problem:
+        here = await _daemon_platform(docker)
+        if not here:
+            problem = "this daemon's platform could not be read"
+        elif platform != here:
+            problem = f"it is for {platform}, not this daemon's {here}"
+    if problem:
+        _PULL_FAILED[daemon] = _clock() + _RETRY_BUILD_SEC
+        logger.warning(
+            "The metadata firewall helper's prebuilt image %s was refused (%s): "
+            "it is never run; building it here",
+            HELPER_IMAGE,
+            problem,
+        )
+        return None
+    return image
+
+
+def image_source(daemon: str) -> str:
+    """Where this process's helper image for ``daemon`` came from: "pulled"
+    (the prebuilt one), "built" (here), or an earlier process's still on the
+    daemon, with where that one came from ("recorded:pulled",
+    "recorded:built"); "" when it has none."""
+    return _SOURCE.get(daemon, "")
+
+
 async def ensure_image(docker: DockerRun, daemon: str) -> str:
-    """The helper image's ID on this daemon, as BenchFlow built it.
+    """The helper image's ID on this daemon: the release's prebuilt image,
+    pulled by its digest and checked (:func:`_pull_image`), else as BenchFlow
+    built it.
 
     Built from the pinned recipe with no build cache (``docker build
     --no-cache --quiet`` prints the ID): the daemon's cache is shared with
@@ -321,48 +503,86 @@ async def ensure_image(docker: DockerRun, daemon: str) -> str:
         if built:
             return built
         failed = _FAILED.get(daemon)
-        if failed is not None and _clock() - failed[0] < _RETRY_BUILD_SEC:
+        if failed is not None and _clock() < failed[0]:
             raise HelperUnavailable(failed[1])
         daemon_id = await _daemon_id(docker)
-        recorded = recorded_image(daemon_id) if daemon_id else None
-        if recorded is not None and await _still_ours(docker, recorded):
-            _READY[daemon] = recorded
-            return recorded
+        found = _recorded(daemon_id) if daemon_id else None
+        if found is not None and await _still_ours(docker, found[0]):
+            _READY[daemon] = found[0]
+            _SOURCE[daemon] = f"recorded:{found[1]}"
+            return found[0]
+        if _pull_wanted(daemon) and (pulled := await _pull_image(docker, daemon)):
+            _FAILED.pop(daemon, None)
+            _PULL_FAILED.pop(daemon, None)
+            _READY[daemon] = pulled
+            _SOURCE[daemon] = "pulled"
+            if daemon_id and await _keep(docker, pulled):
+                try:
+                    record_image(daemon_id, pulled, source="pulled")
+                except OSError as exc:
+                    logger.debug("Metadata helper image ID not recorded: %s", exc)
+            return pulled
         # Build locks are process-local. Two controllers can export this
         # recipe at once, and containerd rejects concurrent exports to the
         # same tag. Keep each export named until its immutable ID has its
         # own retained tag; never resolve an image through this name.
         build_tag = f"{HELPER_TAG}-build-{secrets.token_hex(12)}"
-        result = await docker(
-            [
-                "build",
-                "--no-cache",
-                "--quiet",
-                "--tag",
-                build_tag,
-                "--label",
-                f"{HELPER_LABEL}=metadata",
-                "--label",
-                f"{HELPER_RECIPE_LABEL}={HELPER_RECIPE}",
-                "-",
-            ],
-            stdin=HELPER_DOCKERFILE.encode(),
-            timeout=_BUILD_SEC,
-        )
-        ids = _IMAGE_ID.findall(result.stdout or "")
-        if result.return_code != 0 or not ids:
-            why = "building the metadata firewall helper image failed: " + (
-                _last_line(result.stderr or result.stdout or "") or "no image ID"
+        tries: list[str] = []
+        while True:
+            result = await docker(
+                [
+                    "build",
+                    "--no-cache",
+                    "--quiet",
+                    "--tag",
+                    build_tag,
+                    "--label",
+                    f"{HELPER_LABEL}=metadata",
+                    "--label",
+                    f"{HELPER_RECIPE_LABEL}={HELPER_RECIPE}",
+                    "-",
+                ],
+                stdin=HELPER_DOCKERFILE.encode(),
+                timeout=_BUILD_SEC,
             )
-            _FAILED[daemon] = (_clock(), why)
+            ids = _IMAGE_ID.findall(result.stdout or "")
+            if result.return_code == 0 and ids:
+                break
+            output = result.stderr or result.stdout or ""
+            tries.append(_last_line(output) or "no image ID")
+            never_started = buildkit_never_started(output)
+            if never_started and len(tries) <= len(_BUILD_RETRY_DELAYS_SEC):
+                delay = _BUILD_RETRY_DELAYS_SEC[len(tries) - 1]
+                logger.warning(
+                    "BuildKit never started the metadata firewall helper "
+                    "image's build (try %d of %d), building again in %.0f s: %s",
+                    len(tries),
+                    len(_BUILD_RETRY_DELAYS_SEC) + 1,
+                    delay,
+                    tries[-1],
+                )
+                await asyncio.sleep(delay)
+                continue
+            why = "building the metadata firewall helper image failed: " + (
+                tries[0]
+                if len(tries) == 1
+                else "; ".join(f"try {n}: {t}" for n, t in enumerate(tries, 1))
+            )
+            # No step ran in a build BuildKit never started: the next start
+            # builds again rather than waiting out _RETRY_BUILD_SEC.
+            _FAILED[daemon] = (
+                _clock() + (0 if never_started else _RETRY_BUILD_SEC),
+                why,
+            )
             raise HelperUnavailable(why)
         _FAILED.pop(daemon, None)
         _READY[daemon] = ids[-1]
+        _SOURCE[daemon] = "built"
         if daemon_id and await _keep(docker, ids[-1]):
             # Remove only this build's temporary name, after keeping the
             # image by ID. A failed keep leaves the export tag intact.
             with contextlib.suppress(Exception):
-                await docker(["image", "rm", build_tag], timeout=_RUN_SEC)
+                await docker(["image", "rm", build_tag], timeout=_run_sec())
             try:
                 record_image(daemon_id, ids[-1])
             except OSError as exc:
@@ -381,7 +601,7 @@ async def _keep(docker: DockerRun, image: str) -> bool:
     process's, or another BenchFlow's) cannot remove it. A task that tags
     another image so names an image with another ID, which is never used."""
     with contextlib.suppress(Exception):
-        result = await docker(["tag", image, kept_tag(image)], timeout=_RUN_SEC)
+        result = await docker(["tag", image, kept_tag(image)], timeout=_run_sec())
         return result.return_code == 0
     return False
 
@@ -461,7 +681,7 @@ async def _netns_inode(docker: DockerRun, image: str, network: str) -> str:
                 "%i",
                 "/proc/self/ns/net",
             ],
-            timeout=_RUN_SEC,
+            timeout=_run_sec(),
         )
     except Exception:
         return ""
@@ -482,7 +702,7 @@ async def host_netns(docker: DockerRun, daemon: str, container: str) -> str:
     try:
         inspected = await docker(
             ["inspect", "--format", "{{.HostConfig.NetworkMode}}", container],
-            timeout=_RUN_SEC,
+            timeout=_run_sec(),
         )
         mode = (getattr(inspected, "stdout", "") or "").strip()
     except Exception:
@@ -518,6 +738,19 @@ async def host_netns(docker: DockerRun, daemon: str, container: str) -> str:
 def _last_line(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     return lines[-1][:300] if lines else ""
+
+
+#: The hint Docker's CLI prints under an error ("See 'docker run --help'."),
+#: which names no reason.
+_DOCKER_HINT = re.compile(r"^(See|Run) 'docker [^']*--help'")
+
+
+def _docker_reason(text: str) -> str:
+    """The last line of a failed docker command's output that says why: not
+    the usage hint the CLI prints under its error."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    kept = [line for line in lines if not _DOCKER_HINT.match(line)]
+    return kept[-1][:300] if kept else ""
 
 
 #: The report lines a helper script's ``status=`` is read from: the cloud
@@ -583,6 +816,9 @@ class MetadataHelper:
         # A run with no ID back yet (cancelled midway): the name it was given,
         # too random for any task container to hold, is all that finds it.
         self._starting: str | None = None
+        # The name of a start whose docker run got no answer: the daemon may
+        # still create it after the remove by name (_remove_late).
+        self._unanswered: str | None = None
         self._closing: asyncio.Task[None] | None = None
         #: Why the helper did not serve the block, for its record.
         self.unavailable = ""
@@ -683,7 +919,7 @@ class MetadataHelper:
                     "{{.State.Running}} {{.Image}}",
                     self.container,
                 ],
-                timeout=_RUN_SEC,
+                timeout=_run_sec(),
             )
         except Exception:
             return "the metadata firewall helper could not be inspected", True
@@ -716,45 +952,50 @@ class MetadataHelper:
         self._starting = name
         # Its lifetime runs from no later than this.
         started_at = _clock()
-        started = await self._docker(
-            [
-                "run",
-                "--detach",
-                "--rm",
-                "--name",
-                name,
-                "--network",
-                f"container:{main}",
-                "--user",
-                "0:0",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "NET_ADMIN",
-                "--cap-add",
-                "NET_RAW",
-                "--security-opt",
-                "no-new-privileges",
-                "--read-only",
-                "--tmpfs",
-                "/run:rw,noexec,nosuid,nodev,size=1m",
-                "--tmpfs",
-                "/tmp:rw,noexec,nosuid,nodev,size=8m",
-                "--ipc",
-                "none",
-                "--pids-limit",
-                "32",
-                "--memory",
-                "64m",
-                f"--label={HELPER_LABEL}=metadata",
-                *labels,
-                "--entrypoint",
-                "/bin/sleep",
-                image,
-                str(_HELPER_LIFETIME_SEC),
-            ],
-            timeout=_RUN_SEC,
-        )
+        try:
+            started = await self._docker(
+                [
+                    "run",
+                    "--detach",
+                    "--rm",
+                    "--name",
+                    name,
+                    "--network",
+                    f"container:{main}",
+                    "--user",
+                    "0:0",
+                    "--cap-drop",
+                    "ALL",
+                    "--cap-add",
+                    "NET_ADMIN",
+                    "--cap-add",
+                    "NET_RAW",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--read-only",
+                    "--tmpfs",
+                    "/run:rw,noexec,nosuid,nodev,size=1m",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid,nodev,size=8m",
+                    "--ipc",
+                    "none",
+                    "--pids-limit",
+                    "32",
+                    "--memory",
+                    "64m",
+                    f"--label={HELPER_LABEL}=metadata",
+                    *labels,
+                    "--entrypoint",
+                    "/bin/sleep",
+                    image,
+                    str(_HELPER_LIFETIME_SEC),
+                ],
+                timeout=_run_sec(),
+            )
+        except Exception:
+            # No answer within the bound: the daemon may still create it.
+            self._unanswered = name
+            raise
         container = _last_line(started.stdout or "")
         if started.return_code != 0 or not _CONTAINER_ID.fullmatch(container):
             if started.return_code != 0:
@@ -762,7 +1003,10 @@ class MetadataHelper:
                 _READY.pop(self._daemon, None)
             raise HelperUnavailable(
                 "the metadata firewall helper did not start: "
-                + (_last_line(started.stderr or started.stdout or "") or "no output")
+                + (
+                    _docker_reason(started.stderr or started.stdout or "")
+                    or "no output"
+                )
             )
         if container == main:
             # Never main: the helper's execs reach only the container its own
@@ -846,8 +1090,30 @@ class MetadataHelper:
             await asyncio.gather(install, return_exceptions=True)
         self._install = None
         target = self.container or self._starting
+        late = target is not None and target == self._unanswered
         self.container = self._image = self._started_at = self._starting = None
+        self._unanswered = None
         if target is None:
             return
         with contextlib.suppress(Exception):
-            await self._docker(["rm", "--force", target], timeout=_RUN_SEC)
+            await self._docker(["rm", "--force", target], timeout=_run_sec())
+        if late:
+            await self._remove_late(target)
+
+    async def _remove_late(self, name: str) -> None:
+        """Remove a start that got no answer once the daemon has created it.
+        Its ``docker run`` timed out while the daemon was still creating the
+        container, so the remove by name above can come first and find
+        nothing (VM 3: 8 such starts left ``Created`` helpers). Looked
+        for as long as one docker call may take on this host."""
+        ends = _clock() + _run_sec()
+        while _clock() < ends:
+            await asyncio.sleep(_LATE_POLL_SEC)
+            with contextlib.suppress(Exception):
+                found = await self._docker(
+                    ["ps", "--all", "--quiet", "--filter", f"name=^/?{name}$"],
+                    timeout=_run_sec(),
+                )
+                if found.return_code == 0 and (found.stdout or "").strip():
+                    await self._docker(["rm", "--force", name], timeout=_run_sec())
+                    return

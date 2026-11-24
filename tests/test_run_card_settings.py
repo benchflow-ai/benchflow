@@ -68,8 +68,12 @@ def test_benchflow_s_own_output_cap_is_named_as_its_default(tmp_path):
         "caps Claude Code's output at 128000 tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS), "
         "BenchFlow's default;" in _line(lines, "  Sampling:")
     )
+    # With the sub-agent model pin BenchFlow sets beside it (benchflow#1246):
+    # through the proxy, the proxy's name for the model, as the main loop's.
     assert _line(lines, "  Settings:") == (
-        "  Settings:  CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000 (BenchFlow's default)"
+        "  Settings:  CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000 (BenchFlow's default); "
+        "CLAUDE_CODE_SUBAGENT_MODEL runtime-claude-sonnet-5 (BenchFlow's default); "
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE 1 (BenchFlow's default)"
     )
 
 
@@ -88,7 +92,9 @@ def test_agent_env_settings_are_named_as_the_run_s(tmp_path):
     assert thinking["reads"] == "Claude Code"
     assert _line(lines, "  Settings:") == (
         "  Settings:  CLAUDE_CODE_MAX_OUTPUT_TOKENS 128000 (from --agent-env); "
-        "MAX_THINKING_TOKENS 31999 (from --agent-env)"
+        "MAX_THINKING_TOKENS 31999 (from --agent-env); "
+        "CLAUDE_CODE_SUBAGENT_MODEL runtime-claude-sonnet-5 (BenchFlow's default); "
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE 1 (BenchFlow's default)"
     )
 
 

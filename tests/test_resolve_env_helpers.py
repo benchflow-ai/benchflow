@@ -275,13 +275,12 @@ class TestResolveProviderEnv:
         # env_mapping translates to ANTHROPIC_BASE_URL
         assert env["ANTHROPIC_BASE_URL"] == "https://api.z.ai/api/anthropic"
 
-    def test_zai_picks_openai_endpoint_for_codex_agent(self):
-        """codex-acp speaks openai-responses → routes to zai's OpenAI endpoint."""
+    def test_zai_refuses_codex_which_needs_responses(self):
+        """codex-acp speaks openai-responses, which zai does not serve (its
+        /responses answers 404): refused at resolution."""
         env = {"ZAI_API_KEY": "zk-test"}
-        resolve_provider_env(env, "zai/glm-5", "codex-acp")
-        assert env["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
-        assert env["BENCHFLOW_PROVIDER_PROTOCOL"] == "openai-responses"
-        assert env["OPENAI_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+        with pytest.raises(ValueError, match="requires provider protocol"):
+            resolve_provider_env(env, "zai/glm-5", "codex-acp")
 
     def test_openai_provider_sets_pi_openai_completions_env(self):
         """Guards PR #158 follow-up: pi-acp must not fallback to Anthropic for openai/...."""
@@ -1021,21 +1020,21 @@ class TestResolveAgentEnvHostProviderEndpoint:
         assert "DEEPSEEK_API_KEY" not in result
 
     def test_no_host_override_keeps_resolved_provider_url(self, monkeypatch):
-        """Sanity counterpart: without a host override zai's own endpoint is used."""
-        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        """Sanity counterpart: without a host override deepseek's own endpoint is used."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test")
 
-        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+        result = resolve_agent_env("codex-acp", "deepseek/deepseek-flash", {})
 
-        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
 
     def test_empty_host_base_url_does_not_shadow_resolved_url(self, monkeypatch):
         """'export BENCHFLOW_PROVIDER_BASE_URL=' must not blank a real URL."""
-        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "")
 
-        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+        result = resolve_agent_env("codex-acp", "deepseek/deepseek-flash", {})
 
-        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
 
     def test_provider_keys_inherited_from_dotenv_file(self, monkeypatch, tmp_path):
         """resolve_agent_env also inherits BENCHFLOW_PROVIDER_* from a .env file."""
@@ -1069,12 +1068,12 @@ class TestResolveAgentEnvHostProviderEndpoint:
         A whitespace-only value is the same operator mistake as an empty one
         and must not shadow the provider's resolved endpoint.
         """
-        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_BASE_URL", "   ")
 
-        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+        result = resolve_agent_env("codex-acp", "deepseek/deepseek-flash", {})
 
-        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.z.ai/api/paas/v4"
+        assert result["BENCHFLOW_PROVIDER_BASE_URL"] == "https://api.deepseek.com/v1"
 
     def test_empty_host_provider_api_key_does_not_shadow_resolved_key(
         self, monkeypatch
@@ -1083,15 +1082,15 @@ class TestResolveAgentEnvHostProviderEndpoint:
 
         The empty-string class of bug applies to the API key too: an empty host
         value must not block resolve_provider_env from filling it from the
-        provider's own credential (ZAI_API_KEY here).
+        provider's own credential (DEEPSEEK_API_KEY here).
         """
-        monkeypatch.setenv("ZAI_API_KEY", "zk-test")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "ds-test")
         monkeypatch.setenv("BENCHFLOW_PROVIDER_API_KEY", "")
 
-        result = resolve_agent_env("codex-acp", "zai/glm-5", {})
+        result = resolve_agent_env("codex-acp", "deepseek/deepseek-flash", {})
 
-        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "zk-test"
-        assert result["OPENAI_API_KEY"] == "zk-test"
+        assert result["BENCHFLOW_PROVIDER_API_KEY"] == "ds-test"
+        assert result["OPENAI_API_KEY"] == "ds-test"
 
 
 class TestResolveAgentEnvCodexOpenAIPrefix:

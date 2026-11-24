@@ -21,10 +21,9 @@ routes reach it:
   completions with token ids and logprobs shaped like vLLM or SGLang, and
   token capture is on, so ``llm_trajectory.jsonl`` carries per-call ids.
 - ``native`` (subscription route, ``ANTHROPIC_AUTH_TOKEN``): no proxy; Claude
-  Code calls ``ANTHROPIC_BASE_URL`` itself, the in-sandbox fake. Branching is
-  only allowed without a provider runtime (``rollout_branch``: "Branching an
-  active provider runtime needs a runtime fork contract"), so the branch
-  scenarios take this route.
+  Code calls ``ANTHROPIC_BASE_URL`` itself, the in-sandbox fake. Branch
+  scenarios run on this route and on ``proxy``: a fork hands the parent's
+  proxy off (``rollout_branch._hand_off_provider_runtime``).
 """
 
 from __future__ import annotations
@@ -665,6 +664,14 @@ def bench_command(
     ``model`` the route's model.
     """
     agent_env = route_env(route, sandbox, host_fake_url)
+    # The native route's fake is the task's environment-plane service in
+    # main: task code beside the agent's (dummy) token, which a run accepts
+    # with this flag (BenchFlow refuses it otherwise, where it can list main).
+    accept = (
+        ["--allow-task-processes-with-credentials"]
+        if route == "native" and sandbox == "docker"
+        else []
+    )
     args = [
         bench_executable(),
         *subcommand,
@@ -679,6 +686,7 @@ def bench_command(
         "--jobs-dir",
         str(jobs_dir),
         *agent_env_args(agent_env),
+        *accept,
         *extra,
     ]
     env = dict(os.environ)
@@ -768,42 +776,48 @@ def llm_calls(trial_dir: Path) -> list[dict[str, Any]]:
 
     ``main`` calls carry tools (Claude Code's agent loop); ``side`` calls do
     not (session-title generation and similar). Ids and timestamps dropped.
+    A call the proxy saw cut also has ``stream_interrupted`` (its reason).
     """
     path = trial_dir / "trajectory" / "llm_trajectory.jsonl"
     if not path.is_file():
         return []
     calls = []
     for row in read_jsonl(path):
-        request = (row.get("request") or {}).get("body") or {}
-        response = (row.get("response") or {}).get("body") or {}
-        if isinstance(response.get("output"), list):
-            calls.append(_responses_call(request, response))
-            continue
-        usage = response.get("usage") or {}
-        choice = (response.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        tool_calls = message.get("tool_calls") or []
-        calls.append(
-            {
-                "kind": "main" if request.get("tools") else "side",
-                "n_messages": len(request.get("messages") or []),
-                "finish_reason": choice.get("finish_reason"),
-                "text": message.get("content"),
-                "tool_calls": [
-                    {
-                        "id": tc.get("id"),
-                        "name": (tc.get("function") or {}).get("name"),
-                        "arguments": json.loads(
-                            (tc.get("function") or {}).get("arguments") or "{}"
-                        ),
-                    }
-                    for tc in tool_calls
-                ],
-                "input_tokens": usage.get("prompt_tokens"),
-                "output_tokens": usage.get("completion_tokens"),
-            }
-        )
+        calls.append(_call(row))
+        cut = (row.get("metadata") or {}).get("stream_interrupted")
+        if cut:
+            calls[-1]["stream_interrupted"] = cut
     return calls
+
+
+def _call(row: dict[str, Any]) -> dict[str, Any]:
+    """One captured exchange in :func:`llm_calls`' shape."""
+    request = (row.get("request") or {}).get("body") or {}
+    response = (row.get("response") or {}).get("body") or {}
+    if isinstance(response.get("output"), list):
+        return _responses_call(request, response)
+    usage = response.get("usage") or {}
+    choice = (response.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    tool_calls = message.get("tool_calls") or []
+    return {
+        "kind": "main" if request.get("tools") else "side",
+        "n_messages": len(request.get("messages") or []),
+        "finish_reason": choice.get("finish_reason"),
+        "text": message.get("content"),
+        "tool_calls": [
+            {
+                "id": tc.get("id"),
+                "name": (tc.get("function") or {}).get("name"),
+                "arguments": json.loads(
+                    (tc.get("function") or {}).get("arguments") or "{}"
+                ),
+            }
+            for tc in tool_calls
+        ],
+        "input_tokens": usage.get("prompt_tokens"),
+        "output_tokens": usage.get("completion_tokens"),
+    }
 
 
 def _responses_call(

@@ -320,7 +320,15 @@ class DaytonaProcess(SubprocessLiveProcess):
         route: Any = None,
         bf_env: Any = None,
         terminal_env: dict[str, str] | None = None,
+        compose_env: dict[str, str] | None = None,
     ):
+        if compose_cmd_prefix:
+            # ``KEY=value`` words before compose: the ssh argv and Daytona's
+            # SSH exec would carry every value.
+            raise ValueError(
+                "DaytonaProcess takes the compose env as compose_env, which goes "
+                "in the launch's env file, never on the remote command line"
+            )
         self._bootstrap_env: dict[str, str] = {}
         # PTY_SESSION_ENV for a launch moved from the PTY (a reviewer's), on a
         # direct sandbox: compose's exec gives the agent no terminal either way.
@@ -335,7 +343,8 @@ class DaytonaProcess(SubprocessLiveProcess):
         # otherwise (its system tools).
         self._route = route
         self._file_route = None if is_dind else route
-        self._compose_cmd_prefix = compose_cmd_prefix
+        # The DinD VM's compose env (the task's env and persistent env).
+        self._compose_env = dict(compose_env or {})
         self._compose_cmd_base = compose_cmd_base
         self._ssh_config_path: str | None = None
         self._ssh_config_cleanup_task: asyncio.Task[None] | None = None
@@ -404,15 +413,11 @@ class DaytonaProcess(SubprocessLiveProcess):
         # Detect DinD mode by checking if the environment uses compose
         is_dind = hasattr(env, "_strategy") and hasattr(env._strategy, "_compose_cmd")
 
-        compose_cmd_prefix = ""
+        compose_env: dict[str, str] = {}
         compose_cmd_base = ""
         if is_dind:
-            # Build compose env vars and command prefix for DinD
             strategy = env._strategy
-            compose_env = " ".join(
-                f"{k}={shlex.quote(v)}" for k, v in strategy._compose_env_vars().items()
-            )
-            compose_cmd_prefix = compose_env
+            compose_env = strategy._compose_env_vars()
             # Extract the full compose base command with project/file flags
             # (e.g. "docker compose -p NAME --project-directory DIR -f F1 -f F2")
             # so that `docker compose exec` can find the running project.
@@ -421,7 +426,7 @@ class DaytonaProcess(SubprocessLiveProcess):
         process = cls(
             sandbox=sandbox,
             is_dind=is_dind,
-            compose_cmd_prefix=compose_cmd_prefix,
+            compose_env=compose_env,
             compose_cmd_base=compose_cmd_base,
             route=await launch_route(env),
             bf_env=env,
@@ -533,16 +538,19 @@ class DaytonaProcess(SubprocessLiveProcess):
             # Source provider values into the remote shell, then pass only
             # env names through `docker compose exec --env KEY`. Compose exec
             # does not accept --env-file, and `--env KEY=value` would leak
-            # provider values into the remote command line.
-            if env:
+            # provider values into the remote command line. The compose env
+            # (what Compose itself reads) goes in the same file, its values
+            # over the agent's as the words before compose put them.
+            file_env = {**(env or {}), **self._compose_env}
+            if file_env:
                 remote_env_path = f"/tmp/runtime_env_{uuid.uuid4().hex[:16]}.env"
                 await self._bootstrap_env_file(
                     remote_env_path=remote_env_path,
-                    env=env,
+                    env=file_env,
                     shell_exports=True,
                 )
-                for key in env:
-                    inner_parts.extend(["--env", key])
+            for key in env or ():
+                inner_parts.extend(["--env", key])
             # Root's shell in the task container: /bin/bash with the image's
             # loader variables empty and the system PATH until the drop (C8).
             inner_parts.extend(_compose_empty_loader_flags(env))
@@ -555,19 +563,11 @@ class DaytonaProcess(SubprocessLiveProcess):
             inner_parts.extend(
                 ["main", *root_launch_argv(script, launch_bash(self._route))]
             )
-            inner_cmd = shlex.join(inner_parts)
-
-            remote_cmd = (
-                f"{self._compose_cmd_prefix} {inner_cmd}"
-                if self._compose_cmd_prefix
-                else inner_cmd
-            )
+            remote_cmd = shlex.join(inner_parts)
             if remote_env_path:
                 remote_env_path_q = shlex.quote(remote_env_path)
                 # Source the env file to populate vars, then exec compose.
-                # The EXIT trap handles cleanup; we intentionally keep the file
-                # alive until exit so that compose_cmd_prefix wrappers (which
-                # may re-exec the shell) still inherit the sourced vars.
+                # The EXIT trap handles cleanup.
                 remote_cmd = (
                     f"trap 'rm -f {remote_env_path_q}' EXIT; "
                     f". {remote_env_path_q} && "

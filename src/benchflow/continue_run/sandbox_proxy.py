@@ -24,6 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from benchflow._root_python import root_python_command
+from benchflow._utils import staged_secrets
 from benchflow.sandbox._exec_output import diagnostic_result, exec_raw
 from benchflow.trajectories.types import LLMExchange
 
@@ -368,6 +369,8 @@ class SandboxReplayProxy:
     ) -> SandboxReplayProxy:
         from benchflow.trust.state import IngressKind, admit
 
+        # The upstream key goes into the sandbox with the replay config.
+        staged_secrets.register("replay proxy upstream key", upstream_api_key)
         admission = admit(sandbox, "main", IngressKind.CONTINUATION_REPLAY)
         token = uuid4().hex[:16]
         runtime_dir = f"{SANDBOX_REPLAY_ROOT}/{token}"

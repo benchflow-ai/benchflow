@@ -16,6 +16,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -151,6 +152,22 @@ def _disk_free_gb() -> float:
     return usage.free / (1024**3)
 
 
+def _check_host_verifier_dir(folder: Path) -> None:
+    """Refuse the trial before the container starts unless the host's
+    ``verifier`` folder, bind-mounted at ``/logs/verifier``, is a folder
+    others and the group can't write (#1247)."""
+    from benchflow.sandbox._verifier_dir import OPEN, check_verifier_dir
+
+    st = os.lstat(folder)
+    mode = stat.S_IMODE(st.st_mode)
+    if (
+        not stat.S_ISDIR(st.st_mode)
+        or st.st_uid not in (0, os.getuid())
+        or mode & 0o022
+    ):
+        check_verifier_dir(f"{OPEN} {st.st_uid} {mode:o}")
+
+
 async def _run_cli(
     *args: str,
     timeout: float | None = None,
@@ -215,6 +232,7 @@ class AppleContainerSandbox(BaseSandbox):
 
     _container_name: str | None = None
     _holds_run_slot: bool = False
+    bfx_in_scripts = False  # no bfx route yet (R4); if one lands, the walker's alone
 
     @property
     def is_mounted(self) -> bool:
@@ -369,7 +387,10 @@ class AppleContainerSandbox(BaseSandbox):
                 logs_dir = self.rollout_paths.rollout_dir
                 for sub in ("verifier", "agent", "artifacts"):
                     os.makedirs(logs_dir / sub, exist_ok=True)
-                    os.chmod(logs_dir / sub, 0o777)
+                    # /logs/verifier is the host user's, 0755: never the
+                    # agent's to write (#1247); checked before the run.
+                    os.chmod(logs_dir / sub, 0o755 if sub == "verifier" else 0o777)
+                _check_host_verifier_dir(logs_dir / "verifier")
                 cmd_args.extend(
                     ["--mount", f"type=bind,source={logs_dir},target=/logs"]
                 )

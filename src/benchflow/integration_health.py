@@ -208,7 +208,15 @@ def diagnose(
     normalized_agent = (agent or "").strip().lower()
     if is_scripted_agent(normalized_agent) or normalized_agent == "empty":
         return None
-    if not events and not truncated:
+    if (
+        not events
+        and not truncated
+        and not (prompt_sent and _manifest_agent(normalized_agent))
+    ):
+        # A healthy flat-telemetry agent records nothing (PR #886); an agent
+        # from a manifest, local or the catalog's, that was sent a prompt
+        # and ended its turn with no ACP event is judged: with no
+        # model output either (below), it broke its handshake.
         return None
     # Old results may lack the agent name; the control's own trajectory
     # event still says what ran.
@@ -298,6 +306,16 @@ def diagnose(
     if agent_seconds is not None and agent_seconds < IMMEDIATE_EXIT_SEC:
         return found("immediate_exit", nothing, "timing")
     return found("no_activity", nothing, "trajectory")
+
+
+def _manifest_agent(agent: str) -> bool:
+    """Whether ``agent`` came from a manifest (a custom agent)."""
+    try:
+        from benchflow.agents.remote_manifests import manifest_agent_names
+
+        return agent in manifest_agent_names()
+    except Exception:
+        return False
 
 
 def read_agent_logs(trial_dir: Path) -> dict[str, str]:

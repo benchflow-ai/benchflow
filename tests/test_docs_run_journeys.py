@@ -101,6 +101,14 @@ def install(env: dict[str, str], cwd: Path) -> str:
     return out
 
 
+def scored(out: str, score: str) -> bool:
+    """The run's footer gives the score, `Score` over `1/1 passed` (0.10.0rc6's
+    end-of-run table); the docs' samples show 0.9.3's `Score: 1/1` line."""
+    return bool(
+        re.search(rf"^Score +Model cost.*\n{re.escape(score)} passed\b", out, re.M)
+    )
+
+
 def test_readme_first_score_with_no_model_and_no_key(user, tmp_path):
     work = tmp_path / "work"
     work.mkdir()
@@ -108,12 +116,12 @@ def test_readme_first_score_with_no_model_and_no_key(user, tmp_path):
     readme = blocks(read("README.md"))
     oracle = block_with(readme, "bench run", "--agent oracle")
     out = run("\n".join(shell_lines(oracle)), user, work)
-    assert "Score: 1/1" in out, out[-3000:]
+    assert scored(out, "1/1"), out[-3000:]
     # Step 4: read the results. The README says to use jobs/oracle when the
     # model run was skipped; `bench view` serves a page, so it is not run here.
     results = block_with(readme, "bench results jobs/", "bench eval metrics")
     lines = [
-        line.replace("jobs/claude", "jobs/oracle")
+        line.replace("jobs/model", "jobs/oracle")
         for line in shell_lines(results)
         if not line.startswith("bench view")
     ]
@@ -163,7 +171,7 @@ def test_write_a_task_tutorial_scores_one_with_the_oracle_and_zero_with_nop(
 
     oracle_line, nop_line = shell_lines(controls)
     out = run(oracle_line, user, work)
-    assert "Score: 1/1" in out, out[-3000:]
+    assert scored(out, "1/1"), out[-3000:]
     out = run(nop_line, user, work)
     assert "nop control: 0/1" in out, out[-3000:]
 

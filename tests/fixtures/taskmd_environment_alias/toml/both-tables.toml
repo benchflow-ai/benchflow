@@ -1,0 +1,10 @@
+version = "1.0"
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 4
+
+[sandbox]
+cpus = 2

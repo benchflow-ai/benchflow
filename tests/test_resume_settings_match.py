@@ -154,6 +154,11 @@ _CHANGED = {
     "sandbox_user": {"sandbox_user": None},
     "sandbox_locked_paths": {"sandbox_locked_paths": ["/opt/answers"]},
     "allow_cloud_metadata": {"allow_cloud_metadata": True},
+    "allow_cloud_credential_file": {"allow_cloud_credential_file": True},
+    "allow_task_processes_with_credentials": {
+        "allow_task_processes_with_credentials": True
+    },
+    "scoped_credentials": {"scoped_credentials": ("ANTHROPIC_AUTH_TOKEN",)},
     "verifier_sandbox": {"verifier_sandbox": "separate"},
     "base_image_override": {"base_image_override": "python:3.12-slim"},
     "separate_verifier": {"separate_verifier": True},
@@ -2107,3 +2112,23 @@ def test_every_recognized_env_setting_is_still_compared(tmp_path, name) -> None:
         job.job_dir, _config(agent_env={name: "2"}), tasks_dir
     )
     assert differs == f"agent_env {name} changed"
+
+
+def test_the_scoped_names_are_compared_as_a_set(tmp_path: Path) -> None:
+    """--scoped-credential names in another order are the same setting; a
+    name dropped or added is a change."""
+    tasks_dir = _tasks(tmp_path)
+    job = Evaluation(
+        tasks_dir=tasks_dir,
+        jobs_dir=tmp_path / "jobs",
+        config=_config(scoped_credentials=("A_TOKEN", "B_TOKEN")),
+    )
+    job._write_evaluation_record()
+    _mark_reviewed(job.job_dir)
+    same = _config(scoped_credentials=("B_TOKEN", "A_TOKEN"))
+    assert _recorded_run_differs(job.job_dir, same, tasks_dir) is None
+    for changed in (("A_TOKEN",), ("A_TOKEN", "B_TOKEN", "C_TOKEN")):
+        differs = _recorded_run_differs(
+            job.job_dir, _config(scoped_credentials=changed), tasks_dir
+        )
+        assert differs is not None and "scoped_credentials" in differs

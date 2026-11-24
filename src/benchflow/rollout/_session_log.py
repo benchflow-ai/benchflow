@@ -17,20 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import json
 import logging
 import os
-import re
 import shlex
 import shutil
+import sqlite3
 import stat
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, quote_plus
 
+from benchflow._utils import staged_secrets
 from benchflow._utils.reachable_write import (
     ReachablePath,
     ReachableWriteError,
@@ -112,161 +112,22 @@ def _secrets(rollout: Any) -> list[str]:
     return values
 
 
-#: The characters JavaScript's ``encodeURIComponent`` leaves as they are,
-#: and ``encodeURI`` (ECMA-262, 19.2.6); Python's ``quote`` keeps letters,
-#: digits and ``_.-~`` whatever ``safe`` says.
-_URI_COMPONENT_KEEPS = "!*'()"
-_URI_KEEPS = _URI_COMPONENT_KEEPS + ";/?:@&=+$,#"
-
-
-def _url_forms(value: str) -> set[str]:
-    """*value* as each URL encoder writes it, once and twice: Python's
-    ``quote`` (``/`` kept, and nothing kept) and ``quote_plus`` (nothing and
-    ``/`` kept), JavaScript's ``encodeURIComponent`` and ``encodeURI``, and a
-    form body or ``URLSearchParams`` (WHATWG urlencoded: ``*`` kept, ``~``
-    escaped, a space as ``+``)."""
-    encoders = (
-        lambda v: quote(v, safe=""),
-        quote,
-        quote_plus,
-        lambda v: quote_plus(v, safe="/"),
-        lambda v: quote(v, safe=_URI_COMPONENT_KEEPS),
-        lambda v: quote(v, safe=_URI_KEEPS),
-        lambda v: quote_plus(v, safe="*").replace("~", "%7E"),
-    )
-    forms = set()
-    for encode in encoders:
-        once = encode(value)
-        forms.update({once, encode(once)})
-    return forms
-
-
-def _secret_forms(value: str) -> list[str]:
-    """Every form a credential value takes in a copied log, as the encoders
-    write it, never a list of escapes of our own: as given; JSON-escaped
-    (``json.dumps``, ASCII-only and not, up to three times: a JSON line held
-    in a string field of a JSON line); each of those %-encoded (``quote``,
-    once and again: ``%25XX``); the value as each URL encoder writes it
-    (:func:`_url_forms`)."""
-    forms: set[str] = {value}
-    for ascii_only in (True, False):
-        escaped = value
-        for _ in range(3):
-            escaped = json.dumps(escaped, ensure_ascii=ascii_only)[1:-1]
-            forms.add(escaped)
-    for form in list(forms):
-        encoded = form
-        for _ in range(2):
-            encoded = quote(encoded, safe="")
-            forms.add(encoded)
-    forms.update(_url_forms(value))
-    return sorted(forms, key=lambda form: -len(form))
-
-
-#: One unit of a form: an escape whose hex digits come in either case
-#: (``%XX``, ``\\uXXXX``), or one character.
-_UNIT = re.compile(r"%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4}|.", re.DOTALL)
-
-
-def _unit_key(unit: str) -> str:
-    if len(unit) == 3 and unit[0] == "%":
-        return unit.upper()
-    if len(unit) == 6 and unit.startswith("\\u"):
-        return unit.lower()
-    return unit
-
-
-def _unit_pattern(unit: str) -> str:
-    if len(unit) == 3 and unit[0] == "%":
-        return f"%(?i:{unit[1:]})"
-    if len(unit) == 6 and unit.startswith("\\u"):
-        return f"\\\\u(?i:{unit[2:]})"
-    return re.escape(unit)
-
-
-class _Node:
-    """A node of the forms' trie: its edges by their first unit, each the
-    run of units no other form shares there and the node it leads to, and
-    whether a form ends here."""
-
-    __slots__ = ("edges", "end")
-
-    def __init__(self) -> None:
-        self.edges: dict[str, list[Any]] = {}
-        self.end = False
-
-
-def _insert(root: _Node, units: list[str]) -> None:
-    """Add one form's units to the trie, splitting an edge where it parts
-    from another form's. A loop, not recursion: a form is as deep as it is
-    long, and a credential can be kilobytes."""
-    node, i = root, 0
-    while i < len(units):
-        edge = node.edges.get(units[i])
-        if edge is None:
-            leaf = _Node()
-            leaf.end = True
-            node.edges[units[i]] = [units[i:], leaf]
-            return
-        label, child = edge
-        shared = 1
-        while (
-            shared < len(label)
-            and i + shared < len(units)
-            and label[shared] == units[i + shared]
-        ):
-            shared += 1
-        if shared < len(label):
-            middle = _Node()
-            middle.edges[label[shared]] = [label[shared:], child]
-            edge[0], edge[1] = label[:shared], middle
-            child = middle
-        node, i = child, i + shared
-    node.end = True
-
-
-def _trie_pattern(root: _Node) -> str:
-    """The forms in the trie as one regex: a branch per edge, and a form
-    that ends at a node only when no longer one goes on (greedy ``?``).
-    Built bottom up with a stack, so no form is too long for it."""
-    built: dict[int, str] = {}
-    stack: list[tuple[_Node, bool]] = [(root, False)]
-    while stack:
-        node, ready = stack.pop()
-        if not ready:
-            stack.append((node, True))
-            stack.extend((child, False) for _, child in node.edges.values())
-            continue
-        branches = [
-            "".join(map(_unit_pattern, label)) + built.pop(id(child))
-            for label, child in node.edges.values()
-        ]
-        if not branches:
-            built[id(node)] = ""
-            continue
-        body = branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
-        built[id(node)] = f"(?:{body})?" if node.end else body
-    return built[id(root)]
-
-
-@functools.lru_cache(maxsize=64)
-def _secrets_pattern(secrets: tuple[str, ...]) -> re.Pattern[str]:
-    """One pattern for every form of every value: a trie of their units, so
-    a match costs the form's length, not the number of forms, and the
-    longest form wins; an escape's hex digits in either case."""
-    root = _Node()
-    for value in secrets:
-        for form in _secret_forms(value):
-            _insert(root, [_unit_key(unit) for unit in _UNIT.findall(form)])
-    return re.compile(_trie_pattern(root))
+# The forms a value takes, and one pattern for many of them, are the staged
+# secrets registry's (``_utils.staged_secrets``): one mechanism masks both
+# the values the agent was given and what BenchFlow staged.
+_url_forms = staged_secrets.url_forms
+_secret_forms = staged_secrets.secret_forms
+_secrets_pattern = staged_secrets.values_pattern
 
 
 def scrub_secrets(text: str, secrets: list[str]) -> str:
     """*text* with each credential value the agent was given (``_secrets``)
     replaced, wherever it appears and in whichever form (:func:`_secret_forms`):
     a value with a quote, a backslash or a non-ASCII character is escaped in
-    a JSON copy, and a URL carries it %-encoded. The teardown copy and the
-    copy made while the turns run both use it."""
+    a JSON copy, and a URL carries it %-encoded. What BenchFlow staged in the
+    trial goes first, under its own name (``staged_secrets.mask``). The
+    teardown copy and the copy made while the turns run both use it."""
+    text = staged_secrets.mask(text)
     if not secrets:
         return text
     return _secrets_pattern(tuple(secrets)).sub("[redacted]", text)
@@ -336,15 +197,87 @@ async def off_loop[T](
     return work.result()
 
 
-def _redact(path: Path, secrets: list[str]) -> None:
+def _is_text(data: bytes) -> bool:
+    if b"\0" in data:
+        return False
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+#: The first bytes of a sqlite database, and of its write-ahead log (both
+#: byte orders) and rollback journal.
+_SQLITE = b"SQLite format 3\0"
+_SQLITE_LOGS = (
+    b"\x37\x7f\x06\x82",
+    b"\x37\x7f\x06\x83",
+    b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7",
+)
+WITHHELD_DATABASE = (
+    "a sqlite database holding a credential BenchFlow staged, which fails its "
+    "integrity check once the credential is filled in place (an index over it)"
+)
+WITHHELD_LOG = (
+    "a sqlite log holding a credential BenchFlow staged: filled in place it can "
+    "break its database's indexes, and it can't be checked on its own"
+)
+
+
+def _unsafe_fill(data: bytes, filled: bytes) -> str | None:
+    """Why a non-text copy, its staged values filled in place, can't be kept,
+    or None. A filled sqlite database must still pass ``pragma
+    integrity_check``: a filled value an index covers no longer sorts where
+    the index says. A sqlite log can't be checked alone."""
+    if data.startswith(_SQLITE_LOGS):
+        return WITHHELD_LOG
+    if not data.startswith(_SQLITE):
+        return None
+    with tempfile.TemporaryDirectory() as temp:
+        copy = Path(temp) / "filled.sqlite"
+        copy.write_bytes(filled)
+        try:
+            con = sqlite3.connect(f"{copy.as_uri()}?mode=ro&immutable=1", uri=True)
+            try:
+                rows = con.execute("pragma integrity_check").fetchall()
+            finally:
+                con.close()
+        except sqlite3.DatabaseError:
+            rows = []
+    return None if rows == [("ok",)] else WITHHELD_DATABASE
+
+
+def _redact(path: Path, secrets: list[str], *, where: Path | None = None) -> None:
     """Redact one copied log file: a .jsonl line by line (:func:`redact_line`),
-    other files whole, the exact values before and after the trajectory
-    patterns."""
+    other text files whole, the exact values before and after the trajectory
+    patterns; a file that is not text keeps its length, what BenchFlow staged
+    filled in place (``staged_secrets.mask_bytes``), or, where that is not
+    safe, is withheld: a stub in its place says why, and the trial's
+    ``masking.json`` names it (*where*: where the copy lands in the trial
+    folder, in full; *path* itself by default)."""
     from benchflow._utils.reachable_write import destination
     from benchflow.trajectories.types import redact_trajectory_text
 
     held = destination(path)
-    text = held.read_text(errors="replace")
+    data = held.read_bytes()
+    if path.suffix != ".jsonl" and not _is_text(data):
+        # Not text: what was staged is filled in place, so the file keeps its
+        # length and stays valid (a tar, a sqlite file).
+        filled = staged_secrets.mask_bytes(data)
+        if filled == data:
+            return
+        why = _unsafe_fill(data, filled)
+        if why is None:
+            held.write_bytes(filled)
+            return
+        held.write_text(
+            f"Withheld by BenchFlow: {why}. The trial's integrity/masking.json "
+            "names this file.\n"
+        )
+        staged_secrets.withhold(where or path, why)
+        return
+    text = data.decode("utf-8", errors="replace")
     if path.suffix == ".jsonl":
         lines = []
         for line in text.splitlines():
@@ -387,19 +320,23 @@ def note_redaction_failure(rollout: Any, error: str, *, copy: str) -> None:
     )
 
 
-def _redact_files(files: list[Path], secrets: list[str]) -> None:
+def _redact_files(
+    files: list[Path], secrets: list[str], tree: Path, dest: Path | None
+) -> None:
     try:
         for path in files:
-            _redact(path, secrets)
+            where = dest / path.relative_to(tree) if dest is not None else None
+            _redact(path, secrets, where=where)
     except Exception as exc:
         raise RedactionFailed(type(exc).__name__) from None
 
 
 async def _capture(
-    env: Any, source: str, bundle: Path, secrets: list[str]
+    env: Any, source: str, bundle: Path, secrets: list[str], dest: Path | None = None
 ) -> Path | None:
     """Copy ``source`` from the sandbox into ``bundle`` (a private folder),
-    redacted; the copied tree, or None when ``source`` is absent."""
+    redacted, for *dest* (where the copy lands in the trial folder); the
+    copied tree, or None when ``source`` is absent."""
     from benchflow.review.evidence import capture_workspace
 
     probe = await exec_raw(
@@ -421,12 +358,16 @@ async def _capture(
         for path in sorted(tree.rglob("*"))
         if path.is_file() and not path.is_symlink()
     ]
-    await off_loop(_redact_files, files, secrets, then=lambda _: None)
+    await off_loop(_redact_files, files, secrets, tree, dest, then=lambda _: None)
     return tree
 
 
 async def _copy_out(
-    env: Any, source: str, target: ReachablePath, secrets: list[str]
+    env: Any,
+    source: str,
+    target: ReachablePath,
+    secrets: list[str],
+    dest: Path | None = None,
 ) -> bool:
     """Copy ``source`` from the sandbox to ``target``, redacted; False when absent."""
     # target.parent is agent/, /logs/agent in a Docker sandbox: the copy is
@@ -434,7 +375,7 @@ async def _copy_out(
     # rename through the held folder (reachable_write, R4-1).
     target.parent.mkdir(parents=True, exist_ok=True)
     with private_folder(target.parent) as temp:
-        tree = await _capture(env, source, Path(temp) / "bundle", secrets)
+        tree = await _capture(env, source, Path(temp) / "bundle", secrets, dest)
         if tree is None:
             return False
         target.publish(tree)
@@ -582,7 +523,13 @@ async def snapshot_session_logs(rollout: Any) -> None:
         return
     try:
         tree = await asyncio.wait_for(
-            _capture(env, source, folder / "bundle", _secrets(rollout)),
+            _capture(
+                env,
+                source,
+                folder / "bundle",
+                _secrets(rollout),
+                _copy_dest(rollout, name),
+            ),
             timeout=_TIMEOUT_SEC + 60,
         )
     except RedactionFailed as exc:
@@ -690,6 +637,12 @@ def settle_session_log_folders(rollout: Any) -> None:
             logger.warning("Could not empty agent/%s: %s", name, exc)
 
 
+def _copy_dest(rollout: Any, name: str) -> Path:
+    """Where the session-log copy *name* lands in the trial folder, in full
+    (the record names a withheld file by it)."""
+    return Path(rollout._rollout_paths.rollout_dir) / "agent" / name
+
+
 async def _copy_session_log(rollout: Any, source: str, target: ReachablePath) -> bool:
     """Place the agent's session log at ``target``: a copy of the one made at
     the end of the agent's turn when that point was reached
@@ -698,7 +651,13 @@ async def _copy_session_log(rollout: Any, source: str, target: ReachablePath) ->
     snapshot = getattr(rollout, "_session_log_snapshot", None)
     if snapshot is None:
         return await asyncio.wait_for(
-            _copy_out(rollout._env, source, target, _secrets(rollout)),
+            _copy_out(
+                rollout._env,
+                source,
+                target,
+                _secrets(rollout),
+                _copy_dest(rollout, target.name),
+            ),
             timeout=_TIMEOUT_SEC + 60,
         )
     if snapshot.source != source or snapshot.tree is None:
@@ -786,7 +745,23 @@ async def price_from_session_log(rollout: Any) -> None:
         "responses": estimate["responses"],
         "models": estimate["models"],
         "context_1m": estimate["context_1m"],
+        **{
+            key: estimate[key]
+            for key in ("claude_code_usd", "repriced_models", "unpriced_models")
+            if key in estimate
+        },
     }
+    if estimate["usd"] is None:
+        # No list price for a model Claude Code does not price: the cost is
+        # unknown, never Claude Code's default rate (benchflow#1240).
+        rollout._usage_metrics = {**metrics, "usage_details": details}
+        logger.info(
+            "No list price for %s, which Claude Code does not price: the "
+            "trial's cost stays unknown (Claude Code's own figure: $%.4f)",
+            ", ".join(estimate.get("unpriced_models") or []),
+            estimate.get("claude_code_usd") or 0.0,
+        )
+        return
     rollout._usage_metrics = {
         **metrics,
         "cost_usd": estimate["usd"],

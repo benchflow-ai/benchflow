@@ -102,7 +102,9 @@ def test_a_stale_total_falls_back_to_list_prices(tmp_path):
 def test_no_log_or_an_unpriced_model_gives_no_estimate(tmp_path):
     assert estimate_claude_code_cost(tmp_path / "missing") is None
     _log(tmp_path, [_response("msg_1", model="claude-unknown-9")])
-    assert estimate_claude_code_cost(tmp_path) is None
+    estimate = estimate_claude_code_cost(tmp_path)
+    assert estimate is not None and estimate["usd"] is None
+    assert estimate["unpriced_models"] == ["claude-unknown-9"]
 
 
 TOKEN = "sk-ant-oat01-" + "x" * 40

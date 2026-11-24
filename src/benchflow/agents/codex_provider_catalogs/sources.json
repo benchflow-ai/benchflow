@@ -1,0 +1,12 @@
+{
+ "deepseek": {
+  "file": "deepseek.json",
+  "url": "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/",
+  "fetched": "2026-11-18",
+  "taken_from": "the page's third <pre> block, its text as the page renders it",
+  "same_json_as": "the models.json written by https://cdn.deepseek.com/api-docs/codex-deepseek-setup-en.sh (SCRIPT_VERSION 1.5.0, sha256 6093107f8fe82149cc5c35f254ae6bd2b19edd382e7853666397e636c184fe0c)",
+  "sha256": "6cd2d1de818d16b2e37e4b62f50c91b103e72e309cd20e6034873907014c0e9e",
+  "models": ["deepseek-flash", "deepseek-v4-pro"],
+  "minimal_client_version": "0.164.0"
+ }
+}

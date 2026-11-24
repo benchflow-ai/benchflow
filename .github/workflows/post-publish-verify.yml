@@ -1,0 +1,119 @@
+name: post-publish-verify
+
+# What a user gets from PyPI, checked after every publish: the files PyPI
+# serves are the accepted bytes, the release's constraints URL answers (it was
+# 404 for rc4 in the dogfood), a fresh install pins to it, `bench doctor`
+# passes, the README's oracle step scores 1/1, and the GitHub release is
+# marked as the version says. It reads no secret.
+
+on:
+  workflow_run:
+    workflows: ["public-release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The published version to check (for example 0.10.0rc6).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      HARBOR_TELEMETRY: "off"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          ref: ${{ inputs.version && format('v{0}', inputs.version) || github.event.workflow_run.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Use the release gate's Docker
+        run: |
+          mapfile -t want < <(sed -n '/^UBUNTU_PACKAGES=(/,/^)/{/^ /p}' tools/release_gate/bootstrap_vm.sh | tr -d ' ')
+          test "${#want[@]}" -ge 5
+          sudo systemctl stop docker.socket docker.service containerd.service || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y -q docker-ce docker-ce-cli docker-ce-rootless-extras containerd.io docker-buildx-plugin docker-compose-plugin || true
+          for d in /usr/libexec/docker/cli-plugins /usr/local/lib/docker/cli-plugins "$HOME/.docker/cli-plugins"; do
+            sudo rm -f "$d/docker-compose" "$d/docker-buildx"
+          done
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --allow-downgrades "${want[@]}"
+          sudo systemctl restart docker
+
+      - name: The version and its record
+        id: release
+        run: |
+          v="$(uv run --no-project python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          test -f ".github/release-acceptance/$v.json"
+
+      - name: PyPI serves the accepted bytes
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          curl -fsS --retry 5 --retry-delay 20 "https://pypi.org/pypi/benchflow/$VERSION/json" -o "$RUNNER_TEMP/pypi.json"
+          python3 -I - "$RUNNER_TEMP/pypi.json" ".github/release-acceptance/$VERSION.json" <<'PY'
+          import json, sys
+          served = {f["filename"]: f["digests"]["sha256"] for f in json.load(open(sys.argv[1]))["urls"]}
+          accepted = json.load(open(sys.argv[2]))["artifacts"]
+          assert served == accepted, (served, accepted)
+          print("PyPI serves the accepted bytes:", sorted(served))
+          PY
+
+      - name: The constraints URL answers
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: curl -fsSI "https://raw.githubusercontent.com/${{ github.repository }}/v$VERSION/constraints.txt"
+
+      - name: A new user's install from PyPI
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          uv tool install --python 3.12 "benchflow==$VERSION" \
+            --constraints "https://raw.githubusercontent.com/${{ github.repository }}/v$VERSION/constraints.txt"
+          bench --version | tee version.txt
+          grep -q "benchflow $VERSION" version.txt
+          python3 -I - "$(uv tool dir)/benchflow" "$(jq -r .source_commit ".github/release-acceptance/$VERSION.json")" <<'PY'
+          import json, pathlib, sys
+          found = list(pathlib.Path(sys.argv[1]).rglob("benchflow/_build.json"))
+          assert found, "no _build.json in the installed wheel"
+          build = json.loads(found[0].read_text())
+          assert build == {"commit": sys.argv[2], "dirty": False}, build
+          print("installed build:", build)
+          PY
+
+      - name: bench doctor
+        run: bench doctor
+
+      - name: README step 2, the oracle with no model
+        working-directory: ${{ runner.temp }}
+        run: |
+          bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
+            --agent oracle --sandbox docker --jobs-dir jobs/oracle | tee oracle.log
+          grep -q "Score: 1/1" oracle.log
+
+      - name: The GitHub release is marked as the version says
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre="$(gh release view "v$VERSION" --repo "${{ github.repository }}" --json isPrerelease --jq .isPrerelease)"
+          want="$(uv run --with packaging --no-project python -c 'import sys; from packaging.version import Version; print(str(Version(sys.argv[1]).is_prerelease).lower())' "$VERSION")"
+          test "$pre" = "$want"

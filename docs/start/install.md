@@ -7,18 +7,31 @@ BenchFlow is the `benchflow` package on PyPI. It installs one command under two 
 Install a fixed version, with the dependency versions its release was tested with:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.9.3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
+uv tool install --python 3.12 'benchflow==0.10.1' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.1/constraints.txt
 bench --version
 ```
 
 ```text
-benchflow 0.9.3
+benchflow 0.10.1
 ```
 
 uv fetches Python 3.12 if you don't have it. Keep `--python 3.12`: with an older Python, uv picks an old release that has no `bench` command and stops with `No executables are provided by package benchflow`. If your shell then says `bench: command not found`, run `uv tool update-shell` and open a new terminal.
 
 Without `--constraints`, uv installs the newest version of every dependency that BenchFlow allows today, which can be newer than the versions the release was tested with. The tested versions can have flaws found later: on 7 November 2026, pip-audit 2.9.0 found no known vulnerability among 0.9.2's. Each release's known issues are in the [Changelog](../versions/changelog.md).
+
+## Docker on Linux
+
+BenchFlow runs tasks in Docker, with Compose and buildx. On Ubuntu 24.04, Ubuntu's own packages are the ones BenchFlow's release tests run on:
+
+```bash
+sudo apt-get update                # a fresh image has no package lists yet
+sudo apt-get install -y docker.io docker-compose-v2 docker-buildx
+sudo usermod -aG docker "$USER"   # then log out and back in: the group applies to new logins
+docker version && docker compose version && docker buildx version
+```
+
+Docker CE from [Docker's install guide](https://docs.docker.com/engine/install/) works too. BenchFlow 0.10.1 fully supports Docker Engine 29 and Docker Compose 2.40 or newer: on older versions a trial under a network policy (allowlist, denylist or no-network) is refused before its turn, naming the versions, and trials with an open network run. `bench doctor` checks Docker, Compose, buildx and the docker group, and prints the fix for each one missing.
 
 ## Check your machine
 
@@ -29,10 +42,10 @@ bench doctor
 ```
 
 ```text
-BenchFlow doctor - benchflow 0.9.3, Linux x86_64, sandbox docker
+BenchFlow doctor - benchflow 0.10.1, Linux x86_64, sandbox docker
 
 Runtime
-  PASS  python                Python 3.12.15, benchflow 0.9.3 (...)
+  PASS  python                Python 3.12.15, benchflow 0.10.1 (...)
   PASS  uv                    uv 0.13.1 (x86_64-unknown-linux-gnu)
   PASS  bench on PATH         .../bin/bench, this install
   PASS  bfx                   bfx x86_64, aarch64 (pinned)
@@ -57,8 +70,8 @@ Agent credentials
 Docker needs nothing extra. Daytona, Modal and Amazon Bedrock AgentCore each need an extra, named in the install line:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.9.3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.1' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.1/constraints.txt
 ```
 
 The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `benchflow[sandbox-daytona,sandbox-modal]`. Each sandbox also needs its own login: see [Sandboxes](../scale/sandboxes.md).
@@ -68,26 +81,21 @@ The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `b
 To call BenchFlow from your own code, add it to that project's environment:
 
 ```bash
-uv add 'benchflow==0.9.3'
+uv add 'benchflow==0.10.1'
 ```
 
-`pip install 'benchflow==0.9.3'` works too, on Python 3.12 or newer.
+`pip install 'benchflow==0.10.1'` works too, on Python 3.12 or newer.
 
-## Install the 0.10 prerelease
+## Go back to 0.9.3
 
-Some pages in these docs need a 0.10 release candidate; each says so in its first line, and the nav marks them (0.10). The latest, 0.10.0rc5, is on PyPI as a pre-release, so name the version to get it; without the pin, uv and pip stay on the 0.9 line:
+0.9.3 is the release before 0.10.1. A page or section new in 0.10 says so in its first line or its heading, and the nav marks it (0.10). A score from 0.10.1 and one from 0.9.3 aren't comparable on the tasks [the changes that can move a score](../versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task) touch. To go back, run the install line with 0.9.3 in both places:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.10.0rc5' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.0rc5/constraints.txt
-bench --version
+uv tool install --python 3.12 'benchflow==0.9.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
 ```
 
-```text
-benchflow 0.10.0rc5
-```
-
-Extras go inside the quotes as above (`'benchflow[sandbox-daytona]==0.10.0rc5'`), and `pip install 'benchflow==0.10.0rc5'` works too. Its new commands and flags may still change before 0.10.0, and where 0.9.3 has another way to do a 0.10 page's job, the page says so. [What's in the 0.10 release candidates](../versions/0.10.md) lists what it adds and what may still change. To go back, run the 0.9.3 install line above.
+PyPI keeps the 0.10 release candidates too, the last of them 0.10.0rc5: install one by its version the same way.
 
 ## Upgrade, go back or uninstall
 
@@ -107,7 +115,7 @@ BenchFlow's engine rewritten in Rust is a separate prerelease, [bench 0.8.1](htt
 
 | You type | Runs |
 |---|---|
-| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.9.3` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
+| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.10.1` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
 | `benchflow` | this package |
 | `~/.bench/bin/bench` | the Rust engine, installed as below |
 

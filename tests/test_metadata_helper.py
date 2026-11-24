@@ -263,7 +263,12 @@ def fresh_images(monkeypatch):
     monkeypatch.setattr(helper_mod, "_FAILED", {})
     monkeypatch.setattr(helper_mod, "_BUILD_LOCKS", {})
     monkeypatch.setattr(helper_mod, "_PREBUILDS", {}, raising=False)
+    monkeypatch.setattr(helper_mod, "_PULL_FAILED", {})
+    monkeypatch.setattr(helper_mod, "_SOURCE", {})
     monkeypatch.delenv(helper_mod.HELPER_ENV, raising=False)
+    # The local build's rows, whether or not a release pins a prebuilt image;
+    # the pull's own rows (``prebuilt``) switch it back on with their image.
+    monkeypatch.setenv(helper_mod.PULL_ENV, "0")
 
 
 def _helper(docker: FakeDocker, daemon: str = "local") -> helper_mod.MetadataHelper:
@@ -1330,6 +1335,7 @@ async def test_a_second_process_reuses_the_build_its_daemon_recorded(monkeypatch
         "daemon": daemon.id,
         "recipe": helper_mod.HELPER_RECIPE,
         "image": IMAGE_ID,
+        "source": "built",
     }
     _new_process(monkeypatch)
     assert await helper_mod.ensure_image(daemon, "local") == IMAGE_ID
@@ -1767,3 +1773,465 @@ async def test_a_sandbox_without_the_helper_whose_main_could_restart_is_never_on
     assert record["state"] == "not_installed", record
     assert "restart policy 'always'" in record["why"]
     assert env.calls == []
+
+
+# ---------------------------------------------------------------- the prebuilt image, pulled by its digest
+
+PULLED_ID = "sha256:" + "cd" * 32
+PREBUILT = "registry.example/benchflow/metadata-helper@sha256:" + "ef" * 32
+
+
+class PullDocker(FakeDocker):
+    """FakeDocker with a registry: ``pull`` of the prebuilt reference, the
+    pulled image's ``image inspect`` (its ID, RepoDigests, two labels and
+    platform), and the daemon's platform (``version``)."""
+
+    def __init__(
+        self,
+        *,
+        pull_code: int = 0,
+        pull_hangs: bool = False,
+        pulled_id: str = PULLED_ID,
+        digests: list[str] | None = None,
+        label: str = "metadata",
+        recipe: str | None = None,
+        platform: str = "linux/amd64",
+        daemon_platform: str = "linux/amd64",
+        inspect_fails: bool = False,
+        daemon_id: str = "",
+        **kw: Any,
+    ) -> None:
+        super().__init__(**kw)
+        self.pull_code = pull_code
+        self.pull_hangs = pull_hangs
+        self.pulled_id = pulled_id
+        self.digests = [PREBUILT] if digests is None else digests
+        self.label = label
+        self.recipe = helper_mod.HELPER_RECIPE if recipe is None else recipe
+        self.platform = platform
+        self.daemon_platform = daemon_platform
+        # The pull succeeds, then the name is gone (removed or re-pointed).
+        self.inspect_fails = inspect_fails
+        self.daemon_id = daemon_id
+        self.pulled = False
+        self.container_image = (
+            pulled_id if pull_code == 0 and not pull_hangs else IMAGE_ID
+        )
+
+    async def __call__(self, args: list[str], *, timeout: float, stdin=None):
+        if args[:1] == ["pull"]:
+            self.calls.append(list(args))
+            self.stdin.append(stdin)
+            if self.pull_hangs:
+                await asyncio.Event().wait()
+            self.pulled = self.pull_code == 0
+            out = (
+                f"{PREBUILT}\n"
+                if self.pulled
+                else "Error response from daemon: denied\n"
+            )
+            return SimpleNamespace(stdout=out, stderr="", return_code=self.pull_code)
+        if args[:2] == ["image", "inspect"] and args[-1] == PREBUILT:
+            self.calls.append(list(args))
+            self.stdin.append(stdin)
+            if not self.pulled or self.inspect_fails:
+                return SimpleNamespace(
+                    stdout="", stderr="No such image\n", return_code=1
+                )
+            out = (
+                f"{self.pulled_id}\t{json.dumps(self.digests)}\t{self.label}"
+                f"\t{self.recipe}\t{self.platform}\n"
+            )
+            return SimpleNamespace(stdout=out, stderr="", return_code=0)
+        if args[:1] == ["version"]:
+            self.calls.append(list(args))
+            return SimpleNamespace(
+                stdout=f"{self.daemon_platform}\n", stderr="", return_code=0
+            )
+        if (
+            args[:2] == ["image", "inspect"]
+            and args[-1] == self.pulled_id
+            and self.pulled
+        ):
+            # A later process's check of a recorded pulled image (_still_ours).
+            self.calls.append(list(args))
+            out = f"{self.pulled_id}\tmetadata\t{helper_mod.HELPER_RECIPE}\n"
+            return SimpleNamespace(stdout=out, stderr="", return_code=0)
+        if args[:1] == ["info"] and self.daemon_id:
+            self.calls.append(list(args))
+            return SimpleNamespace(
+                stdout=f"{self.daemon_id}\n", stderr="", return_code=0
+            )
+        if args[:1] == ["tag"]:
+            self.calls.append(list(args))
+            return SimpleNamespace(stdout="", stderr="", return_code=0)
+        return await super().__call__(args, timeout=timeout, stdin=stdin)
+
+
+@pytest.fixture()
+def prebuilt(monkeypatch):
+    """A prebuilt image for this recipe, as a release pins it."""
+    monkeypatch.setattr(helper_mod, "HELPER_IMAGE", PREBUILT)
+    monkeypatch.setattr(helper_mod, "HELPER_IMAGE_RECIPE", helper_mod.HELPER_RECIPE)
+    monkeypatch.setattr(helper_mod, "_PULL_FAILED", {}, raising=False)
+    monkeypatch.setattr(helper_mod, "_SOURCE", {}, raising=False)
+    monkeypatch.delenv(helper_mod.PULL_ENV, raising=False)
+
+
+KEPT_DIGEST = "benchflow-helper@sha256:" + "ef" * 32
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "digests", [[PREBUILT], [KEPT_DIGEST, PREBUILT]], ids=["one", "pinned-second"]
+)
+async def test_the_prebuilt_image_is_pulled_by_its_digest_and_run_by_its_id(
+    prebuilt, digests
+):
+    """The release's image, named only by its digest: pulled, checked (the
+    digest among its RepoDigests, this recipe's labels), then run by the ID
+    the check read. Nothing is built, and no tag names the image. Once the
+    image carries the kept tag, its RepoDigests list that name first: the
+    pinned reference is accepted wherever it is in the list."""
+    docker = PullDocker(digests=digests)
+
+    result, failed = await _helper(docker).installed(MAIN, "echo rules")
+
+    assert failed == "" and result.stdout == ROOT_OK
+    assert docker.of("pull") == [["pull", "--quiet", PREBUILT]]
+    assert docker.of("build") == []
+    (run,) = docker.runs()
+    assert PULLED_ID in run and PREBUILT not in run and helper_mod.HELPER_TAG not in run
+    assert helper_mod.image_source("local") == "pulled"
+
+
+FORGED_ID = "sha256:" + "66" * 32
+
+
+@pytest.mark.asyncio
+async def test_another_image_listing_the_pinned_name_is_never_looked_up_or_run(
+    prebuilt,
+):
+    """A loaded record can list the exact pinned reference, with this recipe's
+    labels, among another image's RepoDigests. The check inspects the pinned
+    reference itself and runs the ID that inspect gave: it never lists images,
+    never inspects another ID, and never runs the other image."""
+
+    class ForgedDocker(PullDocker):
+        async def __call__(self, args, *, timeout, stdin=None):
+            if args[:2] == ["image", "ls"] or (
+                args[:2] == ["image", "inspect"] and args[-1] == FORGED_ID
+            ):
+                self.calls.append(list(args))
+                out = (
+                    f"{FORGED_ID}\t{json.dumps(['evil@sha256:' + '77' * 32, PREBUILT])}"
+                )
+                return SimpleNamespace(
+                    stdout=out
+                    + f"\tmetadata\t{helper_mod.HELPER_RECIPE}\tlinux/amd64\n",
+                    stderr="",
+                    return_code=0,
+                )
+            return await super().__call__(args, timeout=timeout, stdin=stdin)
+
+    docker = ForgedDocker()
+
+    result, failed = await _helper(docker).installed(MAIN, "echo rules")
+
+    assert failed == "" and result.stdout == ROOT_OK
+    assert not any(FORGED_ID in c for c in docker.calls)
+    assert not any(c[:2] == ["image", "ls"] for c in docker.calls)
+    inspected = [c for c in docker.calls if c[:2] == ["image", "inspect"]]
+    assert inspected and all(c[-1] == PREBUILT for c in inspected)
+    (run,) = docker.runs()
+    assert PULLED_ID in run
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    "why",
+    ["denied", "a timeout", "an exception"],
+)
+async def test_a_pull_that_fails_falls_back_to_the_local_build(
+    prebuilt, monkeypatch, why
+):
+    """A registry that refuses, a pull that hangs past its cap, or a docker
+    call that raises: the local build serves, as before."""
+    monkeypatch.setattr(helper_mod, "_PULL_SEC", 0.2)
+    docker = PullDocker(
+        pull_code=1 if why == "denied" else 0, pull_hangs=why == "a timeout"
+    )
+    docker.container_image = IMAGE_ID  # the build serves in each case
+    if why == "an exception":
+
+        async def boom(args, *, timeout, stdin=None):
+            if args[:1] == ["pull"]:
+                raise OSError("docker went away")
+            return await PullDocker.__call__(docker, args, timeout=timeout, stdin=stdin)
+
+        runner = boom
+    else:
+        runner = docker
+
+    helper = helper_mod.MetadataHelper(
+        runner,
+        daemon="local",
+        name="trial-a-bf-metadata",
+        labels={"benchflow.owned": "process"},
+    )
+    result, failed = await helper.installed(MAIN, "echo rules")
+
+    assert failed == "" and result.stdout == ROOT_OK
+    assert len(docker.of("build")) == 1
+    assert all(PULLED_ID not in run for run in docker.runs())
+    assert helper_mod.image_source("local") == "built"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "another recipe's label",
+        "no helper label",
+        "the digest not among its RepoDigests",
+        "another digest of the same name",
+        "an ID that is not one",
+        "another platform",
+        "a daemon whose platform is unread",
+        "an inspect that fails after the pull",
+    ],
+)
+async def test_a_pulled_image_that_is_not_this_recipes_is_refused_never_run(
+    prebuilt, caplog, shape
+):
+    """A pulled image whose labels name another recipe, whose RepoDigests
+    don't hold the pinned digest, whose ID doesn't parse, or whose platform
+    isn't the daemon's (it would start, then die at its first exec) is never
+    run. So is one whose name is gone by the inspect: no ID is guessed. The
+    reason is logged, and the local build serves."""
+    kw: dict[str, Any] = {
+        "another recipe's label": {"recipe": "0" * 16},
+        "no helper label": {"label": "<no value>"},
+        "the digest not among its RepoDigests": {"digests": []},
+        "another digest of the same name": {
+            "digests": [PREBUILT.split("@")[0] + "@sha256:" + "11" * 32]
+        },
+        "an ID that is not one": {"pulled_id": "helper:latest"},
+        "another platform": {"platform": "linux/arm64"},
+        "a daemon whose platform is unread": {"daemon_platform": ""},
+        "an inspect that fails after the pull": {"inspect_fails": True},
+    }[shape]
+    docker = PullDocker(**kw)
+    docker.container_image = IMAGE_ID
+    caplog.set_level("WARNING", logger="benchflow")
+
+    result, failed = await _helper(docker).installed(MAIN, "echo rules")
+
+    assert failed == "" and result.stdout == ROOT_OK
+    assert len(docker.of("build")) == 1
+    pulled_id = kw.get("pulled_id", PULLED_ID)
+    digest = "sha256:" + PREBUILT.rsplit(":", 1)[-1]
+    assert all(
+        pulled_id not in run and PREBUILT not in run and digest not in run
+        for run in docker.runs()
+    )
+    assert helper_mod.image_source("local") == "built"
+    assert any(
+        "prebuilt" in r.getMessage() and "refused" in r.getMessage()
+        for r in caplog.records
+    ), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pull_is_not_tried_again_within_the_retry_window(
+    prebuilt, monkeypatch
+):
+    """An offline host: the pull fails once; a build BuildKit never started is
+    tried again at once, without paying the pull again until the window ends.
+    With the pull switched off there is no pull at all."""
+    docker = PullDocker(pull_code=1, build_fails=True)
+    original = PullDocker.__call__
+
+    async def never_started(self, args, *, timeout, stdin=None):
+        result = await original(self, args, timeout=timeout, stdin=stdin)
+        if args[:1] == ["build"] and result.return_code != 0:
+            result.stdout = "ERROR: forwarding Ping: no such job\n"
+        return result
+
+    monkeypatch.setattr(PullDocker, "__call__", never_started)
+    monkeypatch.setattr(helper_mod, "_BUILD_RETRY_DELAYS_SEC", ())
+    for _ in range(2):
+        with pytest.raises(helper_mod.HelperUnavailable):
+            await helper_mod.ensure_image(docker, "local")
+    assert len(docker.of("pull")) == 1 and len(docker.of("build")) == 2
+    now = helper_mod._clock()
+    monkeypatch.setattr(
+        helper_mod, "_clock", lambda: now + helper_mod._RETRY_BUILD_SEC + 1
+    )
+    with pytest.raises(helper_mod.HelperUnavailable):
+        await helper_mod.ensure_image(docker, "local")
+    assert len(docker.of("pull")) == 2
+
+    monkeypatch.setenv(helper_mod.PULL_ENV, "0")
+    off = PullDocker()
+    await helper_mod.ensure_image(off, "remote")
+    assert off.of("pull") == [] and len(off.of("build")) == 1
+
+
+@pytest.mark.asyncio
+async def test_after_the_window_a_pull_that_succeeds_serves_and_clears_the_failure(
+    prebuilt, monkeypatch
+):
+    """The registry was down; after the retry window the pull is tried again,
+    succeeds, and the pulled image serves. A refused image (another recipe's
+    label) is remembered for the window too: a later start in it builds
+    without pulling again."""
+    docker = PullDocker(pull_code=1)
+    docker.container_image = IMAGE_ID
+    assert await helper_mod.ensure_image(docker, "local") == IMAGE_ID
+    monkeypatch.setattr(helper_mod, "_READY", type(helper_mod._READY)())
+    now = helper_mod._clock()
+    monkeypatch.setattr(
+        helper_mod, "_clock", lambda: now + helper_mod._RETRY_BUILD_SEC + 1
+    )
+    docker.pull_code = 0
+    assert await helper_mod.ensure_image(docker, "local") == PULLED_ID
+    assert helper_mod.image_source("local") == "pulled"
+    assert "local" not in helper_mod._PULL_FAILED
+    assert await helper_mod.ensure_image(docker, "local") == PULLED_ID
+    assert len(docker.of("pull")) == 2
+
+    refused = PullDocker(recipe="0" * 16)
+    assert await helper_mod.ensure_image(refused, "other") == IMAGE_ID
+    monkeypatch.setattr(helper_mod, "_READY", type(helper_mod._READY)())
+    assert await helper_mod.ensure_image(refused, "other") == IMAGE_ID
+    assert len(refused.of("pull")) == 1 and len(refused.of("build")) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_pulled_image_is_recorded_and_a_later_process_reuses_it(
+    prebuilt, tmp_path, monkeypatch
+):
+    """The record keeps where the image came from; a later process (an empty
+    cache) reuses the recorded image after the usual check and says so. A
+    record written before the field existed reads as a build."""
+    monkeypatch.setenv(helper_mod.STATE_DIR_ENV, str(tmp_path / "state"))
+    docker = PullDocker(daemon_id="daemon-abcdefgh")
+
+    assert await helper_mod.ensure_image(docker, "local") == PULLED_ID
+    data = json.loads(next((tmp_path / "state").iterdir()).read_text())
+    assert data["image"] == PULLED_ID and data["source"] == "pulled"
+    assert any(c[:1] == ["tag"] and c[1] == PULLED_ID for c in docker.calls)
+
+    monkeypatch.setattr(helper_mod, "_READY", type(helper_mod._READY)())
+    monkeypatch.setattr(helper_mod, "_SOURCE", {})
+    pulls = len(docker.of("pull"))
+    assert await helper_mod.ensure_image(docker, "local") == PULLED_ID
+    assert len(docker.of("pull")) == pulls
+    assert helper_mod.image_source("local") == "recorded:pulled"
+
+    record = next((tmp_path / "state").iterdir())
+    record.write_text(
+        json.dumps(
+            {
+                "daemon": "daemon-abcdefgh",
+                "recipe": helper_mod.HELPER_RECIPE,
+                "image": PULLED_ID,
+            }
+        )
+    )
+    record.chmod(0o600)
+    assert helper_mod.recorded_image("daemon-abcdefgh") == PULLED_ID
+    monkeypatch.setattr(helper_mod, "_READY", type(helper_mod._READY)())
+    assert await helper_mod.ensure_image(docker, "local") == PULLED_ID
+    assert helper_mod.image_source("local") == "recorded:built"
+
+
+@pytest.mark.asyncio
+async def test_the_blocks_record_says_where_the_helper_image_came_from():
+    """The block's record names the helper image's source beside rules_from."""
+
+    class SourcedEnv(HelperEnv):
+        @property
+        def metadata_rules_image(self) -> str:
+            return "pulled"
+
+    env = SourcedEnv(
+        AGENT_REFUSED, helper=[ROOT_OK, "BF metadata-hits 0\n", "BF metadata-hits 1\n"]
+    )
+
+    record = await block_cloud_metadata(env, "agent")
+
+    assert record["rules_from"] == "helper" and record["helper_image"] == "pulled", (
+        record
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_block_the_helper_did_not_serve_names_no_helper_image():
+    """The helper was unavailable: root installed in main, and the record
+    claims no helper image, whatever the sandbox's own source says."""
+
+    class Unavailable(HelperEnv):
+        @property
+        def metadata_rules_image(self) -> str:
+            return "pulled"
+
+    why = "building the metadata firewall helper image failed: no route to host"
+    env = Unavailable(
+        ROOT_OK, AGENT_REFUSED, "BF metadata-hits 2\n", helper=[], why=why
+    )
+
+    record = await block_cloud_metadata(env, "agent")
+
+    assert record["rules_from"] == "sandbox" and "helper_image" not in record, record
+
+
+def test_the_sandbox_names_the_source_of_its_own_daemons_helper_image(monkeypatch):
+    """DockerSandbox.metadata_rules_image reads the source kept for its own
+    daemon key (its Compose global args), not another daemon's."""
+    from benchflow.sandbox.docker import DockerSandbox
+
+    sandbox = DockerSandbox.__new__(DockerSandbox)
+    monkeypatch.setattr(
+        DockerSandbox, "_docker_compose_global_args", lambda self: ["-H", "unix:///a"]
+    )
+    monkeypatch.setattr(
+        helper_mod, "_SOURCE", {"-H unix:///a": "pulled", "-H unix:///b": "built"}
+    )
+    assert sandbox.metadata_rules_image == "pulled"
+    monkeypatch.setattr(helper_mod, "_SOURCE", {"-H unix:///b": "built"})
+    assert sandbox.metadata_rules_image == ""
+
+
+@pytest.mark.asyncio
+async def test_the_pull_waits_for_its_recipe_and_for_a_pinned_image(
+    prebuilt, monkeypatch
+):
+    """An image pinned for another recipe (a local edit of the packages) is
+    never pulled, and neither is one before a release pins it: the local build
+    serves."""
+    monkeypatch.setattr(helper_mod, "HELPER_IMAGE_RECIPE", "0" * 16)
+    docker = PullDocker()
+    await helper_mod.ensure_image(docker, "local")
+    monkeypatch.setattr(helper_mod, "HELPER_IMAGE_RECIPE", helper_mod.HELPER_RECIPE)
+    monkeypatch.setattr(helper_mod, "HELPER_IMAGE", "")
+    await helper_mod.ensure_image(docker, "remote")
+    assert docker.of("pull") == [] and len(docker.of("build")) == 2
+
+
+def test_a_pinned_prebuilt_image_is_named_by_digest_for_this_recipe():
+    """When a release pins the prebuilt image, it is a name and a sha256 index
+    digest (never a tag), and it was built from this recipe: a change to the
+    packages fails here until a new image is pushed and pinned with it."""
+    if not helper_mod.HELPER_IMAGE:
+        assert helper_mod.HELPER_IMAGE_RECIPE == ""
+        return
+    import re
+
+    assert re.fullmatch(
+        r"ghcr\.io/benchflow-ai/benchflow-metadata-helper@sha256:[0-9a-f]{64}",
+        helper_mod.HELPER_IMAGE,
+    )
+    assert helper_mod.HELPER_IMAGE_RECIPE == helper_mod.HELPER_RECIPE

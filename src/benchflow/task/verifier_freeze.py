@@ -84,25 +84,65 @@ def state_path() -> str:
     return f"{STATE_DIR}/bf-freeze-{uuid4().hex}"
 
 
+#: Daytona's channel helper, as the shell's NUL-dropping ``read`` sees its
+#: command line: the kit's Python (by its loader, or alone) or the channel's
+#: interpreter, on a script staged under /opt/runtime/run (map-H2 §1.2f,
+#: REV2 R2-2: it matched neither kit pattern, and a stopped helper holds the
+#: thaw).
+DAYTONA_CHANNELS = (
+    f"*{KIT}/libexec/python3-I-S-B/opt/runtime/run/*",
+    f"{KIT}/channel/python/bin/python3.12-I-S-B/opt/runtime/run/*",
+)
+
+
+def exempt_patterns(*, kit_channels: bool) -> str:
+    """The ``case`` patterns of BenchFlow's own exec channels, which the
+    freeze leaves running (they carry the thaw and every later root step).
+
+    ``bfx serve`` (and a ``/.bfx/bfx`` one-shot) where bfx sits at /.bfx.
+    With *kit_channels* (bfx not at /.bfx: off, or Daytona's per-call), the
+    kit's Python helper, pre-started execs waiting on the kit's ``head``
+    (``sandbox/_exec_channel.py``) and Daytona's helper. Any user can set its
+    own argv, so a name is never enough: :func:`freeze_step` exempts a
+    process only when its real uid is 0 as well. Every BenchFlow channel is
+    root's; a non-root agent's process with such a name is stopped, and a
+    root agent's live processes already make its reward unverifiable."""
+    ours = "/.bfx/bfx|/.bfx/bfxserve*"
+    if kit_channels:
+        ours += f"|*{KIT}/libexec/python3-I-S-B-c*|*__bf_warm_n*|" + "|".join(
+            DAYTONA_CHANNELS
+        )
+    return ours
+
+
+def held(state_text: str) -> bool:
+    """Whether a freeze's state file (:func:`freeze_step`) shows the
+    sandbox held still: the stop was made (``frozen_at``) and every process
+    stopped. Read while the stop holds (before :func:`thaw_command`)."""
+    kinds = [line.split()[0] for line in state_text.splitlines() if line.split()]
+    return "frozen_at" in kinds and not {"unsettled", "running", "unstopped"} & set(
+        kinds
+    )
+
+
 def freeze_step(state: str, *, kit_channels: bool = False) -> str:
     """The shell the test command runs right after test.sh returns (before
     its exit record): stop everything but PID 1 and this shell's own chain,
     and keep the counts in *state*. It never changes ``$?``'s saved value
     (``_benchflow_status``) and prints nothing.
 
-    *kit_channels*: bfx is not delivered, so BenchFlow's exec channels are
-    the kit's Python helper or pre-started execs waiting on the kit's
-    ``head`` (``sandbox/_exec_channel.py``), and those are left running too
-    (the rc4 dogfood, 11-17: stopped, they held the thaw and every later
+    *kit_channels*: bfx is not at /.bfx, so BenchFlow's exec channels are
+    the kit's helpers (:func:`exempt_patterns`), and those are left running
+    too (the rc4 dogfood, 11-17: stopped, they held the thaw and every later
     root step until the trial timed out)."""
     f = shlex.quote(state)
-    ours = "/.bfx/bfx|/.bfx/bfxserve*"
-    if kit_channels:
-        ours += f"|*{KIT}/libexec/python3-I-S-B-c*|*__bf_warm_n*"
+    ours = exempt_patterns(kit_channels=kit_channels)
     me = _FIELD.format(key="Pid:", var="_bf_me", path="/proc/self/status")
     parent = _FIELD.format(key="PPid:", var="_bf_n", path="/proc/$_bf_a/status")
     status = _FIELD.format(key="State:", var="_bf_s", path="$_bf_d/status")
     status_p = _FIELD.format(key="State:", var="_bf_s", path="/proc/$_bf_p/status")
+    uid = _FIELD.format(key="Uid:", var="_bf_u", path="$_bf_d/status")
+    ppid = _FIELD.format(key="PPid:", var="_bf_pp", path="$_bf_d/status")
     return (
         f"if [ ! -e {f}.cancel ]; then "
         f"_bf_me=; {me}; "
@@ -114,13 +154,26 @@ def freeze_step(state: str, *, kit_channels: bool = False) -> str:
         "_bf_new=0; _bf_i=$((_bf_i + 1)); "
         "for _bf_d in /proc/[0-9]*; do _bf_p=${_bf_d#/proc/}; "
         'case "$_bf_keep$_bf_ours$_bf_pre$_bf_bad" in *" $_bf_p "*) continue ;; esac; '
-        # BenchFlow's own exec channels (``/.bfx/bfx serve``) carry the thaw
-        # and every later root step: stopping one would leave the thaw
-        # waiting on it. Told by argv[0], read by the shell itself (root may
-        # not read their /proc/<pid>/exe); a process named so to slip the stop
-        # can only be a root agent's, whose trial is unverifiable anyway.
+        # BenchFlow's own exec channels (``/.bfx/bfx serve``, the kit's
+        # helpers) carry the thaw and every later root step: stopping one
+        # would leave the thaw waiting on it. Told by argv, read by the shell
+        # itself (root may not read their /proc/<pid>/exe), and by a real uid
+        # of 0: any user can set its own argv, and every channel of
+        # BenchFlow's is root's.
         '_bf_c=; IFS= read -r _bf_c < "$_bf_d/cmdline" 2>/dev/null; '
-        f'case "$_bf_c" in {ours}) continue ;; esac; '
+        f'case "$_bf_c" in {ours}) _bf_u=; {uid}; '
+        '[ "$_bf_u" = 0 ] && continue ;; esac; '
+        # The test command's own session machinery: root's other children of
+        # the shells this stop runs under, below PID 1 (and below an exec's
+        # PPid 0). On Daytona they are the toolbox session's output copiers
+        # and its tail -f /dev/null: stopped, the session never records the
+        # command's exit and its exec waits out the verifier budget (the
+        # final dogfood, 11-18: frozen 119.7 s). A parent is the kernel's to
+        # set, not the process's; an agent's or test.sh's leftover is PID 1's.
+        f"_bf_pp=; {ppid}; "
+        'case "$_bf_keep" in *" $_bf_pp "*) '
+        'if [ "$_bf_pp" != 1 ] && [ "$_bf_pp" != 0 ]; then '
+        f'_bf_u=; {uid}; [ "$_bf_u" = 0 ] && continue; fi ;; esac; '
         f"_bf_s=; {status}; "
         'case "$_bf_s" in ""|Z|X) continue ;; T|t) _bf_pre="$_bf_pre$_bf_p "; continue ;; esac; '
         'if kill -STOP "$_bf_p" 2>/dev/null; then _bf_ours="$_bf_ours$_bf_p "; _bf_new=1; '

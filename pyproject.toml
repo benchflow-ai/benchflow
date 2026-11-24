@@ -1,6 +1,6 @@
 [project]
 name = "benchflow"
-version = "0.10.0rc5"
+version = "0.10.1"
 description = "Multi-turn agent benchmarking with ACP — run any agent, any model, any provider."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -124,14 +124,17 @@ sandbox-daytona = [
     # floor is required for it to import.
     # >=0.207: optional file timestamps must accept null, or readable outputs
     # cannot be recovered. This is required for upgrades as well as fresh installs.
-    # <0.208: 0.207 is the newest release checked against BenchFlow's use of
-    # it: the PTY websocket
+    # ==0.207.0: the one release checked against BenchFlow's use of it. The
+    # context hashing and upload patches (sandbox/daytona_context.py,
+    # daytona_context_stage.py) apply to exactly 0.207.0 and stand down on any
+    # other version, so a range let a fresh install take 0.207.1 and run the
+    # SDK's own blocking path. Also checked against 0.207: the PTY websocket
     # heartbeat (sandbox/_sdk_ops.py, #1143) wraps 0.197's
     # _open_ws(url, headers, subprotocols); the retry and start-path rules know
     # 0.201's DaytonaConnectionTimeoutError, 0.207's 504 DaytonaTimeoutError
     # and its "entered error state" wording; and Ctrl-C stays BenchFlow's
     # although 0.197's clients open a Socket.IO event connection.
-    "daytona>=0.207.0,<0.208",
+    "daytona==0.207.0",
     "tenacity>=8.0",
 ]
 sandbox-modal = [
@@ -242,8 +245,10 @@ markers = [
     "deterministic: real CLI + real sandbox + scripted fake model provider; runs by default when a sandbox is available (Docker, or BENCHFLOW_DETERMINISTIC_SANDBOX=daytona), skips with a reason otherwise (deselect with -m 'not deterministic')",
     "ceiling: the test holds one call to tests/_timing.py's CPU-time ceiling (within_ceiling); it never runs under xdist, where a neighbour on the same core inflates CPU time: conftest leaves it out of an xdist run and CI runs it with -n 0",
     "bfx_refusal: the test asserts the integrity refusal before the turn on a unit fake, so conftest gives its fake sandbox no stand-in bfx (tests/_fake_bfx.py)",
+    "flood: a grading-matrix row that floods the sandbox with millions of names (or caps the walk to act as one); run alone, -n 1, after the rest (-m 'grading_matrix and flood'); pull requests leave it out and nightly.yml runs it on a larger runner",
     "grading_matrix: the grading-integrity matrix (tests/test_grading_integrity_matrix.py), whole trials on real Docker; left out of the default run, selected by -m deterministic (pass D) or -m grading_matrix; it fails, never skips, without Docker",
     "transport_over_bound: the test hands a backend's provider a command over the exec transport bound on purpose (tests/conftest.py exec_transport_tripwire)",
+    "window: the host-side window check (tests/test_egress_window_hostside.py), run by test.yml's window-check job",
 ]
 
 [tool.ruff]

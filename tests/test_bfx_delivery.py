@@ -247,7 +247,7 @@ async def test_a_task_mount_beneath_bfx_is_refused_and_nothing_starts(
         compose["volumes"] = {"data": {}}
     (environment / "docker-compose.yaml").write_text(json.dumps(compose))
     try:
-        with pytest.raises(TaskEnvNotAllowedError, match="at or beneath"):
+        with pytest.raises(TaskEnvNotAllowedError, match="at, beneath or over"):
             await sandbox.start(force_build=False)
         assert await sandbox._main_container_id() is None
     finally:

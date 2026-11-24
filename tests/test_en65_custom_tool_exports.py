@@ -1,4 +1,9 @@
-"""Guard unsupported custom-tool captures against silent loss in 16ae05afd."""
+"""Guard custom-tool captures against silent loss (16ae05afd).
+
+A custom tool is exported as a function of one string, marked ``custom``
+(tests/test_custom_tool_export.py). What that cannot represent is still
+refused: a custom call to a name the request declares as a function of
+another shape, an output with no call, a custom tool in a namespace."""
 
 import copy
 import json
@@ -123,9 +128,7 @@ def test_custom_protocol_refused_before_normalization(kind):
     assert record == original
 
 
-@pytest.mark.parametrize(
-    "kind", ["custom", "mixed", "input_history", "custom_declaration"]
-)
+@pytest.mark.parametrize("kind", ["custom", "mixed", "input_history"])
 def test_results_remain_untrainable_with_explicit_custom_protocol_error(tmp_path, kind):
     """Guards 16ae05afd: unsupported selected calls keep canonical results untrainable."""
     trial, capture = _rollout(tmp_path, [_exchange(kind)])
@@ -194,33 +197,52 @@ def test_supported_protocols_and_literal_custom_type_text_still_normalize(kind):
     assert bool(normalized.messages[-1].get("tool_calls")) is (kind == "function")
 
 
+MARKED = {
+    "type": "function",
+    "function": {
+        "name": "payload-name-must-not-leak",
+        "description": "",
+        "parameters": {
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"],
+            "additionalProperties": False,
+        },
+    },
+    "custom": {"format": {"type": "text"}},
+}
+
+
 @pytest.mark.parametrize("field", ["tools", "tool_defs"])
-def test_unused_custom_tool_declaration_is_not_rewritten_as_a_function(field):
-    """Guards 16ae05afd: even a text response was conditioned on the declared custom tool."""
+def test_an_unused_custom_tool_declaration_is_a_marked_function(field):
+    """A declared custom tool is exported as a function of one string,
+    ``input``, with its original format kept under ``custom``: the row keeps
+    what the text response was conditioned on, and inverts exactly."""
     record = _exchange("custom_declaration")
     if field == "tool_defs":
         body = record["request"]["body"]
         body[field] = body.pop("tools")
     original = copy.deepcopy(record)
     normalized, reason = normalize_prime_sft_exchange(record)
-    assert normalized is None
-    assert reason == "unsupported_tool_protocol: custom"
+    assert reason is None
+    assert normalized.tool_defs == [MARKED]
     assert record == original
 
 
 @pytest.mark.parametrize("export", [export_prime_sft_jsonl, export_trl_sft_jsonl])
 @pytest.mark.parametrize("field", ["tools", "tool_defs"])
-def test_directory_export_refuses_unused_custom_declaration(tmp_path, export, field):
-    """Guards 16ae05afd: a declared custom tool cannot become a published function schema."""
+def test_directory_export_writes_an_unused_custom_declaration_marked(
+    tmp_path, export, field
+):
     record = _exchange("custom_declaration")
     if field == "tool_defs":
         body = record["request"]["body"]
         body[field] = body.pop("tools")
     _rollout(tmp_path, [record])
     out = tmp_path / "out.jsonl"
-    with pytest.raises(ValueError, match="unsupported_tool_protocol: custom"):
-        export(tmp_path, out)
-    assert not out.exists()
+    export(tmp_path, out)
+    (row,) = [json.loads(line) for line in out.read_text().splitlines()]
+    assert row.get("tool_defs", row.get("tools")) == [MARKED]
 
 
 @pytest.mark.parametrize(

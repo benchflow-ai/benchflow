@@ -17,10 +17,17 @@ from pathlib import Path
 from typing import Any
 
 from benchflow.agents.errors import UsageLimitError
+from benchflow.agents.operator_credentials import (
+    CLOUD_FILE_SETTING,
+    TASK_PROCESSES_SETTING,
+    literal_grant,
+    scoped_names,
+)
 from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 from benchflow.integrity.constants import normalize_integrity_mode
 from benchflow.loop_strategies import LoopStrategySpec
 from benchflow.review.options import ReviewerConfig
+from benchflow.sandbox.cloud_metadata import strict_grant
 from benchflow.skill_policy import SKILL_MODE_NO_SKILL
 from benchflow.trial_budget import TrialBudget
 from benchflow.usage_tracking import UsageTrackingConfig
@@ -87,7 +94,14 @@ def _evaluation_config(raw: dict[str, Any]) -> EvaluationConfig:
         freeze_workspace=bool(raw.get("freeze_workspace", False)),
         keep_sandbox=str(raw.get("keep_sandbox") or "never"),
         fresh_install=bool(raw.get("fresh_install", False)),
-        allow_cloud_metadata=bool(raw.get("allow_cloud_metadata", False)),
+        allow_cloud_metadata=strict_grant(raw.get("allow_cloud_metadata")),
+        allow_cloud_credential_file=literal_grant(
+            raw.get(CLOUD_FILE_SETTING), where=CLOUD_FILE_SETTING
+        ),
+        allow_task_processes_with_credentials=literal_grant(
+            raw.get(TASK_PROCESSES_SETTING), where=TASK_PROCESSES_SETTING
+        ),
+        scoped_credentials=scoped_names(raw.get("scoped_credentials")),
         integrity=normalize_integrity_mode(raw.get("integrity")),
         accept_deviations=raw.get("accept_deviations"),
         planned_trials=int(raw.get("planned_trials") or 1),

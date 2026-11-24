@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import logging
 import shlex
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -1097,6 +1098,7 @@ async def execute_prompts(
     timeout: int,
     idle_timeout: int | None = None,
     pending_tool_grace: int | None = None,
+    on_deadline: Callable[[], Awaitable[Any]] | None = None,
 ) -> tuple[list[dict], int]:
     """Send prompts via ACP and capture trajectory. Return (trajectory, n_tool_calls).
 
@@ -1108,6 +1110,9 @@ async def execute_prompts(
     pending_tool_grace — seconds a silent pending tool call may defer the
                    idle abort; None reads BENCHFLOW_AGENT_PENDING_TOOL_GRACE_SEC,
                    else 3x idle_timeout (IdleWatchdog).
+    on_deadline  — the stop's first step when a budget ends the prompt: the
+                   trial's model gate, awaited before the agent is
+                   asked to stop.
 
     The transport's read guard is raised to the silence this call allows
     plus one watchdog poll, so the watchdog, not a fixed transport timeout,
@@ -1129,7 +1134,7 @@ async def execute_prompts(
         if idle_timeout is None:
             try:
                 prompt_result = await _prompt_with_wall_clock_budget(
-                    acp_client, session, prompt, timeout
+                    acp_client, session, prompt, timeout, on_deadline=on_deadline
                 )
             except AgentPromptTimeoutError as e:
                 e.executed_prompts = prompts[: i + 1]
@@ -1143,6 +1148,7 @@ async def execute_prompts(
                     timeout,
                     idle_timeout,
                     pending_tool_grace=pending_tool_grace,
+                    on_deadline=on_deadline,
                 )
             except AgentPromptTimeoutError as e:
                 e.executed_prompts = prompts[: i + 1]
@@ -1207,6 +1213,8 @@ async def _prompt_with_wall_clock_budget(
     session,
     prompt: str,
     timeout: int,
+    *,
+    on_deadline: Callable[[], Awaitable[Any]] | None = None,
 ):
     """Run a prompt until either it finishes or BenchFlow's budget expires."""
     deadline = asyncio.get_running_loop().time() + timeout
@@ -1219,7 +1227,9 @@ async def _prompt_with_wall_clock_budget(
                 prompt_task, session, deadline=deadline, timeout=timeout
             )
         cleanup_attempted = True
-        if await cancel_prompt_after_timeout(acp_client, prompt_task):
+        if await cancel_prompt_after_timeout(
+            acp_client, prompt_task, before_cancel=on_deadline
+        ):
             raise _agent_prompt_timeout_error(session, timeout)
         raise TimeoutError(f"Agent prompt exceeded wall-clock budget {timeout}s")
     finally:
@@ -1236,6 +1246,7 @@ async def _prompt_with_idle_watchdog(
     idle_timeout: int,
     *,
     pending_tool_grace: int | None = None,
+    on_deadline: Callable[[], Awaitable[Any]] | None = None,
 ):
     """Run one ACP prompt with wall-clock and idle-watchdog budgets."""
     prompt_task = asyncio.create_task(_timed_prompt(acp_client, prompt))
@@ -1253,8 +1264,15 @@ async def _prompt_with_idle_watchdog(
         while not prompt_task.done():
             # Wake on completion, not only at the next poll: with the default
             # 600 s idle budget a poll is 30 s, which would otherwise be added
-            # to every prompt's agent time.
-            await asyncio.wait({prompt_task}, timeout=watchdog.poll_interval_sec)
+            # to every prompt's agent time. Nor past the wall clock's deadline
+            # the agent gets its budget, never up to a poll more.
+            await asyncio.wait(
+                {prompt_task},
+                timeout=min(
+                    watchdog.poll_interval_sec,
+                    max(0.0, watchdog.deadline - loop.time()),
+                ),
+            )
             if prompt_task.done():
                 break
             now = loop.time()
@@ -1262,11 +1280,15 @@ async def _prompt_with_idle_watchdog(
             if watchdog.idle_expired(now):
                 error = watchdog.timeout_error(session, now=now)
                 cleanup_attempted = True
-                await cancel_prompt_after_timeout(acp_client, prompt_task)
+                await cancel_prompt_after_timeout(
+                    acp_client, prompt_task, before_cancel=on_deadline
+                )
                 raise error
             if watchdog.wall_clock_expired(now):
                 cleanup_attempted = True
-                if await cancel_prompt_after_timeout(acp_client, prompt_task):
+                if await cancel_prompt_after_timeout(
+                    acp_client, prompt_task, before_cancel=on_deadline
+                ):
                     raise _agent_prompt_timeout_error(session, timeout)
                 raise TimeoutError(
                     f"Agent prompt exceeded wall-clock budget {timeout}s"

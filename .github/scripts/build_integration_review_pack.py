@@ -710,32 +710,82 @@ def parity_summary(parity: list[ParityResult]) -> dict[str, Any]:
     }
 
 
+# The lists a restricted mode is graded on, as V-NETWORK's reason names them.
+_RESTRICTED_LISTS = {"allowlist": "hosts", "denylist": "blocked hosts and URLs"}
+
+
+def ran_network(rollout_dir: Path) -> tuple[dict[str, Any], str] | None:
+    """The network policy *rollout_dir*'s trial ran under, and the record it
+    came from: the trial's ``integrity/manifest.json`` (the agent's mode and
+    its allowed hosts), else its job's ``run-card.json`` (the mode alone, when
+    the job ran one), else ``verifier/verifier-network.json`` (the verifier's
+    mode). None when the trial has none of them."""
+    manifest = _read_json(rollout_dir / "integrity" / "manifest.json") or {}
+    network = manifest.get("network")
+    if isinstance(network, dict) and isinstance(network.get("agent_network_mode"), str):
+        policy: dict[str, Any] = {"network_mode": network["agent_network_mode"]}
+        hosts = network.get("allowlist")
+        if isinstance(hosts, list):
+            policy["allowed_hosts"] = [str(host) for host in hosts]
+        return policy, "integrity/manifest.json"
+    card = _read_json(rollout_dir.parent / "run-card.json") or {}
+    modes = card.get("network")
+    if isinstance(modes, dict) and len(modes) == 1:
+        (mode,) = modes
+        return {"network_mode": str(mode)}, "the job's run-card.json"
+    record = _read_json(rollout_dir / "verifier" / "verifier-network.json") or {}
+    if isinstance(record.get("mode"), str):
+        return (
+            {"network_mode": record["mode"]},
+            "verifier/verifier-network.json, the verifier's network",
+        )
+    return None
+
+
+def network_gate(slot: Slot, verifier_or_sandbox_pr: bool) -> tuple[str, str]:
+    """V-NETWORK for *slot*: the policy its trial ran under, never the
+    planner's label (``bench`` does not get the label, so it is not what ran)."""
+    if not slot.rollouts:
+        return "na", "no rollout, so no record of the network it ran under"
+    records = [ran_network(rollout) for rollout in slot.rollouts]
+    if any(record != records[0] for record in records[1:]):
+        return "na", f"its {len(records)} rollouts ran under different networks"
+    ran = records[0]
+    if ran is None:
+        return "na", "no record of the network its trial ran under"
+    policy, source = ran
+    mode = str(policy["network_mode"]).strip().lower()
+    lists = _RESTRICTED_LISTS.get(mode)
+    if lists and (mode == "denylist" or "allowed_hosts" not in policy):
+        return "na", f"{mode} ran, {lists} not recorded (from {source})"
+    _, status, detail = rubric_checks.network_hardening(
+        policy, verifier_or_sandbox_pr=verifier_or_sandbox_pr
+    )
+    if mode == "public" and status != "pass":
+        detail += (
+            "; the cell ran under its task's declared public policy, and the "
+            "lane runs no cell under a restricted network yet"
+        )
+    return status, f"{detail} (ran {mode}, from {source})"
+
+
 def hardening_summary_md(
     slots: list[Slot], cells: list[Cell], verifier_or_sandbox_pr: bool
 ) -> str:
     """network / verifier / root / path hardening (CONTRACT F)."""
     lines = ["# Hardening summary", ""]
-    lines.append("## Network policy (V-NETWORK, STATIC per-task config)")
+    lines.append("## Network policy (V-NETWORK, the policy each cell ran under)")
     lines.append("")
-    any_net = False
+    by_id = {slot.cell_id: slot for slot in slots}
     for cell in cells:
-        cfg = {
-            "network_mode": _cell_network_config(cell),
-            "allowed_hosts": cell.raw.get("allowed_hosts"),
-            "blocked_urls": cell.raw.get("blocked_urls"),
-            "blocked_hosts": cell.raw.get("blocked_hosts"),
-        }
-        gate_id, status, detail = rubric_checks.network_hardening(
-            cfg, verifier_or_sandbox_pr=verifier_or_sandbox_pr
-        )
-        if status == "na":
-            continue
-        any_net = True
-        lines.append(f"- {cell.id}: {gate_id}={status} — {detail}")
-    if not any_net:
+        slot = by_id.get(cell.id) or Slot(cell=cell)
+        status, detail = network_gate(slot, verifier_or_sandbox_pr)
         lines.append(
-            "- no explicit network policy declared (runtime default no-network)"
+            f"- {cell.id}: V-NETWORK={status} — {detail}; "
+            f"planned label {cell.network_mode}"
         )
+    if not cells:
+        lines.append("- no planned cells")
     lines.append("")
     lines.append("## Verifier / root / path (per-rollout gates)")
     lines.append("")
@@ -753,29 +803,6 @@ def hardening_summary_md(
         "codex/env-probe review."
     )
     return "\n".join(lines) + "\n"
-
-
-def _cell_network_config(cell: Cell) -> str | None:
-    """Map the cell's EXPECTED network_mode (Q3) to a NetworkMode literal.
-
-    The cell carries ``network_mode`` as ``default-off`` | ``allowlist`` |
-    ``denylist`` (Q3: derived from the task config, NOT passed to bench).
-    Translate to the benchflow ``NetworkMode`` literals the static checker
-    understands, or use an explicit per-cell ``network_mode`` override if the
-    planner emitted one.
-    """
-    explicit = cell.raw.get("network_mode")
-    mode = str(explicit) if explicit is not None else "default-off"
-    norm = mode.strip().lower()
-    if norm in {"default-off", "no-network", "off"}:
-        return "no-network"
-    if norm == "allowlist":
-        return "allowlist"
-    if norm == "denylist":
-        return "denylist"
-    if norm == "public":
-        return "public"
-    return None
 
 
 def red_flags_md(slots: list[Slot], unattributed: list[Path]) -> str:

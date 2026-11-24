@@ -1048,6 +1048,9 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                     "call_type": call_type,
                 }
             )
+            if _bf_tally is not None:
+                # The guard's request_end names it (model-calls.json counts).
+                _bf_tally.refused("model-not-served", model)
             _note_ended(data)
             raise ModelNotServed(model)
 
@@ -1072,6 +1075,8 @@ class BenchFlowLiteLLMLogger(CustomLogger):
                         "call_type": call_type,
                     }
                 )
+                if _bf_tally is not None:
+                    _bf_tally.refused("trial-budget", model)
                 _note_ended(data)
                 raise TrialBudgetSpent(
                     spent, _TRIAL_BUDGET["limits"][spent], _TRIAL_BUDGET["used"]
@@ -1469,8 +1474,16 @@ class CallbackLogReader:
             "request_end",
             "upstream_start",
             "upstream_end",
+            "deadline_cut",
         }:
             self._note_request_event(record)
+            return None
+        if record.get("event") == "gate_closed":
+            # The model gate closed at the agent's stop: every call
+            # after it was refused before any provider saw it.
+            self.trajectory.metadata["model_gate_closed"] = {
+                key: record.get(key) for key in ("time", "reason", "open")
+            }
             return None
         trajectory = self.trajectory
         if record.get("event") == "refused":
@@ -1488,6 +1501,11 @@ class CallbackLogReader:
                         *(
                             ("budget", "limits", "used", "refused")
                             if record.get("rule") == "trial-budget"
+                            else ()
+                        ),
+                        *(
+                            ("time", "path")
+                            if record.get("rule") == "agent-deadline"
                             else ()
                         ),
                     )
@@ -1600,6 +1618,8 @@ class CallbackLogReader:
             state["upstream"] = True
         elif event == "upstream_end" and record.get("stream_error") is True:
             state["stream_error"] = True
+        elif event == "deadline_cut":
+            state["deadline_cut"] = True
         elif event == "request_end":
             state["ended"] = True
             state["cut"] = (
@@ -1621,6 +1641,17 @@ class CallbackLogReader:
         )
         if cut:
             trajectory.metadata["requests_cut"] = cut
+        at_deadline = sum(
+            1
+            for state in self._requests.values()
+            if state.get("deadline_cut") and state.get("upstream")
+        )
+        if at_deadline:
+            # Of those, the calls the model gate cut at the agent's stop
+            # counted from LiteLLM's partial record where it wrote
+            # one, an estimate; one cut before its first byte has none, and
+            # its provider may still bill its input.
+            trajectory.metadata["requests_cut_at_deadline"] = at_deadline
         if self._saw_cost:
             trajectory.metadata["cost_usd"] = round(self._total_cost, 10)
         if self._provider_billed_calls:

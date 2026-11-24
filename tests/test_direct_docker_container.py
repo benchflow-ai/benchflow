@@ -20,6 +20,7 @@ import importlib.util
 import ipaddress
 import json
 import random
+import re
 import shutil
 import subprocess
 import uuid
@@ -270,6 +271,38 @@ async def test_a_key_the_path_does_not_render_starts_on_compose_with_its_reason(
     assert _project_objects(project) == []
 
 
+#: The token of BenchFlow's waiter (``/.bfx/bfx hold --token TOKEN [--setenv
+#: NAME=VALUE]... -- ARGV...``), new for each start, so the two paths' differ.
+_WAITER_TOKEN = re.compile(r"[A-Za-z0-9]{16,64}")
+
+
+def _waiter_token_masked(container: dict) -> tuple[dict, list[tuple[str, int]], list]:
+    """*container* (normalised) with the waiter's token, the word after
+    ``--token`` in ``Args`` and in ``Config``'s ``Entrypoint+Cmd``, replaced
+    by ``<token>``; where it was (field, index); and the ``--setenv`` pairs.
+    Each token has the waiter's shape, and nothing but the token changes."""
+    out = json.loads(json.dumps(container))
+    places: list[tuple[str, int]] = []
+    pairs: list = []
+    fields = [("Args", out), ("Entrypoint+Cmd", out.get("Config") or {})]
+    for name, holder in fields:
+        argv = holder.get(name)
+        if not isinstance(argv, list) or "--token" not in argv:
+            continue
+        at = argv.index("--token") + 1
+        assert _WAITER_TOKEN.fullmatch(argv[at]), (name, argv[at])
+        masked = [*argv[:at], "<token>", *argv[at + 1 :]]
+        changed = [
+            i for i, (a, b) in enumerate(zip(argv, masked, strict=True)) if a != b
+        ]
+        assert changed == [at]
+        holder[name] = masked
+        places.append((name, at))
+        end = argv.index("--", at)
+        pairs.append(argv[at + 1 : end])
+    return out, places, pairs
+
+
 @pytest.mark.parametrize(
     "compose",
     [
@@ -284,8 +317,23 @@ async def test_a_key_the_path_does_not_render_starts_on_compose_with_its_reason(
                 }
             }
         },
+        # Names the held container clears: the waiter gives them back with
+        # --setenv, in the same order on both paths.
+        {
+            "services": {
+                "main": {
+                    "image": IMAGE,
+                    "environment": {
+                        "PYTHONPATH": "/opt/p",
+                        "LD_LIBRARY_PATH": "/opt/l",
+                        "A_1": "1",
+                        "BASH_ENV": "",
+                    },
+                }
+            }
+        },
     ],
-    ids=["dockerfile", "environment"],
+    ids=["dockerfile", "environment", "cleared-environment"],
 )
 @needs_proven_compose
 @pytest.mark.asyncio
@@ -299,6 +347,7 @@ async def test_the_direct_path_makes_the_container_compose_makes(
 
     tool = _diff_tool()
     seen = {}
+    waiter = {}
     for direct in (False, True):
         monkeypatch.setattr(DockerSandbox, "direct_docker", direct, raising=False)
         sandbox = _sandbox(tmp_path / ("direct" if direct else "compose"), compose)
@@ -317,14 +366,21 @@ async def test_the_direct_path_makes_the_container_compose_makes(
             container = _inspect("container", main)
             network = _inspect("network", f"{sandbox.compose_project_name}_default")
             root = str(sandbox.rollout_paths.rollout_dir.parent)
+            held, places, pairs = _waiter_token_masked(normalise_inspect(container))
+            waiter[direct] = (places, pairs)
             seen[direct] = [
-                tool.mask(
-                    normalise_inspect(container), sandbox.compose_project_name, root
-                ),
+                tool.mask(held, sandbox.compose_project_name, root),
                 tool.mask(network, sandbox.compose_project_name, root),
             ]
         finally:
             await sandbox.stop(delete=True)
+    # Both paths hold main in the waiter: a token in the same places, and the
+    # same --setenv pairs in the same order; everything else compares as is.
+    assert waiter[False][0] == waiter[True][0]
+    assert [name for name, _ in waiter[False][0]] == ["Args", "Entrypoint+Cmd"]
+    assert waiter[False][1] == waiter[True][1]
+    if compose and "PYTHONPATH" in compose["services"]["main"]["environment"]:
+        assert waiter[True][1][0], "no --setenv for the names the hold clears"
     for compose_side, direct_side in zip(seen[False], seen[True], strict=True):
         assert differences(compose_side, direct_side) == []
 

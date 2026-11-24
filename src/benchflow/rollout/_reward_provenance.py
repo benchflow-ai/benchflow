@@ -12,12 +12,32 @@ lists every check, whether it ran and whether it passed. The checks:
 - ``links-before-test``: every link the turn made into the folder was found
   and removed before test.sh (:mod:`benchflow.sandbox._verifier_links`);
 - ``links-after-grading``: none was there after grading;
-- ``root-agent-processes``: for a root agent's turn (not the oracle's), no
-  process it started was alive during grading;
+- ``root-agent-processes``: for a root agent's turn, no process it started
+  was alive during grading;
+- ``oracle-processes``: for the oracle's turn, the same: no process its
+  ``solve.sh`` started (as root or as the task's ``[agent].user``) was alive
+  during grading. The oracle is the task's own solution, so this is a label:
+  its reward is scored as written either way;
 - ``frozen-after-test``: for a root agent's turn, the sandbox was held still
   from test.sh's exit until its outputs were copied
   (:mod:`benchflow.task.verifier_freeze`). A non-root agent can't write the
   folder, so its freeze is recorded (``freeze``) but decides nothing.
+- ``walker-holds-against-root``: for a root agent's turn, BenchFlow's walker
+  holds against root where it runs (an argv launch, ``any-agent``). Where bfx
+  starts through the image's shell (Daytona, AgentCore), a root agent can
+  replace that shell, so its reward is kept and ``unverifiable`` (R1).
+- ``agent-processes-at-test`` (rule S): for a non-root agent's turn, and an
+  oracle's run as the task's ``[agent].user``, no process of that uid was
+  alive when test.sh started
+  (:mod:`benchflow.sandbox._agent_alive`). One that was could make a link
+  once test.sh ran and remove it after the write, where neither walk sees
+  it, so the reward is kept and ``unverifiable``. A question that went
+  unanswered is a check that did not run: the same. It never zeroes a
+  reward: a link check that did not run, or found a link, keeps its own
+  outcome (:mod:`_grading_outcome`).
+
+A check a verify was never due (the close, for a verify with no test
+command) is a row with ``applies: false`` that counts toward nothing.
 
 It never changes the reward. Strict ends the agent's processes before
 grading and is not assessed.
@@ -36,12 +56,19 @@ ROOT_PROCESSES = (
     "processes a root agent left running were alive during grading; "
     "BenchFlow can't confirm test.sh wrote this reward"
 )
+ORACLE_PROCESSES = (
+    "processes the oracle's solve.sh left running were alive during grading; "
+    "BenchFlow can't confirm test.sh wrote this reward"
+)
 FROZEN = (
     "the sandbox was not held still from test.sh's exit until its outputs "
     "were copied ({why}); BenchFlow can't confirm test.sh wrote this reward"
 )
-NETWORK_ALIVE = (
-    "; it was refused while agent processes were alive; whose traffic it was is unknown"
+WALKER_SHELL = (
+    "BenchFlow's walker holds only against non-root agents on this sandbox "
+    "(its guarantee: {guarantee}; it starts through the image's shell, or "
+    "from a place root can replace), so a root agent could have changed it; "
+    "BenchFlow can't confirm test.sh wrote this reward"
 )
 _SAID: set[tuple[str, str]] = set()
 
@@ -140,6 +167,8 @@ def verdict(
     links_after: dict[str, Any] | None,
     freeze: dict[str, Any] | None = None,
     outputs_close_applies: bool = True,
+    walker: dict[str, Any] | None = None,
+    alive_at_test: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The trial's provenance (module docstring). *links_before* /
     *links_after*: the link checks' records (``ran``, ``why``, ``links``);
@@ -147,7 +176,10 @@ def verdict(
     a verifier without the stop). *outputs_close_applies*: False for a verify
     that runs no test command (llm-judge, agent-judge, an ORS episode), whose
     reward test.sh never wrote, so the output folder's close is no check of
-    it."""
+    it. *walker*: the walker's record (:func:`_verifier_links.walker_record`),
+    kept as ``walker``. *alive_at_test*: rule S's record
+    (:func:`_agent_alive.ask`), None when it was not made; kept as
+    ``alive_at_test``."""
     checks: list[dict[str, Any]] = []
     reasons: list[str] = []
 
@@ -163,7 +195,19 @@ def verdict(
     # An unset close (the kept-services path returns before it sets one) is
     # a check that did not run, never one left out (F34); a verify that runs
     # no test command was never due one.
-    if outputs_close_applies:
+    if not outputs_close_applies:
+        # Said, so a reader can tell "not due" from a record made before the
+        # check existed (R2-3); it counts toward nothing.
+        checks.append(
+            {
+                "check": "outputs-closed",
+                "ran": False,
+                "passed": False,
+                "applies": False,
+                "why": "no test command: the reward is not test.sh's",
+            }
+        )
+    else:
         check(
             "outputs-closed",
             outputs_closed is not None,
@@ -196,19 +240,21 @@ def verdict(
         made_during_grading_reason(made) if made else None,
     )
     root_agent = sandbox_user is None and agent not in (None, "oracle")
+    oracle = agent == "oracle"
     alive: list[dict[str, Any]] = []
-    if root_agent:
+    if root_agent or oracle:
         listed = processes_listed(record)
         alive = processes(record) if listed else []
         check(
-            "root-agent-processes",
+            "oracle-processes" if oracle else "root-agent-processes",
             listed,
             not alive,
             None
             if listed
             else "the processes alive during grading could not be listed",
-            ROOT_PROCESSES,
+            ORACLE_PROCESSES if oracle else ROOT_PROCESSES,
         )
+    if root_agent:
         if freeze is not None:
             check(
                 "frozen-after-test",
@@ -217,6 +263,43 @@ def verdict(
                 freeze.get("why"),
                 FROZEN.format(why=freeze.get("why") or "unknown why"),
             )
+        if isinstance(walker, dict) and walker.get("engine") == "bfx":
+            # Keyed on the sandbox's own ``bfx_guarantee`` (its launch, and
+            # for Modal its CapBnd and a /.bfx root can replace), the single
+            # source of truth; "non-root-agent", or one not known, is not
+            # proof against root (R1).
+            guarantee = walker.get("guarantee")
+            check(
+                "walker-holds-against-root",
+                True,
+                guarantee == "any-agent",
+                None
+                if guarantee == "any-agent"
+                else f"the walker's guarantee is {guarantee or 'unknown'}",
+                WALKER_SHELL.format(guarantee=guarantee or "unknown"),
+            )
+    asked: dict[str, Any] | None = None
+    # The oracle is asked only when solve.sh ran as the task's [agent].user.
+    if (sandbox_user is not None and agent not in (None, "oracle")) or (
+        oracle and isinstance(alive_at_test, dict)
+    ):
+        from benchflow.sandbox import _agent_alive
+
+        asked = alive_at_test if isinstance(alive_at_test, dict) else None
+        answer = asked.get("alive") if asked is not None else None
+        if asked is not None and answer is True:
+            said = f"a process of uid {asked.get('uid')} was alive ({asked.get('by')})"
+        elif asked is not None and answer is False:
+            said = None
+        else:
+            said = (asked or {}).get("why") or "the check was not made"
+        check(
+            _agent_alive.CHECK,
+            isinstance(answer, bool),
+            answer is False,
+            said,
+            _agent_alive.ALIVE,
+        )
     found: dict[str, Any] = {
         "verdict": UNVERIFIABLE if reasons else VERIFIED,
         "reasons": reasons,
@@ -227,8 +310,24 @@ def verdict(
         "links_after_grading": made,
         "links_checked": before_ran and after_ran,
     }
+    # The agent's processes held still for each walk after the turn (C2-1):
+    # when, and which, as the freeze's record has them.
+    pauses = {
+        name: links["pause"]
+        for name, links in (
+            ("links-before-test", links_before),
+            ("links-after-grading", links_after),
+        )
+        if isinstance(links, dict) and isinstance(links.get("pause"), dict)
+    }
+    if pauses:
+        found["pauses"] = pauses
+    if asked is not None:
+        found["alive_at_test"] = asked
     if freeze is not None:
         found["freeze"] = freeze
+    if walker is not None:
+        found["walker"] = walker
     return found
 
 

@@ -16,7 +16,7 @@ For each trial:
 - `trajectory/`: the agent's trajectory and its model calls;
 - `verifier/`: test.sh's output, the reward files, judge results, and the plugin guard and trusted-PATH records;
 - `reviews/` (rubric reviews), `regrade.json` and `regrade/` (regrades), `artifacts/`;
-- the records kept beside them: `trust-state.json`, `locked-system-path.json`, `kill-before-grading.json`;
+- the records kept beside them: `trust-state.json`, `locked-system-path.json`, `kill-before-grading.json`, `kill-after-grading.json`;
 - `evidence/`: the saved workspace, when the run saved one (`--save-outputs`, a rubric review, a separate verifier).
 
 For a job folder it also holds `run-card.json`, `summary.json`, `report.md`, `evaluation.json` and `results.jsonl`. The agent's own logs (`agent/`) are left out; the trajectory holds what it did.

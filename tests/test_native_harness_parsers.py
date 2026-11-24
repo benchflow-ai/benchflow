@@ -68,7 +68,12 @@ def test_samples_exist_for_the_pinned_versions():
     assert sorted(p.name for p in CLAUDE.glob("*.jsonl")) == sorted(
         [*common, "usage-limit.jsonl"]
     )
-    assert sorted(p.name for p in CODEX.glob("*.jsonl")) == common
+    # Codex has two more: a turn whose model call the run's deadline cut
+    # (BenchFlow's model gate answers it 400 trial_deadline_passed) and one
+    # whose every connection was dropped.
+    assert sorted(p.name for p in CODEX.glob("*.jsonl")) == sorted(
+        [*common, "deadline.jsonl", "dropped.jsonl"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +567,37 @@ def test_codex_turn_failed_and_stream_errors_are_errors():
     parser.feed({"type": "turn.failed", "error": {"message": "unexpected status 401"}})
     outcome = parser.outcome()
     assert outcome.completed and outcome.error == "unexpected status 401"
+
+
+def test_codex_turn_cut_at_the_deadline_fails_in_the_gates_words():
+    """deadline.jsonl (Codex 0.159.3, recorded 2026-11-18): the model call is
+    held, then answered as BenchFlow's model gate answers a call still open
+    at the trial's deadline. exec reports it as an error and turn.failed and
+    exits 1. Nothing reaches the trajectory, there is no usage, and the turn's
+    failure is the gate's own words."""
+    trajectory, outcome = _replay(CodexExecParser("/work"), CODEX / "deadline.jsonl")
+    assert trajectory == []
+    assert outcome.completed and outcome.stop_reason is None
+    assert outcome.usage is None and outcome.usage_total is None
+    assert json.loads(outcome.error)["error"]["message"].startswith(
+        "trial_deadline_passed: this trial's time for the agent is over"
+    )
+
+
+def test_codex_dropped_connection_fails_with_its_cause_not_a_retry_notice():
+    """dropped.jsonl (Codex 0.159.3, recorded 2026-11-18): every connection
+    to the model is closed unanswered. exec reports five reconnect attempts as
+    error events, then the cause and turn.failed. The turn's failure is the
+    cause, not the last "Reconnecting..." notice."""
+    events = _events(CODEX / "dropped.jsonl")
+    retries = [e for e in events if str(e.get("message")).startswith("Reconnecting")]
+    assert len(retries) == 5
+    trajectory, outcome = _replay_events(CodexExecParser("/work"), events)
+    assert trajectory == []
+    assert outcome.completed and outcome.stop_reason is None
+    assert outcome.error == (
+        "stream disconnected before completion: error sending request"
+    )
 
 
 def test_codex_warning_items_are_notices_not_the_agents_words():

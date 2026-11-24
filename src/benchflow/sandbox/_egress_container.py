@@ -125,7 +125,7 @@ class EgressContainer:
         self.container = await self._run_container(main, argv, lifetime_sec)
         placed = await self._docker(
             ["exec", "-i", self.container, "tar", "-x", "-C", EGRESS_DIR, "-f", "-"],
-            timeout=helper_mod._RUN_SEC,
+            timeout=helper_mod._run_sec(),
             stdin=_tar(files),
         )
         if placed.return_code != 0:
@@ -190,7 +190,7 @@ class EgressContainer:
                 "-c",
                 boot,
             ],
-            timeout=helper_mod._RUN_SEC,
+            timeout=helper_mod._run_sec(),
         )
         container = helper_mod._last_line(started.stdout or "")
         if started.return_code != 0 or not helper_mod._CONTAINER_ID.fullmatch(
@@ -255,7 +255,7 @@ class EgressContainer:
         with contextlib.suppress(Exception):
             got = await self._docker(
                 ["logs", "--tail", "20", self.container or self.name],
-                timeout=helper_mod._RUN_SEC,
+                timeout=helper_mod._run_sec(),
             )
             logs = (got.stderr or got.stdout or "").strip()[-500:]
         raise EgressContainerError(
@@ -286,4 +286,4 @@ class EgressContainer:
     async def aclose(self) -> None:
         target, self.container = self.container or self.name, None
         with contextlib.suppress(Exception):
-            await self._docker(["rm", "--force", target], timeout=helper_mod._RUN_SEC)
+            await self._docker(["rm", "--force", target], timeout=helper_mod._run_sec())

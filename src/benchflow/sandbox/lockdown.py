@@ -32,12 +32,19 @@ import string
 import time
 import tokenize
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import urlsplit
 
 from benchflow._bfx.client import BfxError, BfxNotStarted, BfxProtocolError
@@ -968,8 +975,13 @@ async def arm_agent_uid_before_its_proxy(
     return True
 
 
-#: Set on a sandbox once R1 found main quiet at its agent's first launch.
+#: Set on a sandbox once main was found quiet at its agent's first launch.
 _QUIET_AT_LAUNCH_ATTR = "_benchflow_quiet_at_launch"
+#: Set when root ran the task's code in main since main was last found quiet.
+_TASK_CODE_RAN_ATTR = "_benchflow_task_code_ran"
+#: What main had when root was about to run the task's code there: what
+#: BenchFlow and the agent left, as (pid, start time) pairs.
+_AGENT_LEFT_ATTR = "_benchflow_agent_left"
 
 
 def _launch_is_held(agent_env: dict[str, str]) -> bool:
@@ -982,18 +994,77 @@ def _launch_is_held(agent_env: dict[str, str]) -> bool:
 
 
 async def refuse_task_processes_before_launch(
-    env: Any, agent_env: dict[str, str]
+    env: Any,
+    agent_env: dict[str, str],
+    *,
+    held: bool | None = None,
+    credentials: str | None = None,
 ) -> None:
-    """R1 right before a model agent's process first starts in
-    *env*, for a launch whose firewall holds only the agent (the no-web
-    policy, the denylist, an allowlist): a refused trial never starts its
-    agent. Once per sandbox: a later connection (another role, a resumed
-    turn) finds what the agent itself left, which is not the task's."""
-    if not _launch_is_held(agent_env) or getattr(env, _QUIET_AT_LAUNCH_ATTR, False):
+    """Main's quiet check before a model agent's connection stages anything in
+    *env*, for a launch whose firewall holds only the agent (the no-web policy, the
+    denylist, an allowlist): a refused trial never starts its agent. *held*
+    says so for a connection whose env is not wired yet (Rollout.connect
+    calls this before its proxy starts); otherwise *agent_env*'s markers do.
+    Once per sandbox: a later connection (another role, a resumed turn) finds
+    what the agent itself left, which is not the task's. *credentials*: the
+    connection stages an operator credential in the sandbox, so main must be
+    quiet under any policy; the refusal ends with this sentence (the run's
+    ways out). Such a connection lists main again after root ran the task's
+    code there (a step's test.sh, :func:`note_main_before_task_code`): what
+    main had then is the agent's, and anything else is the task's."""
+    if held is None:
+        held = _launch_is_held(agent_env)
+    if not (held or credentials):
         return
-    await refuse_task_processes(env)
+    if getattr(env, _QUIET_AT_LAUNCH_ATTR, False) and not (
+        credentials and getattr(env, _TASK_CODE_RAN_ATTR, False)
+    ):
+        return
+    left = tuple(getattr(env, _AGENT_LEFT_ATTR, None) or ())
+    # A credential is passed whenever the connection stages one, held or not:
+    # a held main answers the policy, not the credential.
+    await refuse_task_processes(env, credentials=credentials or None, also_ours=left)
     with contextlib.suppress(AttributeError):
         setattr(env, _QUIET_AT_LAUNCH_ATTR, True)
+        setattr(env, _TASK_CODE_RAN_ATTR, False)
+
+
+async def note_main_before_task_code(env: Any) -> None:
+    """Before root runs the task's code in main (a step's test.sh), once main
+    was found quiet at a launch: what main has now came from BenchFlow and the
+    agent, so it is recorded as theirs, and the next connection that stages an
+    operator credential lists main again (:func:`refuse_task_processes_before_launch`).
+    Only the first note after a listing records: once the task's code ran,
+    a later note (a connection between listed nothing) adds nothing.
+    Docker sandboxes only, as the listing is. A listing that fails records
+    nothing more: the next check then counts what the agent left as the
+    task's, and refuses."""
+    if not getattr(env, _QUIET_AT_LAUNCH_ATTR, False):
+        return
+    if not callable(getattr(type(env), "metadata_rules_install", None)):
+        return
+    if getattr(env, _TASK_CODE_RAN_ATTR, False):
+        # The task's code ran since main was last listed (a connection between
+        # that listed nothing): nothing alive now is known to be the agent's.
+        return
+    with contextlib.suppress(AttributeError):
+        setattr(env, _TASK_CODE_RAN_ATTR, True)
+    try:
+        scan = await _read_exec(env, _TASK_PROCS_SH, user="root", timeout_sec=60)
+    except Exception as exc:
+        logger.warning("Main's processes before the task's code: not listed: %s", exc)
+        return
+    out = str(getattr(scan, "stdout", "") or "")
+    if "BF task-procs status=0" not in out:
+        return
+    record = list(getattr(env, _AGENT_LEFT_ATTR, None) or ())
+    for row in _scan_rows(out).values():
+        pair = (row["pid"], row["start"])
+        # Not PID 1: what test.sh leaves is re-parented to it.
+        if row["pid"] != 1 and row["state"] not in _DEAD_STATES and pair not in record:
+            record.append(pair)
+    with contextlib.suppress(AttributeError):
+        setattr(env, _AGENT_LEFT_ATTR, record)
 
 
 async def enforce_agent_egress_firewall(
@@ -1338,9 +1409,11 @@ async def _stop_task_processes(env: Any, pids: list[int]) -> None:
         ]
 
 
-def _quiet_main_refusal(rows: list[dict[str, Any]], entry: str) -> str:
+def _quiet_main_refusal(
+    rows: list[dict[str, Any]], entry: str, credentials: str | None = None
+) -> str:
     """R1's refusal: each process (pid, uid, command line), and what the
-    task's author changes."""
+    task's author changes; with *credentials*, the operator's ways out."""
     named = "; ".join(
         f"pid {row['pid']} (uid {row['uid']}): {row['argv'] or row['exe'] or '?'}"
         for row in rows[:_NAMED_MAX]
@@ -1351,6 +1424,15 @@ def _quiet_main_refusal(rows: list[dict[str, Any]], entry: str) -> str:
         f"main's image ENTRYPOINT ({entry})" if entry else "the task's own commands"
     )
     count = "1 task process is" if len(rows) == 1 else f"{len(rows)} task processes are"
+    if credentials:
+        return (
+            "sandbox startup refused: main must be quiet when a model agent "
+            "starts with an operator credential in the sandbox (only "
+            f"BenchFlow's own processes running), and {count} still running "
+            f"there, started by {started}: {named}. {credentials} Or drop the "
+            "image's ENTRYPOINT, or make it exec its command without leaving "
+            "background processes"
+        )
     return (
         "sandbox startup refused: main must be quiet when a model agent starts "
         "under the task's network policy (only BenchFlow's own processes "
@@ -1362,7 +1444,12 @@ def _quiet_main_refusal(rows: list[dict[str, Any]], entry: str) -> str:
     )
 
 
-async def refuse_task_processes(env: Any) -> None:
+async def refuse_task_processes(
+    env: Any,
+    *,
+    credentials: str | None = None,
+    also_ours: Iterable[tuple[int, int]] = (),
+) -> None:
     """R1 (the rule, approved as "refuse those images"):
     under the task's network policy a model agent's main keeps the network
     its agent install and model proxy need, held only by the agent's own
@@ -1373,8 +1460,12 @@ async def refuse_task_processes(env: Any) -> None:
     started, never from a process's environment or path), whatever its uid,
     naming each one. The refused trial's task processes are stopped at once.
     Docker sandboxes only (the others start nothing of the task's in main);
-    not where every process of main is held already."""
-    if _every_process_held(env):
+    not where every process of main is held already. *credentials*: the
+    reason is an operator credential in the sandbox, not the policy.
+    *also_ours*: (pid, start time) pairs main had before root ran the task's
+    code there, which are BenchFlow's and the agent's. A held main answers
+    the policy, not a credential: with *credentials* main is listed anyway."""
+    if _every_process_held(env) and not credentials:
         return
     if not callable(getattr(type(env), "metadata_rules_install", None)):
         return
@@ -1382,13 +1473,20 @@ async def refuse_task_processes(env: Any) -> None:
     out = str(getattr(scan, "stdout", "") or "")
     entry = " ".join(_image_entrypoint(env))[:120]
     if "BF task-procs status=0" not in out:
+        if credentials:
+            raise RuntimeError(
+                "sandbox startup refused: main must be quiet when a model agent "
+                "starts with an operator credential in the sandbox, but main's "
+                "processes could not be read (its image needs awk and "
+                f"readlink). {credentials}"
+            )
         raise RuntimeError(
             "sandbox startup refused: main must be quiet when a model agent "
             "starts under the task's network policy, but main's processes could "
             "not be read (its image needs awk and readlink); run the task with an "
             "oracle, script: or nop agent, or on an open network"
         )
-    rows = _task_processes(out, own_processes(env))
+    rows = _task_processes(out, (*own_processes(env), *also_ours))
     if not rows:
         return
     # Refused: main's task processes stop now, not when the sandbox is torn
@@ -1402,7 +1500,7 @@ async def refuse_task_processes(env: Any) -> None:
         if callable(stop_main):
             with contextlib.suppress(Exception):
                 await stop_main(env)
-    raise RuntimeError(_quiet_main_refusal(rows, entry))
+    raise RuntimeError(_quiet_main_refusal(rows, entry, credentials))
 
 
 async def _uid_egress_from_helper(
@@ -1865,7 +1963,20 @@ def _cloud_metadata_agent_check_cmd(
         "conn=skipped; "
         f"if {'true' if connect_probe else 'false'} && "
         "command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then "
-        f"err=$(timeout 5 bash -c {connect} 2>&1); rc=$?; "
+        # BusyBox's timeout daemonizes a watcher, as this user, that outlives
+        # the connect; under a PID 1 that never reaps (BusyBox's sh execs the
+        # keep-alive's sleep) it stays a zombie of the agent's uid, which rule
+        # S counts as the agent's (S-1). There the connect is bounded here,
+        # then killed and reaped: nothing of the agent's outlives the check.
+        'if grep -q BusyBox "$(command -v timeout)" 2>/dev/null; then '
+        f"err=$(bash -c {connect} 2>&1 & c=$!; i=0; "
+        'while [ "$i" -lt 50 ]; do s=; '
+        '{ read -r _a _b s _r < "/proc/$c/stat"; } 2>/dev/null; '
+        'case $s in ""|Z) break;; esac; sleep 0.1; i=$((i + 1)); done; '
+        'if [ "$i" -ge 50 ]; then kill -KILL "$c" 2>/dev/null; wait "$c" 2>/dev/null; '
+        'echo "BF-RC=124"; else wait "$c"; echo "BF-RC=$?"; fi); '
+        "rc=${err##*BF-RC=}; err=${err%BF-RC=*}; "
+        f"else err=$(timeout 5 bash -c {connect} 2>&1); rc=$?; fi; "
         "case $rc in 0) conn=reached;; 124) conn=timeout;; "
         "*) case $err in *[Rr]efused*) conn=refused;; *) conn=failed;; esac;; esac; fi; "
         'echo "BF metadata-agent held=$held power=${power#,} connect=$conn" '
@@ -3378,8 +3489,8 @@ def _verifier_metadata_failure(why: str) -> RuntimeError:
         "Verifier hardening failed: the cloud metadata endpoints could not be "
         f"refused to root before test.sh ({why}). test.sh runs as root and runs "
         "code the agent wrote, so it does not run with them open; "
-        "set allow_cloud_metadata = true in the task's [environment] table if "
-        "its verifier must reach them"
+        "set allow_cloud_metadata = true in the task's [environment] table, and "
+        "run with --allow-cloud-metadata, if its verifier must reach them"
     )
 
 
@@ -3764,6 +3875,10 @@ async def _block_cloud_metadata(env: Any, sandbox_user: str | None) -> dict[str,
         )
     if from_helper is not None:
         extra["rules_from"] = "helper"
+        source = getattr(rules, "metadata_rules_image", "") if rules is not None else ""
+        if isinstance(source, str) and source:
+            # The helper image's own source: the prebuilt image or a local build.
+            extra["helper_image"] = source
     elif rules is not None and (helper_failed or rules.metadata_rules_unavailable):
         # The helper could not serve the block: root installed in main, as before.
         extra["rules_from"] = "sandbox"
@@ -4677,7 +4792,7 @@ printf '%s\n' "$bf_ids" | tr '\n' ' '
 
 
 def _create_sandbox_user_cmd(
-    sandbox_user: str, *, above_regular_ids: bool = False
+    sandbox_user: str, *, above_regular_ids: bool = False, avoid_uid: int | None = None
 ) -> str:
     """Create *sandbox_user* with a uid and gid that own nothing in the image.
 
@@ -4696,6 +4811,11 @@ def _create_sandbox_user_cmd(
     gid too, is the first from 1000 that no passwd or group entry names and
     no file's owner or group is. A user the image already has is kept as it
     is: the task chose it. busybox images (Alpine) have adduser, not useradd.
+
+    *avoid_uid*: a uid the user must not get even where nothing in the image
+    names it: the uid BenchFlow runs as, where the sandbox's /logs/verifier is
+    the host's own folder (``_host_uid_for_mount``). When it would have been
+    the first free one, ``bf_moved=1`` says the user was moved off it.
     """
     user = shlex.quote(sandbox_user)
     start, limit = (
@@ -4703,13 +4823,23 @@ def _create_sandbox_user_cmd(
         if above_regular_ids
         else (f"bf_uid={_SANDBOX_UID_MIN}", _SANDBOX_UID_LIMIT)
     )
+    next_free = (
+        'while case "$bf_ids" in *" $bf_uid "*) true;; *) false;; esac; '
+        "do bf_uid=$((bf_uid + 1)); done; "
+    )
+    avoid = (
+        ""
+        if avoid_uid is None
+        else f'if [ "$bf_uid" = {int(avoid_uid)} ]; then bf_moved=1; '
+        f'bf_ids="${{bf_ids}}{int(avoid_uid)} "; {next_free}fi; '
+    )
     return (
         f"{{ id -u {user} >/dev/null 2>&1 || {{ "
         f'bf_ids=" $({_system_probe(_USED_IDS_CMD, "bf-used-ids")})" || '
         '{ echo "sandbox uid/gid inventory could not complete" >&2; exit 1; }; '
         f"{start}; "
-        f'while case "$bf_ids" in *" $bf_uid "*) true;; *) false;; esac; '
-        f"do bf_uid=$((bf_uid + 1)); done; "
+        f"{next_free}"
+        f"{avoid}"
         f'[ "$bf_uid" -lt {limit} ] && '
         f"if command -v useradd >/dev/null 2>&1; then "
         f'groupadd -g "$bf_uid" {user} && '
@@ -4717,6 +4847,89 @@ def _create_sandbox_user_cmd(
         f'else addgroup -g "$bf_uid" {user} && '
         f'adduser -D -u "$bf_uid" -G {user} -s /bin/bash {user}; fi; }}; }}'
     )
+
+
+_IMAGE_UID_MARK = "benchflow-image-uid"
+_SANDBOX_UID_MARK = "benchflow-sandbox-uid"
+#: Where ``setup_sandbox_user`` leaves the account it set up for the trial's
+#: record: ``{"user", "uid", "existed_before_setup", "moved_off_host_uid"}``.
+SANDBOX_ACCOUNT_ATTR = "_benchflow_sandbox_account"
+
+
+def _host_uid_for_mount(env: Any) -> int | None:
+    """The uid BenchFlow runs as, when *env*'s /logs/verifier is the host's own
+    folder (``is_mounted``: local Docker's bind mount) and that uid is not
+    root's; else None. After test.sh that folder goes back to this uid
+    (``Verifier._open_output_dir_to_host``), so an agent process with it could
+    add names there."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is None or getattr(env, "is_mounted", False) is not True:
+        return None
+    return getuid() or None
+
+
+def _image_uid(stdout: str) -> tuple[str | None, str]:
+    """The image's own uid for the sandbox user that the resolve exec showed
+    first (None: not shown, or no such account), and the rest of *stdout*."""
+    head, _, rest = stdout.partition("\n")
+    if not head.startswith(_IMAGE_UID_MARK + " "):
+        return None, stdout
+    uid = head[len(_IMAGE_UID_MARK) + 1 :].strip()
+    return (uid if uid.isdigit() else None), rest
+
+
+def _refuse_host_uid_account(
+    sandbox_user: str, host_uid: int, *, image_account: bool = True
+) -> NoReturn:
+    from benchflow._utils.scoring import INTEGRITY_UNAVAILABLE_HEADER
+    from benchflow.rollout._grading_outcome import IntegrityUnavailableError
+
+    whose = (
+        "is the image's own account with"
+        if image_account
+        else "is BenchFlow's own account and got"
+    )
+    raise IntegrityUnavailableError(
+        f"{INTEGRITY_UNAVAILABLE_HEADER}the sandbox user {sandbox_user!r} {whose} "
+        f"uid {host_uid}, the uid BenchFlow runs as on "
+        "the host, and this sandbox's /logs/verifier is the host's own folder: "
+        "after test.sh the folder is that uid's again, and the agent's processes, "
+        "alive through grading in audit and off, could add names to the trial's "
+        "verifier outputs. No agent code ran; the trial has no score.\n"
+        "next: give the image's account another uid (useradd -u), use "
+        "BenchFlow's own sandbox user (the default), run BenchFlow as another "
+        "host user, or use a sandbox that doesn't bind-mount the trial folders "
+        "(--sandbox remote-docker)"
+    )
+
+
+def _keep_sandbox_account(
+    env: Any, sandbox_user: str, shown: str, host_uid: int
+) -> None:
+    """Keep the account the setup exec showed (``_SANDBOX_UID_MARK`` in
+    *shown*) on *env* for the trial's record, and refuse BenchFlow's own
+    sandbox user if it still got the host's uid (the remap's own check; an
+    image's own account was judged before the setup)."""
+    line = next(
+        (
+            ln.split()
+            for ln in shown.splitlines()
+            if ln.startswith(_SANDBOX_UID_MARK + " ")
+        ),
+        None,
+    )
+    if line is None or len(line) != 4 or not line[1].isdigit():
+        return
+    account = {
+        "user": sandbox_user,
+        "uid": int(line[1]),
+        "existed_before_setup": line[2] == "1",
+        "moved_off_host_uid": line[3] == "1",
+    }
+    with contextlib.suppress(AttributeError):
+        setattr(env, SANDBOX_ACCOUNT_ATTR, account)
+    if account["uid"] == host_uid and not account["existed_before_setup"]:
+        _refuse_host_uid_account(sandbox_user, host_uid, image_account=False)
 
 
 async def setup_sandbox_user(
@@ -4742,6 +4955,7 @@ async def setup_sandbox_user(
     the agent's turn.
     """
     from benchflow._runtime_tree import (
+        UNKNOWN_MODE,
         WORKSPACE_MODE_ATTR,
         granted_mode,
         workspace_grant_command,
@@ -4768,16 +4982,30 @@ async def setup_sandbox_user(
     # test.sh sees the workspace as an agent trial's does.
     from benchflow.sandbox._exec_receipt import RECEIPT_FAILED
 
+    # Where /logs/verifier is the host's own folder, the uid BenchFlow runs as
+    # is the sandbox user's only if the image's own account has it: read in
+    # the same exec (#1247).
+    host_uid = _host_uid_for_mount(env)
+    image_uid = (
+        f"printf '{_IMAGE_UID_MARK} %s\\n' "
+        f'"$(id -u {shlex.quote(sandbox_user)} 2>/dev/null)"; '
+        if host_uid is not None
+        else ""
+    )
     resolved = await _read_exec(
         env,
-        f"cd {shlex.quote(workspace)} && pwd -P && {workspace_mode_probe(workspace)}",
+        f"{image_uid}cd {shlex.quote(workspace)} && pwd -P && "
+        f"{workspace_mode_probe(workspace)}",
         timeout_sec=timeout_sec,
     )
     status = _exec_return_code(resolved)
-    text, mode = granted_mode(getattr(resolved, "stdout", "") or "")
+    owned_by, shown = _image_uid(getattr(resolved, "stdout", "") or "")
+    text, mode = granted_mode(shown)
     physical = text.rstrip("\n")
     if status != 0:
         physical, mode = "", None
+    if guard_daemon and host_uid is not None and owned_by == str(host_uid):
+        _refuse_host_uid_account(sandbox_user, host_uid)
     # Scripted controls run as root and use no privileged agent tools; the
     # physical check protects an untrusted user turn, not an oracle workspace,
     # and one the image lacks is left without a grant.
@@ -4798,6 +5026,12 @@ async def setup_sandbox_user(
                     f"{physical!r}: {problem}"
                 )
             workspace = physical
+    if mode is None and status == RECEIPT_FAILED:
+        # The read before the grant was lost: whether the grant will make the
+        # workspace root's and sticky is not known, so it is recorded with no
+        # mode, and the steps before root's scripts act on what the folder is
+        # (#1249, N1), never skipped for want of a record.
+        mode = UNKNOWN_MODE
     if mode is not None:
         modes = getattr(env, WORKSPACE_MODE_ATTR, None) or {}
         modes.setdefault(physical or workspace, mode)
@@ -4828,9 +5062,8 @@ async def setup_sandbox_user(
         else ""
     )
     started = time.monotonic()
-    result = await exec_raw(
-        env.exec,
-        f"{_create_sandbox_user_cmd(sandbox_user)} && "
+    command = (
+        f"{_create_sandbox_user_cmd(sandbox_user, avoid_uid=host_uid)} && "
         f"{_legacy_root_tool_link_cmd('/root/.local/bin', f'{home}/.local/bin')} && "
         f"{_legacy_root_tool_link_cmd('/root/.nvm', f'{home}/.nvm')} && "
         f"for d in {' '.join(home_dirs)}; do "
@@ -4842,13 +5075,31 @@ async def setup_sandbox_user(
         f"{workspace_grant_command(workspace, sandbox_user)} && "
         f"for d in /output /outputs; do "
         f'if [ -d "$d" ] && [ ! -L "$d" ]; then '
-        f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done',
-        # As root whatever the image's USER is: an image that ends with
-        # `USER nobody` (Terminal-Bench 4.1's risk-scorer-replay) otherwise
-        # runs useradd and the uid inventory as nobody.
-        user="root",
-        timeout_sec=timeout_sec,
+        f'chown -R {sandbox_user}:{sandbox_user} "$d"; fi; done'
     )
+    # As root whatever the image's USER is: an image that ends with
+    # `USER nobody` (Terminal-Bench 4.1's risk-scorer-replay) otherwise runs
+    # useradd and the uid inventory as nobody.
+    if host_uid is None:
+        result = await exec_raw(env.exec, command, user="root", timeout_sec=timeout_sec)
+    else:
+        # Where the logs are the host's own folder, the same exec shows the
+        # uid the user got, read as a receipt, for the trial's record and the
+        # remap's own check (#1247); the exit status is the steps' own.
+        q_user = shlex.quote(sandbox_user)
+        account = await _read_exec(
+            env,
+            f"bf_own=0; bf_moved=0; id -u {q_user} >/dev/null 2>&1 && bf_own=1; "
+            f"{{ {command}; }}; bf_rc=$?; "
+            f"printf '{_SANDBOX_UID_MARK} %s %s %s\\n' "
+            f'"$(id -u {q_user} 2>/dev/null)" "$bf_own" "$bf_moved"; (exit "$bf_rc")',
+            user="root",
+            timeout_sec=timeout_sec,
+        )
+        _keep_sandbox_account(
+            env, sandbox_user, getattr(account, "stdout", "") or "", host_uid
+        )
+        result = account
     if ended_by_time_limit(result, timeout_sec, time.monotonic() - started):
         # The time limit cut the setup short, most often in the workspace
         # grant (a large node_modules): the agent would start on a workspace
@@ -4886,6 +5137,14 @@ async def setup_sandbox_user(
         if not await prepare_runtime_tree(
             env, phase="seal", timeout_sec=max(timeout_sec, 300), service=service
         ):
+            from benchflow.sandbox import _inert_bootstrap
+
+            if await _inert_bootstrap.service_down(
+                env, service, _inert_bootstrap.EXITED_AT_START_UP
+            ):
+                # It exited after the start and stays down: nothing runs
+                # there, so it needs no kit (held_exited records it).
+                continue
             raise RuntimeError(
                 f"the compose service {service!r} had its protected runtime "
                 "before the workspace grant and lost it after: the grant "
@@ -11638,10 +11897,13 @@ async def _trusted_verifier_bash_env(
 # Wipe /logs/verifier/ contents before the verifier runs. Do not remove the
 # directory itself: Daytona DinD bind-mounts it from the remote VM, so deleting
 # the mountpoint fails with "Device or resource busy". ``find ... -exec ... +``
-# avoids glob ARG_MAX failures if an agent floods the world-writable log dir.
+# avoids glob ARG_MAX failures if a flood is left there.
 # When ``find`` is unavailable (minimal service images), fall back to
 # ``rm -rf /logs/verifier/* ...`` which handles the common case but may miss
-# dot-files and can hit ARG_MAX on extreme floods.
+# dot-files and can hit ARG_MAX on extreme floods. The folder is left root's
+# 0755, as sandbox setup made it (#1247): never the agent's to write. A
+# verifier with a user of its own gets it from the close before test.sh
+# (``Verifier._close_output_dir``).
 _CLEAR_VERIFIER_DIR_CMD = (
     "if [ -L /logs/verifier ]; then rm -f /logs/verifier; fi && "
     "mkdir -p /logs/verifier && "
@@ -11650,20 +11912,16 @@ _CLEAR_VERIFIER_DIR_CMD = (
     "else "
     "rm -rf /logs/verifier/* /logs/verifier/.[!.]* /logs/verifier/..?* 2>/dev/null; true; "
     "fi && "
-    "chown root:root /logs/verifier && chmod 777 /logs/verifier"
+    "chown root:root /logs/verifier && chmod 755 /logs/verifier"
 )
-# The same clear while the trial keeps services (x-keep-services): the folder
-# is left root's 0755 instead of 0777. The verifier runs as root then
-# (trial_keep), so nothing needs the write for others. On a verifier retried
-# in place the kept services are already running: a folder they can write,
-# even for the moment between this clear and the release, lets one that holds
-# it through a descriptor in flight on a socket create a file of its own
-# there (reward.txt) and keep it open, and test.sh would then write into the
-# agent's file (K2-R4-A-1).
-_CLEAR_VERIFIER_DIR_CLOSED_CMD = (
-    _CLEAR_VERIFIER_DIR_CMD.removesuffix("chmod 777 /logs/verifier")
-    + "chmod 755 /logs/verifier"
-)
+# The same clear while the trial keeps services (x-keep-services), root's
+# 0755 as every clear is now. The verifier runs as root then (trial_keep).
+# On a verifier retried in place the kept services are already running: a
+# folder they can write, even for the moment between this clear and the
+# release, lets one that holds it through a descriptor in flight on a socket
+# create a file of its own there (reward.txt) and keep it open, and test.sh
+# would then write into the agent's file (K2-R4-A-1).
+_CLEAR_VERIFIER_DIR_CLOSED_CMD = _CLEAR_VERIFIER_DIR_CMD
 # The same clear in the hardening of a trial that keeps services, on a sandbox
 # whose /logs/verifier is the host's own folder (``is_mounted``: Docker's bind
 # mount of the trial's verifier/): the folder keeps its owner, the host user,
@@ -11679,9 +11937,9 @@ _CLEAR_VERIFIER_DIR_CLOSED_CMD = (
 # starts (keep_services.refuse_host_uid).
 _CLEAR_HOST_VERIFIER_DIR_CMD = (
     _CLEAR_VERIFIER_DIR_CMD.removesuffix(
-        "chown root:root /logs/verifier && chmod 777 /logs/verifier"
+        "chown root:root /logs/verifier && chmod 755 /logs/verifier"
     )
-    + "chmod 777 /logs/verifier"
+    + "chmod 755 /logs/verifier"
 )
 
 # Legacy verifier rootdir fallback for main-container verification paths.
@@ -11754,14 +12012,49 @@ async def _checked_read(env: Any, command: str, label: str, /, **kwargs: Any) ->
 _INPUT_PROOF_RESERVE_SEC = 60
 
 
-@contextlib.contextmanager
-def _outputs_clearing(env: Any, step: str) -> Iterator[None]:
+async def _foreign_names_left(env: Any) -> bool | None:
+    """Whether a name another user owns is still directly in the output
+    folder, by a root re-list (bfx, depth 1); None where bfx can't say."""
+    from benchflow.sandbox._verifier_links import OUTPUTS
+
+    call = getattr(env, "bfx_call", None)
+    if not callable(call) or not isinstance(getattr(env, "bfx_delivery", None), str):
+        return None
+    try:
+        answer = await call(
+            "scan",
+            {
+                # The output folder test.sh writes (VERIFIER_DIR here is the
+                # protected verifier code folder, another place).
+                "walks": [{"root": OUTPUTS, "depth": 1}],
+                "mounts": False,
+                "acl": False,
+            },
+            timeout_sec=30,
+        )
+    except Exception:
+        return None
+    for entry in answer.get("entries") or ():
+        if (
+            isinstance(entry, dict)
+            and entry.get("path") != OUTPUTS
+            and entry.get("uid") not in (0, None)
+        ):
+            return True
+    return False
+
+
+@contextlib.asynccontextmanager
+async def _outputs_clearing(env: Any, step: str) -> AsyncIterator[None]:
     """While *step* clears the output folder in integrity off or audit, the
     agent's processes are alive: one that keeps writing there (or a flood of
     names past the step's budget) holds the folder, which is the trial's
     verifier failing, never BenchFlow's crash and never an unscored timeout
     (C, VerifierOutputsHeldError). The step is named on the sandbox
-    while it runs, for a verifier deadline that lands inside it."""
+    while it runs, for a verifier deadline that lands inside it. A clear
+    that fails otherwise is held when a root re-list shows a name another
+    user owns still in the folder; its stderr decides nothing (a
+    name the agent chose can say anything)."""
     from benchflow.sandbox.protocol import ExecTimeoutError
     from benchflow.task.verifier_core import _OUTPUTS_HELD, VerifierOutputsHeldError
 
@@ -11783,10 +12076,16 @@ def _outputs_clearing(env: Any, step: str) -> Iterator[None]:
         ) from None
     except RuntimeError as exc:
         done()
-        if "Directory not empty" not in str(exc):
+        if isinstance(exc, VerifierOutputsHeldError):
+            raise
+        held = await _foreign_names_left(env)
+        if held is None:
+            # No bfx (the oracle alone runs here, Q4): the shell's own words.
+            held = "Directory not empty" in str(exc)
+        if not held:
             raise
         raise VerifierOutputsHeldError(
-            f"{_OUTPUTS_HELD} ({step}: a folder kept filling while it was emptied)"
+            f"{_OUTPUTS_HELD} ({step}: a name another user owns stayed in the folder)"
         ) from exc
     except BaseException:
         done()
@@ -11808,12 +12107,15 @@ async def clear_verifier_output_dir(
     stays on the agent container, but a verifier running in another service may
     still need its own writable ``/logs/verifier`` output directory.
 
-    ``closed=True`` (the trial keeps services) leaves the folder root's 0755
-    instead of 0777 (``_CLEAR_VERIFIER_DIR_CLOSED_CMD``). ``host_owned=True``
-    (the hardening of such a trial where the folder is the host's) keeps its
-    owner (``_CLEAR_HOST_VERIFIER_DIR_CMD``).
+    Every clear leaves the folder 0755 (#1247): root's, or, where it is the
+    host's own folder (``is_mounted``: local Docker's bind mount) or
+    ``host_owned=True`` (the hardening of a trial that keeps services there),
+    the owner it has (``_CLEAR_HOST_VERIFIER_DIR_CMD``), so BenchFlow on the
+    host can still write its records there before the close, as it could at
+    0777. An agent with the host's uid is refused at setup
+    (``setup_sandbox_user``).
     """
-    if host_owned:
+    if host_owned or getattr(env, "is_mounted", False) is True:
         command = _CLEAR_HOST_VERIFIER_DIR_CMD
     elif closed:
         command = _CLEAR_VERIFIER_DIR_CLOSED_CMD
@@ -12233,6 +12535,10 @@ def _conftest_sweep_cmd(
         # Prune virtual filesystems so the full-rootfs walk stays bounded and
         # fast — an unpruned `find /` over a slow network-backed FS (Daytona)
         # routinely exceeds the setup timeout and false-errors a valid verifier.
+        # /dev is walked: it is small, and /dev/shm (or a folder root made in
+        # /dev) holds files pytest reaches through a folder link. The sweep
+        # never follows a link: it removes by real path only, so a link into
+        # a folder it prunes (the verifier's runtime) removes nothing there.
         # `-exec rm`, not `-delete`: GNU find refuses -delete next to -prune
         # (exit 1, nothing removed), which made this sweep a silent no-op.
         # V2's protected verifier runtime holds a copy of the image's site
@@ -12240,7 +12546,7 @@ def _conftest_sweep_cmd(
         # alone and checked file by file before test.sh, so a conftest.py
         # planted or changed there refuses grading anyway; removing one
         # made that check refuse an honest trial.
-        "find / -path /proc -prune -o -path /sys -prune -o -path /dev -prune -o "
+        "find / -path /proc -prune -o -path /sys -prune -o "
         + f"-path {shlex.quote(VERIFIER_DIR)} -prune -o "
         + "".join(f"-path {shlex.quote(path)} -prune -o " for path in keep)
         + "-name conftest.py "
@@ -14816,10 +15122,11 @@ def _init_may_be(table: Identities, identity: Identity) -> bool:
 async def _bfx_kill_receipt(env: Any, sandbox_user: str) -> str | None:
     """The K1 kill as ``bfx kill`` (TRUSTED-RUNTIME v2 §4): its receipt.
 
-    None where bfx is not delivered, the sandbox has no ``bfx_call``, the
-    pre-agent identity table is absent, PID 1 may run as the account (bfx
-    has no rule for it), or bfx did not start the request: the shell kill
-    then runs, as before. The account's numbers are the ones
+    None where bfx is not delivered, the sandbox has no ``bfx_call``, its
+    route serves the walker alone (``bfx_in_scripts``), the pre-agent
+    identity table is absent, PID 1 may run as the account (bfx has no rule
+    for it), or bfx did not start the request: the shell kill then runs, as
+    before. The account's numbers are the ones
     measured before the agent started (``_identities.snapshot``). Every
     other bfx failure raises, with the shell kill's wording; a kill that may
     have run is never sent again.
@@ -14827,6 +15134,8 @@ async def _bfx_kill_receipt(env: Any, sandbox_user: str) -> str | None:
     if getattr(type(env), "bfx_call", None) is None:
         return None
     if getattr(env, "bfx_delivery", None) is None:
+        return None
+    if getattr(env, "bfx_in_scripts", True) is False:
         return None
     table = vars(env).get("_benchflow_identities")
     if not isinstance(table, Identities):
@@ -15424,8 +15733,8 @@ class _PrepStep:
 
 
 def _clear_verifier_dir_cmd(*, bfx: bool = False) -> str:
-    """Empty /logs/verifier, keeping the folder (a remote bind mount), and
-    open it to the verifier.
+    """Empty /logs/verifier, keeping the folder (a remote bind mount), root's
+    and 0755 (the close before test.sh gives a verifier user its own).
 
     With *bfx*, ``bfx clear`` empties it beneath a descriptor it holds: no
     link is followed and no mount entered. Where /logs/verifier is a link or
@@ -15444,7 +15753,7 @@ def _clear_verifier_dir_cmd(*, bfx: bool = False) -> str:
         f"[ ! -d /logs/verifier ]; then {_CLEAR_VERIFIER_DIR_CMD}; else "
         f"__bf_o=$({bfx_path} clear --json {shlex.quote(args)}); "
         'case "$__bf_o" in '
-        "*'\"ok\":true'*) chown root:root /logs/verifier && chmod 777 /logs/verifier;; "
+        "*'\"ok\":true'*) chown root:root /logs/verifier && chmod 755 /logs/verifier;; "
         "*) printf '%s\\n' \"$__bf_o\" >&2; false;; "
         "esac; fi"
     )
@@ -16912,17 +17221,15 @@ async def _faithful_steps(
     await _kept_steps(
         env, task, sandbox_user, agent_paths, keep, seconds, None, kill=False
     )
-    with (
-        _prep_timing(seconds, "clear_verifier_output"),
-        _outputs_clearing(env, "the clear before test.sh"),
-    ):
-        await clear_verifier_output_dir(
-            env,
-            "Verifier hardening failed: clearing verifier output directory",
-            host_owned=keep is not None,
-            user="root",
-            timeout_sec=verifier_setup_timeout_sec(),
-        )
+    with _prep_timing(seconds, "clear_verifier_output"):
+        async with _outputs_clearing(env, "the clear before test.sh"):
+            await clear_verifier_output_dir(
+                env,
+                "Verifier hardening failed: clearing verifier output directory",
+                host_owned=keep is not None,
+                user="root",
+                timeout_sec=verifier_setup_timeout_sec(),
+            )
     configured = task.config.verifier.env
     task.config.verifier.env = resolve_env_vars(configured) if configured else {}
     with contextlib.suppress(AttributeError):

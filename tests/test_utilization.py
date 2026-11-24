@@ -70,7 +70,10 @@ def test_a_busy_run_has_no_warning_and_no_proxy_is_said():
     assert warnings == []
     unseen = [("connected", None)] * 4
     line, warnings = summarize(_window([unseen], waiting=0), slots=4, minutes=5)
-    assert "model load not visible (no BenchFlow model proxy on this machine)" in line
+    # The old wording said there was no proxy at all,
+    # though the run's usage came from one.
+    assert "model load not visible from this machine" in line
+    assert "usage is still counted" in line
     assert warnings == []
     starting = [("setup", None)] * 4
     line, _warnings = summarize(_window([starting], waiting=2), slots=4, minutes=1)

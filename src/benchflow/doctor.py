@@ -642,9 +642,11 @@ def check_uv(probes: DoctorProbes) -> Check:
 
 BFX_MISSING = (
     "bfx is not installed: this BenchFlow was built without its pinned bfx "
-    "binaries, so Docker trials run root's steps after the agent without it, "
-    "as with BENCHFLOW_BFX_DELIVERY=off (those steps then need a Python in "
-    "the image)"
+    "binaries, so, as with BENCHFLOW_BFX_DELIVERY=off, a Docker trial whose "
+    "services wait for their rules (every task but one whose cloud metadata "
+    "opt-out the run grants under an open network) is refused before it "
+    "starts; a trial that waits for no rule runs as on 0.10.0, root's steps "
+    "after the agent without bfx (those then need a Python in the image)"
 )
 BFX_FIX = (
     "install a release wheel, or build bfx with `make bfx` before building "
@@ -1105,6 +1107,31 @@ def check_docker(
             details=details,
         )
     )
+    from benchflow.sandbox._compose_runtime import (
+        DOCKER_MINIMUM_TEXT,
+        docker_below_minimum,
+    )
+
+    old = docker_below_minimum(version, compose_version)
+    if old is not None:
+        version_row = _checker("sandbox", "docker version", "docker-version")
+        checks.append(
+            version_row(
+                "warn",
+                f"{old}: a trial under a network policy (allowlist, denylist or "
+                "no-network) is refused before its turn, and build-only Compose "
+                "services and `models:` do not resolve; open-network trials run",
+                f"Upgrade to {DOCKER_MINIMUM_TEXT} or newer (Docker's apt "
+                "repository: docker-ce and docker-compose-plugin; on GitHub "
+                "Actions' ubuntu-24.04 runners, install them before running "
+                "BenchFlow)",
+                {
+                    "server_version": version,
+                    "compose_version": compose_version,
+                    "minimum": "Engine 29, Compose 2.40",
+                },
+            )
+        )
     if free is not None and free < MIN_DOCKER_FREE_BYTES:
         disk_row = _checker("sandbox", "docker disk", "docker-disk")
         checks.append(

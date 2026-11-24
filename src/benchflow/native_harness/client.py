@@ -119,7 +119,40 @@ def encode_prompt(text: str) -> str:
     return base64.b64encode(text.encode()).decode()
 
 
-def _process_functions(run_id: str) -> str:
+def _as_user(user: str) -> str:
+    """Shell that sets ``bf_read`` to a command running its arguments as
+    *user*: the protected kit's ``setpriv`` where the sandbox has it, else
+    util-linux's, else ``su``. With none of them, or no such user, it prints
+    ``blind`` and why, and exits: a kill that cannot see is never "gone"."""
+    from benchflow._runtime_tree import KIT_BIN
+
+    q = shlex.quote(user)
+    candidates = " ".join(
+        shlex.quote(p)
+        for p in (
+            f"{KIT_BIN}/setpriv",
+            "/usr/bin/setpriv",
+            "/bin/setpriv",
+            "/usr/sbin/setpriv",
+            "/sbin/setpriv",
+        )
+    )
+    return (
+        f"bf_uid=$(id -u {q} 2>/dev/null); bf_gid=$(id -g {q} 2>/dev/null); "
+        'case "$bf_uid:$bf_gid" in *[!0-9:]*|:*|*:) '
+        f"echo blind no account {q} in the sandbox; exit 0;; esac; "
+        f"bf_sp=; for c in {candidates}; do "
+        '[ -x "$c" ] && { bf_sp=$c; break; }; done; '
+        'if [ -n "$bf_sp" ] && "$bf_sp" --reuid="$bf_uid" --regid="$bf_gid" '
+        "--clear-groups -- true 2>/dev/null; then "
+        'bf_read() { "$bf_sp" --reuid="$bf_uid" --regid="$bf_gid" --clear-groups -- "$@"; }; '
+        f"elif su -s /bin/sh {q} -c true </dev/null >/dev/null 2>&1; then "
+        f'bf_read() {{ su -s /bin/sh {q} -c "$(printf \'%s \' "$@")" </dev/null; }}; '
+        "else echo blind no setpriv or su could read as the sandbox user; exit 0; fi; "
+    )
+
+
+def _process_functions(run_id: str, user: str | None = None) -> str:
     """Shell functions over this turn's marked processes (read from ``/proc``).
 
     Marked processes are those whose initial environment holds this turn's
@@ -128,11 +161,23 @@ def _process_functions(run_id: str) -> str:
     id is a unique 32-digit hex string), so the scan costs one process
     however many run in the sandbox. Needs ``/proc``, ``grep``, ``sed`` and
     ``cut``.
+
+    With a sandbox *user* the environments are read as that user:
+    root in a Docker container has no CAP_SYS_PTRACE and cannot read the
+    environment of another uid's process, so a scan as root found nothing
+    and the kill reported the turn stopped while the CLI ran on. Root still
+    sends the signals.
     """
     marker = shlex.quote(f"{RUN_ENV}={run_id}")
+    if user:
+        scan = (
+            _as_user(user)
+            + f"marked() {{ bf_read grep -lF {marker} /proc/[0-9]*/environ 2>/dev/null | "
+        )
+    else:
+        scan = f"marked() {{ grep -lF {marker} /proc/[0-9]*/environ 2>/dev/null | "
     return (
-        f"marked() {{ grep -lF {marker} /proc/[0-9]*/environ 2>/dev/null | "
-        "sed -n 's#^/proc/\\([0-9][0-9]*\\)/environ$#\\1#p'; }; "
+        scan + "sed -n 's#^/proc/\\([0-9][0-9]*\\)/environ$#\\1#p'; }; "
         "leaders() { for p in $(marked); do "
         "g=$(sed 's/^.*) //' /proc/$p/stat 2>/dev/null | cut -d' ' -f3); "
         '[ "$g" = "$p" ] && echo "$p"; done; }; '
@@ -147,7 +192,7 @@ def _process_functions(run_id: str) -> str:
 _POLL = "sleep 0.2 2>/dev/null || { sleep 1; i=$((i+4)); }; i=$((i+1))"
 
 
-def kill_script(run_id: str, *, grace_sec: int) -> str:
+def kill_script(run_id: str, *, grace_sec: int, user: str | None = None) -> str:
     """Root script: SIGINT the turn's process groups, then kill what is left.
 
     The grace lasts until the signalled group leaders (the CLI) have exited,
@@ -159,7 +204,7 @@ def kill_script(run_id: str, *, grace_sec: int) -> str:
     runs, else ``left`` and the pids.
     """
     return (
-        _process_functions(run_id)
+        _process_functions(run_id, user)
         + "gs=$(leaders); for g in $gs; do kill -INT -- -$g 2>/dev/null; done; "
         f'i=0; while [ $i -lt {int(grace_sec) * 5} ] && [ -n "$(running $gs)" ]; '
         f"do {_POLL}; done; "
@@ -170,9 +215,13 @@ def kill_script(run_id: str, *, grace_sec: int) -> str:
     )
 
 
-def alive_script(run_id: str) -> str:
-    """Root script printing ``alive`` while any marked process runs, else ``gone``."""
-    return _process_functions(run_id) + '[ -n "$(alive)" ] && echo alive || echo gone'
+def alive_script(run_id: str, user: str | None = None) -> str:
+    """Root script printing ``alive`` while any marked process runs, else
+    ``gone`` (``blind`` when it cannot read as *user*)."""
+    return (
+        _process_functions(run_id, user)
+        + '[ -n "$(alive)" ] && echo alive || echo gone'
+    )
 
 
 def recorded_argv(argv: tuple[str, ...]) -> list[str]:
@@ -290,6 +339,9 @@ class NativeCLIClient:
         self._kill_task: asyncio.Future[bool] | None = None
         self._kill_run_id: str | None = None
         self._kill_record: dict[str, Any] | None = None
+        # What the last kill left of its run: [] when nothing, the pids, or
+        # ["unseen"] when it could not read the run's processes.
+        self._kill_left: list[str] | None = None
         # The running turn's evidence record
         self._record: dict[str, Any] | None = None
         self._closed = False
@@ -444,6 +496,8 @@ class NativeCLIClient:
             )
             await asyncio.wait({kill}, timeout=max(remaining, 0))
             record["stopped"] = self._kill_outcome()
+            if kill.done():
+                record["left"] = list(self._kill_left or [])
         outcome = parser.outcome()
         exit_code = self._exit_code
         if exit_code is None and end is not None:
@@ -637,6 +691,7 @@ class NativeCLIClient:
             record = self._kill_record
             if record is not None and record.get("stopped") is not True:
                 record["stopped"] = bool(stopped)
+                record["left"] = list(self._kill_left or [])
                 self._write_turns()
         finally:
             self._kill_task = None
@@ -647,12 +702,19 @@ class NativeCLIClient:
         """Run :func:`kill_script`; True when no process of the run is left."""
         result = await exec_raw(
             self._env.exec,
-            kill_script(run_id, grace_sec=grace_sec),
+            kill_script(run_id, grace_sec=grace_sec, user=self._sandbox_user),
             user="root",
             timeout_sec=_KILL_TIMEOUT_SEC + grace_sec,
         )
         out = (getattr(result, "stdout", "") or "").strip()
-        if getattr(result, "return_code", 0) == 0 and out.endswith("gone"):
+        last: str = str(out.splitlines()[-1]) if out else ""
+        if last.startswith("left "):
+            self._kill_left = last.split()[1:]
+        elif last.startswith("blind") or not last.endswith("gone"):
+            self._kill_left = ["unseen"]
+        else:
+            self._kill_left = []
+        if getattr(result, "return_code", 0) == 0 and last == "gone":
             return True
         logger.warning(
             "Native harness kill of turn %s exited %s: %s %s",
@@ -666,7 +728,7 @@ class NativeCLIClient:
     async def _cli_alive(self, run_id: str) -> bool:
         result = await exec_raw(
             self._env.exec,
-            alive_script(run_id),
+            alive_script(run_id, user=self._sandbox_user),
             user="root",
             timeout_sec=_KILL_TIMEOUT_SEC,
         )
@@ -703,18 +765,28 @@ class NativeCLIClient:
             return outcome.stop_reason
         # The stream ended with no final event. If the sandbox answers, the
         # CLI died (killed, crashed); otherwise the transport or the sandbox
-        # went away, which is reported as the transport failure it is.
-        try:
-            alive = await self._cli_alive(run_id)
-        except Exception:
-            if end is not None:
-                raise end from None
-            raise
-        if alive:
-            with contextlib.suppress(Exception):
+        # went away, which is reported as the transport failure it is. An
+        # exit status the launch shell reported settles it: the CLI died,
+        # and what is left of the run is its tools, which are stopped.
+        if exit_code is not None:
+            try:
                 await self._kill(run_id, grace_sec=0)
-            if end is not None:
-                raise end
+            except Exception:
+                if end is not None:
+                    raise end from None
+                raise
+        else:
+            try:
+                alive = await self._cli_alive(run_id)
+            except Exception:
+                if end is not None:
+                    raise end from None
+                raise
+            if alive:
+                with contextlib.suppress(Exception):
+                    await self._kill(run_id, grace_sec=0)
+                if end is not None:
+                    raise end
         detail = (
             f"the CLI exited (exit code {exit_code}) before it reported the end of the turn"
             if exit_code is not None

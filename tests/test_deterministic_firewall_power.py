@@ -404,9 +404,9 @@ FIREWALL_TOOL_REFUSAL = (
     "NET_ADMIN only to refuse the cloud metadata endpoints; file capabilities "
     "and setuid/setgid firewall tools could let the agent remove that refusal. "
     "Remove the capabilities or setuid/setgid bits in the task's Dockerfile "
-    "(setcap -r <file>, chmod ug-s <file>), or set allow_cloud_metadata = true "
-    "in the task's [environment] table, or run with --allow-cloud-metadata, to "
-    "let the agent reach them."
+    "(setcap -r <file>, chmod ug-s <file>), or run with --allow-cloud-metadata "
+    "to let the agent reach them (a task's allow_cloud_metadata = true takes "
+    "effect only with that flag)."
 )
 # S3's record on every image under the helper start.
 CLEAR_WHY = (
@@ -442,8 +442,8 @@ UNPROVEN_REFUSAL = (
     "168.63.129.16, 169.254.0.23, fd00:ec2::254, fd00:ec2::23, fd20:ce::254, "
     "fd00:c1::a9fe:a9fe on every port but 53; not proven: the agent user's "
     "connect to 169.254.169.254:80 {}). The trial stops before the agent "
-    "starts; set allow_cloud_metadata = true in the task's [environment] "
-    "table, or run with --allow-cloud-metadata, to let the agent reach them."
+    "starts; run with --allow-cloud-metadata to let the agent reach them (a "
+    "task's allow_cloud_metadata = true takes effect only with that flag)."
 )
 
 

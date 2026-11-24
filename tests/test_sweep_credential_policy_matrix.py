@@ -325,7 +325,6 @@ PROTOCOL_REFUSED = frozenset(
         ("codex-acp", "vertex"),
         ("codex-acp", "anthropic-vertex"),
         ("codex-acp", "xiaomi"),
-        ("codex-acp", "deepseek"),
         ("mimo", "anthropic-vertex"),
     }
 )

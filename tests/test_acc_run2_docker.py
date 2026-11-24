@@ -50,7 +50,7 @@ if [ $? -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; else echo 0 > /logs/ve
 """
 
 
-def _task(tmp_path, name, *, dockerfile, solve, test, tests_py=None):
+def _task(tmp_path, name, *, dockerfile, solve, test, tests_py=None, opt_out=False):
     task = tmp_path / name
     (task / "environment").mkdir(parents=True)
     (task / "solution").mkdir()
@@ -58,6 +58,7 @@ def _task(tmp_path, name, *, dockerfile, solve, test, tests_py=None):
     (task / "task.toml").write_text(
         'version = "1.0"\n\n[verifier]\ntimeout_sec = 300.0\n\n'
         "[agent]\ntimeout_sec = 300.0\n\n[environment]\nbuild_timeout_sec = 900.0\n"
+        + ("allow_cloud_metadata = true\n" if opt_out else "")
     )
     (task / "instruction.md").write_text("Do the task.\n")
     (task / "environment" / "Dockerfile").write_text(dockerfile)
@@ -84,6 +85,18 @@ async def _run(task, agent, **fields):
         **fields,
     )
     return await Rollout(config).run()
+
+
+async def _run_without_bfx(task, agent):
+    """A trial on the plain freeze (``BENCHFLOW_BFX_DELIVERY=off``, as on
+    Daytona). On Docker a service that waits for its rules waits in
+    BenchFlow's waiter, which is bfx, so without it such a trial is refused
+    before it starts; under an open network a task whose cloud metadata
+    opt-out the run grants waits for no rule, and main waits for its bind
+    proof alone, in the hold that predates the waiter. These trials take that
+    route: what they check is root's steps after the agent without bfx, not
+    the metadata block."""
+    return await _run(task, agent, allow_cloud_metadata=True)
 
 
 def _scored(result, reward):
@@ -219,8 +232,10 @@ async def test_a_hook_whose_second_name_the_conftest_sweep_removes_goes(
         + 'ln "$SITE/accrun2.pth" /app/conftest.py\n'
         + 'chown agent "$SITE/accrun2.pth"\n',
         test=HOOK_TEST,
+        opt_out=delivery == "off",
     )
-    _scored(await _run(task, "oracle"), 0.0)
+    run = _run_without_bfx if delivery == "off" else _run
+    _scored(await run(task, "oracle"), 0.0)
 
 
 async def test_without_bfx_a_hook_with_a_second_name_elsewhere_goes(
@@ -237,8 +252,9 @@ async def test_without_bfx_a_hook_with_a_second_name_elsewhere_goes(
         + 'ln "$SITE/accrun2.pth" /app/accrun2-link.pth\n'
         + 'chown agent "$SITE/accrun2.pth"\n',
         test=HOOK_TEST,
+        opt_out=True,
     )
-    _scored(await _run(task, "oracle"), 0.0)
+    _scored(await _run_without_bfx(task, "oracle"), 0.0)
 
 
 async def test_without_bfx_a_root_installed_hook_stays(tmp_path, monkeypatch):
@@ -250,8 +266,28 @@ async def test_without_bfx_a_root_installed_hook_stays(tmp_path, monkeypatch):
         dockerfile=BASE,
         solve=HOOK_SOLVE,
         test=HOOK_TEST,
+        opt_out=True,
     )
-    _scored(await _run(task, "oracle"), 1.0)
+    _scored(await _run_without_bfx(task, "oracle"), 1.0)
+
+
+async def test_without_bfx_a_held_trial_is_refused_by_name(tmp_path, monkeypatch):
+    """``BENCHFLOW_BFX_DELIVERY=off`` stays a switch: a Docker trial whose
+    main waits for its rules (an open network, no granted opt-out) is
+    refused before it starts, the oracle's too, naming bfx and what to do."""
+    monkeypatch.setenv("BENCHFLOW_BFX_DELIVERY", "off")
+    task = _task(
+        tmp_path,
+        "accl1-held-off",
+        dockerfile=BASE,
+        solve=HOOK_SOLVE,
+        test=HOOK_TEST,
+    )
+    result = await _run(task, "oracle")
+    assert result.rewards is None, result.rewards
+    error = str(result.error)
+    assert "only BenchFlow's own waiter (bfx) may run there" in error, error
+    assert "BENCHFLOW_BFX_DELIVERY=off" in error and "next: deliver bfx" in error
 
 
 # -- PATH: sqlite-with-gcov ----------------------------------------------------

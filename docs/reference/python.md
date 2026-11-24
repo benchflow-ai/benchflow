@@ -1,6 +1,6 @@
 # Python API
 
-Each public name in the `benchflow` package (`benchflow.__all__`) has its signature or fields, the methods BenchFlow defines on it, and the first paragraph of its docstring. A name, field, argument or method new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
+Each public name in the `benchflow` package (`benchflow.__all__`) has its signature or fields, the methods BenchFlow defines on it, and the first paragraph of its docstring. A name, field, argument or method new since 0.9.3 has `(0.10)` after it.
 
 <!-- This page is generated from the code by tools/docs_reference.py. To change it, change the docstring or signature in the code, then run `uv run python tools/docs_reference.py --write`. -->
 
@@ -11,10 +11,12 @@ Import the package as `import benchflow as bf`. [Run a benchmark](../evaluate/ru
 ### `abranch`
 
 ```python
-bf.abranch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
+bf.abranch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', allow_cloud_credential_file: 'bool' = False, allow_task_processes_with_credentials: 'bool' = False, scoped_credentials: 'Iterable[str]' = (), on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
 ```
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
+
+New arguments in 0.10: `allow_cloud_credential_file`, `allow_task_processes_with_credentials`, `scoped_credentials`.
 
 Branch one task's run at a checkpoint into labelled, verifier-scored children.
 
@@ -71,8 +73,10 @@ Async form of `stream_rollouts`; folder scans run off the event loop.
 ### `branch`
 
 ```python
-bf.branch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
+bf.branch(task_path: 'str | Path | None' = None, *, agent: 'str | None' = None, children: 'ChildrenArg', model: 'str | None' = None, prompts: 'Iterable[str] | None' = None, checkpoint_after: 'int | None' = None, sandbox: 'str | None' = None, parent: "Literal['continue', 'discard'] | None" = None, snapshot_layers: 'Iterable[str]' = ('sandbox',), concurrency: 'int' = 1, isolate_children: 'bool | None' = None, resume_session: 'bool' = False, child_retries: 'int' = 1, continue_after_child_failure: 'bool' = True, retain_snapshots: 'bool' = False, from_checkpoint: 'str | Path | None' = None, fork: 'str | None' = None, checkpoint: 'str | None' = None, checkpoints: 'CheckpointPolicy | None' = None, jobs_dir: 'str | Path' = 'jobs', job_name: 'str | None' = None, agent_env: 'Mapping[str, str] | None' = None, reasoning_effort: 'str | None' = None, harness: 'str' = 'acp', allow_cloud_credential_file: 'bool' = False, allow_task_processes_with_credentials: 'bool' = False, scoped_credentials: 'Iterable[str]' = (), on_event: 'Callable[[dict[str, Any]], None] | None' = None) -> 'BranchResult'
 ```
+
+New arguments in 0.10: `allow_cloud_credential_file`, `allow_task_processes_with_credentials`, `scoped_credentials`.
 
 Blocking form of `abranch`; takes exactly the same arguments.
 
@@ -332,7 +336,7 @@ bf.run_reviews(path: 'Path', *, agent: 'str', model: 'str | None' = None, enviro
 
 A coroutine function: `await` it, or run it with `asyncio.run(...)`.
 
-Arguments in no release yet: `pdf_tools`, `submitted_file_rule`, `reasoning_effort`, `idle_timeout_sec`, `criterion_evidence`.
+New arguments in 0.10: `pdf_tools`, `submitted_file_rule`, `reasoning_effort`, `idle_timeout_sec`, `criterion_evidence`.
 
 Review rollout(s) at ``path`` and return the report plus its location.
 
@@ -821,7 +825,7 @@ bf.Environment(inner: 'Any', task_path: 'Path', sandbox: 'str') -> 'None'
 - `.download_file(src: 'str', dst: 'str | Path') -> 'None'`: Async: `await` it. Copy the sandbox file ``src`` to the host path ``dst``.
 - `.exec(cmd: 'str', **kwargs: 'Any') -> 'Any'`: Async: `await` it. Run a command in the sandbox.
 - `.exec_in_service(service: 'str', cmd: 'str', **kwargs: 'Any') -> 'Any'`: Async: `await` it. Run a command in a named compose service container (#248).
-- `.from_task(task_path: 'str | Path', sandbox: 'str' = 'daytona', rollout_name: 'str | None' = None, planes: 'Any | None' = None, *, jobs_dir: 'str | Path' = 'jobs') -> 'Environment'`: Create an environment and allocate its trial's artifact paths.
+- `.from_task(task_path: 'str | Path', sandbox: 'str' = 'daytona', rollout_name: 'str | None' = None, planes: 'Any | None' = None, *, jobs_dir: 'str | Path' = 'jobs', allow_cloud_metadata: 'bool' = False) -> 'Environment'`: Create an environment and allocate its trial's artifact paths.
 - `.inner`: The underlying sandbox environment (Docker/Daytona). Use for Scene-based shared sandbox access.
 - `.prepare_kept_services(agent: 'str', *, sandbox_user: 'str | None' = 'agent') -> 'None'`: Tell the sandbox, before `start`, what will run in it, so a task that keeps services (``x-keep-services``) gets the kept-service freezer it needs: the oracle, or an agent run as the non-root ``sandbox_user``; and so, under the task's network policy, an oracle, ``nop`` or ``script:`` run's main is held by it from its first instruction. ``Runtime.execute`` does this for an environment it starts; call it yourself for one you start.
 - `.start(force_build: 'bool' = False) -> 'None'`: Async: `await` it. Start the sandbox (``force_build=True`` rebuilds its image first).
@@ -891,7 +895,7 @@ Configuration for a benchmark job.
 | `agent` | `str` | `'claude-agent-acp'` |
 | `model` | `str \| None` | `None` |
 | `reasoning_effort` | `str \| None` | `None` |
-| `reasoning_effort_source` (unreleased) | `str \| None` | `None` |
+| `reasoning_effort_source` | `str \| None` | `None` |
 | `harness` | `str` | `'acp'` |
 | `environment` | `str` | `'docker'` |
 | `concurrency` | `int` | `4` |
@@ -906,11 +910,14 @@ Configuration for a benchmark job.
 | `sandbox_user` | `str \| None` | `'agent'` |
 | `sandbox_locked_paths` | `list[str] \| None` | `None` |
 | `sandbox_setup_timeout` | `int` | `120` |
-| `sandbox_setup_timeout_given` (unreleased) | `bool \| None` | `None` |
-| `verifier_setup_timeout` (unreleased) | `int \| None` | `None` |
+| `sandbox_setup_timeout_given` | `bool \| None` | `None` |
+| `verifier_setup_timeout` (0.10) | `int \| None` | `None` |
 | `skip_agent_install` | `bool` | `False` |
 | `fresh_install` | `bool` | `False` |
 | `allow_cloud_metadata` | `bool` | `False` |
+| `allow_cloud_credential_file` (0.10) | `bool` | `False` |
+| `allow_task_processes_with_credentials` (0.10) | `bool` | `False` |
+| `scoped_credentials` (0.10) | `tuple[str, ...]` | `()` |
 | `agent_idle_timeout` | `int \| None` | `600` |
 | `agent_idle_timeout_given` (0.10) | `bool \| None` | `None` |
 | `context_root` | `str \| None` | `None` |
@@ -1122,7 +1129,7 @@ Every trial under a job directory (or any folder of trials).
 | `evaluation` | `dict[str, Any] \| None` | `None` |
 | `interrupted` | `list[Path]` | `(computed)` |
 | `unreadable` (0.10) | `list[Path]` | `(computed)` |
-| `retried` (unreleased) | `list[Trial]` | `(computed)` |
+| `retried` (0.10) | `list[Trial]` | `(computed)` |
 
 - `.agents() -> 'list[Trial]'`: Agent runs (control runs left out).
 - `.branch_views() -> 'list[dict[str, Any]]'`: The ``benchflow.branch-view/1`` document of every trial that branched (see docs/train/environment.md).
@@ -1153,7 +1160,7 @@ The ``[judge]`` section of a rubric.
 
 | Field | Type | Default |
 |---|---|---|
-| `model` | `str` | `'claude-sonnet-5-5'` (0.9.2: `claude-sonnet-4-6`) |
+| `model` | `str` | `'claude-sonnet-5-5'` (0.9.3: `claude-sonnet-4-6`) |
 | `mode` | `Literal['batched', 'individual']` | `'individual'` |
 | `files` | `list[str]` | `(computed)` |
 | `timeout` | `int` | `120` |
@@ -1168,7 +1175,7 @@ LLM-as-judge for subjective quality scoring.
 bf.LLMJudgeRewardFunc(prompt: 'str' = '', model: 'str' = 'claude-sonnet-5-5', *, rubric_path: 'Path | None' = None, criteria: 'list[dict] | None' = None, mode: "Literal['batched', 'individual']" = 'individual', judge_model: 'str | None' = None, judge_env: 'Mapping[str, str] | None' = None, judge_errors_are_infra: 'bool' = False) -> 'None'
 ```
 
-In 0.9.2, `model` defaults to `claude-sonnet-4-6`.
+In 0.9.3, `model` defaults to `claude-sonnet-4-6`.
 
 - `.events`: Dense reward events from the last ``score()`` call.
 - `.score(rollout_dir: 'Path') -> 'float'`: Async: `await` it. Score the rollout, returning a float in [0, 1].
@@ -1383,9 +1390,9 @@ One reviewer runtime, independent of solver credentials and budgets.
 | `image` | `str` | `'python@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91'` |
 | `agent_env` | `dict` | `(computed)` |
 | `open_network` | `bool` | `False` |
-| `pdf_tools` (unreleased) | `bool` | `False` |
-| `submitted_file_rule` (unreleased) | `bool` | `False` |
-| `criterion_evidence` (unreleased) | `bool` | `False` |
+| `pdf_tools` (0.10) | `bool` | `False` |
+| `submitted_file_rule` (0.10) | `bool` | `False` |
+| `criterion_evidence` (0.10) | `bool` | `False` |
 
 - `.coerce(value: 'object' = None) -> 'Self'`: A ReviewerConfig from itself, a mapping, or None (the defaults).
 - `.normalize_agent(value: 'str') -> 'str'`: Resolve an agent alias to its registry name.
@@ -1412,7 +1419,7 @@ Everything one ``bench review`` invocation produced.
 | `network` | `str` | `'no-internet'` |
 | `job_summary` | `str \| None` | `None` |
 | `trials` | `list[TrialReview]` | `(computed)` |
-| `setup` (unreleased) | `dict[str, Any]` | `(computed)` |
+| `setup` (0.10) | `dict[str, Any]` | `(computed)` |
 
 - `.to_dict() -> 'dict[str, Any]'`: The report as ``review_report.json``'s mapping.
 
@@ -1562,7 +1569,7 @@ bf.Rollout(config: 'RolloutConfig') -> 'None'
 - `.prestarted`: Whether begin_prestart() ran for this rollout.
 - `.record_external_tool_call(*, tool_name: 'str', event: 'dict') -> 'None'`: Record a tool call driven outside the ACP prompt loop.
 - `.result`: The final result once the rollout is verified or finished, else None.
-- `.result_after_failure(exc: 'BaseException') -> 'RolloutResult | None'` (unreleased): The result of a run that raised, written into its own folder.
+- `.result_after_failure(exc: 'BaseException') -> 'RolloutResult | None'`: The result of a run that raised, written into its own folder.
 - `.run() -> 'RolloutResult'`: Async: `await` it. Run the complete trial lifecycle under a host-side hard deadline.
 - `.setup(*, verifier_only: 'bool' = False) -> 'None'`: Async: `await` it. Resolve config, create environment object (not yet started).
 - `.soft_verify() -> 'tuple[dict | None, str | None, str | None]'`: Async: `await` it. Run the verifier without full hardening; for intermediate feedback.
@@ -1587,11 +1594,14 @@ Declarative rollout configuration.
 | `sandbox_user` | `str \| None` | `'agent'` |
 | `sandbox_locked_paths` | `list[str] \| None` | `None` |
 | `sandbox_setup_timeout` | `int` | `120` |
-| `sandbox_setup_timeout_given` (unreleased) | `bool \| None` | `None` |
-| `verifier_setup_timeout` (unreleased) | `int \| None` | `None` |
+| `sandbox_setup_timeout_given` | `bool \| None` | `None` |
+| `verifier_setup_timeout` (0.10) | `int \| None` | `None` |
 | `skip_agent_install` | `bool` | `False` |
 | `fresh_install` | `bool` | `False` |
 | `allow_cloud_metadata` | `bool` | `False` |
+| `allow_cloud_credential_file` (0.10) | `bool` | `False` |
+| `allow_task_processes_with_credentials` (0.10) | `bool` | `False` |
+| `scoped_credentials` (0.10) | `tuple[str, ...]` | `()` |
 | `services` | `list[str] \| None` | `None` |
 | `job_name` | `str \| None` | `None` |
 | `rollout_name` | `str \| None` | `None` |
@@ -1619,7 +1629,7 @@ Declarative rollout configuration.
 | `prompts` | `list[str \| None] \| None` | `None` |
 | `model` | `str \| None` | `None` |
 | `reasoning_effort` | `str \| None` | `None` |
-| `reasoning_effort_source` (unreleased) | `str \| None` | `None` |
+| `reasoning_effort_source` | `str \| None` | `None` |
 | `agent_env` | `dict[str, str] \| None` | `None` |
 | `skills_dir` | `str \| Path \| None` | `None` |
 | `skills_agent_derived` | `bool` | `False` |
@@ -1630,7 +1640,7 @@ Declarative rollout configuration.
 | `self_gen_no_internet` | `bool` | `False` |
 | `skip_verify` | `bool` | `False` |
 | `freeze_workspace` | `bool` | `False` |
-| `owned_by_retry_loop` (unreleased) | `bool` | `False` |
+| `owned_by_retry_loop` (0.10) | `bool` | `False` |
 | `keep_sandbox` (0.10) | `str` | `'never'` |
 | `integrity` | `str` | `'audit'` |
 | `verifier_sandbox` | `str` | `'task'` |
@@ -1669,9 +1679,7 @@ Outcome of a single rollout execution.
 bf.RolloutResult(task_name: 'str', rollout_name: 'str' = '', rewards: 'dict[str, Any] | None' = None, trajectory: 'list[dict[str, Any]] | None' = None, agent: 'str' = '', agent_name: 'str' = '', model: 'str | None' = None, n_tool_calls: 'int' = 0, n_skill_invocations: 'int' = 0, n_prompts: 'int' = 0, n_input_tokens: 'int | None' = None, n_output_tokens: 'int | None' = None, n_cache_read_tokens: 'int | None' = None, n_cache_creation_tokens: 'int | None' = None, total_tokens: 'int | None' = None, cost_usd: 'float | None' = None, usage_source: 'UsageSource | None' = 'unavailable', n_cache_write_tokens: 'int | None' = None, n_cache_write_5m_tokens: 'int | None' = None, n_cache_write_1h_tokens: 'int | None' = None, no_usage_reason: 'str | None' = None, cost_usd_provider: 'float | None' = None, n_calls_cost_estimated: 'int | None' = None, usage_incomplete: 'bool | None' = None, usage_incomplete_reason: 'str | None' = None, price_source: 'str | None' = None, usage_source_legacy: 'str | None' = None, cost_source: 'str | None' = None, price_table_date: 'str | None' = None, usage_details: 'dict[str, Any] | None' = None, judge_usage: 'dict[str, Any] | None' = None, error: 'str | None' = None, error_category: 'str | None' = None, verifier_error: 'str | None' = None, verifier_error_category: 'str | None' = None, export_error: 'str | None' = None, partial_trajectory: 'bool' = False, trajectory_source: 'TrajectorySource | None' = None, reward_events: 'list[RewardEvent] | None' = None, evolved_skills: 'dict[str, str] | None' = None, source_provenance: 'dict[str, Any] | None' = None, started_at: 'datetime | None' = None, finished_at: 'datetime | None' = None, scoring: 'ScoringResult | None' = None, purpose: "Literal['task', 'reviewer']" = 'task', parent_rollout: 'str | None' = None, rollout_dir: 'Path | None' = None, retry: 'dict[str, Any] | None' = None, integrity: 'dict[str, Any] | None' = None, harness_versions: 'dict[str, Any] | None' = None, model_refusal: 'dict[str, Any] | None' = None, trial_budget: 'dict[str, Any] | None' = None, integration_failure_info: 'dict[str, Any] | None' = None)
 ```
 
-New arguments in 0.10: `harness_versions`, `model_refusal`, `trial_budget`.
-
-Arguments in no release yet: `n_cache_write_tokens`, `n_cache_write_5m_tokens`, `n_cache_write_1h_tokens`, `no_usage_reason`, `cost_usd_provider`, `n_calls_cost_estimated`, `usage_incomplete`, `usage_incomplete_reason`, `usage_source_legacy`, `cost_source`, `price_table_date`, `judge_usage`, `integration_failure_info`.
+New arguments in 0.10: `n_cache_write_tokens`, `no_usage_reason`, `cost_usd_provider`, `n_calls_cost_estimated`, `judge_usage`, `harness_versions`, `model_refusal`, `trial_budget`, `integration_failure_info`.
 
 - `.from_dict(data: 'dict[str, Any]', *, rollout_dir: 'Path | None' = None) -> 'RolloutResult'`: Build a result from a persisted ``result.json`` payload.
 - `.load(path: 'str | Path') -> 'RolloutResult'`: Read a finished rollout from its directory (or its ``result.json``).
@@ -1768,6 +1776,9 @@ Configuration for ``bf.run(agent, env, config)`` and ``bf.run("agent", …)``.
 | `usage_tracking` | `Any` | `None` |
 | `reviewer` | `ReviewerConfig` | `(computed)` |
 | `allow_cloud_metadata` | `bool` | `False` |
+| `allow_cloud_credential_file` (0.10) | `bool` | `False` |
+| `allow_task_processes_with_credentials` (0.10) | `bool` | `False` |
+| `scoped_credentials` (0.10) | `tuple[str, ...]` | `()` |
 
 ### `Sandbox`
 
@@ -1985,8 +1996,8 @@ Full task configuration; the task specification ($T$).
 | `artifacts` | `list` | `(computed)` |
 | `preference` (0.10) | `dict` | `(computed)` |
 
-- `.allows_cloud_metadata`: Whether the task opts out of refusing the cloud metadata endpoints (``allow_cloud_metadata = true`` in its ``[environment]`` table).
-- `.cloud_metadata_opt_out`: How the task opts out of the cloud metadata block, for the record; empty when it does not. ``metadata.x-allow-cloud-metadata = true`` is the older, unreleased spelling of the same opt-out.
+- `.allows_cloud_metadata`: Whether the task asks to lift the cloud metadata block (``allow_cloud_metadata = true`` in its ``[environment]`` table). A request only: a run without ``--allow-cloud-metadata`` refuses the task before it starts (benchflow.sandbox.cloud_metadata .refuse_ungranted_opt_in), so a sandbox only ever sees a granted one.
+- `.cloud_metadata_opt_out`: How the task asks to lift the cloud metadata block, for the record; empty when it does not. ``metadata.x-allow-cloud-metadata = true`` is the older, unreleased spelling of the same request. It needs the run's ``--allow-cloud-metadata`` (see `allows_cloud_metadata`).
 - `.expected_skills`: Hidden Memory-space fixture from ``[verifier.memory]``.
 - `.handle_version_rename(data: 'Any') -> 'Any'`: Refuse the removed ``environment`` spelling and conflicting solution keys.
 - `.ignored_keys`: task.toml keys this config does not model and a lenient load ignored (empty for strict loads). Keys BenchFlow knows it cannot honour are refused by the runtime capability check instead of being run.
@@ -2133,8 +2144,8 @@ Raw trajectory: ordered list of captured LLM API exchanges.
 - `.to_jsonl(*, redact_keys: bool = True) -> str`: Export as JSONL (one exchange per line).
 - `.total_cache_creation_tokens`: Prompt-cache write tokens over the captured exchanges (None when no response reported any: OpenAI reports none).
 - `.total_cache_read_tokens`: Prompt-cache read tokens over the captured exchanges.
-- `.total_cache_write_1h_tokens` (unreleased): The 1-hour part of the cache writes, where reported.
-- `.total_cache_write_5m_tokens` (unreleased): The 5-minute part of the cache writes, where reported.
+- `.total_cache_write_1h_tokens` (0.10): The 1-hour part of the cache writes, where reported.
+- `.total_cache_write_5m_tokens` (0.10): The 5-minute part of the cache writes, where reported.
 - `.total_cost_usd`: Extract cost if the API returns it (Anthropic does not, OpenAI does not).
 - `.total_input_tokens`: Uncached input tokens over the captured exchanges (None: unreported).
 - `.total_output_tokens`: Output tokens, reasoning included, over the captured exchanges.
@@ -2230,12 +2241,12 @@ bf.Verifier(task: 'Any', rollout_paths: 'RolloutPaths', sandbox: 'Any', _logger:
 ```
 
 - `.finish_test_command(return_code: 'int') -> 'VerifierResult'`: Async: `await` it. Score a test command that ended although its exec never returned.
-- `.output_at_exit(name: 'str') -> 'Any'` (unreleased): test.sh's output *name* as it was at its exit (``verifier-at-exit/``) once that copy is taken: a name it does not hold was not there; one too large to copy is read from ``verifier/``, as is every name without a copy.
+- `.output_at_exit(name: 'str') -> 'Any'` (0.10): test.sh's output *name* as it was at its exit (``verifier-at-exit/``) once that copy is taken: a name it does not hold was not there; one too large to copy is read from ``verifier/``, as is every name without a copy.
 - `.save_timed_out_outputs() -> 'None'` (0.10): Async: `await` it. Keep what a test command still running at its deadline wrote.
 - `.test_command_finishable`: Whether `finish_test_command` can score the issued test command: a script verifier whose command records its end.
 - `.test_command_savable` (0.10): Whether `save_timed_out_outputs` has an issued test command whose outputs it can keep.
-- `.thaw_after_test() -> 'None'` (unreleased): Async: `await` it. Let the sandbox go on after the stop at test.sh's exit and record the freeze (``freeze_record``); a no-op once done, or when none was made.
-- `.timed_out_network_verdict() -> 'None'` (unreleased): Async: `await` it. The end-of-test re-proof of a test command killed at its deadline.
+- `.thaw_after_test() -> 'None'` (0.10): Async: `await` it. Let the sandbox go on after the stop at test.sh's exit and record the freeze (``freeze_record``); a no-op once done, or when none was made.
+- `.timed_out_network_verdict() -> 'None'` (0.10): Async: `await` it. The end-of-test re-proof of a test command killed at its deadline.
 - `.verify() -> 'VerifierResult'`: Async: `await` it. Run the configured verifier and return the reward result.
 
 ### `VerifierOutput`
@@ -2283,7 +2294,7 @@ Aggregated result from a Rubric or node evaluation.
 
 ### `__version__`
 
-`bf.__version__`: `'0.10.0rc5'`
+`bf.__version__`: `'0.10.1'`
 
 ### `AGENTS`
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from benchflow._runtime_tree import NODE_RUNTIME_PATHS, runtime_custody_check
 from benchflow.agents.codex_config import disable_codex_apps
+from benchflow.agents.codex_provider_catalogs import install_codex_model_catalog
 from benchflow.agents.registry import (
     CODEX_ACP_BUILTIN_LAUNCH,
     CODEX_CLI_EXECUTABLE_PATH,
@@ -138,6 +139,11 @@ async def enforce_codex_apps_policy(
             mcp_servers=mcp_servers,
             timeout_sec=timeout_sec,
         )
+    # Before Codex starts on either harness: the provider catalog the run's
+    # CODEX_CONFIG names (model_catalog_json), if BenchFlow ships it.
+    await install_codex_model_catalog(
+        env, agent_env, rollout_dir=rollout_dir, timeout_sec=timeout_sec
+    )
     # A failed reconnect must not leave a previous successful receipt current.
     (rollout_dir / "codex_apps_policy.json").unlink(missing_ok=True)
     receipt: dict[str, Any] = {

@@ -130,9 +130,7 @@ async def test_root_owned_reward_from_a_criteria_runner_is_handed_to_the_host(
         return [p for p in tmp_path.rglob("reward.json") if "verifier" in p.parts]
 
     async def exec_(*args, **kwargs):
-        if (kwargs.get("command") or (args[0] if args else "")).startswith(
-            "chmod go+r -- "
-        ):
+        if 'chmod go+r -- "$p"' in (kwargs.get("command") or (args[0] if args else "")):
             # Root's read grant before the copy at exit changes nothing here.
             return MagicMock(exit_code=1, returncode=1)
         result = await runner(*args, **kwargs)
@@ -182,7 +180,8 @@ async def test_root_reads_a_0600_reward_from_a_criteria_runner_open_before_the_c
 
     async def exec_(*args, **kwargs):
         command = kwargs.get("command") or (args[0] if args else "")
-        if command.startswith("chmod go+r -- "):
+        if 'chmod go+r -- "$p"' in command:
+            # No bfx on this fake: the shell's grant, name by name.
             grants.append((command, kwargs.get("user")))
             for reward in reward_files():
                 reward.chmod(0o644)
@@ -201,5 +200,7 @@ async def test_root_reads_a_0600_reward_from_a_criteria_runner_open_before_the_c
 
     assert result.rewards["reward"] == 1.0
     if os.getuid() != 0:
-        assert grants == [("chmod go+r -- /logs/verifier/reward.json", "root")]
+        assert [(c.split(";")[0], u) for c, u in grants] == [
+            ("for p in /logs/verifier/reward.json", "root")
+        ], grants
     verifier._sandbox._chown_to_host_user.assert_not_awaited()

@@ -227,6 +227,9 @@ class Evidence:
     error: str | None = None
     verifier_error: str | None = None
     required_env: list[str] = field(default_factory=list)
+    # The trial's read flags (result.json): a scored result that a cause
+    # inside the task's containers may have made, not the model alone.
+    read_flags: list[str] = field(default_factory=list)
     duration_seconds: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -379,10 +382,38 @@ def _load_flat_evidence(rollout_dir: Path, result: dict[str, Any]) -> Evidence:
             else None
         ),
         required_env=required_env,
+        read_flags=_read_flags(result),
         duration_seconds=_coerce_float(timing.get("duration_seconds")),
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+def _read_flags(result: dict[str, Any]) -> list[str]:
+    """What result.json flags for a read beside a score it keeps: test.sh's
+    network refused it something (``verifier_network_refused``; BenchFlow
+    can't tell test.sh's packets from the agent's code it ran), or a held
+    compose service restarted (``held_after_restart``) or exited after
+    start-up (``held_exited``). An exit at start-up is the task's own
+    one-shot shape, not flagged."""
+    flags: list[str] = []
+    refused = result.get("verifier_network_refused")
+    if isinstance(refused, dict):
+        flags.append(
+            f"verifier network refused test.sh {refused.get('refused_words') or refused.get('refused')}"
+            f" (in {refused.get('phase', 'test.sh')})"
+        )
+    for held in result.get("held_after_restart") or []:
+        if isinstance(held, dict):
+            flags.append(
+                f"compose service {held.get('service')!r} held after a restart"
+            )
+    for exited in result.get("held_exited") or []:
+        if isinstance(exited, dict) and exited.get("phase") != "start-up":
+            flags.append(
+                f"compose service {exited.get('service')!r} exited in {exited.get('phase')}"
+            )
+    return flags
 
 
 def _load_production_evidence(
@@ -455,6 +486,7 @@ def _load_production_evidence(
         error=prod.error,
         verifier_error=prod.verifier_error,
         required_env=required_env,
+        read_flags=_read_flags(result),
     )
 
 
@@ -918,6 +950,9 @@ def classify_capability(evidence: Evidence) -> CapabilityAttribution:
             fidelity.append(f"infra error category={category}")
     if evidence.verifier_error:
         fidelity.append(f"verifier error: {evidence.verifier_error[:120]}")
+    # A scored result the trial flags for a read: the refusal or the held
+    # service may have made it, so it is not the model's alone.
+    fidelity.extend(f"read flag: {flag}" for flag in evidence.read_flags)
 
     # A required resource named by the run config that the error blames is an
     # experiment-fidelity failure (the env was misprovisioned, not the model).

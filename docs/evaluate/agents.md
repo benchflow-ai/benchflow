@@ -93,38 +93,38 @@ Cost:      $0.01, 247,840 tokens
 Time:      2m 14s
 ```
 
-Claude Code can use a provider that serves Anthropic's API. The [Quick start](../start/quick-start.md#on-another-provider) runs it on Xiaomi's MiMo with `-m xiaomi/mimo-v2.6-flash`. Codex needs a provider that serves OpenAI's Responses API, so it can't use MiMo.
+Claude Code runs a model of every prefix below: BenchFlow's gateway takes its calls and makes them in the provider's own API. The [Quick start](../start/quick-start.md#on-another-provider) runs it on Xiaomi's MiMo with `-m xiaomi/mimo-v2.6-flash`, and `-m deepseek/deepseek-flash` runs it on DeepSeek's own API. Codex needs a provider that serves OpenAI's Responses API, so it can't use MiMo. DeepSeek's API serves it, and DeepSeek publishes a model catalog for Codex: BenchFlow ships it and gives it to Codex for `deepseek/deepseek-flash` and `deepseek/deepseek-v4-pro`, so `-a codex -m deepseek/deepseek-flash` needs no Codex configuration of your own.
 
 ### The provider prefixes
 
-These are the prefixes 0.9.2 knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Codex is refused before the run starts, and by its dry run, when the provider doesn't serve the Responses API. Claude Code runs any provider's model: BenchFlow's gateway turns its calls into the provider's own API. The other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
+These are the prefixes BenchFlow knows, from its own provider list. A name with no prefix, such as `sonnet`, goes to the agent's own service; one that starts with a family in the last column, such as `deepseek-v4-flash`, goes to that provider without one. Codex is refused before the run starts, and by its dry run, when the provider doesn't serve the Responses API. Claude Code runs any provider's model: BenchFlow's gateway turns its calls into the provider's own API. The other agents name no API, and BenchFlow doesn't check them. `bench run tasks/half-life -a codex -m xiaomi/mimo-v2.6-flash`:
 
 ```text
 Agent 'codex-acp' requires provider protocol 'openai-responses', but provider 'xiaomi' for model 'xiaomi/mimo-v2.6-flash' only supports anthropic-messages, openai-completions. Use a provider prefix that matches the agent protocol.
 No job was created.
 ```
 
-| Prefix | Serves | Key | Also set | Claude Code | Codex | Family without a prefix |
-|---|---|---|---|---|---|---|
-| `openai/`, `us-openai/` | Chat Completions, Responses | `OPENAI_API_KEY` | | no | yes | |
-| `azure-foundry-openai/` | Chat Completions, Responses | `AZURE_API_KEY` | `AZURE_RESOURCE`, or `AZURE_API_ENDPOINT` with the whole address | no | yes | |
-| `azure-foundry-anthropic/` | Anthropic Messages | `AZURE_API_KEY` | `AZURE_RESOURCE`, or `AZURE_API_ENDPOINT` with the whole address | yes | no | |
-| `anthropic-vertex/` | Anthropic Messages | a Google Cloud login | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | yes | no | |
-| `google-vertex/` | Chat Completions | a Google Cloud login | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | no | no | |
-| `aws-bedrock/` | Anthropic Messages, Responses | AWS credentials | | yes | yes | |
-| `zai/`, `zai-coding/` | Anthropic Messages, Chat Completions, Responses | `ZAI_API_KEY` | | yes | yes | |
-| `xiaomi/` | Anthropic Messages, Chat Completions | `XIAOMI_API_KEY` | `XIAOMI_BASE_URL` | yes | no | `xiaomi`, `mimo` |
-| `deepseek/` | Chat Completions | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL`, if not DeepSeek's own | no | no | `deepseek` |
-| `kimi/` | Chat Completions | `KIMI_API_KEY` | `KIMI_BASE_URL` | no | no | `kimi`, `moonshot` |
-| `minimax/` | Chat Completions | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | no | no | `minimax` |
-| `qwen-dashscope/` | Chat Completions | `QWEN_API_KEY` | `QWEN_BASE_URL` | no | no | `qwen` |
-| `glm/` | Chat Completions | `GLM_API_KEY` | `GLM_BASE_URL` | no | no | `glm` |
-| `hunyuan/` | Chat Completions | `HUNYUAN_API_KEY` | `HUNYUAN_BASE_URL` | no | no | `hunyuan` |
-| `doubao-seed-2-lite/`, `doubao-seed-2-pro/` | Chat Completions | `DOUBAO_SEED_2_LITE_API_KEY`, `DOUBAO_SEED_2_PRO_API_KEY` | `DOUBAO_VOLCES_BASE_URL` | no | no | the prefix's own name |
-| `openrouter/` | Chat Completions | `OPENROUTER_API_KEY` | | no | no | |
-| `github-models/` | Chat Completions | `GITHUB_TOKEN` | | no | no | |
-| `litellm/` | Chat Completions | `LITELLM_API_KEY` | `LITELLM_BASE_URL` | no | no | |
-| `vllm/`, `sglang/` | your server's | `OPENAI_API_KEY` | the server's address ([below](#a-model-you-serve)) | yes | yes | |
+| Prefix | Serves | Key | Also set | Codex | Family without a prefix |
+|---|---|---|---|---|---|
+| `openai/`, `us-openai/` | Chat Completions, Responses | `OPENAI_API_KEY` | | yes | |
+| `azure-foundry-openai/` | Chat Completions, Responses | `AZURE_API_KEY` | `AZURE_RESOURCE`, or `AZURE_API_ENDPOINT` with the whole address | yes | |
+| `azure-foundry-anthropic/` | Anthropic Messages | `AZURE_API_KEY` | `AZURE_RESOURCE`, or `AZURE_API_ENDPOINT` with the whole address | no | |
+| `anthropic-vertex/` | Anthropic Messages | a Google Cloud login | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | no | |
+| `google-vertex/` | Chat Completions | a Google Cloud login | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | no | |
+| `aws-bedrock/` | Anthropic Messages, Responses | AWS credentials | | yes | |
+| `zai/`, `zai-coding/` | Anthropic Messages, Chat Completions | `ZAI_API_KEY` | | no | |
+| `xiaomi/` | Anthropic Messages, Chat Completions | `XIAOMI_API_KEY` | `XIAOMI_BASE_URL` | no | `xiaomi`, `mimo` |
+| `deepseek/` | Chat Completions, Responses | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL`, if not DeepSeek's own | yes | `deepseek` |
+| `kimi/` | Chat Completions | `KIMI_API_KEY` | `KIMI_BASE_URL` | no | `kimi`, `moonshot` |
+| `minimax/` | Chat Completions | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | no | `minimax` |
+| `qwen-dashscope/` | Chat Completions | `QWEN_API_KEY` | `QWEN_BASE_URL` | no | `qwen` |
+| `glm/` | Chat Completions | `GLM_API_KEY` | `GLM_BASE_URL` | no | `glm` |
+| `hunyuan/` | Chat Completions | `HUNYUAN_API_KEY` | `HUNYUAN_BASE_URL` | no | `hunyuan` |
+| `doubao-seed-2-lite/`, `doubao-seed-2-pro/` | Chat Completions | `DOUBAO_SEED_2_LITE_API_KEY`, `DOUBAO_SEED_2_PRO_API_KEY` | `DOUBAO_VOLCES_BASE_URL` | no | the prefix's own name |
+| `openrouter/` | Chat Completions | `OPENROUTER_API_KEY` | | no | |
+| `github-models/` | Chat Completions | `GITHUB_TOKEN` | | no | |
+| `litellm/` | Chat Completions | `LITELLM_API_KEY` | `LITELLM_BASE_URL` | no | |
+| `vllm/`, `sglang/` | your server's | `OPENAI_API_KEY` | the server's address ([below](#a-model-you-serve)) | yes | |
 
 ## A model you serve
 

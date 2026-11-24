@@ -216,6 +216,15 @@ SDK_CALLERS = {
     ("sandbox/daytona_channel.py", "DaytonaChannels._control"): (
         "_session_command builds the control command on the captured root route"
     ),
+    # The session scrub sends a command built on root's route (root_tools:
+    # exec_route's system-shell route, the DinD VM's system tools on its own
+    # VM) as one toolbox exec, not a session command: a session command
+    # keeps its own text in the sessions folder the scrub empties right
+    # before a snapshot.
+    ("sandbox/daytona_exec_env.py", "scrub_sessions"): (
+        "root_tools(sandbox, route) builds the scrub on root's route; a "
+        "toolbox exec, which opens no session of its own"
+    ),
     ("sandbox/daytona.py", "DaytonaSandbox._sandbox_session_exec"): (
         "lowest call: sends the session command _session_command built on the "
         "route _sandbox_exec passes (its payload, if any, as staged stdin)"
@@ -231,9 +240,20 @@ SDK_CALLERS = {
         "read-only Volume (bfx is the route, TRUSTED-RUNTIME I1; no shell, "
         "environment or secrets), before any root step"
     ),
+    ("sandbox/modal_impl.py", "ModalSandbox.bfx_call"): (
+        "lowest call: argv exec of the pinned /.bfx/bfx from its read-only "
+        "Volume, its arguments on stdin (bfx is the route, TRUSTED-RUNTIME "
+        "I1; no shell, environment or secrets;)"
+    ),
     ("sandbox/daytona.py", "DaytonaSandbox._toolbox_startup_env"): (
         "lowest call: the start probe, builtins only (read, printf, compgen) "
         "in the toolbox's POSIX-mode shell, before any root step"
+    ),
+    ("sandbox/daytona.py", "DaytonaSandbox._note_session_shell"): (
+        "lowest call: the session-shell probe (_SESSION_SHELL_PROBE), a "
+        "session's first command, builtins only (read, set, printf) in a "
+        "subshell of that session's own shell; no environment, payload or "
+        "secrets, and nothing of the task's runs before it in that session"
     ),
     ("sandbox/modal_impl.py", "ModalSandbox._refuse_startup_names"): (
         "lowest call: argv exec of /bin/cat /proc/self/environ by absolute "

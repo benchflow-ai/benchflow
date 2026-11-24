@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 from benchflow._paths import ignore_symlinks, is_safe_regular_file
 from benchflow._utils.modal_gpu import modal_gpu_request
+from benchflow._utils.modal_lifetime import VERIFIER_SANDBOX_VIEW, modal_sandbox_timeout
 from benchflow.agents.registry import AGENTS
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox.providers import (
@@ -102,6 +103,22 @@ def _modal_add_python_version(dockerfile_path: Path) -> str | None:
         return None
     value = (configured if configured is not None else "3.12").strip()
     return value or None
+
+
+def _modal_added_python_custody(version: str, lib: str = "/usr/local/lib") -> str:
+    """The build step after Modal's ``add_python``: the shared libraries it
+    puts in the system loader's folder, which Modal's build leaves
+    group-writable (owner 0:0, mode 0775), made root's alone, so BenchFlow's
+    loader check (``lockdown.LoaderCustodyError``) can pass a non-root start.
+    Exactly those three files, never a link: no other file of the image is
+    touched, and the check itself is unchanged."""
+    names = (f"libpython{version}.so", f"libpython{version}.so.1.0", "libpython3.so")
+    paths = " ".join(shlex.quote(f"{lib}/{name}") for name in names)
+    return (
+        f"for f in {paths}; do "
+        'if [ -f "$f" ] && [ ! -L "$f" ]; then chmod go-w "$f" || exit 1; fi; '
+        "done"
+    )
 
 
 def _modal_heredoc_decoder(body: str) -> str:
@@ -223,12 +240,18 @@ def _create_benchflow_modal_environment_class():
                 modal_dockerfile_path, cleanup_dockerfile = _modal_builder_dockerfile(
                     dockerfile_path
                 )
+                add_python = _modal_add_python_version(dockerfile_path)
                 self._image = Image.from_dockerfile(
                     modal_dockerfile_path,
                     force_build=force_build,
                     context_dir=self.environment_dir,
-                    add_python=_modal_add_python_version(dockerfile_path),
+                    add_python=add_python,
                 )
+                if add_python:
+                    # Modal's own Python, not the task's: root's alone.
+                    self._image = self._image.run_commands(
+                        _modal_added_python_custody(add_python)
+                    )
 
             self._app = await App.lookup.aio(
                 name="__benchflow__",
@@ -257,11 +280,22 @@ def _create_benchflow_modal_environment_class():
             # Sandbox.mkdir, see ModalSandbox._make_log_dirs).
             await self._make_log_dirs()
 
-            # Make log directories world-writable so non-root agents/verifiers can write to them.
-            await exec_raw(
-                self.exec,
-                f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
+            # The agent's log folder is writable by every user; /logs/verifier
+            # is root's 0755 from here on, checked (#1247).
+            from benchflow.sandbox._verifier_dir import (
+                check_verifier_dir,
+                close_verifier_dir_cmd,
             )
+
+            # BENCHFLOW_MODAL_RLIMITS (opt-in): every later exec runs with
+            # its limits (ModalSandbox._hold_rlimits).
+            await self._hold_rlimits()
+
+            closed = await exec_raw(
+                self.exec,
+                f"chmod 777 {SandboxPaths.agent_dir}; {close_verifier_dir_cmd()}",
+            )
+            check_verifier_dir(getattr(closed, "stdout", "") or "")
 
     return BenchFlowModalSandbox
 
@@ -686,6 +720,7 @@ def _create_sandbox_environment(
     environment_manifest: Any = None,
     block_cloud_metadata: bool = False,
     cloud_metadata_root_agent: bool = False,
+    allow_cloud_metadata: bool = False,
 ) -> Any:
     """Create a sandbox environment (Docker, Daytona, or Modal).
 
@@ -696,9 +731,21 @@ def _create_sandbox_environment(
     manifest's ``task_selection`` + ``forward_env`` are resolved into a
     persistent env overlay so the values reach the container's entrypoint
     via compose and every subsequent ``sandbox.exec`` call.
+
+    A task that asks to lift the cloud metadata block (its own
+    ``allow_cloud_metadata = true``) is refused here unless the caller passes
+    the run's grant, *allow_cloud_metadata* (``--allow-cloud-metadata``):
+    every sandbox BenchFlow makes for a task comes through here, so a task
+    can't lift it by itself on any path.
     """
+    from benchflow.sandbox.cloud_metadata import refuse_ungranted_opt_in
     from benchflow.sandbox.egress_denylist import agent_network_sandbox_config
 
+    refuse_ungranted_opt_in(
+        task.config,
+        task_name=str(getattr(task, "name", None) or task_path.name),
+        allow_cloud_metadata=allow_cloud_metadata,
+    )
     # An [agent] allowlist override is enforced like a sandbox allowlist, so
     # the provider sees it (NET_ADMIN overlay, snapshot-restore guard).
     env_config = (
@@ -750,6 +797,35 @@ def _create_sandbox_environment(
             f"{joined.main_network_mode}), which is the host's own network, where "
             "no rule of the trial's may go"
         )
+    if sandbox_type in COMPOSE_ON_HOST:
+        from benchflow._utils.trial_warnings import report_trial_warning
+        from benchflow.sandbox._compose import (
+            unread_compose_file,
+            unread_compose_warning,
+        )
+        from benchflow.task.compose_env import host_access_allowed, pid_joins
+
+        if host_access_allowed():
+            from benchflow.sandbox.service_cover import _compose_services
+
+            joins = pid_joins(_compose_services(environment_dir))
+            if joins:
+                # Granted by the operator's host access: named in the trial.
+                warning = (
+                    "services share a pid namespace ("
+                    + ", ".join(f"{n} joins {t}" for n, t in joins)
+                    + "), which BENCHFLOW_ALLOW_TASK_HOST_ACCESS grants: a process "
+                    "in one can release the other's hold before its rules are in"
+                )
+                logger.warning(warning)
+                report_trial_warning(warning)
+        unread = unread_compose_file(environment_dir)
+        if unread is not None:
+            # 0.10.1 names it; reading the other names is 0.10.2's (the
+            # services would then start under the hold).
+            warning = unread_compose_warning(unread)
+            logger.warning(warning)
+            report_trial_warning(warning)
     # Every backend builds and launches from a private, no-follow copy of
     # the environment folder, never the task's own files.
     if (
@@ -1034,6 +1110,9 @@ def _make_sandbox(
             rollout_paths=rollout_paths,
             task_env_config=env_config,
             persistent_env=manifest_env or None,
+            # BENCHFLOW_MODAL_SANDBOX_TIMEOUT; a value out of range is
+            # refused here, before any sandbox.
+            sandbox_timeout_secs=modal_sandbox_timeout(),
         )
     elif sandbox_type == "agentcore":
         try:
@@ -1165,6 +1244,8 @@ def _validate_task_runtime_for_launch(
         runtime_task,
         sandbox=sandbox_type,
         task_dir=runtime_view.task_dir,
+        # A separate verifier's sandbox runs no agent (its lifetime check).
+        verifier_sandbox=getattr(task, VERIFIER_SANDBOX_VIEW, False) is True,
     )
 
 

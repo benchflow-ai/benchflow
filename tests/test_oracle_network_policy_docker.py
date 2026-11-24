@@ -170,19 +170,27 @@ NO_SETGID_ERROR = (
 )
 
 
-def test_an_oracle_image_without_setgid_is_an_error_never_a_score(oracle_trials):
+def test_an_oracle_image_without_setgid_is_scored_by_its_tests_never_unscored(
+    oracle_trials,
+):
     """Was test_an_oracle_that_cannot_join_the_policys_group_is_an_error. Before
     REPORT B10's fix the join exited 1 before solve.sh started, only rc=1 was
     logged, and the verifier scored the untouched workspace 0. Since #234 the
-    oracle joins no group, so it cannot fail there; the trial still ends in an
-    error and no score. In the default mode nothing stops the sandbox
-    user's processes before grading (the faithful default, 09:58Z), so the
-    trial ends at the verifier instead, still an error and never a score;
-    strict's hardening error is the next test's."""
+    oracle joins no group, so it cannot fail there, and solve.sh runs. In the
+    default mode nothing stops the sandbox user's processes before grading, and
+    test.sh's own fetch is refused under the task's allowlist: since 0.10.1 a
+    refusal in test.sh is scored as test.sh says (0 here) and flagged for a
+    read, never unscored. strict's hardening error is the next test's."""
     result = json.loads((oracle_trials[NO_SETGID] / "result.json").read_text())
-    assert result.get("error") or result.get("verifier_error"), result
     assert "cannot join group" not in (result.get("error") or "")
-    assert not result.get("rewards"), result
+    assert not result.get("error") and not result.get("verifier_error"), result
+    assert result.get("rewards") == {"reward": 0.0}, result
+    refusal = result.get("verifier_network_refused") or {}
+    assert refusal.get("mode") == "allowlist", refusal
+    assert refusal.get("refused", 0) >= 1 and refusal.get("passed") is False, refusal
+    assert any("refused test.sh" in w for w in result.get("warnings") or []), (
+        result.get("warnings")
+    )
 
 
 def test_strict_hardening_stops_the_no_setgid_oracle_with_its_error(
@@ -243,18 +251,23 @@ def test_a_verifier_with_no_network_of_its_own_is_held_to_the_tasks(oracle_trial
     """#234's one reader: no [verifier] network_mode, so the task's allowlist
     holds test.sh too, for every process. test.sh's own fetch of example.com
     is refused at the egress proxy, and a test.sh that fails after a refusal
-    ends "verifier network refused" (unscored), never a silent 0."""
+    is scored as it says (0), flagged for a read with the refusal recorded,
+    never unscored: BenchFlow can't tell test.sh's packets from the agent's."""
     trial = oracle_trials[INHERITED]
     said = _verifier_said(trial)
     assert said.get("verifier_reached") == "refused", said
     assert said.get("oracle_reached") == "refused", said
     result = json.loads((trial / "result.json").read_text())
-    assert result.get("rewards") is None, result
-    assert (result.get("verifier_error") or "").startswith(
-        "verifier network refused: test.sh exited 0 with reward 0.0 after the "
-        "verifier's network (in-container under allowlist: verifier.network_mode, "
-        "else the sandbox's policy) refused it "
-    ), result
+    assert result.get("rewards") == {"reward": 0.0}, result
+    assert result.get("verifier_error") is None, result
+    refusal = result.get("verifier_network_refused") or {}
+    assert refusal.get("phase") == "test.sh", result
+    assert refusal.get("mode") == "allowlist", refusal
+    assert refusal.get("refused", 0) > 0 and refusal.get("passed") is False, refusal
+    assert any(
+        "refused test.sh" in w and "scored as test.sh says" in w
+        for w in result.get("warnings") or []
+    ), result.get("warnings")
     record = json.loads((trial / "verifier" / "verifier-network.json").read_text())
     assert record["mode"] == "allowlist", record
     assert record["state"] == "held", record

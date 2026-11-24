@@ -44,6 +44,9 @@ def _make_trial(
     trial._rollout_dir.mkdir()
     trial._rollout_paths = MagicMock()
     trial._task = MagicMock()
+    # A task with no verifier user (the default: test.sh runs as root). A MagicMock
+    # user has no uid to read, and the RB2 check before the turn (F7) refuses that.
+    trial._task.config.verifier.user = None
     # FIX-49 r4: this unnamed-runner fake has a readable tests folder.
     trial._task.task_dir = tmp_path / "task"
     (trial._task.task_dir / "tests").mkdir(parents=True)

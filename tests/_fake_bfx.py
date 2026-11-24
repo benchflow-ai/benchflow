@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -72,6 +73,7 @@ def give(env: Any) -> None:
     except (AttributeError, TypeError):
         return
     answer_the_close(env)
+    answer_the_pause(env)
     # A unit test that drives verify() on its own never ran the turn's start,
     # so its fake has no record of the links before the turn: an empty one,
     # as the stand-in's walk would have made.
@@ -113,3 +115,53 @@ def answer_the_close(env: Any) -> None:
     exec_._answers_the_close = True
     with contextlib.suppress(AttributeError, TypeError):
         env.exec = exec_
+
+
+#: The walk pause (sandbox/_walk_pause.py) in an empty sandbox: the uid read,
+#: no process of the agent's to stop, the resume's look clean; and rule S's
+#: question (sandbox/_agent_alive.py): none alive.
+_PAUSE_ANSWERS = (
+    ("BF pause still", "BF pause uid 1000\nBF pause at 1.0\nBF pause still 1\n"),
+    ("BF resume done", "BF resume at 2.0\nBF resume done\n"),
+    # Rule S (sandbox/_agent_alive.py): no process of the agent's alive.
+    (
+        "BF alive done",
+        "BF alive uid 1000\nBF alive at 1.0\n"
+        "BF alive by getpriority none found:0 none\nBF alive done\n",
+    ),
+)
+
+
+def answer_the_pause(env: Any) -> None:
+    """A unit fake's canned answer can't be the walk pause's: it gets an
+    empty sandbox's. The fake's exec still runs first, so one that raises
+    still fails the pause. A Mock's exec stays the same Mock, its answers
+    routed through here, so a test still reads every call from it
+    (``await_args_list``), the ones before this too."""
+    run = getattr(env, "exec", None)
+    if not callable(run) or getattr(run, "_answers_the_pause", False) is True:
+        return
+    if isinstance(run, mock.Mock):
+        before = run.side_effect
+
+        async def fake(*args, **kwargs):
+            # The Mock's own answer, as it gave it before this.
+            shadow = mock.AsyncMock(side_effect=before, return_value=run.return_value)
+            return await shadow(*args, **kwargs)
+    else:
+        fake = run
+
+    async def exec_(command, *args, **kwargs):
+        result = await fake(command, *args, **kwargs)
+        for said, answer in _PAUSE_ANSWERS:
+            if isinstance(command, str) and said in command:
+                return SimpleNamespace(return_code=0, stdout=answer, stderr="")
+        return result
+
+    with contextlib.suppress(AttributeError, TypeError):
+        if isinstance(run, mock.Mock):
+            run.side_effect = exec_
+            run._answers_the_pause = True
+        else:
+            exec_._answers_the_pause = True
+            env.exec = exec_

@@ -317,9 +317,12 @@ def admit_restricted_model(
         return RestrictedAdmission(model, provider, base, key, "operator")
     shown = requested or model
     sent = f" (sent to the provider as {model!r})" if shown != model else ""
+    # Name the supported base URL only for a base URL that isn't one: an
+    # official endpoint with an unlisted model needs the operator's entry.
+    hint = endpoint_hint(provider, api_base) if api_base and endpoint is None else ""
     raise RestrictedModelRefused(
         f"Refused {shown!r}{sent} with web access restricted: BenchFlow can't confirm it "
-        f"has no hosted web search or retrieval ({reason}).{endpoint_hint(provider, api_base)} "
+        f"has no hosted web search or retrieval ({reason}).{hint} "
         f"next: if it runs without web access, set {OPERATOR_ENV}={shown} in the "
         f"controller's environment (comma-separated ids; '{provider}/*' allows an "
         "operator-run provider). The run records the override in config.json "
@@ -327,8 +330,48 @@ def admit_restricted_model(
     )
 
 
+def preflight_restricted_route(
+    agent: str,
+    model: str | None,
+    agent_env: Mapping[str, str],
+    *,
+    disallow_web_tools: bool,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """The launch's admission of a web-restricted model, run before any sandbox or image build.
+
+    The launch decides it again with the same route (``admit_restricted_route``); this only refuses earlier what
+    it would refuse, so a run that can't start costs no image build, and never admits more. A model the proxy
+    doesn't route, or a route that doesn't resolve, is left to the launch, which says why.
+    """
+    if not disallow_web_tools or not model:
+        return
+    from benchflow.agents.env import (
+        uses_direct_anthropic_endpoint,
+        uses_native_subscription_auth,
+    )
+    from benchflow.providers.litellm_config import resolve_litellm_route
+    from benchflow.providers.litellm_runtime import needs_litellm_runtime
+
+    env = dict(agent_env)
+    if (
+        not needs_litellm_runtime(agent, model)
+        or uses_native_subscription_auth(agent, model, env)
+        or uses_direct_anthropic_endpoint(agent, model, env)
+    ):
+        return
+    try:
+        route = resolve_litellm_route(model, env)
+    except ValueError:
+        return
+    admit_restricted_route(route, env, environ=environ)
+
+
 def admit_restricted_route(
-    route: LiteLLMRoute, agent_env: Mapping[str, str]
+    route: LiteLLMRoute,
+    agent_env: Mapping[str, str],
+    *,
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[RestrictedAdmission, LiteLLMRoute, dict[str, str]]:
     """Admit and seal the actual deployment, for both proxy placements.
 
@@ -379,6 +422,7 @@ def admit_restricted_route(
         route.upstream_model,
         provider_name=route.provider_name,
         api_base=str(api_base) if api_base else None,
+        environ=environ,
         requested=route.requested_model,
     )
     sealed_env: dict[str, str] = {}

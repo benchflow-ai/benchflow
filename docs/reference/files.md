@@ -8,7 +8,7 @@ You write two kinds of file for BenchFlow, a task's `task.md` header and a run c
 
 ### task.md
 
-The header is YAML between two `---` lines at the top of `task.md`; the instruction is below it. Each table below is one key's settings, with the type, default and description the code gives them. A key is optional unless the table says required, and a key the header doesn't know is refused. A key new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
+The header is YAML between two `---` lines at the top of `task.md`; the instruction is below it. Each table below is one key's settings, with the type, default and description the code gives them. A key is optional unless the table says required, and a key the header doesn't know is refused. A key new since 0.9.3 has `(0.10)` after it.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -22,7 +22,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `source` | text |  |  |
 | `reward` | mapping | `{}` | Legacy task-level reward expression metadata. |
 | `multi_step_reward_strategy` | `mean` \| `final` |  | How to derive one rollout reward from per-step verifier results. Used only by a task with `steps`, which runs on 0.10.0rc2. |
-| `steps` | list of tables ([`steps[]`](#steps)) |  | 0.9.2 reads this key but refuses to run a task that has it (`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc2. |
+| `steps` | list of tables ([`steps[]`](#steps)) |  | 0.9.3 reads this key but refuses to run a task that has it (`multi-step tasks are not supported`); multi-step tasks run on 0.10.0rc2. |
 | `artifacts` | list of text or tables ([`artifacts[]`](#artifacts)) | `[]` |  |
 | `preference` (0.10) | mapping | `{}` | How `bench preferences` pairs and ranks this task's outputs (protocol, randomize_sides, raters_per_pair, min_agreement; other keys are recorded). The run itself is unchanged. See docs/tasks/human-preferences.md. |
 | `agents` | table: `roles`, each role by name ([`agents.roles.*`](#agentsroles)) |  | A multi-turn task's roles: which agent plays each. |
@@ -51,11 +51,11 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `type` | `test-script` \| `llm-judge` | `test-script` | Verification method. In `task.md`, 0.9.2's `bench check` and `bench run` refuse `llm-judge` (no runnable verifier entrypoint); a verifier document grades with a model instead ([LLM judge](../tasks/llm-judge.md)). |
+| `type` | `test-script` \| `llm-judge` | `test-script` | Verification method. In `task.md`, 0.9.3's `bench check` and `bench run` refuse `llm-judge` (no runnable verifier entrypoint); a verifier document grades with a model instead ([LLM judge](../tasks/llm-judge.md)). |
 | `submission_files` | list of text | `[]` | Explicit verifier-recovery contract (submission-files-v1): the absolute paths of the task's submission files, at most 8, literal (no globs), outside /dev, /logs, /proc, /solution, /sys and /tests. Only these regular files are captured and restored; never a whole directory. |
 | `workspace_recovery` | boolean | `false` | Allow verifier-only recovery from captured workspace after transport failure. The task author guarantees all solver changes needed for scoring are inside the workspace and a fresh task image/setup reproduces all other dependencies; no mutable external state. |
 | `timeout_sec` | number (> 0) | `600.0` | Wall-clock budget in seconds for verifier execution. Omitting the field inherits this default; zero, negative, and non-finite budgets are rejected at validation time. |
-| `setup_timeout_sec` (unreleased) | number (> 60) |  | Seconds each command that sets up the verifier may take (hardening the sandbox, preparing a separate verifier's runtime); default 180. The run's --verifier-setup-timeout wins over it. It must be more than 60, the time the pytest plugin guard keeps of each command; non-finite values are rejected. |
+| `setup_timeout_sec` (0.10) | number (> 60) |  | Seconds each command that sets up the verifier may take (hardening the sandbox, preparing a separate verifier's runtime); default 180. The run's --verifier-setup-timeout wins over it. It must be more than 60, the time the pytest plugin guard keeps of each command; non-finite values are rejected. |
 | `env` | mapping of names to text | `{}` |  |
 | `collect` (0.10) | list of tables ([`verifier.collect[]`](#verifiercollect)) | `[]` | Commands run in compose services after the agent's turn and before artifact collection (task.toml [[verifier.collect]]). |
 | `required_tools` | list of text |  | Complete list of PATH program names whose availability or lookup can affect grading, including subprocesses and later-created helpers. Required when any image PATH entry is omitted by hardening. Every name must already resolve in the trusted verifier PATH; use absolute paths for uploaded/generated helpers. [] declares no required PATH tools. |
@@ -67,7 +67,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `sandbox_mode` | `shared` \| `separate` |  | Whether the verifier runs in the agent sandbox ('shared') or a dedicated verifier sandbox ('separate'). |
 | `sandbox` | table, the keys of [`sandbox`](#sandbox) |  | Optional separate verifier sandbox configuration. |
 | `service` | text | `main` | Compose service the test-script verifier runs in. Defaults to 'main' (the agent container). Multi-container (vulhub-style) tasks set this to a target/database service so test.sh can inspect target-side state (RCE markers, DB modifications) rather than only the agent's workspace. The agent's anti-tamper hardening only applies to 'main'; deliberately vulnerable target containers are intentionally not hardened. See #248. |
-| `judge` | table ([`verifier.judge`](#verifierjudge)) |  | LLM-judge configuration (used when type == 'llm-judge'). Read only with `type: llm-judge`, which 0.9.2 refuses in `task.md` ([LLM judge](../tasks/llm-judge.md)). |
+| `judge` | table ([`verifier.judge`](#verifierjudge)) |  | LLM-judge configuration (used when type == 'llm-judge'). Read only with `type: llm-judge`, which 0.9.3 refuses in `task.md` ([LLM judge](../tasks/llm-judge.md)). |
 | `memory` | table ([`verifier.memory`](#verifiermemory)) |  | Memory-space scoring fixtures. |
 | `hardening` | table ([`verifier.hardening`](#verifierhardening)) |  | Per-task verifier hardening opt-outs. |
 | `pytest_plugins` | list of text | `[]` | pytest11 plugin names to allow under PYTEST_DISABLE_PLUGIN_AUTOLOAD=1. Container-side auto-discovery handles most cases; this is the explicit fallback for plugins that discovery cannot see (e.g. ctrf, playwright). |
@@ -86,7 +86,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `model` | text | `claude-sonnet-5-5` | Judge model identifier. Provider is routed from the prefix (claude-* / gpt-* / gemini-*). 0.9.2 defaults to `claude-sonnet-4-6`. |
+| `model` | text | `claude-sonnet-5-5` | Judge model identifier. Provider is routed from the prefix (claude-* / gpt-* / gemini-*). 0.9.3 defaults to `claude-sonnet-4-6`. |
 | `rubric_path` | text | `tests/rubric.toml` | Path to the rubric file, relative to the task directory. Both rubric.toml (native) and rubric.json (Harvey LAB style) are supported. |
 | `input_dir` | text | `/app` | Directory inside the sandbox holding the agent's deliverables. Its contents are downloaded and shown to the judge. |
 | `input_type` | `deliverables` | `deliverables` | What the judge evaluates. Only 'deliverables' (agent output files) is supported; trajectory judging is not available at verify time. |
@@ -126,7 +126,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `blocked_urls` | list of text |  | URL prefixes the agent cannot reach when network_mode='denylist'; scheme optional, query ignored |
 | `blocked_hosts` | list of text |  | Hostnames (and their subdomains) the agent cannot reach when network_mode='denylist' |
 | `build_timeout_sec` | number | `600.0` |  |
-| `setup_timeout_sec` (unreleased) | number (> 0) |  | Seconds BenchFlow may take to give the workspace to the sandbox user before the agent or oracle starts (default 600). The run's --sandbox-setup-timeout, when named, wins over it, longer or shorter. Raise it for a workspace with many files, such as a large node_modules. |
+| `setup_timeout_sec` (0.10) | number (> 0) |  | Seconds BenchFlow may take to give the workspace to the sandbox user before the agent or oracle starts (default 600). The run's --sandbox-setup-timeout, when named, wins over it, longer or shorter. Raise it for a workspace with many files, such as a large node_modules. |
 | `docker_image` | text |  | Prebuilt image name; legacy SkillsBench tasks may use image. Also read as `image`. |
 | `os` | `linux` \| `windows` | `linux` | Operating system the task's container runs. |
 | `cpus` | integer | `1` |  |
@@ -142,7 +142,7 @@ The header is YAML between two `---` lines at the top of `task.md`; the instruct
 | `workdir` | text |  | Default working directory for command execution. |
 | `setup_commands` | list of tables ([`sandbox.setup_commands[]`](#sandboxsetup_commands)) | `[]` | Commands run after sandbox services start and before the agent is installed. Useful for benchmark-native workspace/database seeding. |
 | `bugswarm_image_tag` | text |  | BugSwarm image tag used by build-repair benchmark tasks. |
-| `allow_cloud_metadata` | boolean | `false` | Let the agent reach the cloud metadata endpoints under an open network: no block, and the trial records the opt-out. Without it the agent starts only once the block is proven on. |
+| `allow_cloud_metadata` | boolean | `false` | Ask to lift the cloud metadata block for this task's trials (the agent, test.sh and the task's other services can reach the endpoints). It takes effect only when the run passes --allow-cloud-metadata, and the trial records it; a run without that flag refuses the task before it starts. |
 | `require_cloud_metadata_block` | boolean | `false` | Refuse an agent that runs as root on a sandbox provider without BenchFlow's metadata helper (Daytona, Modal, AgentCore, Apple), where it otherwise runs under the provider's own metadata policy. |
 | `allow_internet` | boolean | `true` | Deprecated compatibility field; use network_mode instead. |
 | `memory` | text |  |  |
@@ -267,7 +267,7 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 
 ### Run config
 
-`bench run --config FILE` reads a whole run from a YAML file of these keys. It needs `tasks_dir` or `source`; a flag given beside it wins over its key; `sandbox` is read as `environment`; and a key not in this table is refused, with the closest one. The flag column names the flag that sets the same thing, and the help is that flag's. A key new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
+`bench run --config FILE` reads a whole run from a YAML file of these keys. It needs `tasks_dir` or `source`; a flag given beside it wins over its key; `sandbox` is read as `environment`; and a key not in this table is refused, with the closest one. The flag column names the flag that sets the same thing, and the help is that flag's. A key new since 0.9.3 has `(0.10)` after it.
 
 | Key | Flag | Default | Help |
 |---|---|---|---|
@@ -277,7 +277,9 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `agent_env_keys` |  | `[]` |  |
 | `agent_idle_timeout` | `--agent-idle-timeout` | `600` | Abort a prompt when the agent is silent this long: seconds, or 90s, 10m, 1h; 0, none or null turns it off and leaves the task's wall-clock timeout (default: 10m, 30m at effort xhigh or max) |
 | `agent_idle_timeout_sec` | `--agent-idle-timeout` | `600` | Abort a prompt when the agent is silent this long: seconds, or 90s, 10m, 1h; 0, none or null turns it off and leaves the task's wall-clock timeout (default: 10m, 30m at effort xhigh or max) |
-| `allow_cloud_metadata` | `--allow-cloud-metadata` | `false` | Let the agent reach the cloud metadata endpoints under an open network (no block; each trial records the opt-out). Without it, or the task's allow_cloud_metadata = true, the agent starts only once the block is proven on |
+| `allow_cloud_credential_file` (0.10) | `--allow-cloud-credential-file` (0.10) |  | Let a cloud credential file (the gcloud application default credentials) be staged in the sandbox: the Gemini CLI's own Vertex route, or a Vertex model through a proxy that runs in the sandbox. Each trial records it. Without it such a run is refused before it starts; the proxy on the host (Docker, `public`) keeps the file out of the sandbox and needs no flag |
+| `allow_cloud_metadata` | `--allow-cloud-metadata` |  | Let the agent reach the cloud metadata endpoints under an open network (no block; each trial records the opt-out), and grant a task's own allow_cloud_metadata key, which lifts the block for every process of its trials. Without it the agent starts only once the block is proven on, and a task that sets that key is refused before it starts |
+| `allow_task_processes_with_credentials` (0.10) | `--allow-task-processes-with-credentials` (0.10) |  | Start a model agent whose operator credentials go into the sandbox (a subscription login, its own API key, or a key the proxy in the sandbox holds) while the task's own processes run in main, where they could read them. Each trial records it. Without it such a trial is refused before anything is staged; the proxy on the host (Docker, `public`) keeps an API key out of the sandbox |
 | `base_image_override` | `--base-image-override` |  | Rewrite task Dockerfile FROM images on the runtime task copy. Use only for reproducing runs whose base image moved namespaces. |
 | `budget` | `--max-cost-usd`, `--max-sandbox-seconds`, `--max-tokens`, `--max-rollouts` |  | A table of `max_cost_usd`, `max_sandbox_seconds`, `max_tokens`, `max_rollouts`. |
 | `build_concurrency` | `--build-concurrency` |  | Max concurrent docker image builds. Defaults to --concurrency. Set lower (e.g. 8) when --concurrency is high to avoid overwhelming the docker daemon with parallel builds. |
@@ -290,6 +292,7 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `dataset_name` |  |  |  |
 | `dataset_task_digests` |  | `{}` |  |
 | `dataset_version` |  |  |  |
+| `effort_pin` (0.10) | `--effort-pin` (0.10) |  | Pin every model call's reasoning effort to the run's (--effort) in BenchFlow's model proxy, a sub-agent's included; each rewrite is counted in the trial's model-calls.json (effort_rewrites). |
 | `environment` | `--sandbox` | `docker` | Sandbox: docker, remote-docker, daytona, modal, apple-container, or agentcore |
 | `environment_manifest` | `--environment-manifest` |  | Environment-plane manifest applied to every rollout: a path to an environment.toml, OR a 'name@version' registry spec resolved via $BENCHFLOW_ENV_REGISTRY when set, else the built-in registry shipped with benchflow (env0@prod, env0@outage). The manifest-declared stateful environment is provisioned, gated on readiness, and torn down. |
 | `exclude` | `--exclude` | `[]` | Skip these task names; repeatable (e.g. --exclude quantum-numerical-simulation) |
@@ -298,7 +301,7 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `fresh_install` | `--fresh-install` | `false` | Install the model proxy and the agent in every trial instead of starting from their cached image layers (same as BENCHFLOW_FRESH_INSTALL=1) |
 | `harness` | `--harness` | `acp` | How the agent runs: acp (default, its ACP adapter) or native (its own CLI in headless JSON mode; claude-agent-acp and codex-acp) |
 | `include` | `--include` | `[]` | Only run these task names; repeatable (e.g. --include jax-computing-basics --include data-to-d3) |
-| `integrity` | `--integrity` |  | audit (default: test.sh as written, the agent's actions checked), strict (also a hardened separate verifier; experimental: on a 170-task sample, 17-19% of honest reference runs score 0 in strict because of what strict transfers) or off. Verdict: integrity/claim_verdict.json. |
+| `integrity` | `--integrity` |  | audit (default: test.sh as written, the agent's actions checked), strict (also a hardened separate verifier; experimental: on a 170-task sample, 17-19% of honest reference runs score 0 in strict because of what strict transfers) or off. In audit and off, a non-root agent scores 0 when its reward check doesn't complete (provenance_incomplete), and a trial where bfx can't run is refused before the agent's turn (integrity_unavailable); `bench explain` has both. Verdict: integrity/claim_verdict.json. |
 | `job_mode` |  | `parallel-independent` |  |
 | `jobs_dir` | `--jobs-dir` | `jobs` | Output directory (default jobs); a plain run resumes its latest job |
 | `keep_sandbox` (0.10) | `--keep-sandbox` (0.10) | `never` | Keep a trial's sandbox: on-failure, always or never (default). `bench sandbox attach <trial>` opens a shell in it; `bench sandbox release <trial>` deletes it. |
@@ -312,11 +315,12 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `retry_from_checkpoint` | `--retry-from-checkpoint` |  | on-failure, on-timeout, or both: when a trial fails or times out, fork one retry from its last --checkpoints snapshot, verified the same way. The trial's reward is kept; the retry's is reported next to it (result.json retry block, summary checkpoint_retries). |
 | `retry_prompt` | `--retry-prompt` |  | Prompt for the retry, replacing the prompts after the checkpoint (the default). '@instruction' is the task instruction, '@verifier_feedback' the failed trial's reward and verifier output tail. |
 | `retry_resume_session` | `--retry-resume-session` | `false` | The retry resumes the failed trial's conversation at the checkpoint (ACP session/load; Claude Code) instead of a fresh session. |
-| `reviewer` | `--reviewer-agent`, `--reviewer-model`, `--reviewer-reasoning-effort`, `--reviewer-sandbox`, `--reviewer-timeout-sec`, `--reviewer-idle-timeout`, `--reviewer-storage-mb` (0.10), `--reviewer-memory-mb` (0.10), `--reviewer-setup-timeout` (0.10), `--reviewer-evidence-timeout` (0.10), `--reviewer-concurrency`, `--reviewer-image`, `--reviewer-agent-env`, `--reviewer-open-network`, `--reviewer-pdf-tools` (unreleased), `--reviewer-submitted-file-rule` (unreleased), `--reviewer-criterion-evidence` (unreleased) |  | A table of `agent`, `model`, `reasoning_effort`, `environment`, `timeout_sec`, `idle_timeout_sec`, `storage_mb`, `memory_mb`, `setup_timeout_sec`, `evidence_timeout_sec`, `concurrency`, `image`, `agent_env`, `open_network`, `pdf_tools`, `submitted_file_rule`, `criterion_evidence`. |
+| `reviewer` | `--reviewer-agent`, `--reviewer-model`, `--reviewer-reasoning-effort`, `--reviewer-sandbox`, `--reviewer-timeout-sec`, `--reviewer-idle-timeout`, `--reviewer-storage-mb` (0.10), `--reviewer-memory-mb` (0.10), `--reviewer-setup-timeout` (0.10), `--reviewer-evidence-timeout` (0.10), `--reviewer-concurrency`, `--reviewer-image`, `--reviewer-agent-env`, `--reviewer-open-network`, `--reviewer-pdf-tools` (0.10), `--reviewer-submitted-file-rule` (0.10), `--reviewer-criterion-evidence` (0.10) |  | A table of `agent`, `model`, `reasoning_effort`, `environment`, `timeout_sec`, `idle_timeout_sec`, `storage_mb`, `memory_mb`, `setup_timeout_sec`, `evidence_timeout_sec`, `concurrency`, `image`, `agent_env`, `open_network`, `pdf_tools`, `submitted_file_rule`, `criterion_evidence`. |
 | `sample_seed` | `--sample-seed` |  | Seed for the --n-tasks random sample |
 | `sandbox_locked_paths` |  |  |  |
 | `sandbox_setup_timeout` | `--sandbox-setup-timeout` | `120` | Seconds for sandbox setup before the agent; wins over sandbox.setup_timeout_sec (default: that, else 600) |
 | `sandbox_user` | `--sandbox-user` | `agent` | Sandbox user (null for root) |
+| `scoped_credentials` (0.10) | `--scoped-credential` (0.10) |  | Name a credential variable that is this run's own (a per-run token, not one of your logins or keys): repeatable. It still goes into the sandbox and each trial records it, but a task process in main is not refused for it. Refused before the run starts when the agent's env does not set it, or when it is staged as a file |
 | `seeds` | `--seeds` |  | Seeded rollouts: run every task once per seed, e.g. 0-4 or 0,3,7 (tasks in a task format that writes seeded variants, such as embodied tasks). summary.json gets pass@k and variance per task. |
 | `self_gen_no_internet` | `--self-gen-no-internet` | `false` | Disable web tools for the self-generated run |
 | `separate_verifier` | `--separate-verifier` | `false` | Run each verifier in a fresh sandbox built from the verifier image that receives only the frozen workspace, declared artifacts and /logs/artifacts, as if every task set \[verifier].sandbox_mode = 'separate'. Docker, remote-docker, Daytona and Modal. |
@@ -338,12 +342,12 @@ The keys BenchFlow reads: `compat`, `environment`, `evidence`, `nudges`, `prompt
 | `usage_proxy_url` |  |  | No longer supported: a config with it is refused. Use `usage_tracking`. |
 | `usage_tracking` | `--usage-tracking` |  | Telemetry-enforcement policy: auto, required, or off. The LiteLLM proxy is always used for routable agents (usage, cost, and llm_trajectory.jsonl are always captured); this flag only controls whether trusted telemetry is required. |
 | `verifier_sandbox` | `--verifier-sandbox` | `task` | task (default: each task's own choice) or separate: every verifier in a fresh sandbox with only the workspace and the declared artifacts; a task that cannot run there refuses the run. |
-| `verifier_setup_timeout` (unreleased) | `--verifier-setup-timeout` (unreleased) |  | Seconds each command that sets up the verifier may take (hardening, a separate verifier's runtime), more than 60; wins over the task's verifier.setup_timeout_sec (default: 180) |
+| `verifier_setup_timeout` (0.10) | `--verifier-setup-timeout` (0.10) |  | Seconds each command that sets up the verifier may take (hardening, a separate verifier's runtime), more than 60; wins over the task's verifier.setup_timeout_sec (default: 180) |
 | `warm_pool` | `--warm-pool` |  | Docker: how many sandboxes to prepare ahead of their trial's turn, beyond the --concurrency running ones (0 to --concurrency; default 1, or 0 when --concurrency is 1) |
 
 ### YAML job config
 
-A run config with `agents:` and `datasets:` (or a `tasks:` list) is a YAML job config: it runs every agent on every dataset, `n_attempts` times each. Its top-level keys: `agent_idle_timeout`, `agent_idle_timeout_sec`, `agent_setup_timeout_multiplier`, `agent_timeout_multiplier`, `agents`, `allow_cloud_metadata`, `base_image_override`, `codex_apps_policy`, `context_root`, `datasets`, `environment`, `environment_build_timeout_multiplier`, `exclude`, `exclude_tasks`, `excludes`, `extra_instruction_paths`, `extra_instructions`, `fresh_install`, `harness`, `include`, `include_tasks`, `includes`, `integrity`, `job_name`, `jobs_dir`, `metrics`, `n_attempts`, `n_concurrent_trials`, `orchestrator`, `quiet`, `reasoning_effort`, `reviewer`, `sandbox_locked_paths`, `sandbox_setup_timeout`, `sandbox_user`, `self_gen_no_internet`, `separate_verifier`, `separate_verifier_include`, `skill_creator_dir`, `skill_mode`, `skills_dir`, `tasks`, `timeout_multiplier`, `usage_proxy`, `usage_proxy_advertised_base_url`, `usage_proxy_bind_host`, `usage_proxy_port`, `usage_proxy_url`, `usage_tracking`, `verifier_sandbox`, `verifier_setup_timeout` (unreleased), `verifier_timeout_multiplier`. An agent entry takes `concurrency_group`, `env`, `harness`, `model_name`, `n_concurrent`, `name`, `reasoning_effort`, `skip_install`; a dataset entry `exclude_task_names`, `n_tasks`, `path`, `task_names`. A setting BenchFlow can't honour exactly is refused when the file loads, unless it holds its default:
+A run config with `agents:` and `datasets:` (or a `tasks:` list) is a YAML job config: it runs every agent on every dataset, `n_attempts` times each. Its top-level keys: `agent_idle_timeout`, `agent_idle_timeout_sec`, `agent_setup_timeout_multiplier`, `agent_timeout_multiplier`, `agents`, `allow_cloud_credential_file` (0.10), `allow_cloud_metadata`, `allow_task_processes_with_credentials` (0.10), `base_image_override`, `codex_apps_policy`, `context_root`, `datasets`, `environment`, `environment_build_timeout_multiplier`, `exclude`, `exclude_tasks`, `excludes`, `extra_instruction_paths`, `extra_instructions`, `fresh_install`, `harness`, `include`, `include_tasks`, `includes`, `integrity`, `job_name`, `jobs_dir`, `metrics`, `n_attempts`, `n_concurrent_trials`, `orchestrator`, `quiet`, `reasoning_effort`, `reviewer`, `sandbox_locked_paths`, `sandbox_setup_timeout`, `sandbox_user`, `scoped_credentials` (0.10), `self_gen_no_internet`, `separate_verifier`, `separate_verifier_include`, `skill_creator_dir`, `skill_mode`, `skills_dir`, `tasks`, `timeout_multiplier`, `usage_proxy`, `usage_proxy_advertised_base_url`, `usage_proxy_bind_host`, `usage_proxy_port`, `usage_proxy_url`, `usage_tracking`, `verifier_sandbox`, `verifier_setup_timeout` (0.10), `verifier_timeout_multiplier`. An agent entry takes `concurrency_group`, `env`, `harness`, `model_name`, `n_concurrent`, `name`, `reasoning_effort`, `skip_install`; a dataset entry `exclude_task_names`, `n_tasks`, `path`, `task_names`. A setting BenchFlow can't honour exactly is refused when the file loads, unless it holds its default:
 
 | Key | Instead |
 |---|---|
@@ -357,7 +361,7 @@ A run config with `agents:` and `datasets:` (or a `tasks:` list) is a YAML job c
 
 ## Files BenchFlow writes
 
-The JSON documents BenchFlow writes, one section per schema file in [`schemas/`](./schemas/), with each document's top-level fields. A schema or field new since 0.9.2 has `(0.10)` after it when 0.10.0rc3 has it, or `(unreleased)` when no release has it yet.
+The JSON documents BenchFlow writes, one section per schema file in [`schemas/`](./schemas/), with each document's top-level fields. A schema or field new since 0.9.3 has `(0.10)` after it.
 
 ### benchflow-assessment-event.v1.schema.json (0.10)
 
@@ -574,7 +578,7 @@ Identifier: `https://benchflow.ai/schemas/benchflow-job.v2.schema.json`. File: [
 | `summary` | object or null | no | the job's summary.json |
 | `timing_totals` | object | no | seconds per timing phase, summed over agent runs (1.1) |
 | `trials` | array of object (TrialExport) | yes |  |
-| `trials_cost_incomplete` (unreleased) | integer or null | no | trials whose cost_usd was priced from some of their calls only (usage_incomplete), so cost_usd is a floor when this is not 0; summary.json's name for the same count. Null in a document below minor 2, which did not count them (2.2) |
+| `trials_cost_incomplete` | integer or null | no | trials whose cost_usd was priced from some of their calls only (usage_incomplete), so cost_usd is a floor when this is not 0; summary.json's name for the same count. Null in a document below minor 2, which did not count them (2.2) |
 
 ### benchflow-model-call.v1.schema.json (0.10)
 
@@ -646,7 +650,7 @@ Identifier: `https://benchflow.ai/schemas/benchflow-model-call.v2.schema.json`. 
 | `top_p` | number or null | yes |  |
 | `truncated` | boolean or null | yes |  |
 
-### benchflow-model-call.v3.schema.json (unreleased)
+### benchflow-model-call.v3.schema.json (0.10)
 
 **One model call (trajectory/model-calls.jsonl)**
 
@@ -692,11 +696,16 @@ Identifier: `https://benchflow.ai/schemas/benchflow-model-calls.v1.schema.json`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agent_effort` | object | no |  |
-| `agent_effort_calls` (unreleased) | integer or null | no |  |
+| `agent_effort_calls` | integer or null | no |  |
 | `agent_retries` | integer or null | no |  |
 | `calls` | integer | yes |  |
 | `cost_usd` | number or null | no |  |
 | `effort` | object | no |  |
+| `effort_mismatches` | integer or null | no |  |
+| `effort_pin` | string or null | no |  |
+| `effort_rewrites` | integer or null | no |  |
+| `efforts_requested` | object or null | no |  |
+| `efforts_used` | object or null | no |  |
 | `finish_reasons` | object | no |  |
 | `first_agent_tools` | object or null | no |  |
 | `first_call_at` | string or null | no |  |
@@ -705,10 +714,13 @@ Identifier: `https://benchflow.ai/schemas/benchflow-model-calls.v1.schema.json`.
 | `input_files` | object or null | no |  |
 | `last_agent_call` | object or null | no |  |
 | `max_output_tokens` | object | no |  |
+| `model_refused_calls` | integer or null | no |  |
 | `model_time_ms` | number or null | no |  |
+| `models_refused` | object | no |  |
 | `models_requested` | object | no |  |
 | `models_served` | object | no |  |
 | `purposes` | object | no |  |
+| `refusals_by_reason` | object | no |  |
 | `refused_calls` | integer or null | no |  |
 | `schema` | constant "benchflow.model-calls.v1" | yes |  |
 | `source` | string or array or null | yes |  |

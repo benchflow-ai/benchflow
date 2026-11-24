@@ -74,6 +74,7 @@ async def test_execute_records_every_prompt(
         prompts: list[str],
         timeout: int,
         idle_timeout: int | None = None,
+        on_deadline: Any = None,
     ) -> tuple[list[dict], int]:
         # execute_prompts returns the cumulative session trajectory.
         for p in prompts:
@@ -134,6 +135,7 @@ async def test_build_result_emits_all_executed_prompts(
         prompts: list[str],
         timeout: int,
         idle_timeout: int | None = None,
+        on_deadline: Any = None,
     ) -> tuple[list[dict], int]:
         for p in prompts:
             cumulative["traj"].append({"type": "user_message", "text": p})

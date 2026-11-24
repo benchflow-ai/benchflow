@@ -360,7 +360,9 @@ def _instant(value: Any) -> float:
         return float("-inf")
 
 
-def attempt_spend_summary(attempts: Iterable[dict]) -> dict[str, Any]:
+def attempt_spend_summary(
+    attempts: Iterable[dict], *, unrecorded: int = 0
+) -> dict[str, Any]:
     """summary.json's ``spend_all_attempts``: what the job spent over every
     attempt it recorded, retries and resumed runs included, its agents' and
     judges' together.
@@ -381,11 +383,20 @@ def attempt_spend_summary(attempts: Iterable[dict]) -> dict[str, Any]:
     ``attempts_cost_incomplete`` counts the attempts whose cost was priced
     from some of their calls only (``cost_incomplete``), so ``cost_usd`` is a
     floor when it is not 0.
+
+    An attempt that ended with no result and no receipt (its run stopped
+    mid-turn: a host reset or a killed process) is a stopped attempt too: counted from the logs it left
+    (``attempts_usage_salvaged``, a floor, so also in
+    ``attempts_cost_incomplete``), or, with none, one of ``unrecorded``
+    (``evaluation._recorded_attempts``' count), in ``stopped_attempts`` and
+    ``stopped_attempts_without_usage`` and never left out.
     """
+    from benchflow._utils.attempt_salvage import SALVAGED_KEY
     from benchflow._utils.result_paths import is_interrupted_result
     from benchflow.budget import AttemptSpend
 
     attempts = list(attempts)
+    unrecorded = max(0, unrecorded)
 
     def stopped_record(row: dict) -> bool:
         # A cancellation receipt, or the stopped trial's own result.json
@@ -400,7 +411,7 @@ def attempt_spend_summary(attempts: Iterable[dict]) -> dict[str, Any]:
     return {
         "spend_all_attempts": {
             "attempts": len(finished),
-            "stopped_attempts": len(stopped),
+            "stopped_attempts": len(stopped) + unrecorded,
             "cost_usd": _round_usd(_known_sum(s.total_cost_usd for s in spends)),
             "tokens": _known_sum(s.total_tokens for s in spends),
             "judge_cost_usd": _round_usd(_known_sum(s.judge_cost_usd for s in spends)),
@@ -408,8 +419,10 @@ def attempt_spend_summary(attempts: Iterable[dict]) -> dict[str, Any]:
             "attempts_without_cost": sum(1 for s in called if s.usd_unknown),
             "attempts_without_tokens": sum(1 for s in called if s.tokens is None),
             "attempts_without_model_call": len(no_call),
-            "stopped_attempts_without_usage": sum(
-                1 for s in stopped if s.tokens is None and s.cost_usd is None
+            "stopped_attempts_without_usage": unrecorded
+            + sum(1 for s in stopped if s.tokens is None and s.cost_usd is None),
+            "attempts_usage_salvaged": sum(
+                1 for a in attempts if stopped_record(a) and a.get(SALVAGED_KEY)
             ),
             # Its tokens counted, its cost not (a model no price table has).
             "stopped_attempts_without_cost": sum(

@@ -10,10 +10,11 @@ import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from benchflow._utils.aware_time import aware
 from benchflow.review.outcome import ScoringResult, keeps_verifier_result
 
 #: The scoring lock's file in a trial folder; it exists only while scoring runs.
@@ -94,7 +95,7 @@ def _execution_seconds(result: dict[str, Any]) -> float | None:
     if not isinstance(started, str) or not isinstance(finished, str):
         return None
     duration = (
-        datetime.fromisoformat(finished) - datetime.fromisoformat(started)
+        aware(datetime.fromisoformat(finished)) - aware(datetime.fromisoformat(started))
     ).total_seconds()
     return duration if duration >= 0 else None
 
@@ -190,11 +191,11 @@ def commit_scoring_result(
             result["verifier_error"] = scoring.error or source.get("verifier_error")
             if scoring.error:
                 result["verifier_error_category"] = "infra_failure"
-    finished = datetime.now()
+    finished = datetime.now(UTC)
     result["solver_started_at"] = source.get("started_at")
     result["solver_finished_at"] = source.get("finished_at")
-    result["scoring_finished_at"] = str(finished)
-    result["finished_at"] = str(finished)
+    result["scoring_finished_at"] = finished.isoformat()
+    result["finished_at"] = finished.isoformat()
     timing = (
         _scoring_timing(rollout_dir, source, scoring)
         if scoring is not None

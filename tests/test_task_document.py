@@ -1363,23 +1363,20 @@ def test_sidecar_prompt_files_take_precedence_over_legacy_headings(
     assert doc.role_prompts == {"reviewer": "File version wins."}
 
 
-def test_task_document_rejects_renamed_environment_frontmatter_key() -> None:
-    """task.md is the native format: only 'sandbox:' validates, and the
-    'environment:' failure names the rename instead of a bare extra-key error."""
-    with pytest.raises(
-        ValueError,
-        match=r"the 'environment' key was renamed to 'sandbox' — rename "
-        r"'environment:' to 'sandbox:'",
-    ):
-        TaskDocument.from_text(
-            """---
+def test_task_document_reads_the_old_environment_frontmatter_key() -> None:
+    """task.md's 'environment:' is the name 'sandbox:' had until July 2026
+    (SkillsBench's v1.1 tag uses it): it is read as 'sandbox:'. Both in one
+    file are refused (tests/test_taskmd_environment_alias.py)."""
+    doc = TaskDocument.from_text(
+        """---
 version: "1.0"
 environment:
   cpus: 2
 ---
 Do it.
 """
-        )
+    )
+    assert doc.config.sandbox.cpus == 2
 
 
 def test_task_document_rejects_renamed_verifier_environment_frontmatter_key() -> None:

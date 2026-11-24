@@ -71,15 +71,58 @@ FreshInstallOption = Annotated[
         ),
     ),
 ]
+AllowCloudCredentialFileOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-cloud-credential-file",
+        help=(
+            "Let a cloud credential file (the gcloud application default "
+            "credentials) be staged in the sandbox: the Gemini CLI's own Vertex "
+            "route, or a Vertex model through a proxy that runs in the sandbox. "
+            "Each trial records it. Without it such a run is refused before it "
+            "starts; the proxy on the host (Docker, `public`) keeps the file out "
+            "of the sandbox and needs no flag"
+        ),
+    ),
+]
+AllowTaskProcessesWithCredentialsOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-task-processes-with-credentials",
+        help=(
+            "Start a model agent whose operator credentials go into the sandbox "
+            "(a subscription login, its own API key, or a key the proxy in the "
+            "sandbox holds) while the task's own processes run in main, where "
+            "they could read them. Each trial records it. Without it such a "
+            "trial is refused before anything is staged; the proxy on the host "
+            "(Docker, `public`) keeps an API key out of the sandbox"
+        ),
+    ),
+]
+ScopedCredentialOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--scoped-credential",
+        help=(
+            "Name a credential variable that is this run's own (a per-run "
+            "token, not one of your logins or keys): repeatable. It still goes "
+            "into the sandbox and each trial records it, but a task process in "
+            "main is not refused for it. Refused before the run starts when the "
+            "agent's env does not set it, or when it is staged as a file"
+        ),
+    ),
+]
 AllowCloudMetadataOption = Annotated[
     bool,
     typer.Option(
         "--allow-cloud-metadata",
         help=(
             "Let the agent reach the cloud metadata endpoints under an open "
-            "network (no block; each trial records the opt-out). Without it, "
-            "or the task's allow_cloud_metadata = true, the agent starts only "
-            "once the block is proven on"
+            "network (no block; each trial records the opt-out), and grant a "
+            "task's own allow_cloud_metadata key, which lifts the block for "
+            "every process of its trials. Without it the agent starts only once "
+            "the block is proven on, and a task that sets that key is refused "
+            "before it starts"
         ),
     ),
 ]

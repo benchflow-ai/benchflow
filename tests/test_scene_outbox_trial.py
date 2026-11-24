@@ -212,6 +212,7 @@ async def test_execute_uses_active_role_timeouts(
         timeout,
         *,
         idle_timeout=None,
+        on_deadline=None,
     ):
         captured["timeout"] = timeout
         captured["idle_timeout"] = idle_timeout

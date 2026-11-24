@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from benchflow._types import Role, Scene, Turn
 from benchflow._utils.config_keys import key_lines, validation_error_text
 from benchflow.task._document_normalize import (
+    OLD_SANDBOX_KEY,
     TaskDocumentParseError,
     _mapping,
     normalize_task_document_frontmatter,
@@ -317,7 +318,13 @@ def _frontmatter_key_lines(text: str) -> dict[tuple[str, ...], int]:
         (i for i, line in enumerate(lines[1:], start=1) if line.strip() == "---"),
         len(lines),
     )
-    return key_lines("".join(lines[1:end]), first_line=2)
+    found = key_lines("".join(lines[1:end]), first_line=2)
+    # An old-key task.md is validated as 'sandbox:' (_document_normalize):
+    # its keys' lines are found under either name.
+    for key, line in list(found.items()):
+        if key[:1] == (OLD_SANDBOX_KEY,):
+            found.setdefault(("sandbox", *key[1:]), line)
+    return found
 
 
 def _split_frontmatter(

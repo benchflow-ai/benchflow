@@ -150,9 +150,10 @@ def test_the_live_footer_marks_a_floor_total():
     )
     dash.on_plan(2, 0, 2)
     dash.on_result("one", result("one", 0.01))
-    assert "$0.01" in rendered(dash) and "(floor)" not in rendered(dash)
+    # The final screen's cost grammar: a floor leads with ≥.
+    assert "$0.0100" in rendered(dash) and "≥" not in rendered(dash)
     dash.on_result("two", result("two", 0.02, incomplete=True))
-    assert "$0.03+ (floor)" in rendered(dash)
+    assert "≥$0.0300" in rendered(dash)
 
 
 def test_the_job_export_counts_its_floor_costs(tmp_path):

@@ -24,6 +24,7 @@ import importlib
 import json
 import os
 import shlex
+import time
 from abc import abstractmethod
 from dataclasses import replace
 from pathlib import Path
@@ -63,6 +64,12 @@ from benchflow.sandbox.daytona_pty import (
 from benchflow.sandbox.daytona_reaper import (
     _benchflow_owned_labels,
     benchflow_snapshot_name,
+)
+from benchflow.sandbox.daytona_snapshot_create import (
+    create_snapshot,
+    settle_leftovers,
+    snapshot_timeout_sec,
+    write_leftovers,
 )
 from benchflow.sandbox.protocol import (
     ExecTimeoutError,
@@ -170,6 +177,11 @@ def check_daemon_log_result(result: Any, path: str = DAYTONA_DAEMON_LOG) -> None
     ):
         return
     why = marks[-1].removeprefix("BF daemon-log ") if marks else "no result"
+    if why.startswith("verifier-dir-open"):
+        # The same root exec first closes /logs/verifier (#1247).
+        from benchflow.sandbox._verifier_dir import check_verifier_dir
+
+        check_verifier_dir(f"BF {why}")
     raise RuntimeError(
         f"Daytona's daemon log {path} could not be made root-only ({why}, "
         f"exit status {code!r}); the agent could read it, so the sandbox is "
@@ -284,26 +296,12 @@ class _DaytonaStrategy:
 
 
 async def _deliver_bfx(env: Any) -> None:
-    """bfx by upload (root's 0555 /.bfx), as root on the system shell,
-    before the agent's first byte (TRUSTED-RUNTIME.md §6). A sandbox whose
-    snapshot already has /.bfx gets none and keeps the kit path."""
-    from benchflow._bfx import delivery as bfx_delivery
-
-    if not bfx_delivery.provider_enabled("daytona"):
-        env.bfx_delivery = None
-        return
-    route = await system_shell_route(env)
-
-    async def run_root(command: str) -> tuple[int, str]:
-        result = await env._sandbox_exec(
-            command, user="root", timeout_sec=60, route=route
-        )
-        out = result.stdout or ""
-        if result.return_code != 0:
-            out += result.stderr or ""
-        return result.return_code, out
-
-    await bfx_delivery.deliver_upload(env, "daytona", env._sdk_upload_file, run_root)
+    """A fresh start or a restore has no bfx yet. Native Daytona's one route
+    is per-call, made and checked before each trial's turn
+    (``DaytonaSandbox.plan_bfx_upload``), never a start-time upload to /.bfx
+    (R6); any earlier copy was in the sandbox this one replaced."""
+    env.bfx_delivery = None
+    env._bfx_path = None
 
 
 class _DaytonaDirect(_DaytonaStrategy):
@@ -312,17 +310,35 @@ class _DaytonaDirect(_DaytonaStrategy):
     # Daytona ships a native sandbox-snapshot API on AsyncSandbox; the direct
     # strategy uses it for the container layer of Branch (#384).
     supports_snapshot: bool = True
+    # How long a snapshot whose create failed is looked up by name until
+    # Daytona shows it final, after the create and again at stop(), and how
+    # often (daytona_snapshot_create). A claude-agent-acp sandbox's snapshot
+    # took 150-240 s on Daytona; the stop's look ends inside strict's 300 s
+    # bound on the stop before the verifier.
+    snapshot_look_sec: float = 300.0
+    snapshot_stop_look_sec: float = 240.0
+    snapshot_poll_sec: float = 10.0
 
     def __init__(self, env: DaytonaSandbox) -> None:
         super().__init__(env)
         # Snapshots still in use when their fork finished; stop() deletes them.
         self._deferred_snapshot_refs: set[str] = set()
+        # Snapshots whose create failed and that were still being made when
+        # the look ended, by name, with their record; stop() deletes them.
+        self._snapshot_leftovers: dict[str, dict[str, Any]] = {}
         # Credential files scrubbed out of each snapshot, held in host memory
         # so restore() can put them back (see _snapshot_credentials).
         self._snapshot_credentials: dict[str, list[StashedCredential]] = {}
 
     def _credential_ops(self) -> _DaytonaCredentialOps:
         return _DaytonaCredentialOps(self._env)
+
+    def snapshot_budget_sec(self) -> float:
+        """The longest Daytona can take over one snapshot: the create, and the
+        look after a failed one. The host's hard deadline credits a checkpoint
+        up to this, and a tenth more for the credential scrub and put-back
+        around it (990 s at the defaults; ``checkpoints.clock``)."""
+        return (snapshot_timeout_sec() + self.snapshot_look_sec) * 1.1
 
     async def start(self, force_build: bool) -> None:
         from benchflow.sandbox import daytona as _sdk
@@ -611,7 +627,7 @@ class _DaytonaDirect(_DaytonaStrategy):
         await start_with_identity_probe(
             env,
             f"mkdir -p {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir} && "
-            f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
+            f"chmod 777 {SandboxPaths.agent_dir}",
             functools.partial(
                 env._sandbox_exec,
                 route=await system_shell_route(env),
@@ -620,9 +636,13 @@ class _DaytonaDirect(_DaytonaStrategy):
             env=None,
         )
         # As root, bounded, and checked: the image's default user may not be
-        # root, and the agent must never start while it can read the log.
+        # root, and the agent must never start while it can read the log, or
+        # write /logs/verifier (#1247: root's 0755 from here on).
+        from benchflow.sandbox._verifier_dir import close_verifier_dir_or_exit_cmd
+
         result = await env._sandbox_exec(
-            DAEMON_LOG_ROOT_ONLY_CMD,
+            f"{close_verifier_dir_or_exit_cmd('BF daemon-log')}; "
+            f"{DAEMON_LOG_ROOT_ONLY_CMD}",
             user="root",
             timeout_sec=60,
             route=await system_shell_route(env),
@@ -732,7 +752,22 @@ class _DaytonaDirect(_DaytonaStrategy):
             )
 
         try:
+            # Daytona refuses to delete a sandbox while a snapshot of it is
+            # being made, so a leftover goes first.
             sandbox = env._sandbox
+            try:
+                await self._settle_snapshot_leftovers()
+            except BaseException as e:
+                # Cancelled (strict's bound on the stop before the verifier)
+                # or failed: the leftover stays for the next stop, and the
+                # ledger retries the sandbox's delete while the job lives.
+                if sandbox is not None:
+                    env._log_sandbox_left_behind(
+                        e, sandbox=sandbox, release_channels=True
+                    )
+                    if env._sandbox is sandbox:
+                        env._sandbox = None
+                raise
             if not sandbox:
                 env._log_no_sandbox_to_stop()
             else:
@@ -754,6 +789,23 @@ class _DaytonaDirect(_DaytonaStrategy):
         finally:
             if env._sandbox is None:
                 env._client_manager = None
+
+    async def _settle_snapshot_leftovers(self) -> None:
+        """Wait for, delete and record the snapshots of failed creates that
+        were still being made (``daytona_snapshot_create``)."""
+        if not self._snapshot_leftovers:
+            return
+        settled = await settle_leftovers(
+            self._snapshot_leftovers,
+            look_sec=self.snapshot_stop_look_sec,
+            poll_sec=self.snapshot_poll_sec,
+        )
+        paths = getattr(self._env, "rollout_paths", None)
+        if paths is not None:
+            from benchflow.checkpoints import record_leftovers
+
+            write_leftovers(paths.rollout_dir, settled)
+            record_leftovers(paths.rollout_dir, settled)
 
     async def _delete_deferred_snapshots(self) -> None:
         """Delete snapshots that were in use when their fork finished."""
@@ -919,8 +971,11 @@ class _DaytonaDirect(_DaytonaStrategy):
     async def snapshot(self, name: str | None = None) -> SandboxImage:
         """Create a Daytona snapshot from the current sandbox state.
 
-        Wraps ``AsyncSandbox._experimental_create_snapshot``; the snapshot
-        name is the ``ref`` other Daytona sandboxes can be created from via
+        Wraps ``AsyncSandbox._experimental_create_snapshot`` through
+        :func:`daytona_snapshot_create.create_snapshot`, which gives it
+        ``BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC`` and accounts for a snapshot
+        that outlives a failed create; the snapshot name is the ``ref`` other
+        Daytona sandboxes can be created from via
         :class:`CreateSandboxFromSnapshotParams`.
         """
         env = self._env
@@ -941,15 +996,44 @@ class _DaytonaDirect(_DaytonaStrategy):
         snap_name = name or benchflow_snapshot_name(env.environment_name)
         # Daytona names: lowercase, dash-separated, ascii — sanitize defensively.
         snap_name = snap_name.lower().replace("_", "-")
-        # Agent credential files stay out of the provider snapshot.
+        # Agent credential files stay out of the provider snapshot. Daytona
+        # fixes a snapshot's content when the create starts (measured: a file
+        # written 0.2 s into the call, and files written while it was
+        # SNAPSHOTTING for minutes, weren't in it), so they go back once the
+        # call and the look after a failed one have ended, in every case.
         ops = self._credential_ops()
         stash = await scrub_credentials(ops)
+        started_at = time.time()
         try:
-            await env._sandbox._experimental_create_snapshot(snap_name)
-        finally:
+            await env._scrub_sessions_before_snapshot()
+            late = await create_snapshot(
+                env._sandbox,
+                snap_name,
+                self._snapshot_leftovers,
+                look_sec=self.snapshot_look_sec,
+                poll_sec=self.snapshot_poll_sec,
+            )
+        except BaseException:
+            _record_snapshot_window(env, started_at)
+            env._renew_command_channels()
             if stash:
                 await put_back_credentials(ops, stash)
+            raise
+        _record_snapshot_window(env, started_at)
+        # The snapshot dropped the command channel: the next command, the
+        # put-back's first, starts a new one.
+        env._renew_command_channels()
         if stash:
+            # The snapshot exists and no record names it until the caller
+            # writes one: if the put-back is cancelled or fails, the stop
+            # deletes it.
+            self._snapshot_leftovers[snap_name] = {
+                "name": snap_name,
+                "cause": "put-back interrupted",
+                "outcome": "delete_deferred",
+            }
+            await put_back_credentials(ops, stash)
+            del self._snapshot_leftovers[snap_name]
             self._snapshot_credentials[snap_name] = stash
         env.logger.info(
             f"Snapshot created: {snap_name}; "
@@ -961,6 +1045,7 @@ class _DaytonaDirect(_DaytonaStrategy):
             meta={
                 "sandbox_id": getattr(env._sandbox, "id", "") or "",
                 _TOOLBOX_STARTUP_META: json.dumps(receipt),
+                **late,
             },
         )
 
@@ -1055,6 +1140,19 @@ class _DaytonaDirect(_DaytonaStrategy):
         self._deferred_snapshot_refs.discard(image.ref)
         self._env.logger.info(f"Snapshot deleted: {image.ref}")
         return True
+
+
+def _record_snapshot_window(env: Any, started_at: float) -> None:
+    """Keep on the sandbox when this snapshot ran (host epoch seconds, its
+    create's start to the end of the create and the look after a failed one).
+    Daytona sets the ctime of files in the sandbox's writable layer (the
+    runtime kit's among them) to the snapshot's start, so the
+    walk after the turn, and the shell look after a failed one, don't read
+    that one change as an edit (``_image_trees.snapshot_during``)."""
+    windows = getattr(env, "_snapshot_windows", None)
+    if windows is None:
+        windows = env._snapshot_windows = []
+    windows.append((started_at, time.time()))
 
 
 class _DaytonaCredentialOps:

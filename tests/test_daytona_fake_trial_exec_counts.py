@@ -83,10 +83,14 @@ class _Exec:
 @dataclass
 class _Counts:
     execs: list[_Exec] = field(default_factory=list)
+    # Each kept session's shell probe (DaytonaSandbox._note_session_shell),
+    # its first command, kept apart from the execs it comes before.
+    probes: list[_Exec] = field(default_factory=list)
     sessions_created: int = 0
     sessions_deleted: int = 0
     uploads: int = 0
     downloads: int = 0
+    deletes: int = 0
     searches: int = 0
     file_infos: int = 0
     # The trial's own daytona-execs.json.
@@ -112,6 +116,7 @@ class _Counts:
             "sessions_deleted": self.sessions_deleted,
             "uploads": self.uploads,
             "downloads": self.downloads,
+            "deletes": self.deletes,
             "searches": self.searches,
             "file_infos": self.file_infos,
             "command_seconds": round(
@@ -121,6 +126,10 @@ class _Counts:
                 3,
             ),
             "wait_after_done_seconds": round(sum(lag), 3),
+            "session_probes": len(self.probes),
+            "session_probe_status_requests": sum(
+                e.status_requests for e in self.probes
+            ),
         }
 
 
@@ -179,10 +188,14 @@ class _FakeProcess:
         self._sandbox.counts.sessions_deleted += 1
 
     async def execute_session_command(self, session_id, request, timeout=None):
+        from benchflow.sandbox.daytona import _SESSION_SHELL_PROBE
+
         record = _Exec(
             caller=_caller(), command=request.command, started=time.monotonic()
         )
-        self._sandbox.counts.execs.append(record)
+        counts = self._sandbox.counts
+        probe = request.command == _SESSION_SHELL_PROBE
+        (counts.probes if probe else counts.execs).append(record)
         cmd_id = uuid.uuid4().hex
 
         async def run() -> None:
@@ -280,6 +293,14 @@ class _FakeFs:
         self._sandbox.counts.uploads += 1
         for upload in files:
             await self._put(upload.source, upload.destination)
+
+    async def delete_file(self, path, recursive=False):
+        self._sandbox.counts.deletes += 1
+        code, _, err = await _docker(
+            "exec", self._sandbox.id, "rm", "-r" if recursive else "-f", "--", path
+        )
+        if code != 0:
+            raise RuntimeError(f"fake delete of {path} failed: {err}")
 
     async def _get(self, source: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
@@ -543,6 +564,11 @@ async def test_one_fake_trial_counts_execs_and_polls_before_and_after(
             == summary[arm]["status_requests"]
         ), arm
         assert record["transient_exec_calls"] == summary[arm]["sessions_deleted"]
+        assert record["session_probes"] == summary[arm]["session_probes"] > 0, arm
+        assert (
+            record["session_probe_status_requests"]
+            == summary[arm]["session_probe_status_requests"]
+        ), arm
 
     def seconds(arm: str) -> float:
         record = runs[arm][1].record
@@ -576,7 +602,7 @@ def _u12_group(e: _Exec) -> str:
     innermost = e.caller.split(" < ")[0]
     command = e.command
     if (
-        "chmod 777 /logs/agent /logs/verifier" in command
+        "chmod 777 /logs/agent" in command
         or (innermost == "_setup._resolve_agent_cwd" and command.endswith(" pwd"))
         or (innermost == "lockdown._verifier_uid" and "su " not in command)
     ):
@@ -737,7 +763,19 @@ async def test_one_fake_trial_with_merged_execs(
     # look at the output folder (1), less the three shell walks.
     # The root exec after the copy at test.sh's exit that checks
     # the sandbox stayed still and lets it go on (verifier_freeze): 56.
-    assert summary["exec_calls"] == 56, groups
+    # Each walk takes its roots from the mount table and walks them
+    # in one scan, where it scanned / and then each round of mount points
+    # (3 x 3 became 3 x 2): 53.
+    # After the turn, the two walks use bfx's walk, one call per mount root
+    # (8 here) where one scan took them all (2 x 7 more): 67.
+    # C2-1: each of those two walks runs inside a pause of the agent's
+    # processes, one root exec to stop them and one to continue them
+    # (2 x 2 more): 71.
+    # In audit, the kill after grading lists the agent's processes before and
+    # after it, for kill-after-grading.json: two more (73).
+    # The oracle's exec env is a file in the sandbox: one root exec makes
+    # its folder before the first upload: 74.
+    assert summary["exec_calls"] == 74, groups
     assert {g: groups.get(g, 0) for g in U12_GROUPS} == {
         "start": 1,
         "snapshot": 1,
@@ -755,11 +793,18 @@ async def test_one_fake_trial_with_merged_execs(
     # file's route (DAYTONA-GAPS rule 4): ``if ( <proof> ); then { ...``.
     # In audit only the kit's build and seal are staged; the preparation,
     # plugin discovery, the guard's install and the PATH verdict are strict's.
-    staged = [e for e in counts.execs if e.command.startswith("if ( ")]
+    # An exec's env file is opened the same way, after its own proof.
+    opened = [e for e in counts.execs if e.command.startswith("if ( ")]
+    env_files = [e for e in opened if "8</opt/runtime/run/env-" in e.command]
+    staged = [e for e in opened if e not in env_files]
     assert len(staged) == 2, [e.caller for e in staged]
     assert all("prepare_runtime_tree" in e.caller for e in staged)
-    # Step 5b: bfx uploaded before the turn and afresh after it.
-    assert summary["uploads"] == 4 + len(staged) + 2
+    assert [e.caller for e in env_files] == [
+        "_setup._run_oracle < __init__._run_lifecycle"
+    ]
+    # Step 5b: bfx uploaded before the turn and afresh after it; the
+    # oracle's env file once.
+    assert summary["uploads"] == 4 + len(staged) + 2 + 1
     sync = [e for e in counts.execs if e.sync]
     assert not sync
     assert all(e.status_requests >= 1 and e.logs_at is not None for e in counts.execs)

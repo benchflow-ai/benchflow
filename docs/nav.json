@@ -1,6 +1,5 @@
 {
-  "stable": "0.9.2",
-  "prerelease": "0.10.0rc3",
+  "stable": "0.10.1",
   "sections": [
     {
       "id": "start",
@@ -352,7 +351,7 @@
         },
         {
           "path": "versions/0.10",
-          "title": "What's in 0.10.0rc3",
+          "title": "What's in 0.10.1",
           "job": "The prerelease's features, how to install it, and what may still change.",
           "since": "0.10",
           "kind": "guide"

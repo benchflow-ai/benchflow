@@ -22,9 +22,24 @@ before the agent's first byte, and says which guarantee that gives
   through a never-started container, as the pinned SHA-256. A volume whose
   ``bfx`` is anything else is refused, never refilled. Holds against any
   agent.
-- ``upload`` (providers without read-only mounts): root uploads the binary
-  to ``/.bfx/`` (root:root, 0555) before the agent starts. Holds only
-  against a non-root agent.
+- ``upload`` (AgentCore, which has no read-only mounts): root uploads the
+  binary to ``/.bfx/`` (root:root, 0555) before the agent starts. Holds
+  only against a non-root agent.
+- ``per-call`` (Daytona native, and Daytona DinD by default): a copy in a
+  fresh root-only folder before the turn and another after it
+  (:data:`PER_CALL`); nothing is at ``/.bfx``.
+
+Where bfx sits is half of the guarantee; how the backend starts it is the
+other (:data:`ARGV`, :data:`IMAGE_SHELL`, a backend's ``bfx_launch``).
+Docker and Modal start a program by argv, with nothing of the image's in
+between. Daytona's toolbox and AgentCore's runtime start every command
+through the image's own shell, which a root agent can replace, so there bfx
+holds against a non-root agent only, whatever its delivery
+(:func:`guarantee`). No check of the binary, however it is made, changes
+that: the shell that starts it is the agent's to replace. Modal starts it by
+argv, but its ``/.bfx`` is a link in the sandbox's own filesystem and its
+root has CAP_SYS_PTRACE (both measured by the live run, 11-18), so it holds
+against a non-root agent only as well.
 
 A backend whose delivery has not passed its tests delivers nothing
 (``None``) and keeps today's kit path.
@@ -62,19 +77,105 @@ from benchflow._bfx.locate import (
 BIND = "bind"
 VOLUME = "volume"
 UPLOAD = "upload"
-#: Daytona native with no /.bfx (step 5b): root uploads the pinned
-#: binary into a fresh root-only folder when a walk needs it, before the turn
-#: and again after it, and checks its SHA-256 before every call. Nothing is
-#: at /.bfx/bfx, so root's scripts keep the forms they use without bfx.
+# Daytona native with no /.bfx (step 5b): root uploads the pinned
+#: binary into a fresh root-only folder before the turn, and into another once
+#: the turn is over. No program of the image's checks it: each copy is read
+#: back through the toolbox's file API and hashed here, then reports its own
+#: hash and arch, and its own look finds it root's, before anything uses it.
+#: Nothing is at /.bfx/bfx, so root's scripts keep the forms they use without
+#: bfx.
 PER_CALL = "per-call"
 
-#: Who each delivery holds against.
+#: Who each delivery holds against where the backend starts bfx by argv
+#: (:func:`guarantee`). Per-call is Daytona's alone, which starts it through
+#: the image's shell.
 GUARANTEE = {
     BIND: "any-agent",
     VOLUME: "any-agent",
     UPLOAD: "non-root-agent",
-    PER_CALL: "any-agent",
+    PER_CALL: "non-root-agent",
 }
+
+#: How a backend starts bfx (its ``bfx_launch``): by absolute path with no
+#: program of the image's in between (``docker exec``, Modal's
+#: ``Sandbox.exec``), or through the image's own shell (Daytona's toolbox,
+#: AgentCore's runtime command).
+ARGV = "argv"
+IMAGE_SHELL = "image-shell"
+
+
+def guarantee(mode: str | None, *, launch: str, root_held: bool = True) -> str | None:
+    """Who bfx holds against in a sandbox whose delivery is *mode*: the
+    delivery's :data:`GUARANTEE`, but ``non-root-agent`` where the backend
+    starts bfx through the image's shell (*launch* not :data:`ARGV`), or
+    where root there could get at it anyway (*root_held* False). None
+    without a delivery."""
+    held = GUARANTEE.get(mode) if mode else None
+    if held is None:
+        return None
+    if launch != ARGV or not root_held:
+        return "non-root-agent"
+    return held
+
+
+def not_yet(name: str) -> str:
+    """Why bfx can't run on a backend whose route is not on: the words of
+    rc5's refusal for a backend with no route (the walker's refusal reads a
+    sandbox's ``bfx_unavailable_why``)."""
+    return (
+        f"{name} can't run BenchFlow's integrity check yet; run the trial on "
+        "Docker or Daytona"
+    )
+
+
+def status_uid(text: str) -> int | None:
+    """The real uid in a ``/proc/<pid>/status`` text; None without one."""
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        fields = value.split()
+        if key == "Uid" and fields and fields[0].isdigit():
+            return int(fields[0])
+    return None
+
+
+def per_call_problems(
+    entries: Sequence[Mapping[str, Any]], *, folder: str, binary: str
+) -> list[str]:
+    """What is wrong with a per-call copy, from bfx's own look at it (a
+    ``scan`` of *folder* and *binary*, which lists every folder on the way
+    and follows no link): *binary* must be a regular file of root's, mode
+    0500, in *folder*, root's with mode 0700, below folders that are root's
+    and that nobody else may write (or sticky)."""
+    seen: dict[str, Mapping[str, Any]] = {}
+    for entry in entries:
+        path = entry.get("path") if isinstance(entry, Mapping) else None
+        if isinstance(path, str):
+            seen[path] = entry
+    problems: list[str] = []
+    above = [str(p) for p in reversed(PurePosixPath(folder).parents)]
+    want = [(p, "dir", None) for p in above]
+    want += [(folder, "dir", 0o700), (binary, "file", 0o500)]
+    for path, kind, mode in want:
+        entry = seen.get(path)
+        if entry is None or entry.get("exists") is False:
+            problems.append(f"{path} was not seen")
+            continue
+        bits = entry.get("mode")
+        if (
+            entry.get("type") != kind
+            or entry.get("uid") != 0
+            or not isinstance(bits, int)
+        ):
+            problems.append(
+                f"{path} is a {entry.get('type')} of uid {entry.get('uid')}, "
+                f"not a {kind} of root's"
+            )
+        elif mode is not None and bits & 0o7777 != mode:
+            problems.append(f"{path} has mode {bits & 0o7777:o}, not {mode:o}")
+        elif mode is None and bits & 0o022 and not bits & 0o1000:
+            problems.append(f"{path} is writable by others ({bits & 0o7777:o})")
+    return problems
+
 
 #: Operators and tests choose the Docker delivery: ``auto`` (bind on a local
 #: daemon, volume on a remote one), ``bind``, ``volume`` or ``off`` (no bfx;
@@ -173,29 +274,33 @@ def compose_overlay(
     """A Compose overlay that mounts bfx read-only at :data:`SANDBOX_DIR` in
     *services*: *source* is the host folder (``bind``) or the volume name
     (``volume``)."""
+    document: dict = {
+        "services": {s: {"volumes": [mount(mode, source=source)]} for s in services}
+    }
+    if mode == VOLUME:
+        document["volumes"] = {source: {"external": True, "name": source}}
+    return json.dumps(document, indent=2)
+
+
+def mount(mode: str, *, source: str) -> dict:
+    """The Compose mount of bfx at :data:`SANDBOX_DIR`, read-only (and never
+    filled from the image, for a volume)."""
     if mode == BIND:
-        mount = {
+        return {
             "type": "bind",
             "source": source,
             "target": SANDBOX_DIR,
             "read_only": True,
         }
-        document: dict = {"services": {s: {"volumes": [mount]} for s in services}}
-    elif mode == VOLUME:
-        mount = {
+    if mode == VOLUME:
+        return {
             "type": "volume",
             "source": source,
             "target": SANDBOX_DIR,
             "read_only": True,
             "volume": {"nocopy": True},
         }
-        document = {
-            "services": {s: {"volumes": [mount]} for s in services},
-            "volumes": {source: {"external": True, "name": source}},
-        }
-    else:
-        raise ValueError(f"no Compose overlay for delivery {mode!r}")
-    return json.dumps(document, indent=2)
+    raise ValueError(f"no Compose overlay for delivery {mode!r}")
 
 
 def run_args(mode: str, *, source: str) -> list[str]:
@@ -303,11 +408,65 @@ async def _docker(
         out, err = await asyncio.wait_for(process.communicate(), timeout)
     except BaseException:
         # A timeout here or a cancelled step: the CLI never outlives it.
-        with contextlib.suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
+        await stop_process(process)
         raise
     return process.returncode or 0, out, err
+
+
+#: How long :func:`stop_process` waits, in all, for a stopped process's
+#: pipes to close and its exit to be reported.
+STOP_SEC = 5.0
+
+
+async def _drain(stream: asyncio.StreamReader | None, keep: int) -> bytes:
+    """Read *stream* to its end, keeping its first *keep* bytes."""
+    kept = b""
+    if stream is None:
+        return kept
+    while chunk := await stream.read(1 << 16):
+        if len(kept) < keep:
+            kept += chunk[: keep - len(kept)]
+    return kept
+
+
+def _exited(process: asyncio.subprocess.Process) -> bool:
+    """Whether *process* has exited, asked without reaping it (``waitid``
+    with ``WNOWAIT``): its exit status stays for asyncio's own wait."""
+    if process.returncode is not None:
+        return True
+    try:
+        found = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:  # reaped already
+        return True
+    except (AttributeError, OSError):  # no waitid here: not known to have exited
+        return False
+    return found is not None
+
+
+async def stop_process(
+    process: asyncio.subprocess.Process, *, timeout: float = STOP_SEC
+) -> bytes:
+    """Stop *process*, killed if it still runs, within *timeout* in all, and
+    return the start of what was left on its stderr. Both pipes are read to
+    their end first: some Python builds (3.12.3 among them) report a
+    process's exit only once every pipe has closed, and a pipe left unread
+    past its buffer pauses its transport, so a bare ``wait()`` after reading
+    part of a large output never returns there. One that has exited is not
+    signalled: the signal's own poll would reap it before asyncio does, and
+    asyncio would then report it as 255."""
+    if not _exited(process):
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+    said = b""
+    try:
+        async with asyncio.timeout(timeout):
+            _, said = await asyncio.gather(
+                _drain(process.stdout, 0), _drain(process.stderr, 1 << 16)
+            )
+            await process.wait()
+    except TimeoutError:
+        pass
+    return said
 
 
 def _member_bytes(archive: bytes, name: str) -> bytes | None:
@@ -750,16 +909,18 @@ def version_answer(output: str) -> dict:
 #: Providers whose delivery has passed a live run. The others deliver only
 #: when :data:`PROVIDER_ENV` is ``on`` (their tests use fakes until then),
 #: and otherwise keep the kit path (TRUSTED-RUNTIME.md §6, fallback).
-PROVEN_LIVE: frozenset[str] = frozenset()
+# Modal: the live run MR (11-18), in the benchflow workspace.
+PROVEN_LIVE: frozenset[str] = frozenset({"modal"})
 
 #: ``on`` lets a provider not in :data:`PROVEN_LIVE` deliver bfx.
 PROVIDER_ENV = "BENCHFLOW_BFX_PROVIDERS"
 
-#: Each provider's delivery.
+#: Each provider's delivery. Native Daytona has none here: its one route
+#: is per-call, made and checked before each trial's turn
+# (``DaytonaSandbox.plan_bfx_upload``), never a start-time upload.
 PROVIDER_DELIVERY = {
     "modal": VOLUME,
     "daytona-dind": VOLUME,
-    "daytona": UPLOAD,
     "agentcore": UPLOAD,
 }
 
@@ -777,7 +938,7 @@ def provider_enabled(backend: str, environ: Mapping[str, str] | None = None) -> 
 
 
 async def deliver_by_upload(upload, run_root) -> str:
-    """Upload delivery (native Daytona, AgentCore): before the agent's
+    """Upload delivery (AgentCore): before the agent's
     first byte, root makes :data:`SANDBOX_DIR`, the verified binary is
     uploaded into it, and root makes both 0555 and its own. Returns the
     architecture; raises :class:`BfxUnavailable` when any step fails.
@@ -810,15 +971,19 @@ async def deliver_by_upload(upload, run_root) -> str:
 async def deliver_upload(sandbox, backend: str, upload, run_root) -> None:
     """Set ``sandbox.bfx_delivery`` to ``upload`` when *backend* delivers
     bfx (:func:`provider_enabled`) and :func:`deliver_by_upload` succeeds;
-    otherwise leave it None, so the sandbox keeps the kit path."""
+    otherwise leave it None, so the sandbox keeps the kit path. A delivery
+    keeps the arch bfx reported (``_bfx_arch``, which the walker's record
+    names); a failed one keeps why (``bfx_unavailable_why``)."""
     sandbox.bfx_delivery = None
     if not provider_enabled(backend):
         return
     try:
-        await deliver_by_upload(upload, run_root)
+        arch = await deliver_by_upload(upload, run_root)
     except BfxUnavailable as exc:
         sandbox.logger.debug("bfx: not delivered (%s)", exc)
+        sandbox.bfx_unavailable_why = f"BenchFlow's bfx could not be delivered ({exc})"
         return
+    sandbox._bfx_arch = arch
     sandbox.bfx_delivery = UPLOAD
 
 
@@ -834,18 +999,16 @@ def modal_sdk_supported(version: str) -> bool:
 
 
 def _modal_digest(volume) -> str | None:
-    digest = hashlib.sha256()
-
-    class _Sink:
-        def write(self, data: bytes) -> int:
-            digest.update(data)
-            return len(data)
-
+    """The SHA-256 of the volume's ``bfx``, read through the Volume API (not
+    through any sandbox); None when it can't be read. Modal's SDK writes the
+    file's blocks by offset (``tell``, ``seek``, out of order), so it reads
+    into a seekable buffer, hashed once complete (M7)."""
+    buffer = io.BytesIO()
     try:
-        volume.read_file_into_fileobj("bfx", _Sink())
+        volume.read_file_into_fileobj("bfx", buffer)
     except Exception:
         return None
-    return digest.hexdigest()
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
 
 
 def modal_volume(modal, arch: str = "x86_64"):

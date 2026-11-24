@@ -221,6 +221,7 @@ async def enforce_hard_deadline(
     *,
     config: RolloutConfig,
     stop_agent: Callable[[str], bool] | None = None,
+    paused_sec: Callable[[], float] | None = None,
 ) -> RolloutResult:
     """Run one rollout lifecycle under the host-side hard deadline.
 
@@ -232,17 +233,24 @@ async def enforce_hard_deadline(
     ``finally`` cleanup, bounded by :data:`ABANDON_CLEANUP_BOUND_SEC`) and a
     normal infra-retryable error result is returned. External cancellation of
     the caller is forwarded to the lifecycle under the same cleanup bound.
+    ``paused_sec()`` is time the deadline doesn't count (checkpoint snapshots,
+    ``checkpoints.seconds_spent``): the deadline moves out by it.
     """
     deadline = hard_deadline_sec(config)
     if deadline is None:
         return await lifecycle
     inner = asyncio.ensure_future(lifecycle)
-    if await _finished_within(inner, deadline):
+    if await _finished_by(inner, deadline, paused_sec):
         return inner.result()
     task_name = config.task_path.name
+    paused = paused_sec() if paused_sec is not None else 0.0
+    if paused > 0:
+        deadline_text = f"{deadline:.0f}s, plus {paused:.0f}s of checkpoints"
+    else:
+        deadline_text = f"{deadline:.0f}s"
     reason = (
         f"Agent timed out: still running at the host hard deadline "
-        f"({deadline:.0f}s); agent stopped so the verifier could run"
+        f"({deadline_text}); agent stopped so the verifier could run"
     )
     wedged = "transport or teardown wedged below the idle/wall-clock watchdogs"
     if stop_agent is not None and stop_agent(reason):
@@ -270,6 +278,27 @@ async def enforce_hard_deadline(
         ),
         error_category=INFRA_ERROR,
     )
+
+
+async def _finished_by(
+    inner: asyncio.Task,
+    deadline: float,
+    paused_sec: Callable[[], float] | None,
+) -> bool:
+    """Wait for the lifecycle until ``deadline`` seconds that ``paused_sec()``
+    doesn't cover have passed; it is read again each time the wait ends, at
+    least a second apart, so a checkpoint still running then keeps the
+    lifecycle alive."""
+    if paused_sec is None:
+        return await _finished_within(inner, deadline)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while True:
+        remaining = deadline + paused_sec() - (loop.time() - start)
+        if remaining <= 0:
+            return False
+        if await _finished_within(inner, max(remaining, 1.0)):
+            return True
 
 
 async def _finished_within(inner: asyncio.Task, timeout: float) -> bool:

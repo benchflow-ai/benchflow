@@ -8,6 +8,7 @@ This file is copied into the proxy's private runtime, independent of BenchFlow.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextvars
 import hashlib
@@ -27,6 +28,23 @@ from urllib.parse import parse_qsl, unquote, urlencode
 # model proxy and imports nothing of BenchFlow's: tests/test_effort_request.py
 # holds it to benchflow._utils.config.CLAUDE_EFFORT_LEVELS.
 _CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# The opt-in effort pin (benchflow.effort_pin): BENCHFLOW_EFFORT_PIN holds the
+# run's level, and each generation request's effort level is rewritten to it.
+# The levels BenchFlow knows (benchflow._utils.config.EFFORT_LEVELS):
+# tests/test_effort_pin.py holds it. count_tokens carries an effort and
+# generates nothing.
+_EFFORT_PIN_ENV = "BENCHFLOW_EFFORT_PIN"
+_EFFORT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+_GENERATION_PATHS = frozenset(
+    {
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/responses",
+        "/v1/responses",
+        "/messages",
+        "/v1/messages",
+    }
+)
 
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -96,6 +114,120 @@ def recorded(call_id):
             _tally_awaiting.discard(call_id)
 
 
+def _printable(value, limit):
+    """*value*, which the agent chose (a model it asked for, an effort it
+    sent), cut to *limit* characters, as the run card and the CLI can print
+    it: one with a control character reads ``(unprintable)``."""
+    text = value if isinstance(value, str) else repr(value)
+    text = text[:limit]
+    return text if text.isprintable() else "(unprintable)"
+
+
+def refused(rule, model):
+    """The callback refused the request this boundary is serving (its model
+    gate, the trial's budget): the request's ``request_end`` names the rule
+    and the model asked for, which the trial's ``model-calls.json`` counts."""
+    state = _REQUEST.get()
+    if state is None:
+        return
+    state["refused"] = {"rule": _printable(rule, 64), "model": _printable(model, 200)}
+
+
+def effort_pin():
+    """The level this proxy pins each generation request's effort to; None
+    without a pin. Anything but a level fails closed: the run's switch (1)
+    is replaced by its level before the proxy starts, so a 1 here means the
+    proxy was never told the run's effort."""
+    raw = os.environ.get(_EFFORT_PIN_ENV, "").strip()
+    if raw.lower() in {"", "0", "false", "no", "off"}:
+        return None
+    if raw in _EFFORT_LEVELS:
+        return raw
+    raise RuntimeError(
+        f"{_EFFORT_PIN_ENV}={raw[:40]!r} reached the model proxy, which pins only "
+        f"to a reasoning effort level ({', '.join(_EFFORT_LEVELS)}): the run's "
+        "effort was not given to it"
+    )
+
+
+def _effort_of(body, wire):
+    """The effort a request asks for, as the trial's model calls spell it: a
+    level, or ``budget_tokens=N`` for an Anthropic thinking budget with no
+    level; None when it carries none."""
+    if wire is _MESSAGES:
+        config = body.get("output_config")
+        if isinstance(config, dict) and isinstance(config.get("effort"), str):
+            return _printable(config["effort"], 40)
+        thinking = body.get("thinking")
+        if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+            return None
+        budget = thinking.get("budget_tokens")
+        if isinstance(budget, int) and not isinstance(budget, bool):
+            return f"budget_tokens={budget}"
+        return None
+    if wire is _CHAT:
+        effort = body.get("reasoning_effort")
+        return _printable(effort, 40) if isinstance(effort, str) else None
+    if wire is _RESPONSES:
+        reasoning = body.get("reasoning")
+        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        return _printable(effort, 40) if isinstance(effort, str) else None
+    return None
+
+
+def _pin_effort(body, wire, level):
+    """Rewrite *body*'s effort level to *level* in place, on the field of its
+    wire that carries one: Anthropic ``output_config.effort``, OpenAI
+    ``reasoning_effort``, Responses ``reasoning.effort``. A thinking budget
+    with no level is the agent's own (Claude Code's ``MAX_THINKING_TOKENS``,
+    its main loop's as much as a sub-agent's) and is left as sent; so is a
+    level a field cannot hold (one Anthropic has no name for). The caller
+    reads the effort again."""
+    if wire is _MESSAGES:
+        config = body.get("output_config")
+        if (
+            isinstance(config, dict)
+            and isinstance(config.get("effort"), str)
+            and level in _CLAUDE_EFFORTS
+        ):
+            body["output_config"] = {**config, "effort": level}
+    elif wire is _CHAT and isinstance(body.get("reasoning_effort"), str):
+        body["reasoning_effort"] = level
+    elif wire is _RESPONSES:
+        reasoning = body.get("reasoning")
+        if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str):
+            body["reasoning"] = {**reasoning, "effort": level}
+
+
+def _effort_fields(body, wire, path):
+    """Pin a generation request's effort when the run pins it, and say for its
+    ``request_end`` what it asked for (``effort_asked``), the pin's level
+    (``effort_pin``) and, when the pin changed it, what goes upstream
+    (``effort_sent``). {} for a request that carries no effort and no pin, or
+    is no generation request."""
+    if path not in _GENERATION_PATHS or wire not in (_MESSAGES, _CHAT, _RESPONSES):
+        return {}
+    asked = _effort_of(body, wire)
+    level = effort_pin()
+    fields = {}
+    if asked is not None:
+        fields["effort_asked"] = asked
+    if level is None:
+        return fields
+    fields["effort_pin"] = level
+    if asked is None:
+        return fields
+    _pin_effort(body, wire, level)
+    sent = _effort_of(body, wire)
+    if sent != asked:
+        fields["effort_sent"] = sent
+    return fields
+
+
+# The requests admitted and not yet ended, by request id: their state.
+_OPEN_STATES = {}
+
+
 def _count_open(change):
     with _counting():
         _tally["open"] += change
@@ -112,6 +244,12 @@ def _write_tally():
             "bytes": _tally["bytes"],
             "sha256": _tally_digest.hexdigest(),
             "open": _tally["open"],
+            # Of those, the ones whose provider answer is not whole yet: what
+            # stopping the agent now would cut (the rollout's normal stop
+            # waits for them, LiteLLMProcess.unanswered_calls).
+            "unanswered": sum(
+                1 for state in list(_OPEN_STATES.values()) if not state.get("answered")
+            ),
             "awaiting": len(_tally_awaiting),
             # The first few by id, so a shortfall can name the calls cut off.
             "awaiting_ids": sorted(_tally_awaiting)[:5],
@@ -158,6 +296,204 @@ def _lifecycle(event, **fields):
         pass
 
 
+# The trial's model gate: one-way, closed by SIGUSR2 from the
+# controller as the first step of every stop of the agent (its wall-clock
+# deadline, its trial budget, the host's deadline). From the close on a POST
+# is refused here with a 400 ``trial_deadline_passed`` before LiteLLM sees
+# it, and every request this boundary admitted before the close is told its
+# client left (``receive()`` answers ``http.disconnect``), so LiteLLM ends
+# its upstream stream and logs what it counted of it. The check and the
+# admission (``SingleRouteGuard.__call__``) run with no await between them
+# and the close runs as a callback of the same loop, so every request is
+# either admitted before the close or refused after it. ``<log>.gate-armed``
+# holds this process's pid once the handler is in (SIGUSR2's default action
+# would end the proxy); ``<log>.gate`` is the close's acknowledgement, which
+# the controller waits for before it signals the agent.
+_GATE_SUFFIX = ".gate"
+_GATE_ARMED_SUFFIX = ".gate-armed"
+_GATE_REASON_SUFFIX = ".gate-reason"
+DEADLINE_RULE = "agent-deadline"
+_DEADLINE_MESSAGE = (
+    "trial_deadline_passed: this trial's time for the agent is over; "
+    "the run allows it no more model calls"
+)
+
+
+class _Gate:
+    """The gate's state in this proxy process."""
+
+    def __init__(self):
+        self.closed_at = None
+        self.reason = None
+        self.loop = None
+        self.event = None
+        # The requests admitted and not yet ended: request id -> the task
+        # that serves it.
+        self.open = {}
+
+
+_GATE = _Gate()
+
+
+def _gate_path(suffix):
+    path = os.environ.get("BENCHFLOW_LITELLM_LOG_PATH")
+    return path + suffix if path else None
+
+
+def _write_replacing(target, text):
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def _close_gate(reason=None):
+    """Close the gate (once): cut what is open, record it, acknowledge."""
+    gate = _GATE
+    if gate.closed_at is not None:
+        return
+    if reason is None:
+        reason = "the controller's stop"
+        asked = _gate_path(_GATE_REASON_SUFFIX)
+        if asked:
+            with (
+                suppress(OSError, UnicodeError),
+                open(asked, encoding="utf-8") as handle,
+            ):
+                reason = handle.read(200).strip() or reason
+    gate.closed_at = time.time()
+    gate.reason = reason
+    cut = sorted(gate.open)
+    if gate.event is not None:
+        gate.event.set()
+    for request_id in cut:
+        _lifecycle("deadline_cut", request_id=request_id)
+    if cut:
+        # A request listening for its client (a stream) is told the client
+        # left and ends itself, LiteLLM counting what it streamed; whatever is
+        # still open a moment later (a call waiting on its provider, which
+        # never listens) is cancelled, its upstream connection closed.
+        loop = gate.loop
+        if loop is None:
+            with suppress(RuntimeError):
+                loop = asyncio.get_running_loop()
+        if loop is not None:
+            loop.call_later(_CUT_GRACE_SEC, _cancel_open)
+    _lifecycle("gate_closed", reason=reason, open=len(cut))
+    ack = _gate_path(_GATE_SUFFIX)
+    if ack:
+        _write_replacing(
+            ack,
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "closed_at": gate.closed_at,
+                    "reason": reason,
+                    "open": len(cut),
+                }
+            ),
+        )
+
+
+#: How long the close lets a request that listens for its client end itself
+#: before it cancels what is still open.
+_CUT_GRACE_SEC = 0.25
+
+#: How long a client's departure is kept from LiteLLM while its provider's
+#: answer, already begun (its status is in), is still arriving: an answer the
+#: provider finished but this proxy had not yet read whole when the client
+#: left (the stream is read as LiteLLM forwards it). A provider still
+#: generating after it is cut, as before; it can bill at most this much more.
+_ANSWER_GRACE_SEC = 1.0
+
+
+def _cancel_open():
+    for task in list(_GATE.open.values()):
+        if task is not None and not task.done():
+            task.cancel()
+
+
+def _gate_refused_upstream(httpx, request):
+    """A send attempted after the gate closed: refused here, at the HTTP
+    client, so no retry (BenchFlow's MiMo retry, LiteLLM's own) and no call
+    that was admitted before the close reaches a provider after it."""
+    _lifecycle(
+        "refused",
+        rule=DEADLINE_RULE,
+        at="upstream",
+        path=_wire_path(request),
+        closed_at=_GATE.closed_at,
+    )
+    return httpx.Response(
+        400,
+        json={"error": {"message": _DEADLINE_MESSAGE, "type": "invalid_request_error"}},
+        request=request,
+    )
+
+
+def _on_gate_signal(signum, frame):
+    loop = _GATE.loop
+    if loop is None:
+        # No request reached this boundary yet: nothing is open or being
+        # written, so the close is whole here.
+        _close_gate()
+        return
+    # The handler runs between two bytecodes of the loop's own thread: the
+    # close waits for the loop, never splitting a check from its admission.
+    try:
+        loop.call_soon_threadsafe(_close_gate)
+    except RuntimeError:
+        _close_gate()
+
+
+def _install_gate_signal():
+    with suppress(AttributeError, OSError, ValueError):
+        signal.signal(signal.SIGUSR2, _on_gate_signal)
+        armed = _gate_path(_GATE_ARMED_SUFFIX)
+        if armed:
+            _write_replacing(armed, f"{os.getpid()}\n")
+
+
+async def _refuse_after_gate(send, path):
+    _lifecycle(
+        "refused",
+        rule=DEADLINE_RULE,
+        path=path,
+        closed_at=_GATE.closed_at,
+        reason=_GATE.reason,
+    )
+    await _deadline_response(send)
+
+
+async def _deadline_response(send):
+    payload = json.dumps(
+        {"error": {"message": _DEADLINE_MESSAGE, "type": "invalid_request_error"}}
+    ).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 400,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
+
+
+# How a provider's stream says its answer, usage included, is whole: the
+# Messages API's last event, the end of a chat-completions stream, the
+# Responses API's terminal events. Each is matched at a line start, where a
+# model's own text (always inside a JSON string, newlines escaped) never is.
+_ANSWER_DONE = (
+    b"\nevent: message_stop",
+    b"\ndata: [DONE]",
+    b"\nevent: response.completed",
+    b"\nevent: response.incomplete",
+)
+
+
 class _UpstreamAttempt:
     def __init__(self, request):
         self.request = _REQUEST.get()
@@ -170,6 +506,9 @@ class _UpstreamAttempt:
         self.ended = False
         # The provider's stream raised while it was read.
         self.stream_error = False
+        # The provider's stream ended on its own (or its body was read whole).
+        self.eof = False
+        self.tail = b"\n"
         if self.request is not None:
             import httpx
 
@@ -193,6 +532,16 @@ class _UpstreamAttempt:
         if self.request is not None and self.status is not None and self.status >= 500:
             # Validate the error body the client reads; never log its content.
             self.error_body.extend(data)
+        if (
+            self.request is not None
+            and self.status is not None
+            and self.status < 400
+            and not self.encoding
+        ):
+            window = self.tail + bytes(data)
+            if any(marker in window for marker in _ANSWER_DONE):
+                self.request["answered"] = True
+            self.tail = window[-64:]
 
     def end(self):
         if self.ended or self.request is None:
@@ -216,6 +565,8 @@ class _UpstreamAttempt:
                 invalid = True
         if self.status is None or self.status >= 400:
             self.request["failed_at"] = self.started
+        elif self.eof and not self.stream_error:
+            self.request["answered"] = True
         self.request["upstream_seconds"] += elapsed
         _lifecycle(
             "upstream_end",
@@ -226,13 +577,17 @@ class _UpstreamAttempt:
             upstream_seconds=elapsed,
             invalid_provider_response=invalid,
             stream_error=self.stream_error,
+            answered=bool(self.request.get("answered")),
         )
 
 
 def _track_response(httpx, response, attempt, *, asynchronous):
     attempt.status = response.status_code
+    if attempt.request is not None and response.status_code < 400:
+        attempt.request["answering"] = True
     if response.is_stream_consumed:
         attempt.chunk(response.content)
+        attempt.eof = True
         attempt.end()
         return response
     stream = response.stream
@@ -244,6 +599,7 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+                attempt.eof = True
             except Exception:
                 # The provider's stream broke while it was read: a reset, a
                 # body cut short. A reader that stops early raises
@@ -265,6 +621,7 @@ def _track_response(httpx, response, attempt, *, asynchronous):
                 async for chunk in stream:
                     attempt.chunk(chunk)
                     yield chunk
+                attempt.eof = True
             except Exception:
                 attempt.stream_error = True
                 raise
@@ -1010,6 +1367,9 @@ _OUT_CONVERSE_EXTRA = frozenset(
         "inferenceConfig",
         # Anthropic tools on Converse; checked like Messages tools below.
         "tools",
+        # LiteLLM's translation of parallel_tool_calls for Claude on
+        # Converse: {"disable_parallel_tool_use": bool}, checked below.
+        "tool_choice",
     }
 )
 # Anthropic tools the caller runs, by versioned type, with exactly the fields
@@ -1462,6 +1822,67 @@ _OUT_PATHS = (
     ),
     (re.compile(r".*/cachedContents"), "gemini_cache"),
 )
+# Responses-API fields that LiteLLM's translation into another protocol
+# carries over as they are, though that protocol has no such field (measured
+# over every field the client boundary admits, against the pinned
+# translators): under web restrictions they are removed from the translated
+# body before the check below, which refuses every unknown field. Nothing
+# downstream reads them. client_metadata is Codex's tracing data (its
+# installation, session, thread and turn ids); max_tool_calls caps calls to
+# provider-hosted tools, which a translated request cannot make. Per outbound
+# protocol: (the object they sit in, by key path; the fields).
+_CARRIED_OVER = {
+    "chat": ((), frozenset({"client_metadata", "max_tool_calls"})),
+    "messages": ((), frozenset({"max_tool_calls"})),
+    "converse": (("additionalModelRequestFields",), frozenset({"max_tool_calls"})),
+}
+
+
+def _without_carried_over(path, content):
+    """``content`` without the fields above, or None when it carries none."""
+    protocol = next((name for rx, name in _OUT_PATHS if rx.fullmatch(path)), None)
+    if protocol not in _CARRIED_OVER:
+        return None
+    keys, fields = _CARRIED_OVER[protocol]
+    try:
+        body = json.loads(content)
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+    holder = body
+    for key in keys:
+        holder = holder.get(key) if isinstance(holder, dict) else None
+    if not isinstance(holder, dict) or not fields & holder.keys():
+        return None
+    for field in fields:
+        holder.pop(field, None)
+    if keys and not holder:
+        # An additionalModelRequestFields object left empty goes too.
+        body.pop(keys[0], None)
+    return json.dumps(body, separators=(",", ":")).encode()
+
+
+def _restricted_request(httpx, request, content):
+    """The request that leaves under web restrictions, and its body."""
+    if request.method != "POST":
+        return request, content
+    stripped = _without_carried_over(_wire_path(request), content)
+    if stripped is None:
+        return request, content
+    headers = [
+        (key, value)
+        for key, value in request.headers.raw
+        if key.lower() not in {b"content-length", b"transfer-encoding"}
+    ]
+    rebuilt = httpx.Request(
+        request.method,
+        request.url,
+        headers=headers,
+        content=stripped,
+        extensions=request.extensions,
+    )
+    return rebuilt, stripped
+
+
 # Gemini caches created through this boundary, by provider resource name.
 _OWN_CACHES: set[str] = set()
 _WRAPPERS: set[object] = set()
@@ -1688,6 +2109,13 @@ def _converse_refusal(body, path="", *, fields=_OUT_CONVERSE):
         refusal = _unknown(extra, _OUT_CONVERSE_EXTRA, "additionalModelRequestFields")
         if refusal is None and "tools" in extra:
             refusal = _anthropic_tools_refusal(extra["tools"])
+        choice = extra.get("tool_choice") if refusal is None else None
+        if choice is not None and not (
+            isinstance(choice, dict)
+            and choice.keys() == {"disable_parallel_tool_use"}
+            and isinstance(choice["disable_parallel_tool_use"], bool)
+        ):
+            refusal = "additionalModelRequestFields tool_choice is not the parallel-tool switch"
     config = body.get("toolConfig")
     if refusal is None and config is not None:
         refusal = _unknown(config, {"tools", "toolChoice"}, "toolConfig")
@@ -1906,10 +2334,11 @@ def install_outbound_check() -> None:
     async_send = httpx.AsyncClient.send
 
     def send(self, request, **kwargs):
+        if _GATE.closed_at is not None:
+            return _gate_refused_upstream(httpx, request)
         if _web_restricted():
-            reason = outbound_refusal(
-                request.method, _wire_path(request), request.read()
-            )
+            request, content = _restricted_request(httpx, request, request.read())
+            reason = outbound_refusal(request.method, _wire_path(request), content)
             if reason is not None:
                 return _refused_response(httpx, request, reason)
         token = checked.set(True)
@@ -1935,8 +2364,12 @@ def install_outbound_check() -> None:
         return response
 
     async def asend(self, request, **kwargs):
+        if _GATE.closed_at is not None:
+            return _gate_refused_upstream(httpx, request)
         if _web_restricted():
-            content = await request.aread()
+            request, content = _restricted_request(
+                httpx, request, await request.aread()
+            )
             reason = outbound_refusal(request.method, _wire_path(request), content)
             if reason is not None:
                 return _refused_response(httpx, request, reason)
@@ -1972,6 +2405,8 @@ def install_outbound_check() -> None:
     session_request = aiohttp.ClientSession._request
 
     async def unchecked_request(self, method, url, *args, **kwargs):
+        if _GATE.closed_at is not None:
+            raise aiohttp.ClientError(_DEADLINE_MESSAGE)
         if _web_restricted() and not checked.get():
             raise aiohttp.ClientError(
                 f"{_WEB_TOOLS_DISABLED}: request outside the checked HTTP client"
@@ -1986,6 +2421,8 @@ class SingleRouteGuard:
         self.app = app
 
     async def __call__(self, scope: dict[str, Any], receive, send):
+        if _GATE.loop is None:
+            _GATE.loop = asyncio.get_running_loop()
         if scope["type"] == "websocket":
             # The vendor also exposes Responses/realtime sockets. They must
             # not provide a second, uninspected way to submit routing controls.
@@ -2029,6 +2466,7 @@ class SingleRouteGuard:
                 vertex_path = f"/vertex_ai/v1/projects/{project}/locations/{location}/publishers/google/models/{native[1]}:{native[2]}"
         chunks = []
         unknown_fields = []
+        effort = {}
         if valid and method == "POST":
             # LiteLLM chooses its parser from Content-Type. Validate and replay
             # one JSON object, never bytes another parser can reinterpret as
@@ -2070,6 +2508,7 @@ class SingleRouteGuard:
                         )
                     )
                 if valid:
+                    effort = _effort_fields(body, allowed, path)
                     chunks = [json.dumps(body, separators=(",", ":")).encode()]
                 if (
                     valid
@@ -2161,6 +2600,16 @@ class SingleRouteGuard:
                 [(k, v) for k, v in query if k != "key"]
             ).encode()
 
+        if method != "POST":
+            return await self.app(scope, receive, send)
+        # The gate's check and the admission: no await between them.
+        if _GATE.closed_at is not None:
+            await _refuse_after_gate(send, path)
+            return
+        if _GATE.event is None:
+            _GATE.event = asyncio.Event()
+        closed = _GATE.event
+
         async def replay():
             if chunks:
                 return {
@@ -2168,16 +2617,55 @@ class SingleRouteGuard:
                     "body": chunks.pop(0),
                     "more_body": bool(chunks),
                 }
-            return await receive()
+            if closed.is_set():
+                return {"type": "http.disconnect"}
+            if state.get("kept"):
+                # Kept from LiteLLM (below): only the gate's close ends it.
+                await closed.wait()
+                return {"type": "http.disconnect"}
+            message = asyncio.ensure_future(receive())
+            gate = asyncio.ensure_future(closed.wait())
+            done, _pending = await asyncio.wait(
+                {message, gate}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if message in done:
+                gate.cancel()
+                received = message.result()
+                if received.get("type") == "http.disconnect":
+                    state["client_left"] = time.monotonic() - started
+                if received.get("type") == "http.disconnect" and state.get("answering"):
+                    waited = time.monotonic() + _ANSWER_GRACE_SEC
+                    while (
+                        not state.get("answered")
+                        and not closed.is_set()
+                        and time.monotonic() < waited
+                    ):
+                        await asyncio.sleep(0.01)
+                if received.get("type") == "http.disconnect" and state.get("answered"):
+                    # The client left after its provider's whole answer, usage
+                    # included, reached this proxy (an agent stopped just
+                    # after it asked). LiteLLM is not told: it ends the stream
+                    # it already holds and logs the provider's own count, so
+                    # the call is not a cut stream with an estimated usage.
+                    # One the provider had not answered still is.
+                    state["kept"] = True
+                    await closed.wait()
+                    return {"type": "http.disconnect"}
+                return received
+            # The gate closed while LiteLLM waited on the client: tell it
+            # the client left, so it ends the upstream stream.
+            message.cancel()
+            return {"type": "http.disconnect"}
 
-        if method != "POST":
-            return await self.app(scope, receive, send)
         state = {
             "id": uuid.uuid4().hex,
             "upstream_seconds": 0.0,
             "retry_wait_seconds": 0.0,
             "failed_at": None,
+            "effort": effort,
         }
+        _GATE.open[state["id"]] = None
+        _OPEN_STATES[state["id"]] = state
         token = _REQUEST.set(state)
         started = time.monotonic()
         status = None
@@ -2195,7 +2683,12 @@ class SingleRouteGuard:
                 _lifecycle("response_start", request_id=state["id"], status=status)
             if message["type"] == "http.response.body":
                 response_bytes += len(message.get("body", b""))
-            await send(message)
+            if state.get("kept"):
+                # Nobody to send to; the answer is only being accounted.
+                with suppress(Exception):
+                    await send(message)
+            else:
+                await send(message)
             if message["type"] == "http.response.body" and not message.get(
                 "more_body", False
             ):
@@ -2204,7 +2697,25 @@ class SingleRouteGuard:
                 response_complete = True
 
         try:
-            await self.app(scope, replay, counted_send)
+            # Served in a task of its own, which the gate's close can cancel
+            # (its context, with _REQUEST, is this one's copy).
+            serving = asyncio.ensure_future(self.app(scope, replay, counted_send))
+            _GATE.open[state["id"]] = serving
+            try:
+                await serving
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if not serving.cancelled() or (
+                    current is not None and current.cancelling()
+                ):
+                    serving.cancel()
+                    raise
+                # The gate's close cut it: the agent is told so, if nothing
+                # of an answer went out yet.
+                if status is None:
+                    with suppress(Exception):
+                        await _deadline_response(counted_send)
+                    response_complete = False
         finally:
             _lifecycle(
                 "request_end",
@@ -2215,15 +2726,32 @@ class SingleRouteGuard:
                 duration_seconds=time.monotonic() - started,
                 upstream_seconds=state["upstream_seconds"],
                 retry_wait_seconds=state["retry_wait_seconds"],
+                # When the guard saw the client leave (seconds after the
+                # start); response_complete then says whether the provider's
+                # answer was kept whole or the call was cut.
+                **(
+                    {"client_left": round(left, 3)}
+                    if isinstance(left := state.get("client_left"), float)
+                    else {}
+                ),
+                # A refusal the callback reported (refused()), and the
+                # request's effort: asked, pinned, sent (_effort_fields).
+                **({"refused": state["refused"]} if "refused" in state else {}),
+                **state["effort"],
             )
             _count_open(-1)
+            _GATE.open.pop(state["id"], None)
+            _OPEN_STATES.pop(state["id"], None)
             _REQUEST.reset(token)
 
 
 def install() -> None:
     """Called by sitecustomize before the CLI can build its middleware stack."""
+    # A pin that is not a level stops the proxy here, before any request.
+    effort_pin()
     from litellm.proxy.proxy_server import app
 
     install_outbound_check()
     app.add_middleware(SingleRouteGuard)
     _install_tally_signal()
+    _install_gate_signal()

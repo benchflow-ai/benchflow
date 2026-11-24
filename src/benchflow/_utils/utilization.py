@@ -119,7 +119,8 @@ def summarize(
             )
     elif window.connected:
         parts.append(
-            "model load not visible (no BenchFlow model proxy on this machine)"
+            "model load not visible from this machine (no model proxy here reports "
+            "its requests in flight; usage is still counted)"
         )
     if setup_bound and not first:
         warnings.append(

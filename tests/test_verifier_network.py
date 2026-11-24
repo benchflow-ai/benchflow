@@ -3,9 +3,11 @@
 Root's test.sh runs the agent's code. It starts through a bounded launch (no
 NET_ADMIN, NET_RAW, SETUID or SETGID, the verifier's group, no new
 privileges) that records its capabilities; the verifier's network is
-``verifier.network_mode``, else the sandbox's; a failed test.sh the network
-refused packets ends "verifier network refused", unscored, and every reader
-says so. The real-Docker matrix (four policies x oracle, script and model
+``verifier.network_mode``, else the sandbox's; a test.sh the network refused
+packets is scored as it says and flagged (result.json's
+``verifier_network_refused``), and every reader says so. A result.json from
+before 0.10.1, when a failed one ended "verifier network refused", unscored,
+still reads so. The real-Docker matrix (four policies x oracle, script and model
 agents) ran on a GCE VM; see the PR.
 """
 
@@ -29,10 +31,7 @@ from benchflow._utils.scoring import (
 )
 from benchflow.sandbox import verifier_network as vn
 from benchflow.task.config import NetworkMode, TaskConfig
-from benchflow.task.verifier_errors import (
-    VerifierLaunchRefusedError,
-    VerifierNetworkRefusedError,
-)
+from benchflow.task.verifier_errors import VerifierLaunchRefusedError
 
 # The record test.sh writes as root on Docker (fx609, every policy): Docker's
 # default set without NET_RAW; SETUID and SETGID kept (apt drops to _apt).
@@ -106,7 +105,9 @@ def test_a_separate_verifier_sandbox_keeps_the_network_it_declares():
         (0, 1, 0.0, False),  # nothing refused: the tests' own verdict
     ],
 )
-def test_refused_packets_and_no_pass_end_the_run(refused, exit_code, reward, ends):
+def test_refused_packets_and_no_pass_fall_short_of_a_pass(
+    refused, exit_code, reward, ends
+):
     assert vn.network_refusal_ends(refused, exit_code, reward) is ends
 
 
@@ -389,14 +390,26 @@ def _held(baseline: int = 4) -> vn.VerifierNetwork:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("reward", "exit_code"), [("0", 1), ("0", 0), ("0.5", 0)])
-async def test_a_failed_test_sh_the_network_refused_ends_verifier_network_refused(
+async def test_a_failed_test_sh_the_network_refused_is_scored_and_flagged(
     tmp_path, reward, exit_code
 ):
+    """The refused packets can be test.sh's or come from code the agent left
+    that test.sh runs: the reward stands as test.sh gave it, never unscored,
+    and the refusal is kept for the trial's read flag."""
     verifier, paths, _ = _verifier(
         tmp_path, _held(), reward=reward, exit_code=exit_code, refused_now=7
     )
-    with pytest.raises(VerifierNetworkRefusedError, match="refused it 3 packets"):
-        await verifier.verify()
+    result = await verifier.verify()
+    assert result.rewards == {"reward": float(reward)}
+    assert verifier.network_refusal == {
+        "phase": "test.sh",
+        "where": "in-container",
+        "mode": "no-network",
+        "refused": 3,
+        "refused_words": "3 packets",
+        "exit_code": exit_code,
+        "passed": False,
+    }
     record = json.loads((paths.verifier_dir / vn.VERIFIER_NETWORK_RECORD).read_text())
     assert record == {
         "where": "in-container",
@@ -414,6 +427,19 @@ async def test_a_pass_despite_refusals_keeps_its_reward_and_records_the_count(tm
     assert result.rewards == {"reward": 1.0}
     record = json.loads((paths.verifier_dir / vn.VERIFIER_NETWORK_RECORD).read_text())
     assert record["refused_packets"] == 2
+    assert verifier.network_refusal is not None
+    assert verifier.network_refusal["passed"] is True
+    assert verifier.network_refusal["refused"] == 2
+
+
+@pytest.mark.asyncio
+async def test_nothing_refused_flags_nothing(tmp_path):
+    verifier, _, _ = _verifier(
+        tmp_path, _held(), reward="0", exit_code=1, refused_now=4
+    )
+    result = await verifier.verify()
+    assert result.rewards == {"reward": 0.0}
+    assert verifier.network_refusal is None
 
 
 @pytest.mark.asyncio
@@ -430,14 +456,22 @@ async def test_a_separate_verifier_sandbox_runs_test_sh_under_its_own_network(tm
 
 
 @pytest.mark.asyncio
-async def test_no_usable_reward_after_refusals_ends_verifier_network_refused(tmp_path):
-    """FXPB: a verify.py that exits 3 with no reward after refused fetches ends
-    "verifier network refused", not "verifier wrote no usable reward"."""
+async def test_no_usable_reward_after_refusals_keeps_its_ending_and_is_flagged(
+    tmp_path,
+):
+    """FXPB: a verify.py that exits 3 with no reward after refused fetches
+    keeps "verifier wrote no usable reward" (a failure in every score), and
+    the refusal is kept for the trial's read flag."""
+    from benchflow.task.verifier_errors import RewardFileNotFoundError
+
     verifier, _, _ = _verifier(
         tmp_path, _held(), reward=None, exit_code=3, refused_now=7
     )
-    with pytest.raises(VerifierNetworkRefusedError, match="left no usable reward"):
+    with pytest.raises(RewardFileNotFoundError):
         await verifier.verify()
+    assert verifier.network_refusal is not None
+    assert verifier.network_refusal["no_usable_reward"] is True
+    assert verifier.network_refusal["passed"] is False
 
 
 @pytest.mark.asyncio
@@ -483,9 +517,11 @@ def test_the_no_route_counting_rules_are_valid_sh():
 
 # --- every reader -------------------------------------------------------------------
 
+# A result.json written before 0.10.1, when a failed test.sh the network
+# refused ended "verifier network refused", unscored.
 REFUSED = (
-    vn.VERIFIER_NETWORK_REFUSED
-    + "test.sh exited 0 with reward 0.0 after the verifier's network (in-container "
+    "verifier network refused: "
+    "test.sh exited 0 with reward 0.0 after the verifier's network (in-container "
     "under no-network: verifier.network_mode, else the sandbox's policy) refused it 3 "
     "packets, so the run is not scored."
 )
@@ -510,7 +546,7 @@ def _rows() -> list[dict]:
     ]
 
 
-def test_the_ending_is_unscored_and_counts_0_in_mean_reward():
+def test_an_old_ending_reads_unscored_and_counts_0_in_mean_reward():
     from benchflow import scoring
 
     rows = _rows()
@@ -557,7 +593,9 @@ def test_the_run_card_counts_and_flags_the_job():
 
     lines = after_run_lines({"verifier_network_refusals": 2})
     assert any(
-        '2 trials ended "verifier network refused"' in line and "flagged" in line
+        "2 trials had test.sh refused by the verifier's network" in line
+        and "scored as test.sh says" in line
+        and "flagged" in line
         for line in lines
     )
     assert not any("Verifier:" in line for line in after_run_lines({}))
@@ -580,7 +618,7 @@ def test_load_job_load_trial_and_the_export_read_the_ending(tmp_path):
     assert (
         bf.load_trial(refused.path)
         .raw["verifier_error"]
-        .startswith(vn.VERIFIER_NETWORK_REFUSED)
+        .startswith("verifier network refused: ")
     )
     exported = job_export(loaded, include_verifier=False)
     (row,) = [t for t in exported.trials if t.verifier_error]
@@ -595,7 +633,6 @@ def test_the_rollout_records_the_ending_with_its_words():
     from benchflow.rollout import _setup
 
     source = inspect.getsource(_setup)
-    assert 'verifier_error = f"{VERIFIER_NETWORK_REFUSED}{e}"' in source
     assert 'verifier_error = f"{VERIFIER_LAUNCH_REFUSED_ERROR}{e}"' in source
     assert 'verifier_error = f"{VERIFIER_NETWORK_UNHELD}{e}"' in source
     assert isinstance(NetworkMode.PUBLIC.value, str) and SimpleNamespace is not None
@@ -659,3 +696,121 @@ def test_the_launch_check_reads_its_status_again_and_still_fails_closed(
     else:
         assert done.returncode == 0 and "RAN" in done.stdout, done
         assert "CapBnd=00000000a80405fb" in record.read_text()
+
+
+def _flagged_rows() -> list[dict]:
+    """result.json as 0.10.1 writes it: test.sh's reward, and the refusal."""
+    refusal = {
+        "phase": "test.sh",
+        "where": "in-container",
+        "mode": "no-network",
+        "refused": 3,
+        "refused_words": "3 packets",
+        "exit_code": 1,
+        "passed": False,
+    }
+    return [
+        {
+            "task_name": "a",
+            "rewards": {"reward": 1.0},
+            "error": None,
+            "verifier_error": None,
+            "verifier_network_refused": {**refusal, "exit_code": 0, "passed": True},
+        },
+        {
+            "task_name": "b",
+            "rewards": {"reward": 0.0},
+            "error": None,
+            "verifier_error": None,
+            "verifier_network_refused": refusal,
+        },
+    ]
+
+
+def test_a_flagged_trial_is_scored_and_counted_apart():
+    rows = _flagged_rows()
+    assert [classify_score_outcome(row) for row in rows] == ["passed", "failed"]
+    summary = score_summary_fields(rows)
+    assert summary["verifier_network_refusals"] == 2
+    assert summary["unscored"] == 0 and summary["verifier_errored"] == 0
+    assert summary["mean_reward"] == pytest.approx(0.5)
+    assert summary["score_ratio"] == pytest.approx(0.5)
+
+
+def test_a_phase_s_refusal_record_reaches_the_rollout():
+    """A verify reports the refusal as a named record beside its read flag;
+    the rollout keeps both for result.json (``_trial_records``)."""
+    from types import SimpleNamespace
+
+    from benchflow._utils.trial_warnings import (
+        keep_trial_warnings,
+        recording_trial_warnings,
+        report_trial_record,
+        report_trial_warning,
+    )
+
+    rollout = SimpleNamespace()
+    with recording_trial_warnings() as warnings:
+        report_trial_warning("flag")
+        report_trial_record("verifier_network_refused", {"refused": 3})
+    keep_trial_warnings(rollout, warnings)
+    assert rollout._warnings == ["flag"]
+    assert rollout._trial_records == {"verifier_network_refused": {"refused": 3}}
+
+
+def test_held_services_are_counted_for_the_run_card():
+    """A held compose service that restarted, or exited after start-up, is
+    counted in summary.json and named on the run card; a one-shot service done
+    at start-up is the task's own shape and is not."""
+    from benchflow.run_checks import after_run_lines
+
+    rows = [
+        {
+            "task_name": "a",
+            "rewards": {"reward": 0.0},
+            "verifier_error": None,
+            "held_after_restart": [{"service": "side"}],
+        },
+        {
+            "task_name": "b",
+            "rewards": {"reward": 0.0},
+            "verifier_error": None,
+            "held_exited": [{"service": "side", "phase": "the agent's turn"}],
+        },
+        {
+            "task_name": "c",
+            "rewards": {"reward": 1.0},
+            "verifier_error": None,
+            "held_exited": [{"service": "side", "phase": "start-up"}],
+        },
+    ]
+    summary = score_summary_fields(rows)
+    assert (summary["held_restarts"], summary["held_exits"]) == (1, 1)
+    lines = after_run_lines(summary)
+    assert any(
+        "1 trial with a held compose service that Docker restarted" in line
+        and "1 trial with a held compose service that exited after start-up" in line
+        for line in lines
+    ), lines
+    assert not any("Services:" in line for line in after_run_lines({}))
+
+
+def test_the_job_s_card_is_flagged_for_held_services(tmp_path):
+    """The run card's after-run block carries the held-service counts and
+    the job's flag (``held_service``); with none, no flag."""
+    from benchflow.evaluation import Evaluation
+
+    ev = Evaluation.__new__(Evaluation)
+    ev._run_card = {}
+    ev._log_run_card_after(
+        tmp_path, {}, held_services={"held_restarts": 1, "held_exits": 2}
+    )
+    after = ev._run_card["after_run"]
+    assert (after["held_restarts"], after["held_exits"]) == (1, 2)
+    assert "held_service" in after["warnings"]
+    quiet = Evaluation.__new__(Evaluation)
+    quiet._run_card = {}
+    quiet._log_run_card_after(
+        tmp_path, {}, held_services={"held_restarts": 0, "held_exits": 0}
+    )
+    assert "held_service" not in (quiet._run_card["after_run"].get("warnings") or [])

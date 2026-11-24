@@ -32,6 +32,9 @@ async def test_install_agent_records_the_pre_turn_probe_after_lockdown(
     rollout._rollout_dir.mkdir()
     rollout._rollout_paths = MagicMock()
     rollout._task = MagicMock()
+    # A task with no verifier user (the default: test.sh runs as root). A MagicMock
+    # user has no uid to read, and the RB2 check before the turn (F7) refuses that.
+    rollout._task.config.verifier.user = None
     # FIX-49 r4: this unnamed-runner fake has a readable tests folder.
     rollout._task.task_dir = tmp_path / "task"
     (rollout._task.task_dir / "tests").mkdir(parents=True)

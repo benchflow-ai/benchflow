@@ -237,8 +237,8 @@ def test_the_stat_look_flags_a_changed_or_gone_interpreter():
     command = trees.interpreter_stat_command(before)
     assert command and "stat -c" in command
     output = (
-        "/usr/local/bin/python3.6|81ed|0|0|10|5|6\n"
-        "/usr/local/bin/python3|81ed|0|0|9|5|99\n"
+        "/usr/local/bin/python3.6|81ed|0|0|10|5|6|1|2|1\n"
+        "/usr/local/bin/python3|81ed|0|0|9|5|99|3|2|1\n"
         "/usr/local/bin/python|gone\n"
     )
     found = trees.interpreter_stat_flags(before, output)
@@ -537,6 +537,112 @@ def test_own_processes_reads_en698s_record():
 
     assert trees.own_processes(Env()) == {(60, 400), (61, 401)}
     assert trees.own_processes(object()) == frozenset()
+
+
+#: A Daytona sandbox as root's listing at grading reads it: PID 1 is
+#: Daytona's daemon, each session BenchFlow opened is a bash it started (the
+#: host recorded each one's pid and start when it opened), and the walk runs
+#: under BenchFlow's command channel (its helper, 2136).
+DAYTONA_BEFORE = (
+    _proc(1, 0, 10, "/usr/local/bin/daytona sleep infinity"),
+    _proc(83, 1, 20, "/usr/bin/bash"),
+    _proc(97, 83, 20, "tail -f /dev/null"),
+    _proc(
+        2136,
+        1,
+        60,
+        "/lib64/ld-linux-x86-64.so.2 --library-path /opt/runtime/rt/lib "
+        "/opt/runtime/rt/libexec/python3 -I -S -B /opt/runtime/run/stage-1/helper",
+    ),
+    _proc(2137, 1, 60, "/usr/bin/bash"),
+)
+DAYTONA_AFTER = (
+    *DAYTONA_BEFORE,
+    _proc(2526, 1, 900, "/usr/bin/bash"),
+    _proc(2578, 1, 910, "/usr/bin/bash"),
+    _proc(2693, 1, 920, "/usr/bin/bash"),
+    _proc(2760, 2136, 930, '/opt/runtime/rt/bin/sh -c _BENCHFLOW_IMAGE_PATH="$PATH"'),
+    _proc(2761, 2760, 931, "/opt/runtime/rt/libexec/python3 -I -S -B -"),
+)
+#: The sessions the host recorded as they opened.
+DAYTONA_SHELLS = frozenset({(2526, 900), (2578, 910), (2693, 920)})
+
+
+def test_daytonas_recorded_session_shells_and_the_walks_own_tree_are_benchflows():
+    """G1/D1: on Daytona the sessions BenchFlow opened after the walk before
+    the turn and the walk under the command channel were read as processes
+    the turn left, so every Daytona oracle read ``unverifiable``. The
+    recorded shells (by pid and start) and the walk's own tree are
+    BenchFlow's. Mutants: either dropped."""
+    before = _manifest(processes=DAYTONA_BEFORE)
+    after = _manifest(processes=DAYTONA_AFTER, walk_pid=2761)
+    found = trees.diff_processes(before, after, {"own_shells": DAYTONA_SHELLS})
+    assert found == ([], [], len(DAYTONA_AFTER))
+
+
+def test_a_process_the_turn_left_on_daytona_is_still_counted():
+    """Guard rows: a recorded shell is exempt alone, so a ``sleep`` left under
+    it (no setsid: a session's shell outlives its command) still counts; so
+    do a leftover reparented to PID 1 (Daytona has no keep-alive child), one
+    named ``/usr/bin/bash`` (``exec -a``), a bare bash with a child under it,
+    and a process on a recorded shell's pid with another start. Without the
+    walk's pid its exec counts too, and what runs beside the walk under the
+    processes it runs under counts. Mutants: shells matched by command line,
+    a recorded shell's subtree exempt, the keep-alive rule kept on Daytona,
+    the walk's ancestors' subtrees exempt."""
+    left = (
+        _proc(2700, 1, 925, "sleep 900"),
+        _proc(2701, 2526, 926, "sleep 900"),
+        _proc(2702, 1, 927, "/usr/bin/bash"),
+        _proc(2703, 1, 928, "/usr/bin/bash"),
+        _proc(2704, 2703, 929, "sleep 900"),
+        # Beside the walk: under the channel's helper, and under the walk's
+        # own parent exec.
+        _proc(2705, 2136, 932, "sleep 900"),
+        _proc(2706, 2760, 933, "sleep 900"),
+        # Under the walk itself: the walk's.
+        _proc(2707, 2761, 934, "find / -xdev"),
+    )
+    before = _manifest(processes=DAYTONA_BEFORE)
+    after = _manifest(processes=(*DAYTONA_AFTER, *left), walk_pid=2761)
+    _, changes, _ = trees.diff_processes(before, after, {"own_shells": DAYTONA_SHELLS})
+    assert [c["path"] for c in changes] == [
+        "/proc/2700",
+        "/proc/2701",
+        "/proc/2702",
+        "/proc/2703",
+        "/proc/2705",
+        "/proc/2706",
+    ]
+    assert changes[3]["after"]["descendants"] == 1
+    reused = frozenset({(2526, 899), (2578, 910), (2693, 920)})
+    _, changes, _ = trees.diff_processes(
+        before,
+        _manifest(processes=DAYTONA_AFTER, walk_pid=2761),
+        {"own_shells": reused},
+    )
+    assert [c["path"] for c in changes] == ["/proc/2526"]
+    _, changes, _ = trees.diff_processes(
+        before, _manifest(processes=DAYTONA_AFTER), {"own_shells": DAYTONA_SHELLS}
+    )
+    assert [c["path"] for c in changes] == ["/proc/2760"]
+
+
+def test_session_shells_reads_the_hosts_record():
+    from types import SimpleNamespace
+
+    env = SimpleNamespace(
+        _benchflow_session_shells=[(2526, 900), [2578, 910], ("x", 1), (1, 2, 3)]
+    )
+    assert trees.session_shells(env) == {(2526, 900), (2578, 910)}
+    assert trees.session_shells(object()) == frozenset()
+
+
+def test_each_walk_records_its_own_pid(box, bare):
+    """The Python walk and the shell walk each name their own process."""
+    for container in (box, bare):
+        walk_pid = _record(container).trees["walk_pid"]
+        assert type(walk_pid) is int and walk_pid > 1, walk_pid
 
 
 def test_a_reward_writer_the_turn_left_is_a_flag_and_a_service_a_change(box):

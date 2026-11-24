@@ -620,6 +620,62 @@ def test_the_agent_checks_connect_outcomes(sandbox, rc, connect):
     assert _agent(sandbox, CONNECT_RC=rc)["connect"] == connect
 
 
+#: BusyBox's timeout, as its binary reads (the check greps it, never runs it to ask): logs any call.
+FAKE_BUSYBOX_TIMEOUT = """#!/bin/sh
+# BusyBox v1.37.0 multi-call binary.
+echo "timeout $*" >> "$CONNECT_LOG"
+exit 1
+"""
+#: bash's /dev/tcp connect: refused (1), another code, or ``hang`` (the kernel never answers).
+FAKE_CONNECT_BASH = """#!/bin/sh
+echo "$$" > "$CONNECT_PID"
+echo "bash $*" >> "$CONNECT_LOG"
+case "${CONNECT_RC:-1}" in
+  hang) exec sleep 30 ;;
+  1) echo "bash: connect: Connection refused" >&2; exit 1 ;;
+  *) exit "$CONNECT_RC" ;;
+esac
+"""
+
+
+@pytest.mark.parametrize(
+    ("rc", "connect"),
+    [("1", "refused"), ("0", "reached"), ("7", "failed"), ("hang", "timeout")],
+)
+def test_with_busybox_timeout_the_connect_is_bounded_without_it(sandbox, rc, connect):
+    """S-1. BusyBox's timeout leaves a daemonized watcher of the agent's uid; under a PID 1 that never reaps
+    it stays a zombie, and rule S counts it as the agent's process (every honest alpine trial read
+    `unverifiable`). Where the image's timeout is BusyBox's, the check bounds the connect itself: the same
+    outcomes, timeout never run, and the connect's own process killed and reaped within the check (a hang
+    is cut at 5 s).
+
+    Mutant: BusyBox's timeout used as before."""
+    sandbox.caps("0" * 16)
+    sandbox.script("bash", FAKE_CONNECT_BASH).script("timeout", FAKE_BUSYBOX_TIMEOUT)
+    pid_file = sandbox.root / "connect.pid"
+
+    assert (
+        _agent(sandbox, CONNECT_RC=rc, CONNECT_PID=str(pid_file))["connect"] == connect
+    )
+    calls = sandbox.calls("connect.log")
+    assert calls == ["bash -c exec 3<>/dev/tcp/169.254.169.254/80"], calls
+    pid = int(pid_file.read_text())
+    assert not Path(f"/proc/{pid}").exists(), (
+        f"the connect's process {pid} outlived the check"
+    )
+
+
+def test_with_gnu_timeout_the_connect_still_goes_through_it(sandbox):
+    """S-1's control: a timeout that isn't BusyBox's (GNU's forks no watcher) bounds the connect as before."""
+    sandbox.caps("0" * 16)
+    sandbox.script("bash", "#!/bin/sh\nexit 0\n").script("timeout", FAKE_TIMEOUT)
+
+    assert _agent(sandbox, CONNECT_RC="1")["connect"] == "refused"
+    assert sandbox.calls("connect.log") == [
+        "5 bash -c exec 3<>/dev/tcp/169.254.169.254/80"
+    ]
+
+
 def test_without_bash_or_timeout_the_connect_is_skipped(sandbox):
     sandbox.caps("0" * 16)
     assert _agent(sandbox)["connect"] == "skipped"
@@ -1497,9 +1553,10 @@ OPEN = 'version = "1.0"\n'
     ("toml", "user", "launches", "expect"),
     [
         (OPEN, "agent", True, "armed"),
-        (OPEN + "[metadata]\nx-allow-cloud-metadata = true\n", "agent", True, "off"),
-        (OPEN + "[environment]\nallow_cloud_metadata = true\n", "agent", True, "off"),
-        (OPEN + "[environment]\nallow_cloud_metadata = true\n", None, True, "off"),
+        # 0.10.1: a task's key alone keeps the block (the run's flag grants it).
+        (OPEN + "[metadata]\nx-allow-cloud-metadata = true\n", "agent", True, "armed"),
+        (OPEN + "[environment]\nallow_cloud_metadata = true\n", "agent", True, "armed"),
+        (OPEN + "[environment]\nallow_cloud_metadata = true\n", None, True, "root"),
         (OPEN, None, True, "root"),
         (OPEN, "root", True, "root"),
         (OPEN, "agent", False, None),
@@ -1557,13 +1614,14 @@ def test_the_block_is_armed_only_for_an_open_networks_agent_user(
     [
         (
             OPEN + "[metadata]\nx-allow-cloud-metadata = true\n",
-            False,
-            "metadata.x-allow-cloud-metadata = true",
+            True,
+            "metadata.x-allow-cloud-metadata = true, granted by --allow-cloud-metadata",
         ),
         (
             OPEN + "[environment]\nallow_cloud_metadata = true\n",
-            False,
-            "allow_cloud_metadata = true in the task's environment",
+            True,
+            "allow_cloud_metadata = true in the task's environment, granted by "
+            "--allow-cloud-metadata",
         ),
         (OPEN, True, "--allow-cloud-metadata"),
     ],
@@ -1674,6 +1732,9 @@ def _sandbox_for(
             "rollout",
             RolloutPaths(rollout_dir=tmp_path / backend / "rollout"),
             block_cloud_metadata=block,
+            # The run's grant (0.10.1): a task's opt-out needs it, nothing else
+            # reads it.
+            allow_cloud_metadata=True,
         )
 
 
@@ -2258,7 +2319,10 @@ def test_an_sdk_environment_never_arms_under_the_opt_out_or_the_hosts_network(
     )
     host = _task_dir(tmp_path / "host", compose=HOST_MAIN)
     for task_dir in (opted, host):
-        env = Environment.from_task(task_dir, sandbox="docker")
+        # The run's grant (0.10.1): the task's opt-out is refused without it.
+        env = Environment.from_task(
+            task_dir, sandbox="docker", allow_cloud_metadata=True
+        )
         assert not compose_needs_net_admin(env.inner.task_env_config)
 
 

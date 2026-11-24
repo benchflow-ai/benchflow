@@ -36,6 +36,42 @@
       },
       "type": "object"
     },
+    "effort_mismatches": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "effort_pin": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "effort_rewrites": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "efforts_requested": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "efforts_used": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
     "finish_reasons": {
       "additionalProperties": {
         "type": "integer"
@@ -206,11 +242,23 @@
       },
       "type": "object"
     },
+    "model_refused_calls": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "model_time_ms": {
       "type": [
         "number",
         "null"
       ]
+    },
+    "models_refused": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
     },
     "models_requested": {
       "additionalProperties": {
@@ -225,6 +273,12 @@
       "type": "object"
     },
     "purposes": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "type": "object"
+    },
+    "refusals_by_reason": {
       "additionalProperties": {
         "type": "integer"
       },

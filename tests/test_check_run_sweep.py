@@ -116,7 +116,7 @@ def test_scripted_seats_keep_the_root_egress_exemption(tmp_path, agent):
 def test_unroutable_agent_model_matches_run(tmp_path):
     """Guards b9f248b4: check applies the same pure route refusal as run."""
     task = _task(tmp_path / "route")
-    config = SimpleNamespace(agent="codex-acp", model="deepseek/deepseek-v4-pro")
+    config = SimpleNamespace(agent="codex-acp", model="zai-coding/glm-5.3-flash")
     with pytest.raises(ValueError) as refusal:
         check_agent_routes([config])
     result = CliRunner().invoke(

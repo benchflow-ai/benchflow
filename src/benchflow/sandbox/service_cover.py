@@ -185,7 +185,10 @@ def ask_start_holds(
     release, and, where *every_process* (nothing of BenchFlow's in main needs
     the network: the oracle, a ``script:`` agent, ``nop``, a separate
     verifier sandbox), main's every-process rules go in before release too.
-    *mode* is the policy (default: the agent's). Open networks ask for
+    *mode* is the policy (default: the agent's). Under an open network the
+    services' cloud metadata rule is the reason: every service waits until its
+    rule is in and proven, so no start-up code of a task's service reaches the
+    endpoints (0.10.0 let them run first); the task's granted opt-out asks for
     nothing. Set on the sandbox before its start; a sandbox without the
     inert bootstrap ignores it."""
     from benchflow.sandbox.egress_denylist import (
@@ -195,10 +198,25 @@ def ask_start_holds(
 
     if mode is None:
         mode = sandbox_network_mode(agent_network_sandbox_config(task_config))
-    if mode not in ("allowlist", "denylist", "no-network"):
-        return
     opt_out = getattr(task_config, "cloud_metadata_opt_out", "")
     task_opts_out = isinstance(opt_out, str) and bool(opt_out)
+    if mode not in ("allowlist", "denylist", "no-network"):
+        if task_opts_out or not callable(
+            getattr(type(sandbox), "metadata_service_targets", None)
+        ):
+            # Nothing to wait for: the opt-out is granted, or the backend puts
+            # no rule into its services (Daytona's DinD; the 0.10.1 notes).
+            return
+        with contextlib.suppress(AttributeError):
+            sandbox._hold_every_service = True
+            sandbox._start_cover = {
+                "task_config": task_config,
+                "mode": mode,
+                "metadata": True,
+                "opt_out": False,
+                "environment_dir": environment_dir,
+            }
+        return
     with contextlib.suppress(AttributeError):
         sandbox._hold_every_service = True
         sandbox._start_cover = {
@@ -263,6 +281,15 @@ async def start_sandbox(
 
     config = getattr(task, "config", None)
     environment_dir = getattr(getattr(task, "paths", None), "environment_dir", None)
+    policy = restricted_policy(config)
+    if policy:
+        # Below Docker Engine 29 / Compose 2.40 the policy does not hold
+        # main's ENTRYPOINT from its first instruction.
+        from benchflow.sandbox._compose_runtime import old_docker_policy_refusal
+
+        refusal = await old_docker_policy_refusal(sandbox, policy)
+        if refusal is not None:
+            raise ServiceCoverError(refusal)
     if separate_verifier:
         from benchflow.sandbox.verifier_network import separate_verifier_network
 
@@ -677,7 +704,7 @@ async def cover_task_services(
             f"{', '.join(held)}, so root there could remove the rules that keep "
             "the cloud metadata endpoints and the task's network policy from it; "
             "drop the capability, or set allow_cloud_metadata = true in the "
-            "task's [environment] table"
+            "task's [environment] table and run with --allow-cloud-metadata"
         )
     if main_metadata is None:
         targets = await env.metadata_service_targets()
@@ -790,7 +817,8 @@ async def _cover_main(
             + (f" ({detail})" if isinstance(detail, str) and detail else "")
             + ", so the task's processes would have the cloud metadata endpoints "
             "open to them; only the task's own opt-out (allow_cloud_metadata = "
-            "true in its [environment] table) starts it without the rule"
+            "true in its [environment] table), granted by the run's "
+            "--allow-cloud-metadata, starts it without the rule"
         )
     _note_seen(record, target, out)
     before = _counters(out) or (0, 0)
@@ -869,7 +897,7 @@ async def _cover_one(
                 f"holds {', '.join(held)}, so it could remove the rules that keep "
                 "the cloud metadata endpoints and the task's network policy from "
                 "it; drop the capability, or set allow_cloud_metadata = true in "
-                "the task's [environment] table"
+                "the task's [environment] table and run with --allow-cloud-metadata"
             )
     network = str(target.get("network_mode") or "")
     if network == "host":

@@ -1,0 +1,8 @@
+# Tasks broken upstream: their image no longer builds a working verifier or solution, for a reason in the
+# task, not in BenchFlow (an unpinned dependency moved). The sampler never draws them; a row for one is EXCLUDED,
+# never a regression. Each entry names its evidence; remove it once the task is fixed upstream.
+
+[[excluded]]
+key = "reasoning-gym/reasoning-gym-algorithmic-letter-jumble-hard0292e21f-seed45-2"
+found = "2026-11-18"
+reason = "the image's unpinned drawsvg fails at import (NameError: SyncedAnimationConfig) when test.sh imports reasoning_gym; the rc4 record's cached image scored 1.0"

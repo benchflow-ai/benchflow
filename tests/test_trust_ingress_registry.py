@@ -247,18 +247,162 @@ def test_admitting_site_admits_its_kind(key):
     )
 
 
+#: The awaits an inheriting site may make before it inherits the snapshot's
+#: lineage, by site and the awaited call's exact text: only as the site's first
+#: statement after its docstring and imports. Nothing else may await while the
+#: trust ledger and the box could disagree.
+PRE_INHERIT_AWAITS: dict[tuple[str, str], str] = {
+    (
+        "benchflow.sandbox.daytona:DaytonaSandbox.restore",
+        "self._remove_exec_traces()",
+    ): (
+        # The exec env and session files of the sandbox being replaced.
+        "runs on the box being replaced, before the ledger or the box "
+        "changes; reads no trust state"
+    ),
+}
+
+
+def _allowed_pre_inherit_await(function: Function) -> ast.Await | None:
+    """The await :data:`PRE_INHERIT_AWAITS` allows in *function*, if any:
+    its first statement after the docstring and imports, a bare or assigned
+    await of exactly the listed call."""
+    body = [
+        statement
+        for statement in function.node.body
+        if not isinstance(statement, ast.Import | ast.ImportFrom)
+    ]
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    first = body[0] if body else None
+    value = first.value if isinstance(first, ast.Assign | ast.Expr) else None
+    if not isinstance(value, ast.Await):
+        return None
+    if (function.key, ast.unparse(value.value)) not in PRE_INHERIT_AWAITS:
+        return None
+    return value
+
+
+def _awaits_before_inherit(function: Function, inherit_line: int) -> list[int]:
+    allowed = _allowed_pre_inherit_await(function)
+    return sorted(
+        node.lineno
+        for node in _own_nodes(function.node)
+        if isinstance(node, ast.Await)
+        and node.lineno <= inherit_line
+        and node is not allowed
+    )
+
+
 @pytest.mark.parametrize("key", sorted(ingress.INHERITING))
 def test_inheriting_site_inherits_before_any_other_await(key):
     function = BY_KEY.get(key)
     assert function is not None, f"registry names a missing function {key}"
     inherit_line = function.first_line(INHERIT_NAMES)
     assert inherit_line is not None, f"{key} must call trust restore_from"
-    awaits = [
-        node.lineno for node in _own_nodes(function.node) if isinstance(node, ast.Await)
-    ]
-    assert all(line > inherit_line for line in awaits), (
+    assert not _awaits_before_inherit(function, inherit_line), (
         f"{key} awaits sandbox work before it inherits the snapshot's lineage"
     )
+
+
+def test_every_pre_inherit_await_is_in_use():
+    for key, call in PRE_INHERIT_AWAITS:
+        assert key in ingress.INHERITING, key
+        allowed = _allowed_pre_inherit_await(BY_KEY[key])
+        assert allowed is not None, f"{key} no longer starts with {call}"
+
+
+_RESTORE_PROLOGUE = """
+class {cls}:
+    async def restore(self, image):
+        from benchflow.sandbox import _path_inspector_state
+
+"""
+
+
+@pytest.mark.parametrize(
+    ("cls", "body", "flagged"),
+    [
+        # The allowed shape: no await before restore_from but the listed one.
+        (
+            "DaytonaSandbox",
+            "cancelled = await self._remove_exec_traces()\n"
+            "trust_state.restore_from(self, image)\n",
+            [],
+        ),
+        # A second await before restore_from.
+        (
+            "DaytonaSandbox",
+            "cancelled = await self._remove_exec_traces()\n"
+            "await self._strategy.prepare()\n"
+            "trust_state.restore_from(self, image)\n",
+            [7],
+        ),
+        # The listed call, but after another await.
+        (
+            "DaytonaSandbox",
+            "await self._strategy.prepare()\n"
+            "cancelled = await self._remove_exec_traces()\n"
+            "trust_state.restore_from(self, image)\n",
+            [6, 7],
+        ),
+        # The listed call after another statement.
+        (
+            "DaytonaSandbox",
+            "self._forget_kept_identity()\n"
+            "cancelled = await self._remove_exec_traces()\n"
+            "trust_state.restore_from(self, image)\n",
+            [7],
+        ),
+        # Another call, or the same one with arguments.
+        (
+            "DaytonaSandbox",
+            "await self._remove_exec_env_files()\n"
+            "trust_state.restore_from(self, image)\n",
+            [6],
+        ),
+        (
+            "DaytonaSandbox",
+            "await self._remove_exec_traces(route)\n"
+            "trust_state.restore_from(self, image)\n",
+            [6],
+        ),
+        # The listed call at another site.
+        (
+            "DockerSandbox",
+            "cancelled = await self._remove_exec_traces()\n"
+            "trust_state.restore_from(self, image)\n",
+            [6],
+        ),
+    ],
+    ids=[
+        "allowed",
+        "second-await",
+        "after-another-await",
+        "after-another-statement",
+        "another-call",
+        "with-arguments",
+        "another-site",
+    ],
+)
+def test_the_pre_inherit_allowance_is_one_call_at_one_site(cls, body, flagged):
+    source = _RESTORE_PROLOGUE.format(cls=cls) + "".join(
+        f"        {line}\n" for line in body.splitlines()
+    )
+    module = (
+        "benchflow.sandbox.daytona"
+        if cls == "DaytonaSandbox"
+        else "benchflow.sandbox.docker"
+    )
+    (function,) = _walk(module, ast.parse(source), [])
+    inherit_line = function.first_line(INHERIT_NAMES)
+    assert inherit_line is not None
+    assert _awaits_before_inherit(function, inherit_line) == flagged
 
 
 def test_every_ingress_kind_is_admitted_somewhere():

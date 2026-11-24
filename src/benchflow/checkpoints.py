@@ -26,8 +26,11 @@ container uses).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -139,31 +142,40 @@ async def after_prompt(rollout: Any, prompt_number: int) -> None:
         return
     loop = asyncio.get_running_loop()
     started = loop.time()
-    try:
-        image = await sandbox.snapshot()
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        row["error"] = {"type": type(exc).__name__, "code": "snapshot_failed"}
-        logger.warning(
-            "Checkpoint after prompt %d failed (%s: %s); the run continues",
-            prompt_number,
-            type(exc).__name__,
-            exc,
-        )
-    else:
-        row.update(
-            **image.to_record(),
-            status="kept",
-            seconds=round(loop.time() - started, 3),
-        )
-        # The snapshot outlives this run: forget the in-memory credential
-        # copy the sandbox keeps for restores of it.
-        forget = getattr(
-            getattr(sandbox, "_strategy", sandbox), "_snapshot_credentials", None
-        )
-        if isinstance(forget, dict):
-            forget.pop(image.ref, None)
+    # The host's hard deadline doesn't count this time (seconds_spent).
+    with clock(rollout, sandbox):
+        try:
+            image = await sandbox.snapshot()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            row["error"] = {"type": type(exc).__name__, "code": "snapshot_failed"}
+            row["seconds"] = round(loop.time() - started, 3)
+            # What became of a snapshot the provider went on to make (Daytona:
+            # sandbox.daytona_snapshot_create): removed, none found, or left to
+            # the sandbox's stop, which settles it in record_leftovers.
+            leftover = getattr(exc, "benchflow_snapshot_leftover", None)
+            if isinstance(leftover, dict):
+                row["leftover"] = dict(leftover)
+            logger.warning(
+                "Checkpoint after prompt %d failed (%s: %s); the run continues",
+                prompt_number,
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            row.update(
+                **image.to_record(),
+                status="kept",
+                seconds=round(loop.time() - started, 3),
+            )
+            # The snapshot outlives this run: forget the in-memory credential
+            # copy the sandbox keeps for restores of it.
+            forget = getattr(
+                getattr(sandbox, "_strategy", sandbox), "_snapshot_credentials", None
+            )
+            if isinstance(forget, dict):
+                forget.pop(image.ref, None)
     rows.append(row)
     # Itemized in timing.json next to agent_execution and verifier.
     timing = getattr(rollout, "_timing", None)
@@ -172,9 +184,53 @@ async def after_prompt(rollout: Any, prompt_number: int) -> None:
             timing.get("checkpoint_snapshot", 0.0) + (loop.time() - started), 3
         )
     kept = [r for r in rows if r["status"] == "kept"]
-    for old in kept[: max(0, len(kept) - policy.keep)]:
+    stale = kept[: max(0, len(kept) - policy.keep)]
+    if stale:
+        # Recorded before the older ones go: a cancel during their delete
+        # must not leave the new snapshot unrecorded.
+        _write(rollout, policy)
+    for old in stale:
         await _delete(sandbox, old)
     _write(rollout, policy)
+
+
+#: A checkpoint's most credit against the hard deadline when its sandbox
+#: doesn't give its own worst case (``snapshot_budget_sec``). The deadline is
+#: the backstop for an await wedged below its own bounds, so a stuck
+#: checkpoint must not hold the trial for good.
+_DEFAULT_CREDIT_CAP_SEC = 600.0
+
+
+@contextlib.contextmanager
+def clock(rollout: Any, sandbox: Any) -> Iterator[None]:
+    """Count the time inside as ``rollout``'s checkpoint time
+    (:func:`seconds_spent`), up to the sandbox's worst case for one snapshot."""
+    budget = getattr(
+        getattr(sandbox, "_strategy", sandbox), "snapshot_budget_sec", None
+    )
+    rollout._checkpoint_cap = (
+        float(budget()) if callable(budget) else _DEFAULT_CREDIT_CAP_SEC
+    )
+    rollout._checkpoint_started = time.monotonic()
+    try:
+        yield
+    finally:
+        rollout._checkpoint_seconds = seconds_spent(rollout)
+        rollout._checkpoint_started = None
+
+
+def seconds_spent(rollout: Any) -> float:
+    """Seconds ``rollout`` has spent taking checkpoints, the one in progress
+    included, each counted up to its cap. A snapshot of a sandbox with an
+    agent's install can take minutes (Daytona: up to
+    BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC and the look after it), so the
+    host's hard deadline is extended by this much."""
+    spent = float(getattr(rollout, "_checkpoint_seconds", 0.0) or 0.0)
+    started = getattr(rollout, "_checkpoint_started", None)
+    if started is not None:
+        cap = getattr(rollout, "_checkpoint_cap", _DEFAULT_CREDIT_CAP_SEC)
+        spent += min(cap, max(0.0, time.monotonic() - started))
+    return spent
 
 
 async def _delete(sandbox: Any, row: dict[str, Any]) -> None:
@@ -191,6 +247,32 @@ async def _delete(sandbox: Any, row: dict[str, Any]) -> None:
         )
         return
     row["status"] = "deleted" if deleted is not False else "delete_deferred"
+
+
+def record_leftovers(trial_dir: Any, leftovers: list[dict[str, Any]]) -> None:
+    """Write the sandbox stop's outcome for each leftover (by ``name``) into
+    the rows of ``trial_dir/checkpoints.json`` that name it. Best effort, like
+    the rest of the record: a failed write only logs."""
+    import json
+
+    by_name = {item.get("name"): item for item in leftovers}
+    path = trial_dir / CHECKPOINTS_FILE
+    if not path.is_file():
+        # A branch snapshot's leftover: no checkpoint row names it.
+        return
+    try:
+        document = json.loads(path.read_text())
+        rows = document.get("checkpoints") if isinstance(document, dict) else None
+        changed = False
+        for row in rows if isinstance(rows, list) else []:
+            leftover = row.get("leftover") if isinstance(row, dict) else None
+            if isinstance(leftover, dict) and leftover.get("name") in by_name:
+                row["leftover"] = dict(by_name[leftover["name"]])
+                changed = True
+        if changed:
+            write_json_atomic(path, document)
+    except (OSError, ValueError) as exc:
+        logger.warning("Could not record snapshot leftovers in %s: %s", path, exc)
 
 
 def load_checkpoints(trial_dir: Any) -> list[dict[str, Any]]:

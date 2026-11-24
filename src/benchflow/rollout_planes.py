@@ -144,6 +144,7 @@ class DefaultRolloutPlanes:
         environment_manifest: EnvironmentManifest | None,
         block_cloud_metadata: bool = False,
         cloud_metadata_root_agent: bool = False,
+        allow_cloud_metadata: bool = False,
     ) -> Any:
         return _create_environment(
             environment,
@@ -155,6 +156,7 @@ class DefaultRolloutPlanes:
             environment_manifest=environment_manifest,
             block_cloud_metadata=block_cloud_metadata,
             cloud_metadata_root_agent=cloud_metadata_root_agent,
+            allow_cloud_metadata=allow_cloud_metadata,
         )
 
     def manifest_environment(
@@ -311,6 +313,12 @@ class DefaultRolloutPlanes:
 
     async def ensure_litellm_runtime(self, *args: Any, **kwargs: Any) -> Any:
         return await ensure_litellm_runtime(*args, **kwargs)
+
+    def preflight_restricted_model(self, *args: Any, **kwargs: Any) -> None:
+        """The launch's web-restricted model admission, run before any sandbox."""
+        from benchflow.providers.restricted_models import preflight_restricted_route
+
+        preflight_restricted_route(*args, **kwargs)
 
     def reserve_host_proxy(self, **kwargs: Any) -> Any:
         return reserve_host_proxy(**kwargs)

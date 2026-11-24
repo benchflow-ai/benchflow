@@ -539,6 +539,11 @@ def _sent_text(sent: Mapping[str, int]) -> str:
     )
 
 
+#: The refusals model-calls.json names that BenchFlow's model gateway made
+#: before any provider saw the request (a model's own are counted apart).
+_GATEWAY_REFUSALS = ("model_not_served", "trial_budget_spent")
+
+
 def _read_result(trial_dir: Path | None) -> dict[str, Any] | None:
     if trial_dir is None:
         return None
@@ -632,6 +637,30 @@ class RunChecks:
             self._add(name, trial_dir, retried=True)
         self._check()
 
+    def _add_gateway(self, trial_dir: Path) -> None:
+        """What the trial's model-calls.json says BenchFlow's model gateway
+        refused, by reason and model asked for, and the reasoning effort
+        levels its requests went upstream at (benchflow#1246)."""
+        try:
+            figures = json.loads((Path(trial_dir) / "model-calls.json").read_text())
+        except (OSError, ValueError):
+            return
+        if not isinstance(figures, dict):
+            return
+        reasons = figures.get("refusals_by_reason")
+        self._count(
+            "gateway_refusals",
+            {
+                reason: count
+                for reason, count in (
+                    reasons.items() if isinstance(reasons, dict) else ()
+                )
+                if reason in _GATEWAY_REFUSALS
+            },
+        )
+        self._count("models_refused", figures.get("models_refused"))
+        self._count("efforts_used", figures.get("efforts_used"))
+
     def record(
         self, name: str, trial_dir: Path | None, *, retried: bool = False
     ) -> None:
@@ -675,6 +704,7 @@ class RunChecks:
             self.pre_tokens += [
                 t for t in compactions.get("pre_tokens") or [] if isinstance(t, int)
             ]
+        self._add_gateway(trial_dir)
         sent = result.get("settings_sent")
         if not isinstance(sent, dict):
             return
@@ -857,6 +887,9 @@ class RunChecks:
             self._count(field, sent.get(field))
         for field in ("models_served", "routes", "side_models"):
             self._count(field, settings.get(field))
+        gateway = block.get("gateway") or {}
+        for field in ("gateway_refusals", "models_refused", "efforts_used"):
+            self._count(field, gateway.get(field))
         for row in settings.get("compared") or []:
             tally = (
                 self.compared.get(row.get("setting"))
@@ -1127,6 +1160,12 @@ class RunChecks:
                 "max_pre_tokens": max(self.pre_tokens) if self.pre_tokens else None,
                 "compacted_trials": sorted(self.compacted),
             },
+            # The trials' model-calls.json: the gateway's refusals by reason
+            # and model, and the effort levels the requests went upstream at.
+            "gateway": {
+                field: self.sent.get(field, {})
+                for field in ("gateway_refusals", "models_refused", "efforts_used")
+            },
             "settings": {
                 "requested": self.requested,
                 "mismatches": mismatches,
@@ -1204,10 +1243,24 @@ def after_run_lines(summary: Mapping[str, Any]) -> list[str]:
     refused = summary.get("verifier_network_refusals")
     if isinstance(refused, int) and refused > 0:
         lines.append(
-            f"  Verifier:  {refused} trial{'s' if refused != 1 else ''} ended "
-            '"verifier network refused" (unscored, 0 in mean_reward): the '
-            "verifier's network refused their tests; flagged, see each trial's "
-            "verifier/verifier-network.json"
+            f"  Verifier:  {refused} trial{'s' if refused != 1 else ''} had test.sh "
+            "refused by the verifier's network (scored as test.sh says; a run "
+            'before 0.10.1 ended them "verifier network refused", unscored): '
+            "flagged, read each trial's warnings and verifier/verifier-network.json"
+        )
+    held = [
+        f"{n} trial{'s' if n != 1 else ''} with a held compose service that {what}"
+        for n, what in (
+            (summary.get("held_restarts"), "Docker restarted"),
+            (summary.get("held_exits"), "exited after start-up"),
+        )
+        if isinstance(n, int) and n > 0
+    ]
+    if held:
+        lines.append(
+            f"  Services:  {'; '.join(held)}: each ran nothing again, and the trial "
+            "is scored as test.sh says; flagged, read each trial's warnings "
+            "(held_after_restart, held_exited in result.json)"
         )
     breached = summary.get("network_policy_breaches")
     if isinstance(breached, int) and breached > 0:
@@ -1308,6 +1361,27 @@ def after_run_lines(summary: Mapping[str, Any]) -> list[str]:
             recorded.append(f"seed {_sent_text(sent['seed'])}")
         if recorded:
             lines.append("  Recorded:  " + "; ".join(recorded) + " (not requested)")
+    gateway = summary.get("gateway") or {}
+    refusals = gateway.get("gateway_refusals") or {}
+    if sum(refusals.values()):
+        asked = gateway.get("models_refused") or {}
+        lines.append(
+            f"  Refused:   {sum(refusals.values())} requests by the model gateway, "
+            "before any provider ("
+            + "; ".join(
+                f"model not served: {_sent_text(asked)}"
+                if reason == "model_not_served" and asked
+                else f"{reason.replace('_', ' ')}: {count}"
+                for reason, count in sorted(refusals.items())
+            )
+            + "); each trial's model-calls.json"
+        )
+    efforts = gateway.get("efforts_used") or {}
+    if len(efforts) > 1:
+        lines.append(
+            f"  Efforts:   requests went upstream at {_sent_text(efforts)}: "
+            f"{len(efforts)} levels; each trial's model-calls.json (efforts_used)"
+        )
     if summary.get("stopped"):
         lines.append(
             f"  Stopped:   {summary.get('reason')}; "

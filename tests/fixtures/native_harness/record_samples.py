@@ -13,8 +13,13 @@ does not stop on SIGINT, so its sample runs on to the end of the turn, past
 what the harness applies). Claude Code gets a fifth, ``usage-limit``: a
 subscription login whose usage is spent, from a server that answers the API's
 HTTP 429 with the ``anthropic-ratelimit-unified-*`` headers of a rejected
-claim. Paths and ids that change per run are replaced with placeholders;
-``tests/test_native_harness_parsers.py`` reads the result.
+claim. Codex gets two more, each a turn whose model call never gets a reply:
+``deadline``, from a server that holds the call a second and then answers
+exactly what BenchFlow's model gate answers a call still open when the
+trial's time ends (HTTP 400 ``trial_deadline_passed``, built by the gate's own
+``_deadline_response``), and ``dropped``, from a server that closes every
+connection without an answer. Paths and ids that change per run are replaced
+with placeholders; ``tests/test_native_harness_parsers.py`` reads the result.
 
 No model credentials are involved: the fake answers every request.
 """
@@ -27,6 +32,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -106,6 +112,59 @@ def _limit_server() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 
 
+def _gate_answer() -> tuple[int, list[tuple[str, str]], bytes]:
+    """What BenchFlow's model gate sends a call it cuts at the deadline."""
+    import asyncio
+
+    from benchflow.providers.litellm_request_guard import _deadline_response
+
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    asyncio.run(_deadline_response(send))
+    start, body = sent
+    headers = [(k.decode(), v.decode()) for k, v in start["headers"]]
+    return start["status"], headers, body["body"]
+
+
+class _CutHandler(BaseHTTPRequestHandler):
+    """Ends every model call before it is answered (see the module docstring)."""
+
+    protocol_version = "HTTP/1.1"
+    mode = "deadline"
+    answer: tuple[int, list[tuple[str, str]], bytes] = (400, [], b"")
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.close_connection = True
+        if self.mode == "dropped":
+            self.connection.shutdown(socket.SHUT_RDWR)
+            return
+        time.sleep(1.0)
+        status, headers, body = self.answer
+        self.send_response(status)
+        for key, value in headers:
+            self.send_header(key, value)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST
+
+
+def _cut_server(mode: str) -> tuple[ThreadingHTTPServer, str]:
+    handler = type("_Cut", (_CutHandler,), {"mode": mode, "answer": _gate_answer()})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
 def _run(
     argv: list[str], prompt: str, env: dict, cwd: Path, cancel_after: float | None
 ):
@@ -165,21 +224,21 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
         executable = str(prefix / "bin" / "codex")
         version = pinned_npm_package("codex")[1]
         env["OPENAI_API_KEY"] = "sk-benchflow-fake"
-        config = {
-            "model_provider": "benchflow-litellm",
-            "model": "gpt-5.5",
-            "model_providers": {
-                "benchflow-litellm": {
-                    "name": "litellm",
-                    "base_url": f"{url}/v1",
-                    "env_key": "OPENAI_API_KEY",
-                    "wire_api": "responses",
-                    "supports_websockets": False,
-                }
-            },
-        }
 
-        def argv(turn: NativeTurn) -> list[str]:
+        def argv(turn: NativeTurn, base: str = url) -> list[str]:
+            config = {
+                "model_provider": "benchflow-litellm",
+                "model": "gpt-5.5",
+                "model_providers": {
+                    "benchflow-litellm": {
+                        "name": "litellm",
+                        "base_url": f"{base}/v1",
+                        "env_key": "OPENAI_API_KEY",
+                        "wire_api": "responses",
+                        "supports_websockets": False,
+                    }
+                },
+            }
             return [executable, *codex_launch(turn, config).argv]
 
         first = NativeTurn(cwd=str(work))
@@ -225,6 +284,18 @@ def record(cli: str, prefix: Path, out_root: Path) -> None:
         )
         limit_srv.shutdown()
         replacements[limit_url] = "http://fake-llm"
+    else:
+        for mode in ("deadline", "dropped"):
+            cut_srv, cut_url = _cut_server(mode)
+            samples[mode] = _run(
+                argv(NativeTurn(cwd=str(work)), cut_url),
+                "Create hello.txt. [[fake-llm:hello]]",
+                env,
+                work,
+                None,
+            )
+            cut_srv.shutdown()
+            replacements[cut_url] = "http://fake-llm"
     for name, (text, err, rc) in samples.items():
         (out_dir / f"{name}.jsonl").write_text(_scrub(text, replacements))
         print(

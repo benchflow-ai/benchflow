@@ -141,6 +141,7 @@ _REVIEW_LAYOUT = frozenset(
         "firewall-power.json",
         "locked-system-path.json",
         "kill-before-grading.json",
+        "kill-after-grading.json",
         "trust-state.json",
         # bench bundle's trial files and folders (evidence_bundle.TRIAL_FILES
         # and TRIAL_FOLDERS), without its reviews and regrades.
@@ -169,6 +170,10 @@ _REVIEW_LAYOUT = frozenset(
         "pre_verify_removed.json",
     }
 )
+#: In a folder the layout leaves out, the files a re-review's copy takes all
+#: the same, by their path: the masking record, which a withheld file's stub
+#: points to (integrity/'s other records stay out).
+_REVIEW_LAYOUT_FILES = frozenset({"integrity/masking.json"})
 #: Beside a re-review's copy (``evidence/trial-left-out.json``, uploaded to
 #: ``/evidence/``): the top-level names of the rollout that the copy does not
 #: hold, and their count, never their contents. Outside the copy, so the copy
@@ -365,7 +370,13 @@ def _evidence_ignore(
     def ignore(directory: str, names: list[str]) -> set[str]:
         ignored = set(patterns(directory, names))
         if root_names is not None and Path(directory) == root:
-            ignored |= {name for name in names if name not in root_names}
+            ignored |= {name for name in names if name not in _tops(root_names)}
+        elif root_names is not None and Path(directory).parent == root:
+            # A folder the layout names files of (integrity/masking.json):
+            # those files only.
+            inside = _inside(root_names, Path(directory).name)
+            if inside:
+                ignored |= {name for name in names if name not in inside}
         for name in names:
             if (Path(directory) / name).is_symlink() or is_raw_evidence(
                 Path(directory), name
@@ -374,6 +385,16 @@ def _evidence_ignore(
         return ignored
 
     return ignore
+
+
+def _tops(layout: frozenset[str]) -> set[str]:
+    return {name.split("/", 1)[0] for name in layout}
+
+
+def _inside(layout: frozenset[str], folder: str) -> set[str]:
+    """The names in *folder* the layout names one by one (``folder/name``);
+    empty for a folder it names whole."""
+    return {name.split("/", 1)[1] for name in layout if name.startswith(f"{folder}/")}
 
 
 def copy_evidence(
@@ -474,14 +495,25 @@ def _write_left_out_record(rollout_dir: Path, trial: Path) -> Path:
     *rollout_dir* the copy does not hold, and their count. Names only: the
     reviewer can see that a record was left out, never what it held."""
     held = {entry.name for entry in trial.iterdir()}
-    left_out = sorted(
-        entry.name for entry in rollout_dir.iterdir() if entry.name not in held
-    )
+    left_out = [entry.name for entry in rollout_dir.iterdir() if entry.name not in held]
+    # In a folder the layout copies file by file, the names the copy does not
+    # hold there: the others, and a listed one the copy skipped (a link).
+    for folder in sorted(held):
+        source = rollout_dir / folder
+        if _inside(_REVIEW_LAYOUT_FILES, folder) and source.is_dir():
+            copied = {entry.name for entry in (trial / folder).iterdir()}
+            left_out += [
+                f"{folder}/{entry.name}"
+                for entry in source.iterdir()
+                if entry.name not in copied
+            ]
+    left_out.sort()
     path = trial.parent / _LEFT_OUT_RECORD
     record = {
         "about": (
             "Top-level names of the reviewed rollout that are not in its "
-            "evidence copy (/evidence/trial). A rollout that already holds a "
+            "evidence copy (/evidence/trial), and in integrity/ the records "
+            "other than masking.json. A rollout that already holds a "
             "verdict is copied with its rollout layout only, and its "
             "result.json is the record from before any review."
         ),
@@ -594,7 +626,7 @@ def assemble_review_task(
         rollout_dir,
         evidence / "trial",
         extra_excludes=("evidence",),
-        root_names=_REVIEW_LAYOUT if held else None,
+        root_names=_REVIEW_LAYOUT | _REVIEW_LAYOUT_FILES if held else None,
     )
     uploads = {str(evidence / "trial"): TRIAL_MOUNT}
     if held:

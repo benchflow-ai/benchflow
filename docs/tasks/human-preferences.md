@@ -1,6 +1,6 @@
 # Human preferences
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)). 0.9.2 has no preference grading; on 0.9.2, a model can grade each page against criteria you write, one page at a time rather than in pairs ([LLM judge](./llm-judge.md#grade-a-web-page)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)). 0.9.2 has no preference grading; on 0.9.2, a model can grade each page against criteria you write, one page at a time rather than in pairs ([LLM judge](./llm-judge.md#grade-a-web-page)).
 
 Some work can't be scored by a test: whether a landing page is good is a matter of judgment. Here a judge compares two outputs at a time, with the procedure we use to judge designs:
 

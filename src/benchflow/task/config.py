@@ -34,11 +34,12 @@ from benchflow.rewards.validation import validate_declared_reward_range
 from benchflow.sandbox._recovery_submission import validate_contract
 from benchflow.task import keep_services
 
-#: The task metadata key that lets the agent reach the cloud metadata endpoints
-#: under an open network (BenchFlow refuses them by default; see
-#: benchflow.sandbox.lockdown.CLOUD_METADATA_V4). Read from ``metadata`` in
+#: The task metadata key that asks to lift the cloud metadata block
+#: (BenchFlow refuses the endpoints by default; see
+#: benchflow.sandbox.cloud_metadata.CLOUD_METADATA_V4). Read from ``metadata`` in
 #: task.md front-matter and task.toml alike, where the Rust ``bench`` reads it;
-#: ``allow_cloud_metadata = true`` in ``[environment]`` is the same opt-out.
+#: ``allow_cloud_metadata = true`` in ``[environment]`` is the same request.
+#: Either takes effect only with the run's ``--allow-cloud-metadata``.
 CLOUD_METADATA_OPT_OUT_KEY = "x-allow-cloud-metadata"
 # A task with no agent.timeout_sec (and a caller with no timeout) gives the
 # agent no time limit of its own: the rollout's whole deadline bounds it
@@ -1146,9 +1147,11 @@ class SandboxConfig(TaskConfigModel):
     allow_cloud_metadata: bool = Field(
         default=False,
         description=(
-            "Let the agent reach the cloud metadata endpoints under an open "
-            "network: no block, and the trial records the opt-out. Without it "
-            "the agent starts only once the block is proven on."
+            "Ask to lift the cloud metadata block for this task's trials (the "
+            "agent, test.sh and the task's other services can reach the "
+            "endpoints). It takes effect only when the run passes "
+            "--allow-cloud-metadata, and the trial records it; a run without "
+            "that flag refuses the task before it starts."
         ),
     )
     require_cloud_metadata_block: bool = Field(
@@ -1517,15 +1520,19 @@ class TaskConfig(TaskConfigModel):
 
     @property
     def allows_cloud_metadata(self) -> bool:
-        """Whether the task opts out of refusing the cloud metadata endpoints
-        (``allow_cloud_metadata = true`` in its ``[environment]`` table)."""
+        """Whether the task asks to lift the cloud metadata block
+        (``allow_cloud_metadata = true`` in its ``[environment]`` table). A
+        request only: a run without ``--allow-cloud-metadata`` refuses the
+        task before it starts (benchflow.sandbox.cloud_metadata
+        .refuse_ungranted_opt_in), so a sandbox only ever sees a granted one."""
         return bool(self.cloud_metadata_opt_out)
 
     @property
     def cloud_metadata_opt_out(self) -> str:
-        """How the task opts out of the cloud metadata block, for the record;
-        empty when it does not. ``metadata.x-allow-cloud-metadata = true`` is
-        the older, unreleased spelling of the same opt-out."""
+        """How the task asks to lift the cloud metadata block, for the
+        record; empty when it does not. ``metadata.x-allow-cloud-metadata =
+        true`` is the older, unreleased spelling of the same request. It needs
+        the run's ``--allow-cloud-metadata`` (see :attr:`allows_cloud_metadata`)."""
         if self.sandbox.allow_cloud_metadata:
             return CLOUD_METADATA_TASK_OPT_OUT
         raw = self.metadata.get(CLOUD_METADATA_OPT_OUT_KEY)

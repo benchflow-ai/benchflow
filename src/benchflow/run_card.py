@@ -168,6 +168,12 @@ ENV_SETTINGS: tuple[EnvSetting, ...] = (
         _CLAUDE_CODE,
     ),
     EnvSetting(
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+        "Claude Code",
+        "its subagents' model over the Agent tool's own model argument",
+        _CLAUDE_CODE,
+    ),
+    EnvSetting(
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "Claude Code",
         "the model of its background calls",
@@ -209,6 +215,11 @@ ENV_SETTINGS: tuple[EnvSetting, ...] = (
         "the thinking effort of a Bedrock Claude model",
     ),
     EnvSetting(
+        "BENCHFLOW_EFFORT_PIN",
+        "BenchFlow's model proxy",
+        "each model call's reasoning effort, rewritten to the run's (--effort-pin)",
+    ),
+    EnvSetting(
         "BENCHFLOW_REASONING_EFFORT",
         "BenchFlow's model proxy",
         "the reasoning effort of an Azure OpenAI model",
@@ -246,6 +257,7 @@ SOURCE_WORDS = {
     "host_env": "from the host's environment",
     "benchflow_default": "BenchFlow's default",
     "run_effort": "from the run's effort",
+    "effort_pin": "from --effort-pin, a run config's effort_pin or --agent-env",
 }
 # A setting's value as the card shows it: a number, a word or a model id.
 _PLAIN_SETTING = re.compile(r"[\w.:/@\[\]+-]{1,120}")
@@ -281,7 +293,10 @@ def env_settings(
         _MUSE_AGENT,
         _MUSE_SETTINGS_ENV,
         CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT,
+        CLAUDE_CODE_SUBAGENT_MODEL_ENV,
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV,
         inheritable_env_names,
+        subagent_model_value,
     )
 
     dotenv = load_dotenv_env()
@@ -293,6 +308,12 @@ def env_settings(
         defaults["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = (
             CLAUDE_CODE_MAX_OUTPUT_TOKENS_DEFAULT
         )
+    # The sub-agent model pin BenchFlow sets for Claude Code (benchflow#1246),
+    # as the launch names the model on the run's route.
+    pinned = subagent_model_value(agent, model, agent_env)
+    if pinned is not None:
+        defaults[CLAUDE_CODE_SUBAGENT_MODEL_ENV] = pinned
+        defaults[CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV] = "1"
     bedrock = _bedrock_default_effort(model)
     # A Bedrock Claude route is sent the run's effort, not its own default.
     from_effort = {"BENCHFLOW_BEDROCK_THINKING_EFFORT"} if bedrock and effort else set()
@@ -307,7 +328,10 @@ def env_settings(
             if value and value.strip():
                 return value, "dotenv" if dotenv.get(name) == value else "host_env"
         elif name in agent_env:
-            return str(agent_env[name]), "agent_env"
+            # --effort-pin and a run config's effort_pin set it in the run's
+            # agent env too, so --agent-env alone is not known to be its source.
+            source = "effort_pin" if name == "BENCHFLOW_EFFORT_PIN" else "agent_env"
+            return str(agent_env[name]), source
         elif name in copied:
             # Resolution copies .env first, then the host: .env wins.
             for source, values in (("dotenv", dotenv), ("host_env", os.environ)):
@@ -908,6 +932,28 @@ def _task_facts(
     return facts
 
 
+def _operator_network(
+    task_dirs: list[Path], override: dict[str, Any] | None
+) -> dict[str, list[str]]:
+    """Per task, the phase network keys the run's config override replaces
+    (it sets the sandbox's network); only tasks with any."""
+    if not override:
+        return {}
+    from benchflow._utils.config_override import operator_network_replacements
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    found = {}
+    for task_dir in task_dirs:
+        try:
+            config = TaskRuntimeView.from_task_dir(task_dir).config
+            replaced = operator_network_replacements(config, override)
+        except Exception:  # the run itself names a task that does not load
+            continue
+        if replaced:
+            found[task_dir.name] = replaced
+    return found
+
+
 def _agent_users(
     task_dirs: list[Path],
     agent: str | None,
@@ -1171,15 +1217,44 @@ def _compare(
     return deviations
 
 
+def _operator_credentials(cfg: Any, task_dirs: list[Path]) -> dict[str, Any] | None:
+    """The run card's ``operator_credentials``, from the agent env resolution
+    gives the run (its logins and keys; the configured one when resolution
+    refuses, which the run then reports)."""
+    from benchflow.agents import operator_credentials as oc
+    from benchflow.agents.env import resolve_agent_env
+
+    agent_env = dict(cfg.agent_env or {})
+    with contextlib.suppress(Exception):
+        agent_env = resolve_agent_env(cfg.agent, cfg.model, dict(agent_env))
+    return oc.run_card_block(
+        task_dirs,
+        agent=cfg.agent,
+        model=cfg.model,
+        agent_env=agent_env,
+        environment=cfg.environment,
+        sandbox_user=cfg.sandbox_user,
+        allow_cloud_credential_file=cfg.allow_cloud_credential_file is True,
+        allow_task_processes_with_credentials=(
+            cfg.allow_task_processes_with_credentials is True
+        ),
+        scoped_credentials=tuple(cfg.scoped_credentials or ()),
+    )
+
+
 def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, Any]:
     """The card for ``evaluation`` over ``task_dirs`` (the selected tasks)."""
+    from benchflow.agents.env import subagent_model_pin, subagent_model_value
     from benchflow.agents.registry import agent_routes_own_model, is_operator_script
+    from benchflow.agents.remote_manifests import agent_source
     from benchflow.build_info import benchflow_build
+    from benchflow.effort_pin import effort_pin_on
     from benchflow.evaluation import (
         _benchflow_version,
         effective_model,
         model_from_agent_env,
     )
+    from benchflow.sandbox.cloud_metadata import run_card_block, strict_grant
     from benchflow.task.verifier_sandbox import effective_verifier_sandbox
 
     cfg = evaluation._config
@@ -1229,6 +1304,14 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
     cap = next(
         (s for s in settings if s["name"] == "CLAUDE_CODE_MAX_OUTPUT_TOKENS"), None
     )
+    pin_state, pinned_model = (
+        (None, None)
+        if cfg.agent in CONTROL_AGENTS or is_operator_script(cfg.agent)
+        else (
+            subagent_model_pin(cfg.agent, model, dict(cfg.agent_env or {}))[0],
+            subagent_model_value(cfg.agent, model, dict(cfg.agent_env or {})),
+        )
+    )
     run = {
         "agent": cfg.agent,
         "harness": cfg.harness,
@@ -1272,6 +1355,9 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
         },
         "agent": {
             "name": cfg.agent,
+            # Set when a local manifest replaced the core agent of this name
+            # (BENCHFLOW_AGENTS_OVERRIDE_CORE): its path and SHA-256.
+            "source": agent_source(cfg.agent),
             "harness": cfg.harness,
             "installs": _installs(cfg.agent),
             "env_keys": sorted(cfg.agent_env or {}),
@@ -1282,6 +1368,11 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             ),
             "output_cap": cap["value"] if cap else None,
             "output_cap_source": cap["source"] if cap else None,
+            # Claude Code's sub-agents' model (benchflow#1246): "pinned" to the
+            # run's (subagent_model), "run-set" by the run's own env, or "off"
+            # with no model; None for an agent that is not Claude Code.
+            "subagent_model_pin": pin_state,
+            "subagent_model": pinned_model,
             # Each trial's expected token and cost capture.
             "capture": capture_path(
                 cfg.agent,
@@ -1309,6 +1400,8 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             "source": model_source,
             "effort": asked.effort,
             "effort_source": asked_from,
+            # --effort-pin: the proxy rewrites each call's effort to the run's.
+            "effort_pin": effort_pin_on(cfg.agent_env or {}),
             "sampling": None,
             # model_route = "agent": the agent calls its own model, if any, so no
             # model id is BenchFlow's to give.
@@ -1370,6 +1463,19 @@ def build_run_card(evaluation: Evaluation, task_dirs: list[Path]) -> dict[str, A
             task_dirs, cfg.agent, cfg.sandbox_user, cfg.config_override
         ),
         "extra_instruction": cfg.extra_instruction is not None,
+        # The tasks whose phase network keys the run's network overlay replaces.
+        "operator_network": _operator_network(task_dirs, cfg.config_override),
+        # --allow-cloud-metadata, and the tasks whose own opt-out it grants.
+        "cloud_metadata": run_card_block(
+            task_dirs,
+            allow_cloud_metadata=strict_grant(
+                getattr(cfg, "allow_cloud_metadata", False)
+            ),
+            config_override=cfg.config_override,
+        ),
+        # Per task, the operator's credentials its trials stage in the sandbox
+        # (benchflow.agents.operator_credentials); None when none do.
+        "operator_credentials": _operator_credentials(cfg, task_dirs),
         # --accept-deviations, kept whether or not the tasks name a reference.
         "accepted_deviations": cfg.accept_deviations,
         "reference": None,
@@ -1562,8 +1668,15 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
             f"  Agent:     {agent['name']}, an operator script, run as the sandbox user with no harness"
         )
     else:
+        source = agent.get("source") or {}
         lines.append(
             f"  Agent:     {agent['name']}, harness {agent['harness']}"
+            + (
+                f", from the local manifest {source['manifest']}, which replaces "
+                "the core agent"
+                if source.get("overrides_core")
+                else ""
+            )
             + (f", installs {agent['installs']}" if agent["installs"] else "")
         )
     if card["controls"].get("this_run"):
@@ -1585,6 +1698,12 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
         if not model["id"] and model.get("routes_own"):
             default = " set (the agent picks its own, if it calls one)"
         lines.append(f"  Model:     {model['id'] or 'none'}{default}; effort: {effort}")
+        if model.get("effort_pin"):
+            lines.append(
+                "  Effort pin: on (--effort-pin): the model proxy rewrites each "
+                f"model call's reasoning effort to {model['effort']}, "
+                "counted in each trial's model-calls.json (effort_rewrites)"
+            )
         cap = agent.get("output_cap")
         cap_source = SOURCE_WORDS.get(str(agent.get("output_cap_source")))
         lines.append(
@@ -1616,6 +1735,24 @@ def card_lines(card: dict[str, Any], job_dir: Path) -> list[str]:
                 "measures is set"
             )
         )
+        pin = agent.get("subagent_model_pin")
+        if pin == "pinned":
+            lines.append(
+                f"  Sub-agents: on the run's model, as the main loop names it "
+                f"({agent['subagent_model']}; CLAUDE_CODE_SUBAGENT_MODEL, "
+                "CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1, BenchFlow's default): the Agent "
+                "tool's model argument is overridden"
+            )
+        elif pin == "run-set":
+            lines.append(
+                "  Sub-agents: the run's own CLAUDE_CODE_SUBAGENT_MODEL / "
+                "CLAUDE_CODE_SUBAGENT_MODEL_FORCE; BenchFlow sets neither"
+            )
+        elif pin == "off":
+            lines.append(
+                "  Sub-agents: not pinned (the run names no model); the Agent "
+                "tool's model argument picks theirs"
+            )
         if agent.get("direct_endpoint"):
             lines.append(
                 "  Capture:   direct endpoint; no proxy call capture, cost at list prices"

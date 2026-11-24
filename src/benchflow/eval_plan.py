@@ -118,6 +118,9 @@ class EvalCreateRequest:
     accept_deviations: str | None = None
     fresh_install: bool = False
     allow_cloud_metadata: bool = False
+    allow_cloud_credential_file: bool = False
+    allow_task_processes_with_credentials: bool = False
+    scoped_credentials: tuple[str, ...] = ()
     integrity: str | None = None
     # --verifier-sandbox: task or separate (None keeps the config's, else task).
     verifier_sandbox: str | None = None
@@ -335,6 +338,9 @@ class EvalPlan:
             accept_deviations=req.accept_deviations,
             fresh_install=req.fresh_install,
             allow_cloud_metadata=req.allow_cloud_metadata,
+            allow_cloud_credential_file=req.allow_cloud_credential_file,
+            allow_task_processes_with_credentials=req.allow_task_processes_with_credentials,
+            scoped_credentials=req.scoped_credentials,
             integrity=normalize_integrity_mode(req.integrity),
             verifier_sandbox=req.verifier_sandbox or "task",
             retry_from_checkpoint=req.retry_from_checkpoint,

@@ -26,6 +26,10 @@ A run counts only if the agent made tool calls, used tokens and got a reward. 18
 
 Before a release, 9 agents run 9 SkillsBench tasks on Daytona. Every benchmark adapter in the release runs at least one task, and Docker and Daytona run the same task.
 
+## The release gate
+
+A release ships the commit its CI tested. Beside the levels above, every pull request also runs the grading-integrity matrix, the window check (the agent user's network rules are in before the agent starts, read from Docker's own records), a sample of gate 1 (BenchFlow's oracle against the reference scores another evaluation framework's oracle got, on tasks drawn by the tree's hash), two builds compared byte for byte, the public tree guard and a sweep for what GitHub push protection would refuse. Every night the trunk runs the larger gates. [Publishing a release](./release.md#the-release-gate-in-ci) lists each gate and what it blocks, and the [Release checklist](./release-checklist.md) is the release owner's order of work.
+
 ## Next steps
 
 - [Integration CI](../../.github/integration/README.md): how CI picks the runs for each PR.

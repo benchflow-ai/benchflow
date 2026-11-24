@@ -314,15 +314,13 @@ def test_the_start_commands_stderr_stays_in_its_own_answer():
 async def test_the_start_probe_keeps_its_commands_stderr_in_its_answer():
     sandbox = _Probed(_answers())
     await _start(sandbox)
-    assert "\nchmod 777 /logs/agent /logs/verifier\n) 2>&1\n" in (
-        sandbox.execs[0].command
-    )
+    assert "\nchmod 777 /logs/agent\n) 2>&1\n" in (sandbox.execs[0].command)
 
 
 async def test_a_garbled_probe_runs_the_chmod_again_and_keeps_nothing():
     sandbox = _Probed(_answers(), garble=True)
     await _start(sandbox)
-    assert sandbox.execs[1].command == "chmod 777 /logs/agent /logs/verifier"
+    assert sandbox.execs[1].command == "chmod 777 /logs/agent"
     assert sandbox.execs[1].timeout_sec is None
     await _resolve_agent_cwd(sandbox, _task())
     await lockdown._verifier_uid(sandbox, None)
@@ -331,7 +329,7 @@ async def test_a_garbled_probe_runs_the_chmod_again_and_keeps_nothing():
 
 async def test_a_probe_that_raises_runs_the_chmod_alone():
     def handler(command, user):
-        if command == "chmod 777 /logs/agent /logs/verifier":
+        if command == "chmod 777 /logs/agent":
             return 0, ""
         return _answers()(command, user)
 
@@ -345,7 +343,7 @@ async def test_a_probe_that_raises_runs_the_chmod_alone():
     sandbox = _Raising(handler)
     await _start(sandbox)
     assert sandbox.kept_identity() is None
-    assert sandbox.execs[1].command == "chmod 777 /logs/agent /logs/verifier"
+    assert sandbox.execs[1].command == "chmod 777 /logs/agent"
 
 
 async def test_the_chmod_alone_still_raises_as_before():

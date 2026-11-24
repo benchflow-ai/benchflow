@@ -2376,7 +2376,7 @@ def test_review_the_export_names_keep_compact_and_long_forms(name):
 
 # The shared name classifier is the override record's own file.
 CREDENTIAL_NAMES_SHA256 = (
-    "4ab96c38208153b12912b61491580078c45f641160f17fa40859ab695ee5ce34"
+    "614cbdbe66678b35092819d5f25364c69996feff57869ba5c1c1a7308c7c8696"
 )
 
 

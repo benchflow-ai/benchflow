@@ -180,6 +180,9 @@ def _config_payload(
         "keep_sandbox": config.keep_sandbox,
         "fresh_install": config.fresh_install,
         "allow_cloud_metadata": config.allow_cloud_metadata,
+        "allow_cloud_credential_file": config.allow_cloud_credential_file,
+        "allow_task_processes_with_credentials": config.allow_task_processes_with_credentials,
+        "scoped_credentials": list(config.scoped_credentials),
         "integrity": config.integrity,
         # The run card each worker writes: a strict reference's accepted
         # reason, the --trials plan it counts, and whether the run named its

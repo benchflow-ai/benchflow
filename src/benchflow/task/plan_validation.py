@@ -171,6 +171,8 @@ def validate_task_plan(
     execute_solution: bool | None = None,
     usage_tracking: UsageTrackingConfig | str | None = None,
     integrity: str | None = None,
+    allow_cloud_credential_file: bool = False,
+    scoped_credentials: tuple[str, ...] = (),
 ) -> dict[str, object] | None:
     """Refuse a task this run cannot honor, without creating a sandbox.
 
@@ -184,6 +186,12 @@ def validate_task_plan(
     ``required`` (own_model_route_refusal).
     ``integrity`` is the run's mode (None is ``audit``): only ``strict``
     refuses the pytest plugins test.sh installs ((c)).
+    ``allow_cloud_credential_file`` is the run's ``--allow-cloud-credential-file``:
+    without it a route that would stage a gcloud credential file in the
+    sandbox is refused (``operator_credentials.refuse_cloud_credential_file``).
+    ``scoped_credentials`` are the run's ``--scoped-credential`` names: each
+    must be an environment credential the resolved env sets
+    (``operator_credentials.refuse_unscopable``).
     Return the proxy install record the run persists; native-login routes
     return None and do not check extras for a proxy they do not use.
     """
@@ -338,12 +346,37 @@ def validate_task_plan(
         native_oauth_egress_policy(
             agent, model, agent_env, no_web=disallow_web_tools
         ) or allowlist_model_transport(policy, agent, model, agent_env)
+    sandbox_local = (
+        force_sandbox_local
+        or policy is not None
+        or getattr(task.config.sandbox, "allow_internet", True) is False
+    )
+    if not is_scripted_agent(agent) and agent != "task-runtime":
+        from benchflow.agents import operator_credentials
+
+        operator_credentials.refuse_cloud_credential_file(
+            operator_credentials.in_sandbox(
+                agent,
+                model,
+                dict(agent_env or {}),
+                proxy_in_sandbox=operator_credentials.proxy_in_sandbox(
+                    sandbox, force_sandbox_local=sandbox_local
+                ),
+            ),
+            task_name=task.name,
+            allowed=allow_cloud_credential_file,
+        )
+        operator_credentials.refuse_unscopable(
+            scoped_credentials,
+            agent,
+            model,
+            dict(agent_env or {}),
+            task_name=task.name,
+        )
     return proxy_install_record(
         agent=agent,
         model=model,
         agent_env=dict(agent_env or {}),
         environment=sandbox,
-        force_sandbox_local=force_sandbox_local
-        or policy is not None
-        or getattr(task.config.sandbox, "allow_internet", True) is False,
+        force_sandbox_local=sandbox_local,
     )

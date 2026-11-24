@@ -121,7 +121,7 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           echo "Resolved PR #${PR_NUMBER}: head=$head_sha base=$base_ref"
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ steps.resolve.outputs.base_ref }}
           fetch-depth: 0
@@ -145,7 +145,7 @@ jobs:
         run: git fetch --no-tags origin "$HEAD_SHA"
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
         with:
           python-version: "3.12"
 
@@ -240,7 +240,7 @@ jobs:
           fi
 
       - name: Upload matrix plan
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: integration-final-matrix
           path: matrix.json
@@ -282,7 +282,7 @@ jobs:
       AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
       AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.base_ref }}
           fetch-depth: 0
@@ -398,7 +398,7 @@ jobs:
 
       - name: Upload cell jobs
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: integration-final-${{ strategy.job-index }}
           path: ${{ runner.temp }}/job-archives/jobs-${{ strategy.job-index }}.tar.gz
@@ -433,19 +433,19 @@ jobs:
       # personal-OAuth CODEX_AUTH_JSON blob is needed.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ needs.plan.outputs.base_ref }}
           fetch-depth: 0
 
       - name: Download matrix plan
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: integration-final-matrix
           path: .
 
       - name: Download all cell jobs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         continue-on-error: true
         with:
           pattern: integration-final-*
@@ -608,7 +608,7 @@ jobs:
 
       - name: Publish integration-final-review check-run
         if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
         env:
           HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
           CONCLUSION: ${{ steps.final.outputs.conclusion }}
@@ -638,7 +638,7 @@ jobs:
 
       - name: Upload review pack
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
         with:
           name: integration-final-review-pack
           path: review-pack

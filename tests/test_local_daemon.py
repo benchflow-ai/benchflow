@@ -1907,3 +1907,135 @@ async def test_the_handover_rebuild_keeps_the_known_main_container():
     built = await _park._service_images(sandbox)
     assert await _park._rebuild_changes(sandbox, built) == ""
     assert sandbox._main_container == "c0ffee"
+
+
+# ── A runtime that is there but does not answer in time ─────────────────────
+# A request waits 5 s for the runtime's answer. A runtime stalled past that
+# (a loaded host; here SIGSTOP) was reported as not running, and `start`
+# then launched a second runtime beside it, waiting on runtime.lock.
+
+
+def _runtime_pids(folder: Path) -> list[int]:
+    """The runtime processes serving *folder* (started with it as their cwd)."""
+    pids = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            argv = (proc / "cmdline").read_bytes().split(b"\0")
+            cwd = os.readlink(proc / "cwd")
+        except OSError:
+            continue
+        if b"benchflow._daemon" in argv and cwd == str(folder):
+            pids.append(int(proc.name))
+    return pids
+
+
+@contextlib.contextmanager
+def _stalled_runtime(tmp_path):
+    """A started runtime, stopped (SIGSTOP) for the block; resumed and
+    stopped after it, with any other runtime for its folder ended."""
+    import signal
+
+    env = dict(os.environ, BENCHFLOW_DAEMON_DIR=str(tmp_path / "runtime"))
+    env.pop("_BENCHFLOW_DAEMON_WORKER", None)
+    started = cli(["daemon", "start"], env)
+    assert started.returncode == 0, started.stderr
+    (pid,) = _runtime_pids(tmp_path / "runtime")
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        yield env, pid
+    finally:
+        os.kill(pid, signal.SIGCONT)
+        for _ in range(100):
+            if cli(["daemon", "stop"], env).returncode == 0:
+                break
+            time.sleep(0.1)
+        for other in _runtime_pids(tmp_path / "runtime"):
+            if other != pid:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(other, signal.SIGTERM)
+
+
+@pytest.mark.parametrize("verb", ["status", "stop"])
+def test_a_stalled_runtime_did_not_answer_it_is_not_gone(tmp_path, verb):
+    with _stalled_runtime(tmp_path) as (env, _):
+        result = cli(["daemon", verb], env)
+    said = result.stdout + result.stderr
+    assert result.returncode == 1, said
+    assert "did not answer within 5 s" in said, said
+    assert "not running" not in said, said
+
+
+def test_start_never_starts_a_second_runtime_beside_a_stalled_one(tmp_path):
+    import signal
+
+    with _stalled_runtime(tmp_path) as (env, pid):
+        # At base the second start waits for an answer; let the first answer.
+        resume = threading.Timer(10, os.kill, (pid, signal.SIGCONT))
+        resume.start()
+        try:
+            result = cli(["daemon", "start"], env, timeout=120)
+            others = [p for p in _runtime_pids(tmp_path / "runtime") if p != pid]
+        finally:
+            resume.cancel()
+    said = result.stdout + result.stderr
+    assert others == [], others
+    assert result.returncode == 1, said
+    assert "did not answer within 5 s" in said, said
+
+
+def test_status_of_no_runtime_still_says_not_running(tmp_path):
+    env = dict(os.environ, BENCHFLOW_DAEMON_DIR=str(tmp_path / "runtime"))
+    env.pop("_BENCHFLOW_DAEMON_WORKER", None)
+    result = cli(["daemon", "status"], env)
+    assert result.returncode == 1
+    assert "not running" in result.stdout + result.stderr
+
+
+# ── A prepared call reaped before the loop reads its channel's EOF ──────────
+# Its channel is registered with the runtime's selector. reap() closed it
+# while still registered; the next socketpair took the same fd number, and
+# registering that raised KeyError, which ended the runtime: its socket was
+# gone, and a status query found nothing (an empty status in the tests).
+
+
+def test_a_reaped_prepared_call_leaves_no_registration_behind(tmp_path):
+    import selectors
+
+    from benchflow._daemon import _Child, _Runtime
+
+    runtime = _Runtime(tmp_path, 1, 60.0)
+    selector = selectors.DefaultSelector()
+    runtime.selector = selector
+    note, child_note = socket.socketpair()
+    channel, child_channel = socket.socketpair()
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    child_note.close()
+    child_channel.close()
+    value = dict.fromkeys(
+        ("identity", "interpreter", "stdio", "env", "cwd", "argv0", "argv"), ""
+    ) | {"umask": 18, "signals": {}}
+    child = _Child(pid, "parked", note, value)
+    child.channel = channel
+    runtime.children[pid] = child
+    selector.register(channel, selectors.EVENT_READ, child)
+    stale = channel.fileno()
+    # Ended, not yet reaped: the loop's next reap() sees it first.
+    os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+    runtime.reap()
+    assert pid not in runtime.children
+    assert stale not in selector.get_map()
+    # The next prepared call's channel gets the freed fd number.
+    opened = []
+    try:
+        while not opened or opened[-1].fileno() != stale:
+            assert len(opened) < 64, "the closed channel's fd was never reused"
+            opened.append(socket.socket(socket.AF_UNIX))
+        selector.register(opened[-1], selectors.EVENT_READ)
+    finally:
+        for sock in opened:
+            sock.close()
+        selector.close()

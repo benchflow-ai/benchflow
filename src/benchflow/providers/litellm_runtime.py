@@ -19,6 +19,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -37,6 +38,7 @@ import httpx
 import yaml
 
 from benchflow._root_only import root_only_path_check, root_only_tree_check
+from benchflow._utils import staged_secrets
 from benchflow._utils import timing_spans as _timing_spans
 from benchflow._utils.text import describe_exception
 from benchflow._uv_pin import (
@@ -249,8 +251,10 @@ def _warn_refused_requests(trajectory: Trajectory | None) -> None:
     counts = Counter(
         str(entry.get("request_model"))
         for entry in refused
-        # A call the trial's budget no longer allowed is the trial's ending.
-        if isinstance(entry, dict) and entry.get("rule") != "trial-budget"
+        # A call the trial's budget no longer allowed is the trial's ending;
+        # one after the model gate closed came after the agent's.
+        if isinstance(entry, dict)
+        and entry.get("rule") not in ("trial-budget", "agent-deadline")
     )
     if counts:
         logger.warning(
@@ -290,6 +294,25 @@ async def _capture_to_thread[T](
     if publish is not None:
         publish(result)
     return result
+
+
+#: The model gate's files beside the callback log (``litellm_request_guard``):
+#: the guard's pid once its SIGUSR2 handler is in, the controller's reason,
+#: and the close's acknowledgement.
+_GATE_ARMED_SUFFIX = ".gate-armed"
+_GATE_REASON_SUFFIX = ".gate-reason"
+_GATE_ACK_SUFFIX = ".gate"
+#: How long the controller waits for the acknowledgement.
+GATE_ACK_TIMEOUT_SEC = 1.0
+GATE_DEFAULT_REASON = "the agent's stop"
+
+
+def _gate_ack(text: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 class LiteLLMProcess:
@@ -333,6 +356,22 @@ class LiteLLMProcess:
 
     async def is_running(self) -> bool:
         raise NotImplementedError
+
+    async def close_gate(self, reason: str = GATE_DEFAULT_REASON) -> dict[str, Any]:
+        """Close the proxy's model gate (``litellm_request_guard``):
+        from now on it refuses every model call of the trial's agent, and the
+        calls under way are cut. Returns what happened: ``state`` is
+        ``closed`` (with the guard's acknowledgement), ``dead`` (a proxy that
+        is gone forwards nothing), or why it could not be closed. Never
+        raises."""
+        del reason
+        return {"state": "unsupported"}
+
+    async def unanswered_calls(self) -> int | None:
+        """How many model calls this proxy has open whose provider answer is
+        not whole yet (its guard's own count, asked by SIGUSR1), 0 for a
+        proxy that is gone, or None when it cannot say. Never raises."""
+        return None
 
     def start_live_capture(
         self,
@@ -443,6 +482,9 @@ class LiteLLMProcess:
                 "request_end",
                 "upstream_start",
                 "upstream_end",
+                # The model gate: its close, and each request it cut.
+                "gate_closed",
+                "deadline_cut",
             }:
                 continue
             key = (row["event"], row.get("attempt_id", row.get("request_id")))
@@ -921,6 +963,69 @@ class HostLiteLLMProcess(LiteLLMProcess):
 
     async def is_running(self) -> bool:
         return self.process.poll() is None
+
+    async def unanswered_calls(self) -> int | None:
+        try:
+            if self.process.poll() is not None:
+                return 0
+            pid = getattr(self.process, "pid", None)
+            try:
+                armed = Path(f"{self.log_path}{_GATE_ARMED_SUFFIX}").read_text().strip()
+            except OSError:
+                armed = ""
+            # The guard catches SIGUSR1 before it arms its gate (install()):
+            # only an armed guard's process is sent it, its default action
+            # would end the proxy.
+            if not isinstance(pid, int) or armed != str(pid):
+                return None
+            tally = Path(f"{self.log_path}{_TALLY_SUFFIX}")
+            with contextlib.suppress(FileNotFoundError):
+                tally.unlink()
+            os.kill(pid, signal.SIGUSR1)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + GATE_ACK_TIMEOUT_SEC
+            while loop.time() < deadline:
+                with contextlib.suppress(OSError, ValueError):
+                    report = json.loads(tally.read_text())
+                    if isinstance(report, dict) and report.get("pid") == pid:
+                        value = report.get("unanswered")
+                        return value if isinstance(value, int) else None
+                await asyncio.sleep(0.02)
+            return None
+        except Exception:
+            return None
+
+    async def close_gate(self, reason: str = GATE_DEFAULT_REASON) -> dict[str, Any]:
+        ack = Path(f"{self.log_path}{_GATE_ACK_SUFFIX}")
+        try:
+            if ack.is_file():
+                return {"state": "closed", **(_gate_ack(ack.read_text()) or {})}
+            if self.process.poll() is not None:
+                return {"state": "dead"}
+            pid = getattr(self.process, "pid", None)
+            try:
+                armed = Path(f"{self.log_path}{_GATE_ARMED_SUFFIX}").read_text().strip()
+            except OSError:
+                armed = ""
+            # Only the process whose guard caught SIGUSR2 is sent it: the
+            # signal's default action would end the proxy.
+            if not isinstance(pid, int) or armed != str(pid):
+                return {"state": "unarmed"}
+            with contextlib.suppress(OSError):
+                Path(f"{self.log_path}{_GATE_REASON_SUFFIX}").write_text(reason)
+            try:
+                os.kill(pid, signal.SIGUSR2)
+            except ProcessLookupError:
+                return {"state": "dead"}
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + GATE_ACK_TIMEOUT_SEC
+            while loop.time() < deadline:
+                if ack.is_file():
+                    return {"state": "closed", **(_gate_ack(ack.read_text()) or {})}
+                await asyncio.sleep(0.02)
+            return {"state": "unacknowledged"}
+        except Exception as exc:  # the stop goes on whatever the gate does
+            return {"state": "failed", "detail": describe_exception(exc)}
 
     async def stop(self, *, retry_later: bool = False) -> None:
         del retry_later  # the host's own log can always be read
@@ -1534,6 +1639,68 @@ class SandboxLiteLLMProcess(LiteLLMProcess):
             logger.warning(
                 "The in-sandbox model proxy's usage log may miss calls: %s", reason
             )
+
+    async def unanswered_calls(self) -> int | None:
+        try:
+            tally = await self._ask_tally(
+                _runtime_use_guard(self.runtime_dir, self.pid_path)
+            )
+        except Exception:
+            return None
+        if tally.state == "not-running":
+            return 0
+        report = tally.report if tally.state == "answered" else None
+        value = report.get("unanswered") if isinstance(report, dict) else None
+        return value if isinstance(value, int) else None
+
+    async def close_gate(self, reason: str = GATE_DEFAULT_REASON) -> dict[str, Any]:
+        """One root exec: signal the guard (only a process whose guard is
+        armed, at the pid file's pid), then read its acknowledgement."""
+        pid = shlex.quote(self.pid_path)
+        ack = shlex.quote(f"{self.log_path}{_GATE_ACK_SUFFIX}")
+        armed = shlex.quote(f"{self.log_path}{_GATE_ARMED_SUFFIX}")
+        asked = shlex.quote(f"{self.log_path}{_GATE_REASON_SUFFIX}")
+        ticks = int(GATE_ACK_TIMEOUT_SEC * 20)
+        command = (
+            f"{_runtime_use_guard(self.runtime_dir, self.pid_path)} "
+            "|| { echo BF_GATE_GUARD; exit 0; }\n"
+            f"if [ -s {ack} ]; then echo BF_GATE_CLOSED; cat {ack}; echo; exit 0; fi\n"
+            f"pid=$(cat {pid} 2>/dev/null)\n"
+            'if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then '
+            "echo BF_GATE_DEAD; exit 0; fi\n"
+            f'[ "$(cat {armed} 2>/dev/null)" = "$pid" ] || '
+            "{ echo BF_GATE_UNARMED; exit 0; }\n"
+            f"printf %s {shlex.quote(reason)} > {asked} 2>/dev/null\n"
+            'kill -USR2 "$pid" 2>/dev/null || { echo BF_GATE_DEAD; exit 0; }\n'
+            "i=0\n"
+            f'while [ ! -s {ack} ] && [ "$i" -lt {ticks} ]; do\n'
+            "  sleep 0.05 2>/dev/null || { sleep 1; i=$((i+19)); }; i=$((i+1))\n"
+            "done\n"
+            f"if [ -s {ack} ]; then echo BF_GATE_CLOSED; cat {ack}; echo; "
+            "else echo BF_GATE_UNACKED; fi\n"
+        )
+        try:
+            result = await exec_raw(self.sandbox.exec, command, timeout_sec=15)
+        except Exception as exc:
+            return {"state": "unasked", "detail": describe_exception(exc)}
+        out = (getattr(result, "stdout", "") or "").strip().splitlines()
+        states = {
+            "BF_GATE_CLOSED": "closed",
+            "BF_GATE_DEAD": "dead",
+            "BF_GATE_UNARMED": "unarmed",
+            "BF_GATE_UNACKED": "unacknowledged",
+            "BF_GATE_GUARD": "unsafe runtime folder",
+        }
+        for index, line in enumerate(out):
+            if line.strip() in states:
+                state = states[line.strip()]
+                if state == "closed" and index + 1 < len(out):
+                    return {"state": state, **(_gate_ack(out[index + 1]) or {})}
+                return {"state": state}
+        return {
+            "state": "unasked",
+            "detail": f"exit status {getattr(result, 'return_code', None)}",
+        }
 
     async def _ask_tally(self, guard: str) -> _ProxyTally:
         """Ask the proxy for its count of its log (SIGUSR1) and read
@@ -2270,6 +2437,7 @@ async def _start_host_litellm(
     session_id: str,
     agent_name: str,
 ) -> HostLiteLLMProcess:
+    staged_secrets.register("proxy master key", master_key)
     runtime_dir = Path(tempfile.mkdtemp(prefix="benchflow-litellm-"))
     # A fresh extras venv belongs to this process, including on failed start.
     # Build it before writing config, which holds the master key.
@@ -2290,6 +2458,9 @@ async def _start_host_litellm(
         runtime_dir, config=config, lazy_start=_proxy_lazy_start()
     )
     env = dict(os.environ)
+    # The effort pin is the run's alone: never one left in BenchFlow's own
+    # environment (benchflow.effort_pin).
+    env.pop("BENCHFLOW_EFFORT_PIN", None)
     env.update(agent_env)
     if route.upstream_model.startswith("vertex_ai/"):
         adc_json = env.pop("GOOGLE_APPLICATION_CREDENTIALS_JSON", None)
@@ -3470,6 +3641,9 @@ async def _start_sandbox_litellm(
     install_timeout_sec: int = 600,
     install_layer_bypass_reason: str | None = None,
 ) -> SandboxLiteLLMProcess:
+    # The master key and the provider credentials go into the sandbox.
+    staged_secrets.register("proxy master key", master_key)
+    staged_secrets.register_env(agent_env)
     token = uuid4().hex[:16]
     runtime_dir = f"{LITELLM_SANDBOX_ROOT}/{token}"
     pid_path = f"{runtime_dir}/litellm.pid"
@@ -3969,6 +4143,17 @@ def _wire_litellm_agent_env(
         updated["ANTHROPIC_AUTH_TOKEN"] = master_key
         updated["ANTHROPIC_MODEL"] = route.model_alias
         updated[LITELLM_MODEL_VIA_ENV] = "1"
+        from benchflow.agents.env import (
+            CLAUDE_CODE_SUBAGENT_MODEL_ENV,
+            CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV,
+            subagent_model_pin,
+        )
+
+        # Claude Code's sub-agents on the main loop's own model name, unless
+        # the run set either variable itself (benchflow#1246).
+        if subagent_model_pin(agent, route.requested_model, agent_env)[0] == "pinned":
+            updated[CLAUDE_CODE_SUBAGENT_MODEL_ENV] = route.model_alias
+            updated[CLAUDE_CODE_SUBAGENT_MODEL_FORCE_ENV] = "1"
         for key in (
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_SKIP_BEDROCK_AUTH",

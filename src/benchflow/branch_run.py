@@ -35,6 +35,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._utils import staged_secrets
 from benchflow.build_info import benchflow_build
 from benchflow.checkpoints import CheckpointPolicy, after_prompt
 from benchflow.errors import UserError
@@ -328,6 +329,11 @@ class BranchPlan:
     # "acp" or "native" (benchflow.native_harness), as for bench eval run.
     harness: str = "acp"
     agent_env: dict[str, str] = field(default_factory=dict)
+    # The run's --allow-cloud-credential-file and
+    # --allow-task-processes-with-credentials, as for `bench eval run`.
+    allow_cloud_credential_file: bool = False
+    allow_task_processes_with_credentials: bool = False
+    scoped_credentials: tuple[str, ...] = ()
     jobs_dir: Path = Path("jobs")
     job_name: str = "branch"
     source: CheckpointSource | None = None
@@ -752,6 +758,11 @@ async def run_branch_trial(
     # package it materializes; the task document below is read from it.
     try:
         task_path = materialize_task_dir(task_path)
+        from benchflow.sandbox.cloud_metadata import refuse_opt_in_for_command
+
+        # A branch takes no grant: a task asking to lift the cloud metadata
+        # block is refused here, saying which command can run it.
+        refuse_opt_in_for_command([task_path], command="bench eval branch")
     except Exception as exc:
         failed = BranchTrialOutcome(task=task_path.name)
         if plan.source is not None:
@@ -771,6 +782,9 @@ async def run_branch_trial(
         else None,
         environment=plan.sandbox,
         agent_env=dict(plan.agent_env) or None,
+        allow_cloud_credential_file=plan.allow_cloud_credential_file,
+        allow_task_processes_with_credentials=plan.allow_task_processes_with_credentials,
+        scoped_credentials=plan.scoped_credentials,
         jobs_dir=plan.jobs_dir,
         job_name=plan.job_name,
         checkpoints=plan.checkpoints,
@@ -788,6 +802,9 @@ async def run_branch_trial(
     outcome = BranchTrialOutcome(task=task_path.name)
     if plan.source is not None:
         outcome.source = plan.source.to_record()
+    # A branch trial drives its steps itself, its children's inside them: it
+    # binds the trial's registry as Rollout.run does (_utils.staged_secrets).
+    staged, binding = staged_secrets.bind_trial(owner=rollout)
     try:
         await rollout.setup()
         outcome.rollout_dir = str(rollout._rollout_dir)
@@ -934,6 +951,11 @@ async def run_branch_trial(
         except Exception as exc:
             logger.exception("Branch trial cleanup for %s failed", task_path.name)
             outcome.error = outcome.error or f"cleanup: {type(exc).__name__}: {exc}"
+        finally:
+            staged_secrets.write_trial_record(
+                getattr(rollout, "_rollout_dir", None), staged, agent=config.agent
+            )
+            staged_secrets.release_trial(binding)
     return outcome
 
 

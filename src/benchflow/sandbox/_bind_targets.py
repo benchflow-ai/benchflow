@@ -16,6 +16,7 @@ import stat
 from collections.abc import Collection, Mapping
 from typing import Any
 
+from benchflow._bfx.locate import SANDBOX_DIR as BFX_DIR
 from benchflow.sandbox._base import system_shell_route
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.task.paths import SandboxPaths
@@ -35,6 +36,17 @@ LOG_TARGETS = frozenset(
         SandboxPaths.artifacts_dir,
     )
 )
+# BenchFlow's read-only bfx mount (``_bfx/delivery.py``): its source is a
+# folder in this machine's (and this user's) cache, so on another host, or
+# with another cache, it is another inode. It is proved by provenance
+# instead: every start and restore checks, on the inspect the bind proof
+# takes and before any task process runs, that exactly one read-only mount
+# of this machine's verified folder sits there
+# (``DockerSandbox._check_bfx_mounts``), and that folder holds only the
+# binary with the pinned SHA-256 (``delivery.host_dir``). So a restore
+# expects this sandbox's own identity there, as for ``LOG_TARGETS``: a kept checkpoint
+# restored on a second host was refused here.
+BFX_TARGETS = frozenset({BFX_DIR})
 
 
 def decode(value: str) -> BindTargets:
@@ -129,6 +141,14 @@ async def inspect_targets(env: Any, container: str, inspected: dict) -> dict[str
     service = ((inspected.get("Config") or {}).get("Labels") or {}).get(
         "com.docker.compose.service", "main"
     )
+    if any(
+        isinstance(m, dict) and m.get("Destination") == BFX_DIR
+        for m in inspected.get("Mounts") or ()
+    ):
+        # The container holds BenchFlow's bfx (its held services do): bfx
+        # reads the identities, so nothing of the image's runs before the
+        # release.
+        return await _bfx_targets(env, container, paths)
     route = await system_shell_route(getattr(env, "_env", env), service)
     # Absolute tools and an empty environment: task PATH/HOME/startup files
     # never participate. The image, system tools and daemon are trusted.
@@ -151,6 +171,33 @@ async def inspect_targets(env: Any, container: str, inspected: dict) -> dict[str
         raise RuntimeError(
             "Cannot establish container bind identities; provide trusted "
             "/usr/bin/env and /usr/bin/stat in the image, or remove host mounts"
+        )
+    return dict(zip(paths, rows, strict=True))
+
+
+async def _bfx_targets(env: Any, container: str, paths: list[str]) -> dict[str, str]:
+    """``%d:%i`` of each bind target, as ``stat -L`` gives it, read by bfx
+    (``bfx stat``) in *container*, on the bfx route (TRUSTED-RUNTIME v2 I1):
+    bfx by absolute path from the read-only /.bfx, as root, no shell."""
+    request = json.dumps({"root": "/", "paths": [p.lstrip("/") for p in paths]})
+    result = await exec_raw(
+        env._docker_cli,
+        ["exec", "-u", "0", container, f"{BFX_DIR}/bfx", "stat", "--json", request],
+        check=False,
+    )
+    try:
+        answer = json.loads((result.stdout or "").strip().splitlines()[-1])
+        entries = answer["result"]["entries"]
+        rows = [f"{int(e['dev'])}:{int(e['ino'])}" for e in entries]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(
+            "Cannot establish container bind identities through bfx; start a "
+            "fresh trial"
+        ) from exc
+    if result.return_code or not answer.get("ok") or len(rows) != len(paths):
+        raise RuntimeError(
+            "Cannot establish container bind identities through bfx; start a "
+            "fresh trial"
         )
     return dict(zip(paths, rows, strict=True))
 
@@ -293,7 +340,8 @@ def with_own_log_binds(
     receipt this sandbox recorded at its own first start, before any agent
     code ran in it. A container this sandbox makes from the checkpoint gets
     this sandbox's own folders where a sandbox has its own: BenchFlow's log
-    folders (``LOG_TARGETS``, matched by target) and, per service, the
+    folders (``LOG_TARGETS``, matched by target), its bfx mount
+    (``BFX_TARGETS``, proved by provenance, not inode) and, per service, the
     targets in ``staged`` (binds whose source is this sandbox's private copy
     of the task, recorded at that same first start; DET-R2b). Those are
     expected at ``own``'s identities. Every other bind is carried over from
@@ -310,7 +358,11 @@ def with_own_log_binds(
     result: BindTargets = {}
     for service, targets in carried.items():
         mine = own.get(service, {})
-        theirs = LOG_TARGETS | frozenset((staged or {}).get(service, ()))
+        # /.bfx only for main: main is the service whose bfx mount every
+        # start and restore proves (_check_bfx_mounts); a sidecar's keeps the
+        # checkpoint's identity.
+        bfx = BFX_TARGETS if service == "main" else frozenset()
+        theirs = LOG_TARGETS | bfx | frozenset((staged or {}).get(service, ()))
         result[service] = {
             path: mine[path] if path in theirs and path in mine else identity
             for path, identity in targets.items()
@@ -320,11 +372,35 @@ def with_own_log_binds(
 
 def verify(actual: BindTargets, expected: BindTargets) -> None:
     if actual != expected:
-        raise RuntimeError(
-            "Container bind identity changed since the first start; restore "
-            "the original bind sources and mount targets, or start a fresh trial "
-            "without checkpoint reuse"
+        changed = sorted(
+            f"{service} {path}"
+            for service in set(actual) | set(expected)
+            for path in set(actual.get(service, {})) | set(expected.get(service, {}))
+            if actual.get(service, {}).get(path) != expected.get(service, {}).get(path)
         )
+        raise RuntimeError(
+            "Container bind identity changed since the first start "
+            f"({', '.join(changed)}); restore the original bind sources and "
+            "mount targets, or start a fresh trial without checkpoint reuse"
+        )
+
+
+async def verify_one(env: Any, container: str, baseline: BindTargets | None) -> None:
+    """One container started again: its bind targets and its bfx mount, as
+    :func:`pin_project` proves them, the same as at the first start."""
+    inspected = await env._inspect_container(container)
+    service = ((inspected.get("Config") or {}).get("Labels") or {}).get(
+        "com.docker.compose.service"
+    )
+    if not isinstance(service, str):
+        raise RuntimeError(
+            "Cannot identify bind service; use one container per service"
+        )
+    actual = await inspect_targets(env, container, inspected)
+    check_bfx = getattr(type(env), "_check_bfx_mounts", None)
+    if check_bfx is not None:
+        check_bfx(env, inspected, service=service)
+    verify({service: actual}, {service: (baseline or {}).get(service, {})})
 
 
 async def pin_project(
@@ -347,10 +423,12 @@ async def pin_project(
             )
         actual[service] = await inspect_targets(env, container, inspected)
         # Only BenchFlow's read-only bfx at or beneath /.bfx (TRUSTED-RUNTIME
-        # §6), checked on the same inspect, before any task process runs.
+        # §6), checked on the same inspect, before any task process runs: in
+        # main, and in each service its waiter holds.
         check_bfx = getattr(type(env), "_check_bfx_mounts", None)
-        if service == "main" and check_bfx is not None:
-            check_bfx(env, inspected)
+        held = getattr(env, "_hold_tokens", None) or {}
+        if (service == "main" or service in held) and check_bfx is not None:
+            check_bfx(env, inspected, service=service)
         if service == "main" and LABEL in labels:
             inherited = decode(labels[LABEL])
     if "main" not in actual:

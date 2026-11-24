@@ -58,6 +58,7 @@ import tarfile
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -125,6 +126,10 @@ def _json_size(command: str) -> int:
 
 
 _MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+#: The most bytes one bfx answer may bring back through the command's event
+#: stream, as for a download: over it bfx is unavailable here (BenchFlow's
+# gap), never a partial answer.
+BFX_ANSWER_MAX = 64 * 1024 * 1024
 _MAX_EXTRACT_BYTES = 64 * 1024 * 1024
 _MAX_EXTRACT_MEMBERS = 10_000
 _MAX_TAR_BYTES = _MAX_EXTRACT_BYTES + 16 * 1024 * 1024
@@ -158,6 +163,12 @@ class AgentCoreSandbox(BaseSandbox):
     cloud_metadata_provider_managed = True
 
     agent_exec_shell = "/bin/bash"
+
+    # Every command, bfx's too, starts in the runtime's first /bin/sh (the
+    # image's): bfx holds against a non-root agent only, and its opt-in route
+    # serves the walker and read_back alone.
+    bfx_launch = "image-shell"
+    bfx_in_scripts = False
 
     def __init__(
         self,
@@ -356,6 +367,7 @@ class AgentCoreSandbox(BaseSandbox):
                 out += result.stderr or ""
             return result.return_code, out
 
+        self.bfx_unavailable_why = bfx_delivery.not_yet("AgentCore")
         await bfx_delivery.deliver_upload(
             self,
             "agentcore",
@@ -367,6 +379,38 @@ class AgentCoreSandbox(BaseSandbox):
             ),
             run_root,
         )
+        if self.bfx_delivery is not None:
+            self.bfx_unavailable_why = None
+
+    async def bfx_call(
+        self, cmd: str, args: Mapping[str, Any], *, timeout_sec: int
+    ) -> dict[str, Any]:
+        """Run one bfx command as root on the system shell's route: the
+        uploaded /.bfx/bfx, its command and JSON arguments (AgentCore has no
+        way to start a program but its runtime's /bin/sh). An answer over
+        :data:`BFX_ANSWER_MAX` bytes is bfx unavailable here, never a partial
+        parse. Raises :class:`BfxUnavailable` where bfx is not delivered."""
+        from benchflow._bfx import client as bfx_client
+        from benchflow._bfx.locate import BfxUnavailable
+
+        if getattr(self, "bfx_delivery", None) is None:
+            raise BfxUnavailable("bfx is not delivered to this sandbox")
+        command = shlex.join(bfx_client.one_shot_argv(cmd, args))
+        result = await exec_raw(
+            self.exec,
+            command,
+            user="root",
+            timeout_sec=timeout_sec,
+            system_shell=True,
+        )
+        out = result.stdout or ""
+        size = len(out.encode("utf-8", "surrogateescape"))
+        if size > BFX_ANSWER_MAX:
+            raise BfxUnavailable(
+                f"bfx's answer ({size} bytes) is over the {BFX_ANSWER_MAX}-byte "
+                "cap of AgentCore's command output"
+            )
+        return bfx_client.parse_answer(out)
 
     async def _ensure_runtime(self, image_uri: str) -> str:
         """Resolve the shared runtime for an image and execution contract.
