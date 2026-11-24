@@ -121,6 +121,18 @@ def _connect(gateway: server.Gateway, rid: str = "trial-1", mac: str | None = No
     return sock
 
 
+def _wait_connections(gateway: server.Gateway, count: int) -> None:
+    """Until the one registered rollout holds *count* connections: the
+    gateway's thread answers the challenge after the relay's write returns."""
+    deadline = time.monotonic() + 10
+    while True:
+        (row,) = _control(gateway, command="status")["rollouts"]
+        if row["connections"] >= count or time.monotonic() > deadline:
+            assert row["connections"] == count, row
+            return
+        time.sleep(0.02)
+
+
 def _counters(gateway: server.Gateway) -> dict[str, int]:
     """The one registered rollout's counters."""
     (row,) = _control(gateway, command="status")["rollouts"]
@@ -352,6 +364,7 @@ def test_deny_cuts_what_open_let_in_and_open_cuts_nothing(gateway):
     """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
     _register(gateway)
     early = _connect(gateway)
+    _wait_connections(gateway, 1)
     reply = _control(gateway, command="deny", rollout="trial-1", policy=_policy())
     assert reply["cut"] == 1
     early.settimeout(10)
