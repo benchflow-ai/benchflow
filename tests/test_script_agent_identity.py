@@ -119,7 +119,11 @@ async def test_root_account_alias_is_refused(tmp_path, backend, verifier_user):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_empty_verifier_inherits_nonroot_container_user(tmp_path, backend):
-    """Guards CONF-7: Docker's empty selector inherits Config.User."""
+    """Guards CONF-7: Docker's empty selector inherits Config.User. This
+    rollout's verify is a stand-in, so /logs/verifier is left as the close
+    before the turn made it: root's 0755, closed to uid 2000 at rest. The
+    verifier's own write as that user, in test.sh, is
+    tests/test_verifier_inherited_user_docker.py's."""
     with started_box(
         image=PYTHON_IMAGE,
         setup="useradd -m -s /bin/bash agent; useradd -u 2000 -m grader",
@@ -137,4 +141,4 @@ async def test_empty_verifier_inherits_nonroot_container_user(tmp_path, backend)
         assert (await box.exec("test -x /logs", user="2000:2000")).return_code == 0
         assert (
             await box.exec("printf 0 > /logs/verifier/reward.txt", user="2000:2000")
-        ).return_code == 0
+        ).return_code != 0

@@ -146,6 +146,18 @@ def _secrets(argv: Sequence[str] | None = None) -> list[str]:
         if argv is None:
             argv = sys.argv[1:]
     words = list(argv)
+
+    def _reference(value: str) -> bool:
+        # Where a key is kept (file:PATH, env:VAR, - for stdin, or KIND= one of
+        # them), never the key: masking it hid the path a fix line names.
+        _, sep, rest = value.partition("=")
+        rest = (
+            rest
+            if sep and re.fullmatch(r"[A-Za-z0-9_]+", value.split("=", 1)[0])
+            else value
+        )
+        return rest == "-" or rest.startswith(("file:", "env:"))
+
     for index, arg in enumerate(words):
         pairs = [arg]
         if arg.startswith("-") and "=" in arg:
@@ -153,7 +165,12 @@ def _secrets(argv: Sequence[str] | None = None) -> list[str]:
             pairs.append(arg.split("=", 1)[1])
         for pair in pairs:
             key, sep, value = pair.partition("=")
-            if sep and value and _SECRET_NAME_RE.search(key.upper()):
+            if (
+                sep
+                and value
+                and _SECRET_NAME_RE.search(key.upper())
+                and not _reference(value)
+            ):
                 # Named so secret_values() keeps it (it matches key names).
                 environ[f"ARGV_{index}_{key.upper()}"] = value
         # --hf-token VALUE: an option named like a credential, then its value.
@@ -162,7 +179,10 @@ def _secrets(argv: Sequence[str] | None = None) -> list[str]:
             arg.startswith("-")
             and "=" not in arg
             and _SECRET_NAME_RE.search(arg.upper().replace("-", "_"))
+            # --key-file PATH names where the key is.
+            and not arg.upper().replace("-", "_").endswith("_FILE")
             and following
+            and not _reference(following)
         ):
             environ[f"ARGV_{index + 1}_TOKEN"] = following
     return secret_values(environ)

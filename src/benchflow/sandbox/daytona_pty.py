@@ -33,18 +33,11 @@ def _wrap_daytona_command_with_env_file(
 ) -> str:
     """Return *command* prefixed to set *env* with the shell's own builtins.
 
-    Thin wrapper over the canonical
-    :func:`benchflow.sandbox._base.wrap_command_with_env_file` so the
-    secret-redaction logic lives in exactly one place. See that function for
-    the full contract: no value is in the remote command as ``KEY=VALUE``
-    (visible via ``ps``, Daytona audit logs, or any provider-side command
-    logging); they are octal escapes the shell's ``printf`` and ``eval``
-    apply, with no program, file or variable of its own. A command this
-    makes too large for one session command is sent as data, staged by root
-    (``DaytonaSandbox._sandbox_session_exec``, the transport contract).
-
-    Issue #412: previously this used ``env K=V ...`` argv, which placed raw
-    secret values into the remote command line.
+    :func:`benchflow.sandbox._base.wrap_command_with_env_file` under its old
+    Daytona name. No Daytona or DinD exec uses it: the octal escapes are
+    still the values, in the session command's text and in
+    ``/proc/<pid>/cmdline``. Their env is a file root opens before the
+    command runs (:mod:`benchflow.sandbox.daytona_exec_env`).
     """
     return wrap_command_with_env_file(
         env,

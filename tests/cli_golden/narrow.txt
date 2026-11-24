@@ -1,0 +1,6 @@
+Task                  Outcome  Reward  Cost      Tokens  Time
+datasets/gpqa-diamo…  passed        1  ~$0.0054  33,351   58s
+
+Score       Model cost  Tokens  Wall time
+1/1 passed  ~$0.0054    33,351  2m 00s
+Results: jobs/2026-11-18__03-30-13/

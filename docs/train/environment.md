@@ -80,6 +80,32 @@ Two things in 0.9.2 can leave the rows thinner than the rollouts (0.10.0rc2 keep
 
 [Export training data](./export.md) shows a whole row; [Known pitfalls](../audit/pitfalls.md#infrastructure-that-fails-quietly) lists both problems.
 
+## Branch a rollout at a checkpoint
+
+A branch runs a task once up to a checkpoint, snapshots the sandbox, and starts each child from that snapshot with its own prompt: a group of rollouts that share their start, for comparing what each continuation earns.
+
+```bash
+bench branch --tasks-dir tasks/my-task --agent claude-agent-acp --sandbox docker \
+  --prompt "Write draft.txt containing: Hello world" --prompt @instruction \
+  --checkpoint-after-prompt 1 \
+  --child "label=baseline" --child "label=hint,prompt=Rename draft.txt." \
+  --retain-snapshots --jobs-dir jobs/branch
+```
+
+Each child runs in its own sandbox created from the snapshot (`--isolate-children` is the default with a sandbox-only snapshot), and is a trial of its own: its folder has its `result.json`, its `integrity/` record, its reward and its cost. `tree.json` in the job folder names the fork and its children.
+
+To branch again later, start from a snapshot a run kept. The command above kept its fork's (`--retain-snapshots`): give `--from-checkpoint` the parent's trial folder, leave out `--checkpoint`, and the children start from that fork:
+
+```bash
+bench branch --tasks-dir tasks/my-task --from-checkpoint jobs/branch/<job>/<trial> \
+  --child "label=a" --child "label=b,prompt=Try another approach." \
+  --jobs-dir jobs/branch-again
+```
+
+A run with `--checkpoints every-prompt` (`bench run` or `bench branch`) also keeps a snapshot after each prompt, named `prompt:1`, `prompt:2` and so on in the trial's `checkpoints.json`, and `--checkpoint prompt:N` starts the children from one of them. A run without `--checkpoints` keeps none: after the command above, `--checkpoint prompt:1` is refused with `no such checkpoint`. A checkpoint that fails is recorded there too, with what became of its snapshot under `leftover`; on Daytona a snapshot gets `BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC` seconds (600) ([Daytona](../scale/daytona.md#limits)).
+
+From Python, [`run-branch.py`](../examples/python-sdk/run-branch.py) does the same. `bench branch --help` lists every option.
+
 ## From Python
 
 `bf.Evaluation` runs a job from Python, with the flags as arguments ([Run a benchmark](../evaluate/run-a-benchmark.md#from-python)), and `bf.load_job` reads each rollout's reward back ([Read the results](../evaluate/read-results.md#in-python)).

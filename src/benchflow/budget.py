@@ -714,7 +714,7 @@ class BudgetGuard:
                 f"cost unknown for {unpriced}: --max-cost-usd can't be enforced"
             )
             logger.warning(
-                "%s; stopping: no new rollouts, %d running trial(s) finish",
+                "%s; no new trials start, and the %d running trial(s) finish",
                 self.reason,
                 len(self._running),
             )
@@ -774,7 +774,7 @@ class BudgetGuard:
                 f"budget reached: {self.rollouts:,} rollouts started of a {cap:,} cap"
             )
             logger.warning(
-                "%s; stopping: no new rollouts, %d running trial(s) finish",
+                "%s; no new trials start, and the %d running trial(s) finish",
                 self.reason,
                 len(self._running),
             )
@@ -954,7 +954,7 @@ class BudgetGuard:
                 self.reason = reason
                 self._cancelling = True
                 logger.warning(
-                    "%s; stopping: no new rollouts, %d running trial(s) cancelled",
+                    "%s; no new trials start, and the %d running trial(s) are cancelled",
                     reason,
                     len([n for n in self._running if n != exclude]),
                 )

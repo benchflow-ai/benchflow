@@ -16,6 +16,7 @@ ERROR_FAMILIES = {
     "task_refused": "refusal",
     "kept_service_freezer": "refusal",
     "integrity_unavailable": "refusal",
+    "restricted_model_refused": "refusal",
     "runtime_sealing": "refusal",
     "guard_timeout": "sandbox",
     "phase_timeout": "sandbox",
@@ -56,7 +57,14 @@ VERIFIER_FAMILIES = {
     "verifier_tools_refused": "verifier_error",
     "verifier_network_unheld": "verifier_error",
     "network_policy_breached": "verifier_error",
+    # written to verifier_error_category outside VERIFIER_ERROR_CATEGORIES
+    # (classify_verifier_error's integrity_unavailable; the scored 0's
+    # provenance_incomplete from rollout/_results.py), so placed here too.
+    "integrity_unavailable": "refusal",
+    "provenance_incomplete": "verifier_hardening",
 }
+# The verifier categories a result.json writes beyond the catalog.
+VERIFIER_EXTRA = {"integrity_unavailable", "provenance_incomplete"}
 CASES = [
     (channel, category, family)
     for channel, families in (
@@ -70,7 +78,7 @@ CASES = [
 def test_pinned_allowlist_covers_the_complete_integ_catalog():
     """Guards DT3-CU2, including V4's range and P4's fallback categories."""
     assert set(ERROR_FAMILIES) == ERROR_CATEGORIES
-    assert set(VERIFIER_FAMILIES) == VERIFIER_ERROR_CATEGORIES
+    assert set(VERIFIER_FAMILIES) == VERIFIER_ERROR_CATEGORIES | VERIFIER_EXTRA
     assert normalise.load_categories()["python"]["error_category"] == ERROR_FAMILIES
     assert (
         normalise.load_categories()["python"]["verifier_error_category"]

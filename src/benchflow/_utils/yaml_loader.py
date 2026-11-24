@@ -173,11 +173,26 @@ def _optional_fields(raw: dict[str, Any]) -> dict[str, Any]:
         "skip_agent_install",
         "fresh_install",
         "allow_cloud_metadata",
+        "allow_cloud_credential_file",
+        "allow_task_processes_with_credentials",
+        "scoped_credentials",
         "source_provenance",
         "allow_document_user",
     ):
         if raw.get(key) is not None:
             out[key] = raw[key]
+    from benchflow.agents.operator_credentials import (
+        CLOUD_FILE_SETTING,
+        TASK_PROCESSES_SETTING,
+        literal_grant,
+        scoped_names,
+    )
+
+    for key in (CLOUD_FILE_SETTING, TASK_PROCESSES_SETTING):
+        if key in out:
+            out[key] = literal_grant(out[key], where=key)
+    if "scoped_credentials" in out:
+        out["scoped_credentials"] = scoped_names(out["scoped_credentials"])
     if out.get("config_override") is not None:
         # A saved config may hold the override's record (to_dict).
         from benchflow._utils.config_override import recorded_overlay
@@ -357,6 +372,9 @@ def rollout_config_to_dict(
             "skip_agent_install": config.skip_agent_install,
             "fresh_install": config.fresh_install,
             "allow_cloud_metadata": config.allow_cloud_metadata,
+            "allow_cloud_credential_file": config.allow_cloud_credential_file,
+            "allow_task_processes_with_credentials": config.allow_task_processes_with_credentials,
+            "scoped_credentials": list(config.scoped_credentials),
             "environment_manifest": config.environment_manifest.model_dump(mode="json")
             if config.environment_manifest is not None
             else None,

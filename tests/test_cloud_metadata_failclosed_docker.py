@@ -154,10 +154,15 @@ launch_cmd = "/opt/bfprobe/acp.sh"
 """
 
 # Fails the metadata helper's image build, and passes every other call on.
+# The helper's build fails, and so does the pull of the release's prebuilt
+# image when one is pinned (a host that reaches no registry): no helper image.
 FAILING_HELPER_DOCKER = """#!/bin/sh
 case " $* " in
   *" build "*"benchflow.helper=metadata"*)
     echo "forced helper build failure (test)" >&2
+    exit 1;;
+  *" pull --quiet __HELPER_IMAGE__ "*)
+    echo "forced helper pull failure (test)" >&2
     exit 1;;
 esac
 exec __DOCKER__ "$@"
@@ -374,7 +379,11 @@ def _run(
         real = shutil.which("docker")
         assert real is not None
         docker = shim / "docker"
-        docker.write_text(FAILING_HELPER_DOCKER.replace("__DOCKER__", real))
+        docker.write_text(
+            FAILING_HELPER_DOCKER.replace("__DOCKER__", real).replace(
+                "__HELPER_IMAGE__", helper_mod.HELPER_IMAGE or "(none pinned)"
+            )
+        )
         docker.chmod(0o755)
         env["PATH"] = f"{shim}:{env['PATH']}"
         # Its own empty record of built helper images: a build recorded on
@@ -548,8 +557,8 @@ def test_a_forced_helper_failure_refuses_the_start(tmp_path, probe_image):
         "build failure (test)), so no network rule of the trial's could go in from "
         "outside main, and its processes would have the cloud metadata endpoints and "
         "the network open to them; only the task's own opt-out "
-        "(allow_cloud_metadata = true in its [environment] table) on an open network "
-        "starts it without them"
+        "(allow_cloud_metadata = true in its [environment] table), granted by the "
+        "run's --allow-cloud-metadata, on an open network starts it without them"
     ), (error, done.stderr[-2000:])
     # main's own every-user rule goes in before main is released,
     # from the same helper: its failure stops the start there, earlier than
@@ -566,9 +575,11 @@ def test_a_forced_helper_failure_refuses_the_start(tmp_path, probe_image):
     [
         (("--allow-cloud-metadata",), "", "--allow-cloud-metadata"),
         (
-            (),
+            # 0.10.1: the task's key takes effect only with the run's flag.
+            ("--allow-cloud-metadata",),
             "allow_cloud_metadata = true\n",
-            "allow_cloud_metadata = true in the task's environment",
+            "allow_cloud_metadata = true in the task's environment, granted by "
+            "--allow-cloud-metadata",
         ),
     ],
     ids=["run-flag", "task-environment"],
@@ -587,7 +598,11 @@ def test_an_explicit_opt_out_starts_the_agent_and_is_recorded(
     assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-2000:])
     assert record["state"] == "off", record
     assert record.get("opt_out") == opt_out, record
-    assert result["cloud_metadata"] == {"state": "off", "opt_out": opt_out}
+    assert {k: result["cloud_metadata"].get(k) for k in ("state", "opt_out")} == {
+        "state": "off",
+        "opt_out": opt_out,
+    }
+    assert result["cloud_metadata"]["lifted_by"]["run"] == "--allow-cloud-metadata"
     task_opts_out = "task" in opt_out
     assert _connects(probe, "connect") == {"reached" if task_opts_out else "refused"}, (
         probe
@@ -865,10 +880,10 @@ def test_a_uid_0_agent_on_a_no_web_task_is_held_to_loopback(
     network (the connect timed out instead of being refused)."""
     from benchflow.sandbox.lockdown import NO_WEB_ROOT_GID
 
-    done, result, _record, probe, _mock = _run(
+    done, result, record, probe, _mock = _run(
         tmp_path, noweb_image, "--sandbox-user", user, no_web=True
     )
-    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    assert result.get("error") in (None, ""), _why(done, result, record)
     # Held from its launch, before ACP's initialize.
     assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
     assert f"ids 0 {NO_WEB_ROOT_GID}" in probe, probe
@@ -887,9 +902,9 @@ def test_a_no_web_agent_user_is_held_from_its_launch(tmp_path, noweb_image):
     ACP's initialize, is refused by the uid firewall. On bf844d299 the
     firewall went in only after session/new, and that connect left the
     sandbox (it timed out instead of being refused)."""
-    done, result, _record, probe, _mock = _run(
+    done, result, record, probe, _mock = _run(
         tmp_path, noweb_image, "--sandbox-user", "agent", no_web=True
     )
-    assert result.get("error") in (None, ""), (result.get("error"), done.stderr[-3000:])
+    assert result.get("error") in (None, ""), _why(done, result, record)
     assert _launch_connect(tmp_path) == "launch refused", _launch_connect(tmp_path)
     assert _lines(probe, "outside") == ["refused"], probe

@@ -113,6 +113,54 @@ def parse_target(
     return None, (f"{parts[0]}/{parts[1]}", "/".join(parts[2:]) or None, ref or None)
 
 
+def catalog_dataset(text: str) -> str | None:
+    """``bench run <name>[@version]``: the dataset BenchFlow's registry has
+    by that name, as ``name@version``, when no folder here has the name.
+    A name with one version needs none; with several, a usage error
+    lists them. None for anything else (a folder, a repository, a name the
+    registry doesn't have), which the target rules then read."""
+    if "/" in text or text.startswith((".", "~")) or Path(text).expanduser().exists():
+        return None
+    name, at, version = text.partition("@")
+    if not re.fullmatch(_NAME, name) or (at and not version):
+        return None
+    from benchflow._utils.dataset_registry import load_benchflow_registry
+
+    entries, _unreadable = load_benchflow_registry()
+    versions = sorted(
+        {
+            str(e.get("version"))
+            for e in entries
+            if e.get("name") == name and e.get("version")
+        }
+    )
+    if not versions:
+        return None
+    if at:
+        if version not in versions:
+            raise _usage(
+                f"BenchFlow's registry has no {name}@{version}; it has "
+                + ", ".join(f"{name}@{v}" for v in versions),
+                f"bench run {name}@{versions[-1]}",
+            )
+        return f"{name}@{version}"
+    if len(versions) > 1:
+        raise _usage(
+            f"{name} has {len(versions)} versions in BenchFlow's registry: "
+            + ", ".join(versions),
+            f"name one: bench run {name}@{versions[-1]}",
+        )
+    from benchflow.cli._shared import err_console
+
+    err_console.print(
+        f"{name}: the dataset {name}@{versions[0]} from BenchFlow's registry "
+        f"(no folder ./{name} here)",
+        highlight=False,
+        soft_wrap=True,
+    )
+    return f"{name}@{versions[0]}"
+
+
 def idle_seconds(text: str) -> str:
     """``--idle-timeout`` as the whole seconds ``bench eval run`` takes.
 
@@ -389,6 +437,20 @@ def run(
             help="Print only warnings, errors and the final score",
         ),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="The full scoring footer and debug logs too",
+        ),
+    ] = False,
+    json_out: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="One JSON result on stdout; all else on stderr",
+        ),
+    ] = False,
 ) -> None:
     """Run an agent on tasks and score them; without -a, the oracle.
 
@@ -438,6 +500,10 @@ def run(
                 f"add -a <agent> (`bench agents` lists them), or drop {flag} to "
                 "run the oracle",
             )
+    if target is not None and dataset is None and registry is None:
+        named = catalog_dataset(target)
+        if named is not None:
+            target, dataset = None, named
     if target is not None and dataset is not None:
         raise _usage(
             "bench run takes a target or --dataset, not both",
@@ -495,36 +561,45 @@ def run(
             kwargs["source_repo"], kwargs["source_path"], kwargs["source_ref"] = repo
     if "skill_mode" not in more:
         more["skill_mode"] = "with-skill" if task_skills else "no-skill"
-    eval_run(
-        **kwargs,
-        **more,
-        dataset=dataset,
-        registry=registry,
-        agent=("oracle" if oracle_default else None) if agent is None else agent,
-        model=model,
-        reasoning_effort=effort,
-        harness=harness,
-        agent_env=env,
-        include=_split_patterns(include),
-        exclude=_split_patterns(exclude),
-        n_tasks=limit,
-        environment=sandbox,
-        concurrency=concurrency,
-        warm_pool=warm_pool,
-        jobs_dir=jobs_dir,
-        timeout_multiplier=timeout_multiplier,
-        agent_idle_timeout=idle_seconds(idle_timeout)
-        if idle_timeout is not None
-        else None,
-        fail_under=fail_under,
-        freeze_workspace=save_outputs,
-        extra_instruction=extra_instruction,
-        verifier_sandbox=verifier_sandbox,
-        job_name=job,
-        fresh=fresh,
-        dry_run=dry_run,
-        quiet=quiet,
-    )
+    from benchflow.cli._output import report
+
+    report.configure(verbose=verbose, json_out=json_out)
+    try:
+        eval_run(
+            **kwargs,
+            **more,
+            dataset=dataset,
+            registry=registry,
+            agent=("oracle" if oracle_default else None) if agent is None else agent,
+            model=model,
+            reasoning_effort=effort,
+            harness=harness,
+            agent_env=env,
+            include=_split_patterns(include),
+            exclude=_split_patterns(exclude),
+            n_tasks=limit,
+            environment=sandbox,
+            concurrency=concurrency,
+            warm_pool=warm_pool,
+            jobs_dir=jobs_dir,
+            timeout_multiplier=timeout_multiplier,
+            agent_idle_timeout=idle_seconds(idle_timeout)
+            if idle_timeout is not None
+            else None,
+            fail_under=fail_under,
+            freeze_workspace=save_outputs,
+            extra_instruction=extra_instruction,
+            verifier_sandbox=verifier_sandbox,
+            job_name=job,
+            fresh=fresh,
+            dry_run=dry_run,
+            quiet=quiet or json_out,
+        )
+    except (typer.Exit, SystemExit) as stop:
+        code = getattr(stop, "exit_code", getattr(stop, "code", 1))
+        if code:
+            report.write_failure(int(code) if isinstance(code, int) else 1)
+        raise
 
 
 def _is_trial(folder: Path) -> bool:
@@ -639,7 +714,9 @@ def results(
     with one, it reads the job (`bench eval inspect`); with two, it pairs them
     by task (`bench eval compare`).
     """
-    names = jobs or []
+    from benchflow.cli._output.latest import LATEST, resolve
+
+    names = [str(resolve(name)) if name == LATEST else name for name in jobs or []]
     if len(names) > 2:
         raise _usage(
             f"bench results reads one job or compares two; {len(names)} were given",
@@ -672,10 +749,36 @@ def results(
 def agents(
     name: Annotated[
         str | None,
-        typer.Argument(help="Show this agent in detail", show_default=False),
+        typer.Argument(
+            help="Show this agent in detail; or validate <manifest.toml>",
+            show_default=False,
+        ),
+    ] = None,
+    path: Annotated[
+        Path | None,
+        typer.Argument(
+            help="With validate: the manifest.toml (or its folder) to check",
+            show_default=False,
+        ),
     ] = None,
 ) -> None:
-    """List the agents, or show one in detail."""
+    """List the agents, show one in detail, or validate a manifest."""
+    if name == "validate":
+        if path is None:
+            raise _usage(
+                "bench agents validate needs a manifest",
+                "bench agents validate agents/<name>/manifest.toml",
+            )
+        validate = _command(
+            "benchflow.cli.agent", "register_agent", "agent", "validate"
+        )
+        _call(validate, path=path)
+        return
+    if path is not None:
+        raise _usage(
+            f"bench agents {name} takes no second argument",
+            "bench agents <name>, or bench agents validate <manifest.toml>",
+        )
     command = _command(
         "benchflow.cli.agent", "register_agent", "agent", "show" if name else "list"
     )

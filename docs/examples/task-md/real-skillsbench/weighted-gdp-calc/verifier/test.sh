@@ -29,21 +29,9 @@ mkdir -p "$(dirname "$REWARD_TEXT")" "$(dirname "$REWARD_JSON")" "$(dirname "$CT
 
 # CTRF produces a standard test report in JSON format which is useful for logging.
 cd "$WORKSPACE"
-if [ "${BENCHFLOW_SKIP_VERIFIER_DEPS:-0}" = "1" ]; then
-  "$PYTEST_BIN" --ctrf "$CTRF_JSON" "$VERIFIER_DIR/test_outputs.py" -rA -v
-else
-  apt-get update
-  apt-get install -y curl
-
-  curl -LsSf https://astral.sh/uv/0.9.7/install.sh | sh
-  source $HOME/.local/bin/env
-
-  uvx \
-    --with pytest==8.4.1 \
-    --with pytest-json-ctrf==0.3.5 \
-    --with openpyxl==3.1.5 \
-    pytest --ctrf "$CTRF_JSON" "$VERIFIER_DIR/test_outputs.py" -rA -v
-fi
+# pytest and pytest-json-ctrf come with the image (environment/Dockerfile), so
+# nothing is installed here and the verifier needs no network.
+"$PYTEST_BIN" --ctrf "$CTRF_JSON" "$VERIFIER_DIR/test_outputs.py" -rA -v
 
 PYTEST_EXIT_CODE=$?
 

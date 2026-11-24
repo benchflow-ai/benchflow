@@ -19,6 +19,11 @@ from typing import Annotated
 import typer
 
 from benchflow.cli._errors import expected_error_parts
+from benchflow.cli._options import (
+    AllowCloudCredentialFileOption,
+    AllowTaskProcessesWithCredentialsOption,
+    ScopedCredentialOption,
+)
 from benchflow.cli._shared import (
     _apply_dotenv_to_process_env,
     exit_if_missing,
@@ -116,8 +121,15 @@ def register_continue(
                 ),
             ),
         ] = "auto",
+        allow_cloud_credential_file: AllowCloudCredentialFileOption = False,
+        allow_task_processes_with_credentials: AllowTaskProcessesWithCredentialsOption = False,
+        scoped_credential: ScopedCredentialOption = None,
     ) -> None:
         """Resume a previous unfinished (timed-out) OpenHands run to completion."""
+        from benchflow.agents.operator_credentials import (
+            CloudCredentialFileRefused,
+            ScopedCredentialRefused,
+        )
         from benchflow.continue_run.orchestrator import continue_run
         from benchflow.continue_run.run_folder import RunFolderError
 
@@ -136,8 +148,23 @@ def register_continue(
                     strict_divergence=strict_divergence,
                     replay_only=replay_only,
                     proxy_mode=proxy_mode,
+                    allow_cloud_credential_file=allow_cloud_credential_file,
+                    allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+                    scoped_credentials=tuple(scoped_credential or ()),
                 )
             )
+        except CloudCredentialFileRefused as exc:
+            print_error(
+                str(exc),
+                next_step="pass --allow-cloud-credential-file to accept the file",
+            )
+            raise typer.Exit(1) from exc
+        except ScopedCredentialRefused as exc:
+            print_error(
+                str(exc),
+                next_step="name a variable the live model's env sets in --scoped-credential",
+            )
+            raise typer.Exit(1) from exc
         except RunFolderError as exc:
             # No command name in it: the same callback backs both the canonical
             # `bench eval continue` and the deprecated top-level `bench continue`.
@@ -220,6 +247,9 @@ def register_continue(
                 ),
             ),
         ] = "auto",
+        allow_cloud_credential_file: AllowCloudCredentialFileOption = False,
+        allow_task_processes_with_credentials: AllowTaskProcessesWithCredentialsOption = False,
+        scoped_credential: ScopedCredentialOption = None,
     ) -> None:
         """Continue all timed-out OpenHands runs under a directory tree."""
         import json
@@ -265,6 +295,9 @@ def register_continue(
                 require_timeout=True,
                 strict_divergence=strict_divergence,
                 proxy_mode=proxy_mode,
+                allow_cloud_credential_file=allow_cloud_credential_file,
+                allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+                scoped_credentials=tuple(scoped_credential or ()),
             )
         )
         summary = summarize_batch(results)

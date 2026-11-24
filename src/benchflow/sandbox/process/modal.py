@@ -69,21 +69,31 @@ _STDOUT_ENDED = object()
 
 
 async def _platform_end(
-    env: Any, seen_at: str, *, settle: bool = False
+    env: Any, seen_at: str, *, settle: bool = False, killed: bool = False
 ) -> dict[str, Any] | None:
     """How Modal ended the agent's sandbox itself
     (``ModalSandbox.check_platform_end``), or None: still running, or no
     BenchFlow sandbox to ask (a bare process). *settle*: the failure looks
-    like Modal ending the sandbox, so keep asking while it shuts down."""
+    like Modal ending the sandbox, so keep asking while it shuts down.
+    *killed*: the process exited 137, as one does when its sandbox ends,
+    so ask for a few seconds."""
     check = getattr(env, "check_platform_end", None)
     if check is None:
         return None
     try:
-        from benchflow.sandbox.modal_impl import PLATFORM_END_SETTLE_SEC
-
-        return await check(
-            seen_at, settle_sec=PLATFORM_END_SETTLE_SEC if settle else 0.0
+        from benchflow.sandbox.modal_impl import (
+            PLATFORM_END_KILLED_SETTLE_SEC,
+            PLATFORM_END_SETTLE_SEC,
         )
+
+        settle_sec = (
+            PLATFORM_END_SETTLE_SEC
+            if settle
+            else PLATFORM_END_KILLED_SETTLE_SEC
+            if killed
+            else 0.0
+        )
+        return await check(seen_at, settle_sec=settle_sec)
     except Exception:
         logger.debug("Could not ask whether Modal ended the sandbox", exc_info=True)
         return None
@@ -169,7 +179,7 @@ class ModalProcess(LiveProcess):
         # Behind BENCHFLOW_MODAL_RLIMITS's limits once the sandbox holds them.
         hold = getattr(self._bf_env, "hold_argv", None)
         if hold is not None:
-            argv = hold(argv)
+            argv = hold(argv, route)
         # Modal starts the process with the image's ENV: the loader and
         # start-up names go in empty (``docker exec -e NAME=``), so nothing
         # an image value names loads into root's shell before its first line.
@@ -314,7 +324,13 @@ class ModalProcess(LiveProcess):
             # "not found") is the infrastructure's, so its message names no
             # closed pipe (scoring's "sandbox not found" marker).
             end = None
-            if self._stdout_failure is not None or rc is None:
+            from benchflow.sandbox.modal_impl import KILLED_RETURNCODE
+
+            if (
+                self._stdout_failure is not None
+                or rc is None
+                or rc == KILLED_RETURNCODE
+            ):
                 from benchflow.sandbox.modal_impl import modal_ending_error
 
                 why = self._stdout_failure or self._exit_error
@@ -322,11 +338,21 @@ class ModalProcess(LiveProcess):
                     self._bf_env,
                     "agent process",
                     settle=why is not None and modal_ending_error(why),
+                    # Killed with the sandbox's end (its lifetime, a
+                    # terminate from outside): 137, and poll lags (measured).
+                    killed=rc == KILLED_RETURNCODE,
                 )
             if end is not None:
                 from benchflow.sandbox.modal_impl import modal_ended_message
 
-                diagnosis = "remote_session_killed"
+                # A memory kill is the task's processes' doing, as an OOM kill
+                # of the agent is on Docker (pipe_closed), and a lifetime end
+                # the task's budgets'; any other end is the infrastructure's.
+                diagnosis = (
+                    "process_exited"
+                    if end.get("memory_kill") or end.get("lifetime")
+                    else "remote_session_killed"
+                )
                 msg = modal_ended_message(end, "the agent's process ended with it.")
             else:
                 if self._stdout_failure is not None:

@@ -287,6 +287,9 @@ def _plan(
     reasoning_effort: str | None,
     checkpoint: str | None = None,
     harness: str = "acp",
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: Iterable[str] = (),
 ) -> BranchPlan:
     try:
         return _build_plan(
@@ -314,6 +317,9 @@ def _plan(
             reasoning_effort=reasoning_effort,
             checkpoint=checkpoint,
             harness=harness,
+            allow_cloud_credential_file=allow_cloud_credential_file,
+            allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+            scoped_credentials=scoped_credentials,
         )
     except BranchPlanError as exc:
         reworded = BranchPlanError(_python_names(str(exc)))
@@ -347,8 +353,12 @@ def _build_plan(
     reasoning_effort: str | None,
     checkpoint: str | None,
     harness: str = "acp",
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: Iterable[str] = (),
 ) -> BranchPlan:
     from benchflow._utils.config import normalize_agent_name
+    from benchflow.agents.operator_credentials import scoped_names
     from benchflow.rollout import RolloutConfig
     from benchflow.runtime import check_host, check_rollout_config
 
@@ -421,6 +431,10 @@ def _build_plan(
         continue_after_child_failure=continue_after_child_failure,
         concurrency=concurrency,
         isolate_children=isolate_children,
+        allow_cloud_credential_file=allow_cloud_credential_file is True,
+        allow_task_processes_with_credentials=allow_task_processes_with_credentials
+        is True,
+        scoped_credentials=scoped_names(list(scoped_credentials)),
     )
     plan.validate()
     return plan
@@ -452,6 +466,9 @@ async def abranch(
     agent_env: Mapping[str, str] | None = None,
     reasoning_effort: str | None = None,
     harness: str = "acp",
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: Iterable[str] = (),
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> BranchResult:
     """Branch one task's run at a checkpoint into labelled, verifier-scored children.
@@ -477,7 +494,10 @@ async def abranch(
     ``agent`` and ``model`` default to that trial's. ``on_event`` receives
     progress dicts (``event``: ``trial_started``, ``checkpoint_reached``,
     ``child_finished`` with ``label`` and ``reward``, ``fork_finished``,
-    ``parent_finished``, ``trial_finished``). Invalid requests raise
+    ``parent_finished``, ``trial_finished``). ``allow_cloud_credential_file``
+    and ``allow_task_processes_with_credentials`` are ``bench eval run``'s
+    two operator flags, and ``scoped_credentials`` its ``--scoped-credential``
+    names (:class:`benchflow.EvaluationConfig`). Invalid requests raise
     :class:`BranchPlanError` (a ``ValueError``, naming these keywords)
     before anything starts; a trial that fails later is returned with
     ``error`` set.
@@ -507,6 +527,9 @@ async def abranch(
         reasoning_effort=reasoning_effort,
         checkpoint=checkpoint,
         harness=harness,
+        allow_cloud_credential_file=allow_cloud_credential_file,
+        allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+        scoped_credentials=scoped_credentials,
     )
     task = plan.task_paths[0]
 
@@ -558,6 +581,9 @@ def branch(
     agent_env: Mapping[str, str] | None = None,
     reasoning_effort: str | None = None,
     harness: str = "acp",
+    allow_cloud_credential_file: bool = False,
+    allow_task_processes_with_credentials: bool = False,
+    scoped_credentials: Iterable[str] = (),
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> BranchResult:
     """Blocking form of :func:`abranch`; takes exactly the same arguments.
@@ -605,6 +631,9 @@ def branch(
             reasoning_effort=reasoning_effort,
             checkpoint=checkpoint,
             harness=harness,
+            allow_cloud_credential_file=allow_cloud_credential_file,
+            allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+            scoped_credentials=scoped_credentials,
             on_event=on_event,
         )
     )

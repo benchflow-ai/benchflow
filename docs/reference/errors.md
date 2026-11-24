@@ -2,20 +2,20 @@
 
 Every message BenchFlow can print that has a fixed text in its source, and what to do about it. Search this page for the words of your message: `…` marks a part filled in at run time. To find out why a trial failed, start with [When a trial fails](../evaluate/failed-trials.md).
 
-These messages come from BenchFlow's source on the 0.10 line. A message 0.9.2 doesn't print has `(0.10)` after it when 0.10.0rc3 prints it, or `(unreleased)` when no release does yet.
+These messages come from BenchFlow's source on the 0.10 line. A message 0.9.3 doesn't print has `(0.10)` after it.
 
 <!-- This page is generated from the code by tools/docs_errors.py, so it lists what this version prints. To change it, change the message in the code, then run `uv run python tools/docs_errors.py --write`. -->
 
 | Section | Messages |
 |---|---|
-| [Causes a run names](#causes-a-run-names) | 60 |
-| [`bench doctor` warnings and failures](#bench-doctor-warnings-and-failures) | 22 |
-| [Errors that say what to do](#errors-that-say-what-to-do) | 513 |
-| [Command errors](#command-errors) | 247 |
+| [Causes a run names](#causes-a-run-names) | 66 |
+| [`bench doctor` warnings and failures](#bench-doctor-warnings-and-failures) | 23 |
+| [Errors that say what to do](#errors-that-say-what-to-do) | 528 |
+| [Command errors](#command-errors) | 258 |
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
 | [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 48 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 128 |
-| [Warnings a run logs](#warnings-a-run-logs) | 464 |
+| [Warnings a run logs](#warnings-a-run-logs) | 504 |
 
 ## Causes a run names
 
@@ -25,11 +25,11 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 
 | Cause | Code | What happened | Whose problem | What to do |
 |---|---|---|---|---|
-| `network_policy_breached` |  | BenchFlow's network rules for the trial were gone or reset before it was scored (unreleased). BenchFlow proves the trial's network rules again at the end of the agent's turn and at the end of test.sh, from its helper outside the sandbox: iptables -C on every rule it put in, each rule's counter, and a connect from inside test.sh's bounded launch to the cloud metadata server and to TEST-NET. A rule was gone, a counter went back (zeroed, or the rule was put in again), the check could not be made or a connect got through, so the trial ran, or would have run, its tests without the task's network policy. It is unscored, counts 0 in the every-trial mean, is never retried and flags the job. verifier/network-policy.json names the rules and when they were last proven present. | the sandbox | read the trial's verifier/network-policy.json (which rules were gone, and when they were last proven present) and report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder |
-| `verifier_network_refused` |  | the verifier's network refused test.sh packets and its tests did not pass (unreleased). test.sh's network (verifier.network_mode, else the sandbox's policy) refused it: a packet at BenchFlow's rules, or a request at its egress proxy. Its tests did not pass (a non-zero exit, or a reward below 1), so the trial is unscored rather than a silent 0 that would read as the agent's failure. It counts 0 in the every-trial mean. verifier/verifier-network.json names the network, the counts and the first requests refused. A pass despite refusals keeps its reward. | the task | if the tests need those hosts, set verifier.network_mode in the task (the trial's verifier/verifier-network.json names the network and the count); `bench check <task>` |
-| `verifier_launch_refused` |  | test.sh did not start without NET_ADMIN and NET_RAW, so BenchFlow did not run it (unreleased). test.sh runs the agent's code as root, so BenchFlow starts it without NET_ADMIN, NET_RAW and SYS_PTRACE: through its own pinned bfx where bfx was delivered, else util-linux setpriv, else its kit Python. None of them could (or the shell it started still held one of the three), so test.sh did not run and the trial has no score. verifier/test-stdout.txt says what the launch found. | your setup | run with BenchFlow's bfx delivered (a release wheel ships it), or give the image util-linux setpriv; the trial's verifier/test-stdout.txt names what the launch found |
-| `verifier_tools_refused` |  | the verifier's PATH leaves out a folder of the image's that the task's required_tools do not cover, so BenchFlow did not run test.sh (unreleased). The verifier runs test.sh as root with a PATH of the image's folders only root can write. Before the agent's turn BenchFlow locks the image's PATH folders to root (the official rust image leaves /usr/local/cargo/bin open to every user); a folder still open at grading time, a relative entry, or one in the workspace, a home or a temp folder is left out. A task whose test.sh needs programs there declares them in [verifier] required_tools, and none did, or a declared one is only in a folder left out. test.sh did not run, so the trial is unscored, never a 0, and never retried. The error names each folder and why it was left out. | your setup | the error names each folder and why it was left out; make the folder root's alone in the image (RUN chmod -R go-w &lt;folder&gt;), or list the programs test.sh runs from PATH in [verifier] required_tools |
-| `verifier_network_unheld` |  | the verifier's network could not be held, so BenchFlow did not run test.sh (unreleased). The task gives the verifier a restricted network (verifier.network_mode, draft 2's verifier network, else the sandbox's policy), and BenchFlow could not hold test.sh to it: the rules could not be added, from its helper or at all, or were not proven. test.sh runs the agent's code, so it does not run with the network open instead: the trial is unscored and never retried. The error names what failed. | your setup | the error names what failed (the rules from BenchFlow's helper, or their proof); run on Docker with the helper image available, or set the verifier's network to public in the task if its tests need one |
+| `network_policy_breached` |  | BenchFlow's network rules for the trial were gone or reset before it was scored (0.10). BenchFlow proves the trial's network rules again at the end of the agent's turn and at the end of test.sh, from its helper outside the sandbox: iptables -C on every rule it put in, each rule's counter, and a connect from inside test.sh's bounded launch to the cloud metadata server and to TEST-NET. A rule was gone, a counter went back (zeroed, or the rule was put in again), the check could not be made or a connect got through, so the trial ran, or would have run, its tests without the task's network policy. It is unscored, counts 0 in the every-trial mean, is never retried and flags the job. verifier/network-policy.json names the rules and when they were last proven present. | the sandbox | read the trial's verifier/network-policy.json (which rules were gone, and when they were last proven present) and report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder |
+| `verifier_network_refused` |  | the verifier's network refused test.sh packets and its tests did not pass (before 0.10.1). test.sh's network (verifier.network_mode, else the sandbox's policy) refused it: a packet at BenchFlow's rules, or a request at its egress proxy. Its tests did not pass (a non-zero exit, or a reward below 1), and before 0.10.1 the trial ended unscored, counting 0 in the every-trial mean; a result.json written then still reads so. Since 0.10.1 the trial is scored as test.sh says, pass or not, and flagged for a read: the packets can be test.sh's own or come from code the agent left that test.sh runs, and BenchFlow can't tell them apart. result.json's verifier_network_refused and verifier/verifier-network.json name the network, the counts and the first requests refused. | the task | if the tests need those hosts, set verifier.network_mode in the task (the trial's verifier/verifier-network.json names the network and the count); `bench check <task>`. Since 0.10.1 such a trial is scored as test.sh says and flagged in its warnings |
+| `verifier_launch_refused` |  | test.sh did not start without NET_ADMIN and NET_RAW, so BenchFlow did not run it. test.sh runs the agent's code as root, so BenchFlow starts it without NET_ADMIN, NET_RAW and SYS_PTRACE: through its own pinned bfx where bfx was delivered, else util-linux setpriv, else its kit Python. None of them could (or the shell it started still held one of the three), so test.sh did not run and the trial has no score. verifier/test-stdout.txt says what the launch found. | your setup | run with BenchFlow's bfx delivered (a release wheel ships it), or give the image util-linux setpriv; the trial's verifier/test-stdout.txt names what the launch found |
+| `verifier_tools_refused` |  | the verifier's PATH leaves out a folder of the image's that the task's required_tools do not cover, so BenchFlow did not run test.sh. The verifier runs test.sh as root with a PATH of the image's folders only root can write. Before the agent's turn BenchFlow locks the image's PATH folders to root (the official rust image leaves /usr/local/cargo/bin open to every user); a folder still open at grading time, a relative entry, or one in the workspace, a home or a temp folder is left out. A task whose test.sh needs programs there declares them in [verifier] required_tools, and none did, or a declared one is only in a folder left out. test.sh did not run, so the trial is unscored, never a 0, and never retried. The error names each folder and why it was left out. | your setup | the error names each folder and why it was left out; make the folder root's alone in the image (RUN chmod -R go-w &lt;folder&gt;), or list the programs test.sh runs from PATH in [verifier] required_tools |
+| `verifier_network_unheld` |  | the verifier's network could not be held, so BenchFlow did not run test.sh. The task gives the verifier a restricted network (verifier.network_mode, draft 2's verifier network, else the sandbox's policy), and BenchFlow could not hold test.sh to it: the rules could not be added, from its helper or at all, or were not proven. test.sh runs the agent's code, so it does not run with the network open instead: the trial is unscored and never retried. The error names what failed. | your setup | the error names what failed (the rules from BenchFlow's helper, or their proof); run on Docker with the helper image available, or set the verifier's network to public in the task if its tests need one |
 | `verifier_failure` |  | the verifier crashed. The agent finished, but the verifier step failed before a reward existed, and the trial's error starts 'verifier crashed:'. BenchFlow names a finer cause when it can (its own infrastructure, a dependency install, a full disk); this one is left when it cannot, and usually comes from the task's verifier setup. This unscored final trial counts as a failure in primary metrics (mean reward and pass@k), remaining in their denominator; only scored-only metrics exclude it. A test.sh that itself exits with an error before writing a reward is not this cause either: that is verifier_no_usable_reward. | the task | fix the verifier from its output (the trial's verifier/test-stdout.txt, whose last lines the summary shows), then run the task again |
 | `verifier_timeout` | R303 | the verifier timed out. The verifier ran longer than the task's verifier timeout and was stopped before it wrote a reward. Installing test dependencies while grading is the usual cause: install them in the image instead, and raise the timeout only if the tests themselves are slow. | the task | raise the task's verifier timeout (task.md verifier.timeout_sec) |
 | `verifier_dep_install` |  | the verifier's dependency install failed. The verifier installed its dependencies while grading, and the install failed: a package index it could not reach, or no version that matched. Grading that depends on the network at grading time fails whenever the network does. | the task | pin or bake the verifier's dependencies into the image; `bench check <task>` |
@@ -38,18 +38,19 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | `infra_failure` |  | the review or its sandbox failed. The sandbox, or BenchFlow's connection to it, failed during the trial: a lost container, or a trial past the host's hard deadline whose transport or teardown was stuck. It is retried within the run. | the sandbox | run the review again: `bench eval score <the trial's folder> --tasks-root <the tasks folder> --force` |
 | `disk_full` |  | the disk that holds the job folder is full, so the reward was lost. The disk that holds the job folder ran out of space, so BenchFlow could not write the trial's files (result.json, summary.json), or the verifier's reward, which the sandbox writes into that folder, came out empty. It says nothing about the task or the agent, and is not retried within the run; once space is freed, a resume runs the trial again. | your setup | free space on that disk, or pass another --jobs-dir; then `bench eval resume <job dir>` |
 | `verifier_other` |  | the verifier failed. The verifier failed in a way BenchFlow has no finer cause for. The trial's verifier/ folder holds what it printed. | the task | the trial's verifier/ folder has the output |
+| `integrity_unavailable` |  | integrity check unavailable (0.10). BenchFlow could not check where the reward came from, so the trial has no score: never a 0, never retried, and not the agent's fault. In audit and off, BenchFlow's own bfx binary finds the links an agent could leave into the verifier's output folder. Where bfx can't run in the sandbox (a backend with no route for it, BENCHFLOW_BFX_DELIVERY=off, or a checkout built without `make bfx`), the trial is refused before the agent's turn, with no agent tokens spent; the oracle's trial still runs. On Docker and remote Docker, a start whose services wait for their rules in BenchFlow's waiter, which is bfx (an open network's cloud metadata rule, or a network policy), is refused by the hold itself, the oracle's included; under an open network, a run that grants the task's allow_cloud_metadata (--allow-cloud-metadata) keeps main's hold without bfx. A task whose verifier runs as the agent's own user is refused the same way, since its output folder can't be kept from the agent's processes: change [verifier] user in the task. After grading, the same cause means the sandbox had no record of its links from before the turn (a branch child or a resume from a checkpoint made without one): an agent user's attempt is unscored instead of scored 0. strict is not checked this way: it stops the agent's processes before grading. | BenchFlow (a bug) | the error says why. Where bfx can't run in the sandbox, run the trial where it can, from a release install or a checkout with the pinned bfx (`make bfx`; `bench doctor` shows whether this install has it), then `bench eval resume <job dir>`; where grading had no record from before the turn, run the task again |
 | `verifier_plugin_trust` |  | verifier plugin trust: test.sh installs a pytest plugin where the agent could write. The task's test.sh installs a pytest plugin (usually pytest-json-ctrf) into a Python environment the agent could write: the workspace, the agent's home, /tmp, /var/tmp, /logs or /testbed. The pytest plugin guard refuses to load it, since the agent could have planted it, so every run of the task scores 0, with a warning that starts 'Verifier scored 0: pytest plugin guard not confirmed'. Bake the plugin into the image, or pin its release in [verifier] pytest_plugin_releases and install it as root into a Python environment's site-packages, where the guard trusts it by the bytes PyPI publishes. | the task | `bench check <task>` |
 | `verifier_plugin_unrecorded` |  | verifier plugin trust: the plugin guard refused a pytest plugin in a place the agent could write, and with no record of the agent's files it cannot tell who put it there. The pytest plugin guard refused a plugin in a place the agent could write, and the record of the agent's files was missing or incomplete, so it cannot tell whether the agent put the plugin there. The trial is a failure in the scores. When test.sh installs the plugin, pin its release in [verifier] pytest_plugin_releases or bake it into the image. | the task | the trial's verifier/ folder names the files; when test.sh installs the plugin, install it into the image: `bench tasks check <task>` |
 | `verifier_plugin_unproven` |  | verifier plugin trust: test.sh installs a pytest plugin BenchFlow cannot check, and the agent changed files that could have chosen it. The task's test.sh installed a pytest plugin after the agent stopped (with uv, uvx or pip, into the workspace or the verifier's uv state), and the agent had changed files in its trees, any of which could have chosen what was installed. The pytest plugin guard trusts such an install only as a release it can check byte for byte, so it refused the plugin. The trial is a failure in the scores, so a planted input gains nothing, but it is the task's problem: pin the plugin's release in [verifier] pytest_plugin_releases, or bake it into the image. | the task | pin the plugin's release in [verifier] pytest_plugin_releases or install it into the image: `bench tasks check <task>` |
 | `verifier_plugin_unlisted` |  | verifier plugin trust: test.sh installed a pytest-json-ctrf release missing from the table of published releases. The task's test.sh installed a release of pytest-json-ctrf, the plugin BenchFlow vouches for, that was missing from the table of published releases hardening built: this machine could not read the release list from PyPI, or PyPI published the release after hardening read it. The pytest plugin guard refused it, and the trial is a failure in the scores, since the agent can also leave inputs that install a release of any name. Check that this machine reaches pypi.org and run the task again. | the sandbox | check that this machine reaches pypi.org, then run the task again; the trial's verifier/ folder names the release |
 | `verifier_plugin_refused` |  | verifier plugin trust: the plugin guard refused a pytest plugin in a place the agent could write. The pytest plugin guard refused a plugin in a place the agent could write that the agent left there, or changed, after it started. The trial counts as a failure. The trial's verifier/ folder names the plugin and why. | the agent | the trial's verifier/ folder names the plugin and why; when test.sh installs it, `bench tasks check <task>` |
-| `verifier_output_unwritable` |  | the verifier's user could not write its output file, so test.sh never ran (unscored) (unreleased). test.sh never ran: its verifier runs as a user other than root that cannot write the file its output goes to. On Docker BenchFlow makes that file on the host, as the host's user, before the test command, and the verifier's user is the image's own USER when the task names none. That is BenchFlow's failure, not the task's or the agent's: the trial is unscored and stays out of the error-excluding score. Until BenchFlow leaves the file to the test command, run the verifier as root ([verifier] user = "root" in task.toml). | the sandbox | verifier/ in the trial names the file, its owner and the verifier's uid; until BenchFlow leaves that file to the test command, run the verifier as root ([verifier] user = "root" in task.toml) |
-| `verifier_no_usable_reward` |  | the verifier wrote no usable reward (a failure in every score) (0.10). The final verify left no reward BenchFlow could use: no reward file, an empty one, one it could not read, or one without a number. That is the verifier's error, not a wrong answer, and it is never retried. The trial still counts as a failure in every score, as a plugin guard refusal does, because the reward files are evidence the agent can reach. The trial's verifier/ folder has test.sh's output. | the task | the trial's verifier/ folder has test.sh's output; fix test.sh so it always writes one number to /logs/verifier/reward.txt, then run the task again |
+| `verifier_output_unwritable` |  | the verifier's user could not write its output file, so test.sh never ran (unscored). test.sh never ran: its verifier runs as a user other than root that cannot write the file its output goes to. On Docker BenchFlow makes that file on the host, as the host's user, before the test command, and the verifier's user is the image's own USER when the task names none. That is BenchFlow's failure, not the task's or the agent's: the trial is unscored and stays out of the error-excluding score. Until BenchFlow leaves the file to the test command, run the verifier as root ([verifier] user = "root" in task.toml). | the sandbox | verifier/ in the trial names the file, its owner and the verifier's uid; until BenchFlow leaves that file to the test command, run the verifier as root ([verifier] user = "root" in task.toml) |
+| `verifier_no_usable_reward` |  | the verifier wrote no usable reward (a failure in every score). The final verify left no reward BenchFlow could use: no reward file, an empty one, one it could not read, or one without a number. That is the verifier's error, not a wrong answer, and it is never retried. The trial still counts as a failure in every score, as a plugin guard refusal does, because the reward files are evidence the agent can reach. The trial's verifier/ folder has test.sh's output. | the task | the trial's verifier/ folder has test.sh's output; fix test.sh so it always writes one number to /logs/verifier/reward.txt, then run the task again |
 | `no_verdict` |  | no verdict was recorded (an assessment still pending, or an interrupted trial). The trial has neither a reward nor an error: a reviewer's assessment is still pending, or the run was interrupted before the trial recorded an outcome. | the sandbox | `bench eval score <job dir>` finishes pending reviews |
 | `kept_service_freezer` |  | the sandbox cannot freeze the task's kept services. The task declares services that must survive the agent turn and be frozen until verification, and this kind of sandbox cannot freeze them for a non-root agent (native Daytona without Compose, for one). The trial has no score; where the task alone decides it, the refusal comes before any sandbox is made. | your setup | run with --sandbox docker or --sandbox remote-docker; Daytona also supports a Compose environment |
 | `runtime_sealing` |  | the protected runtime could not be sealed. BenchFlow refused to run root's steps using runtime files whose ownership or paths could not be protected from the agent. The refusal preserves isolation; changing the task image is required. | the task | fix the image's runtime paths and ownership named in result.json; keep them root-owned and outside the agent's writable workspace |
 | `guard_timeout` |  | the sandbox guard timed out or did not report. The setup guard did not finish or return its report. The trial has no score. Check the setup evidence before retrying; this is not an agent task failure. | the sandbox | the error in result.json and the sandbox setup log say where the guard stopped; `bench eval resume <job dir>` runs the trial again |
-| `phase_timeout` |  | a step of the trial other than the agent's turn timed out (unreleased). A step of the trial that is not the agent's turn ran out of time: setting the sandbox up, starting it, installing the agent, BenchFlow's own set-up for the agent's turn (its network policy, firewall or model proxy), a multi-step task's step set-up or soft verify, a script's tear-down after it ran, or the verify step after the turn. The agent did not run out of its time limit. The trial has no score and is retried like any infrastructure failure. A step that fails after the agent's turn had ended the trial is not this: that ending stays, and post_turn_failure_info in result.json names the step. | the sandbox | the error in result.json names the step (setup, start, install, agent set-up, step set-up, soft verify, agent tear-down or verify); `bench eval resume <job dir>` runs the trial again |
+| `phase_timeout` |  | a step of the trial other than the agent's turn timed out (0.10). A step of the trial that is not the agent's turn ran out of time: setting the sandbox up, starting it, installing the agent, BenchFlow's own set-up for the agent's turn (its network policy, firewall or model proxy), a multi-step task's step set-up or soft verify, a script's tear-down after it ran, or the verify step after the turn. The agent did not run out of its time limit. The trial has no score and is retried like any infrastructure failure. A step that fails after the agent's turn had ended the trial is not this: that ending stays, and post_turn_failure_info in result.json names the step. | the sandbox | the error in result.json names the step (setup, start, install, agent set-up, step set-up, soft verify, agent tear-down or verify); `bench eval resume <job dir>` runs the trial again |
 | `invalid_provider_response` |  | the provider returned an invalid response. The proxy observed an upstream HTTP 5xx with an invalid JSON body. Lifecycle records preserve the actual status, byte counts and elapsed upstream seconds without copying prompt content. | the model provider | check trajectory/provider_requests.jsonl for upstream status and timing; retry or use another provider endpoint |
 | `provider_auth` | R212 | the model provider refused the credential. The model provider answered with an authentication error (HTTP 401, or a key it called invalid): the key or login is wrong, revoked, expired, or for another provider. The trial is not retried. | your setup | `bench doctor` checks each login and key |
 | `provider_rate_limit` |  | the model provider rate-limited the run. The model provider refused requests for going over its rate limit (HTTP 429). The trial is not retried within the run. | the model provider | lower --concurrency, then `bench eval resume <job dir>` |
@@ -65,26 +66,31 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | `image_build` |  | the task's image did not build. The task's image did not build, for a reason another attempt would repeat: a RUN step exited nonzero with no network failure in its output, the base image in FROM is not found or not public, or the Dockerfile does not parse. The summary names the Dockerfile line and BuildKit's reason; the trial is not retried. A network or registry failure during the build, a RUN step's included, is sandbox_setup instead and is retried; a registry that refused the login is registry_auth. | the task | fix that line in the task's environment/Dockerfile; `docker build <task>/environment` prints the whole build log |
 | `acp_error` | R205 | the agent reported an error. The agent answered a request with an error of its own over the Agent Client Protocol; the message is the agent's. For Claude Code, 'The connection to Claude was lost' means its own process or its API stream ended, not BenchFlow's connection to the sandbox. | the agent | the agent's log (agent/&lt;agent&gt;.txt in the trial folder) has its side |
 | `registry_auth` |  | the registry refused this machine's login for the base image. Docker could not pull the task's base image because the registry refused this machine's login: an expired `docker login`, a login without access to that repository, or the registry's token service saying no. It is your setup, not the task's Dockerfile, and it is not retried. Docker Hub gives the same answer for a repository that does not exist, so check the FROM line's name too. | your setup | check `docker login <registry>` on this machine, and that the FROM line names an image that login can read |
-| `script_backend` |  | a script: agent cannot run on this sandbox backend (unreleased). An operator script (--agent script:...) needs the trusted root runner that only the docker and remote-docker backends have, so the trial is refused before any sandbox or provider call. It is not retried: another attempt would be refused the same way. | your setup | run it with `--sandbox docker`, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
+| `script_backend` |  | a script: agent cannot run on this sandbox backend. An operator script (--agent script:...) needs the trusted root runner that only the docker and remote-docker backends have, so the trial is refused before any sandbox or provider call. It is not retried: another attempt would be refused the same way. | your setup | run it with `--sandbox docker`, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
 | `task_config` |  | a task file does not load. A file of the task does not load: a typo or an unknown key in task.toml, a task.md whose front matter does not parse, or a verifier document or rubric that is not valid. The message names the file and, for a typo, the key it meant. Every run of the task fails the same way until the file is fixed, so it is not retried; `bench check <task>` reports the same problem without running it. | the task | `bench check <task>` names the problem; fix it, then run the task again |
 | `unsupported_task_feature` | R401 | the task asks for something this sandbox backend cannot do. The task asks for something the chosen sandbox backend cannot provide, so the trial is refused before it starts. The message names each feature and the backend. | your setup | the error names what; run the task with `--sandbox docker`, or change what it asks for |
-| `task_refused` |  | BenchFlow refuses this task before the turn, unscored (unreleased). The task is on BenchFlow's in-package refusal list: its reference solution fails under one of BenchFlow's always-on protections, so any score would be BenchFlow's doing. It is refused before the turn for every agent, unscored and never retried, and stays in the task count. The list is keyed by benchmark, task id and the task's digest: a copy with any byte changed runs. | your setup | the error names why; nothing to do in the run: the task is on BenchFlow's refusal list, and an edited copy of it runs |
+| `task_refused` |  | BenchFlow refuses this task before the turn, unscored (0.10). The task is on BenchFlow's in-package refusal list: its reference solution fails under one of BenchFlow's always-on protections, so any score would be BenchFlow's doing. It is refused before the turn for every agent, unscored and never retried, and stays in the task count. The list is keyed by benchmark, task id and the task's digest: a copy with any byte changed runs. | your setup | the error names why; nothing to do in the run: the task is on BenchFlow's refusal list, and an edited copy of it runs |
 | `agent_integration:agent_auth` |  | the agent integration broke: its login or billing failed. The agent started, then did nothing, because its own login or billing failed (an expired subscription, no credit left). | your setup | `bench doctor` |
 | `agent_integration:agent_model` |  | the agent integration broke: it does not offer the model. The agent does not offer the model the run asked for. The error lists the models it does offer. | your setup | pick a model the agent lists in the error |
 | `agent_integration:agent_effort` |  | the agent integration broke: it does not offer the model at that reasoning effort (0.10). The agent offers the model, but not at the reasoning effort the run asked for (codex-acp lists one model id per effort a model takes). The run is refused before the agent starts rather than run at another effort; the error lists the efforts it does offer. | your setup | pick an effort the error lists for the model, or a model that takes the effort |
 | `agent_integration:agent_budget` |  | the agent integration broke: its model calls go around BenchFlow's model proxy, which enforces the trial's token and turn budget (0.10). The trial has a token or turn budget (--token-budget, --turn-budget or the task's [agent] token_budget and turn_budget), but the agent calls its model around BenchFlow's model proxy: a subscription login, an endpoint of its own, or an agent that routes its own model. The proxy is what counts and enforces a trial's budget, so the trial is refused before the agent starts rather than run without one; the error says which route it took. | your setup | run it with an API key, so its calls go through the proxy, or drop --token-budget/--turn-budget (or the task's [agent] budget) |
 | `agent_integration:agent_model_catalog` |  | the agent integration broke: its model catalog has no entry for the model, so it ran on fallback tools (0.10). The agent's engine takes each model's tools from its model catalog, and the catalog has no entry for this model, so the agent ran on fallback tools (for Codex: no apply_patch, no code mode). That is another agent than the model is used with, so the trial is not scored. Codex's warning ('Model metadata for ... not found') or the tools its first request offered show it; result.json's tool_surface lists them. | your setup | pick a model the agent's pinned engine catalogues, or an agent release whose engine lists the model |
 | `agent_integration:agent_install` |  | the agent integration broke: its install or runtime is broken. The agent started, but its install or runtime in the sandbox is broken: a missing program, or a dependency that does not load. | the sandbox | `bench doctor --agent-start <agent>` |
+| `agent_integration:empty_trajectory` |  | the agent integration broke: its turn ended with no ACP event and no model output after the prompt (0.10). The agent was sent the prompt and ended its turn with no ACP event at all: no message, tool call or thought (a session/update) between session/prompt and its answer, and no model output through BenchFlow's proxy. An agent from a manifest that does the work but never reports it ends here, unscored even when the verifier would pass, because nothing shows the agent did it. Send at least one session/update before answering session/prompt (docs/evaluate/your-own-agent.md). | the agent | send at least one session/update (a message, tool call or thought) before answering session/prompt; docs/evaluate/your-own-agent.md |
+| `agent_integration:immediate_exit` |  | the agent integration broke: it ended its turn within seconds and did nothing (0.10). The agent ended its turn within seconds of the prompt and did nothing: usually its launch command exits at once, or it answers session/prompt before doing the work. Its log under agent/ says why. | the agent | check the agent's launch command and its log under agent/; a custom agent must answer session/prompt only after its work |
+| `agent_integration:no_activity` |  | the agent integration broke: it ran and sent no message, tool call or thought (0.10). The agent ran after the prompt but sent no message, tool call or thought, and reported no output tokens. Its log under agent/ and integration_failure_info in result.json have what BenchFlow saw. | the agent | read the agent's log under agent/; an ACP agent reports its work through session/update |
+| `agent_integration:truncated_trajectory` |  | the agent integration broke: its ACP trajectory has unreadable lines (0.10). The agent's ACP trajectory has lines BenchFlow could not read, so what it did can't be told; trajectory/acp_trajectory.jsonl has them. | the sandbox | read trajectory/acp_trajectory.jsonl; rerun the trial |
 | `agent_integration:unknown` |  | the agent integration broke: it did nothing useful. The agent did nothing useful, and BenchFlow has no finer cause for it; integration_failure_info in result.json has what it saw. | the agent | integration_failure_info in result.json |
 | `usage_limit` | R213 | usage limit. The login's subscription usage limit was reached (its 5-hour or 7-day window). The job starts no more trials on it; the summary lists the trials it did not start, the login, the window and the reset. | your setup | switch to another login or wait for the reset, then `bench eval resume <job dir>`; `bench doctor` shows each login's headroom |
 | `pipe_closed:exit` | R204 | the agent process exited. The agent process exited during its turn; the message has its exit code, and says whether the sandbox's cgroup counted an OOM kill (an exit is called a memory kill only with that count, never from its code alone). Its log has its last words. | the agent | the agent's log (agent/&lt;agent&gt;.txt) has its last words; `bench eval resume <job dir>` reruns it |
 | `provider_unavailable` |  | the model provider failed with a server error (0.10). The agent stopped with an error after the model provider answered a call with a server error (HTTP 500, 502, 503, 504 or 529): the provider's failure, not the agent's or the model's. It is retried within the run; agent_outcome in result.json counts the failed calls. | the sandbox | `bench eval resume <job dir>` reruns it; agent_outcome in result.json counts the calls that failed |
 | `kept_service_freezer:engine` |  | the Docker Engine cannot freeze the task's kept services. The task's kept services are frozen in a cgroup between the agent's turn and verification, and this Docker Engine cannot make one for a non-root agent: it is older than 28, rootless or remaps user namespaces. No agent code ran; the trial has no score. | your setup | use Docker Engine 28 or later with cgroup v2, not rootless and without user-namespace remapping (`docker info`) |
-| `kept_service_freezer:host_uid` |  | the task's agent user has the uid BenchFlow runs as (unreleased). The task keeps services, the sandbox mounts the trial's folders from the host (local Docker), and the image's agent user has the uid BenchFlow runs as. While the kept services run, grading closes the verifier's folder to that uid, which closes it to BenchFlow too, so a reward BenchFlow writes there would be lost. No agent code ran; the trial has no score. | your setup | give the image's agent user another uid (useradd -u), run BenchFlow as another host user, or run with --sandbox remote-docker |
+| `kept_service_freezer:host_uid` |  | the task's agent user has the uid BenchFlow runs as (0.10). The task keeps services, the sandbox mounts the trial's folders from the host (local Docker), and the image's agent user has the uid BenchFlow runs as. While the kept services run, grading closes the verifier's folder to that uid, which closes it to BenchFlow too, so a reward BenchFlow writes there would be lost. No agent code ran; the trial has no score. | your setup | give the image's agent user another uid (useradd -u), run BenchFlow as another host user, or run with --sandbox remote-docker |
 | `kept_service_freezer:probe` |  | the sandbox's cgroups cannot freeze the task's kept services. The task's kept services are frozen in a cgroup between the agent's turn and verification, and the freezer check inside this sandbox failed (no cgroup v2, or cgroups it cannot write). No agent code ran; the trial has no score. The check's own reason is in the error. | your setup | run it where Docker uses cgroup v2 with writable cgroups (`docker info` shows Cgroup Version: 2); the check's reason is in result.json |
-| `test_sh_command_missing` |  | test.sh needs a command the verifier's PATH does not have, so the trial was refused before the agent's turn (unreleased). BenchFlow runs test.sh in the task's image as a plain, non-login shell, with the verifier's hardened PATH, as the verifier user. Just before the agent's turn it reads test.sh's interpreter and the commands it runs unconditionally with errexit on, before anything that could install a tool or change PATH, and resolves each there. One that does not resolve means test.sh can never write a reward, so the trial is refused before the agent runs: unscored, never retried, no agent tokens spent. A tool the image puts on PATH only through a login profile (~/.profile, ~/.bashrc) is not on that PATH. Other commands test.sh names that do not resolve are warnings in result.json and change no score. | the task | the error names the command and the PATH the verifier would have run test.sh with; put it on the image's PATH (ENV PATH) or call it by its full path in test.sh |
-| `test_sh_preflight_unavailable` |  | a branch child's checkpoint recorded no test.sh preflight verdict, and none could be decided on a fresh image, so the child was not run (unreleased). A branch child restores its source trial's sandbox after that trial's agent ran, so BenchFlow never judges test.sh's commands there: it carries the verdict the source decided before its turn. A checkpoint made before the check recorded none, and BenchFlow could not decide one on a fresh sandbox of the task's image either (a provider that starts the child from the snapshot itself, or a check that could not run), so the child was not run: unscored, never retried, and never the task's fault. A new checkpoint carries a verdict. | your setup | run the task again to make a new checkpoint (one recorded before the check has no verdict), then branch from it |
-| `other` |  | other error. An error none of the other pages covers. If it repeats on other tasks, it may be a bug in BenchFlow: report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder. | the sandbox | the trial's result.json and the run's log have the details |
+| `test_sh_command_missing` |  | test.sh needs a command the verifier's PATH does not have, so the trial was refused before the agent's turn. BenchFlow runs test.sh in the task's image as a plain, non-login shell, with the verifier's hardened PATH, as the verifier user. Just before the agent's turn it reads test.sh's interpreter and the commands it runs unconditionally with errexit on, before anything that could install a tool or change PATH, and resolves each there. One that does not resolve means test.sh can never write a reward, so the trial is refused before the agent runs: unscored, never retried, no agent tokens spent. A tool the image puts on PATH only through a login profile (~/.profile, ~/.bashrc) is not on that PATH. Other commands test.sh names that do not resolve are warnings in result.json and change no score. | the task | the error names the command and the PATH the verifier would have run test.sh with; put it on the image's PATH (ENV PATH) or call it by its full path in test.sh |
+| `test_sh_preflight_unavailable` |  | a branch child's checkpoint recorded no test.sh preflight verdict, and none could be decided on a fresh image, so the child was not run. A branch child restores its source trial's sandbox after that trial's agent ran, so BenchFlow never judges test.sh's commands there: it carries the verdict the source decided before its turn. A checkpoint made before the check recorded none, and BenchFlow could not decide one on a fresh sandbox of the task's image either (a provider that starts the child from the snapshot itself, or a check that could not run), so the child was not run: unscored, never retried, and never the task's fault. A new checkpoint carries a verdict. | your setup | run the task again to make a new checkpoint (one recorded before the check has no verdict), then branch from it |
+| `other` |  | other error. An error none of the other pages covers. If it repeats on other tasks, it may be a bug in BenchFlow: report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder. | not classified | the trial's result.json and the run's log have the details |
+| `provenance_incomplete` |  | scored 0: a check of where the reward came from did not complete for an agent that runs as its own user (0.10). In audit and off, test.sh runs as written while the agent's processes are still alive, so BenchFlow checks that the reward is test.sh's own: it removes the links the agent made into /logs/verifier before test.sh, looks for new ones after grading, and keeps the folder closed to the agent while test.sh runs. For an agent that runs as its own user, a check that did not complete, or whose action did not take effect, scores the attempt 0: a failure, counted, never retried, with the reason in a `Verifier scored 0: provenance incomplete:` warning. An agent that runs as root keeps the reward instead, marked unverifiable, and the oracle is not checked. Where BenchFlow can't check at all, the trial is unscored instead (integrity_unavailable). | the agent | the reason follows `Verifier scored 0: provenance incomplete:` in the trial's result.json warnings, and integrity/verifier-inputs.json (provenance) has each check; if an honest run gets it too, report it at `https://github.com/benchflow-ai/benchflow/issues` with the trial folder |
 
 ## `bench doctor` warnings and failures
 
@@ -103,7 +109,7 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | runtime: bench on PATH | warn | `bench runs … (…), not this install (…)` | benchflow always runs this install; for bench to run it too, run the install command you installed it with again, with --force (benchflow==… and the same extras and constraints), which replaces …: `https://www.benchflow.ai/docs/benchflow/getting-started/install#which-bench-runs` |
 | runtime: bench on PATH | warn | `no bench on PATH; this one is …` | Add … to PATH (for a uv tool install: uv tool update-shell) |
 | runtime: bench on PATH | warn | `…; it hides …` | Run a hidden one by its full path, or put its folder first on PATH: `https://www.benchflow.ai/docs/benchflow/getting-started/install#which-bench-runs` |
-| runtime: bfx | warn | `bfx is not installed: this BenchFlow was built without its pinned bfx binaries, so Docker trials run root's steps after the agent without it, as with BENCHFLOW_BFX_DELIVERY=off (those steps then need a Python in the image)` | install a release wheel, or build bfx with `make bfx` before building the wheel (docs/getting-started/install.md) |
+| runtime: bfx | warn | `bfx is not installed: this BenchFlow was built without its pinned bfx binaries, so, as with BENCHFLOW_BFX_DELIVERY=off, a Docker trial whose services wait for their rules (every task but one whose cloud metadata opt-out the run grants under an open network) is refused before it starts; a trial that waits for no rule runs as on 0.10.0, root's steps after the agent without bfx (those then need a Python in the image)` (0.10) | install a release wheel, or build bfx with `make bfx` before building the wheel (docs/getting-started/install.md) |
 | runtime: python | fail | `Python … is older than 3.12` | `uv tool install --python 3.12 --upgrade benchflow` |
 | runtime: uv | warn | `uv not found on PATH (needed to install, upgrade or add extras)` | Install uv: `https://docs.astral.sh/uv/getting-started/installation/` |
 | sandbox: colima | warn | ``docker context points at Colima profile …, but `colima list` does not show it`` | `colima start …` |
@@ -113,6 +119,7 @@ A test script that exits with an error, or runs past `verifier.timeout_sec`, wit
 | sandbox: docker disk | warn | `only … free in …; task images and agent installs need at least …` | `docker system df` shows what uses it; remove images you no longer need with `docker image rm` |
 | sandbox: docker memory | warn | `Docker VM has …; image builds plus agent installs need at least …` | Give the Docker VM at least 8 GiB: raise it in Docker Desktop's Resources settings, or run `colima stop <profile> && colima start <profile> --memory 8 --cpu 4`. |
 | sandbox: docker sandboxes | warn | `… container… left by … ended run…` | `docker rm -f …` removes them; the next `bench run` on this daemon removes only the stopped ones |
+| sandbox: docker version | warn | ``…: a trial under a network policy (allowlist, denylist or no-network) is refused before its turn, and build-only Compose services and `models:` do not resolve; open-network trials run`` (0.10) | Upgrade to … or newer (Docker's apt repository: docker-ce and docker-compose-plugin; on GitHub Actions' ubuntu-24.04 runners, install them before running BenchFlow) |
 | versions: … | warn | `registry installs …, not the built-in …; …` | Remove the agent manifest override, or re-run the policy conformance fixtures for the new version |
 
 ## Errors that say what to do
@@ -175,11 +182,14 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `BranchPlanError` | `the oracle has one step (solve.sh): --checkpoint-after-prompt must be 0 or 1` | Set `--checkpoint-after-prompt` to 0 or 1 for the oracle. |
 | `BranchPlanError` | `the oracle takes no --prompt` | Drop `--prompt` for the oracle, or pass `--agent` with a model agent. |
 | `BranchPlanError` | `the oracle takes no prompts: every oracle child runs the task's solve.sh, so drop prompt= from --child` | Remove `prompt=` and `prompt-file=` from every `--child`, or branch a model agent instead of the oracle. |
+| `CloudCredentialFileRefused` | ``…: a cloud credential file (the gcloud application default credentials, …) would be staged in the sandbox (…). A cloud credential file needs an operator flag: pass --allow-cloud-credential-file (run config allow_cloud_credential_file: true), or run the model through the proxy on the host (Docker, `public`), which keeps the file out of the sandbox.`` (0.10) | Pass `--allow-cloud-credential-file` (run config `allow_cloud_credential_file: true`) if the run may stage the file in the sandbox, or run the model through the proxy on the host (Docker, `public`). |
+| `CloudMetadataOptInRefused` | `… task… ask… for the cloud metadata endpoints (a cloud VM's instance credentials), which a task can't open by itself: …. A task's allow_cloud_metadata takes effect only when the run also passes --allow-cloud-metadata, and … takes no such flag, so it can't lift the block: run the task with bench eval run --allow-cloud-metadata instead. Nothing was started.` (0.10) | … can't lift the cloud metadata block; run the task with bench eval run --allow-cloud-metadata (or bench run --allow-cloud-metadata) to let … reach the endpoints, or leave … out |
+| `CloudMetadataOptInRefused` | `… task… ask… for the cloud metadata endpoints (a cloud VM's instance credentials), which a task can't open by itself: …. A task's allow_cloud_metadata takes effect only when the run also passes --allow-cloud-metadata. Nothing was started.` (0.10) | run with --allow-cloud-metadata (the run config's allow_cloud_metadata: true; allow_cloud_metadata=True in EvaluationConfig, RolloutConfig or RuntimeConfig) to let … reach the endpoints, or leave … out; `bench tasks check` at a level that starts a sandbox (--level acceptance-live, for one) takes no such flag, so it can't run such a task |
 | `ConfigKeyError` | (built at run time) | change or drop each setting named; what a YAML job config runs is in `https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md` |
 | `ConfigKeyError` | (built at run time) | fix the key; a run config's keys are listed in `https://github.com/benchflow-ai/benchflow/blob/main/docs/scale/configs.md` |
 | `ConfigOverrideInvalidError` | (built at run time) | correct the key or the value at that path in --config-override; `bench run <tasks> --config-override ... --dry-run` checks it against each task without running one |
-| `ConfigOverrideNeededError` | `the config override given to … is not the recorded one (…); the record sets …` (unreleased) | set BENCHFLOW_CONFIG_OVERRIDE to the --config-override this was recorded with (inline or @file); a rotated key is fine |
-| `ConfigOverrideNeededError` | `… needs the config override values its record left out, because their name or their value looks secret: …` (unreleased) | set BENCHFLOW_CONFIG_OVERRIDE to the --config-override this was recorded with (inline or @file); a rotated key is fine |
+| `ConfigOverrideNeededError` | `the config override given to … is not the recorded one (…); the record sets …` (0.10) | set BENCHFLOW_CONFIG_OVERRIDE to the --config-override this was recorded with (inline or @file); a rotated key is fine |
+| `ConfigOverrideNeededError` | `… needs the config override values its record left out, because their name or their value looks secret: …` (0.10) | set BENCHFLOW_CONFIG_OVERRIDE to the --config-override this was recorded with (inline or @file); a rotated key is fine |
 | `Conflict` | `consumer … already recorded using revision …` (0.10) | Don't record it again: this consumer's use of that revision is already logged; `bench assess show <sidecar> --events` lists the `label.consumed` event. |
 | `Conflict` | `idempotency key … is already used by event …` (0.10) | Don't edit the sidecar log by hand; restore `assessment-events.v1.jsonl` from your copy, or start a new assessment in a new sidecar. |
 | `Conflict` | `idempotency key … was used by event … (…) with a different payload; nothing was appended` (0.10) | Rerun with the original inputs to get the first event back; for a genuinely different write, pass a new `--idempotency-key` (for a changed vote, use `bench assess correct`). |
@@ -253,7 +263,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `EvalPlanError` | `--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts are not supported with --source-env (vf-eval runs the rollouts)` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--max-cost-usd/--max-sandbox-seconds/--max-tokens/--max-rollouts cap one job and are not supported with --worker-concurrency (each worker would get the whole budget)` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--n-tasks must be at least 1` | correct the flag the message names; `bench run --help-all` lists every flag |
-| `EvalPlanError` | `--public requires --publish-hf or --publish-bucket` (unreleased) | correct the flag the message names; `bench run --help-all` lists every flag |
+| `EvalPlanError` | `--public requires --publish-hf or --publish-bucket` (0.10) | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--registry requires --dataset` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` (0.10) | drop --restart-changed for a new job, or drop --fresh and name the job to restart with --job-name |
 | `EvalPlanError` | `--restart-changed restarts a named job's earlier trials; … starts new jobs, which have none` (0.10) | drop --restart-changed: each shard runs a job of its own |
@@ -291,13 +301,13 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `EvalPlanError` | `Invalid usage tracking config: …` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `Missing optional dependency for 'modal' sandbox. Install it with ….` | run that install command, then `bench doctor` checks this machine |
 | `EvalPlanError` | `Missing optional dependency for … sandbox. Install it with ….` | run that install command, then `bench doctor` checks this machine; a Daytona run also needs DAYTONA_API_KEY |
-| `EvalPlanError` | `Refused before launch: …` (unreleased) | ask for a level the model takes, in one way |
+| `EvalPlanError` | `Refused before launch: …` | ask for a level the model takes, in one way |
 | `EvalPlanError` | `Unsupported eval agent protocol: …` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `give --fresh or --job-name, not both` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `script: does not use a model harness or agent options; drop --harness and --agent-env, or choose a model agent` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | ``… (`bench agents` shows the registered agents; to run a command as the agent, give it with its arguments, e.g. 'myagent --acp')`` | pass -a with a name `bench agents` lists |
 | `EvalPlanError` | `… No job was created.` | pass -a with a name `bench agents` lists |
-| `EvalPlanError` | `… … not supported with --source-env: a --source-env run is never published, so nothing would be uploaded` (unreleased) | run it without the publish flags. No bench command publishes a --source-env run; in Python, publish_folder_to_hf or publish_folder_to_bucket (benchflow.publish.huggingface) takes its folder, &lt;jobs-dir&gt;/hosted-env/&lt;run&gt;, and leaves its raw hosted_env/ output out |
+| `EvalPlanError` | `… … not supported with --source-env: a --source-env run is never published, so nothing would be uploaded` (0.10) | run it without the publish flags. No bench command publishes a --source-env run; in Python, publish_folder_to_hf or publish_folder_to_bucket (benchflow.publish.huggingface) takes its folder, &lt;jobs-dir&gt;/hosted-env/&lt;run&gt;, and leaves its raw hosted_env/ output out |
 | `EvalPlanError` | `… … not supported with --source-env: the hosted environment scores the run with its own verifier, which BenchFlow cannot move into a separate verifier sandbox. Run it without …, or run the tasks with --tasks-dir or --dataset.` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvalPlanError` | `… … not supported with --source-env: vf-eval scores the run as one mean reward, with no trials to count. The run exits 1 when it errors; its reward is in <jobs-dir>/hosted-env/<run>/result.json.` | correct the flag the message names; `bench run --help-all` lists every flag |
 | `EvidenceRejected` | `an imported vote is written by its collector (actor role collector)` (0.10) | Import votes only with `bench assess import-vote`; if the sidecar log was edited, restore it from your copy or start a new assessment. |
@@ -377,7 +387,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `FileNotFoundError` | `Could not identify skill-creator under resolved skills root: …` | check the path, and that you can read it |
 | `FileNotFoundError` | `Missing task.md: …` | check the path, and that you can read it |
 | `FileNotFoundError` | `No evals/evals.json found in …. Create one with test cases for your skill.` | check the path, and that you can read it |
-| `FileNotFoundError` | `No job folder at …` (unreleased) | check the path, and that you can read it |
+| `FileNotFoundError` | `No job folder at …` (0.10) | check the path, and that you can read it |
 | `FileNotFoundError` | `No readable result.json in …; pass a trial directory (jobs/<job>/<task>__<id>) or use bf.load_job for a job directory` | check the path, and that you can read it |
 | `FileNotFoundError` | `No result.json at …; pass a rollout directory (jobs/<job>/<task>__<id>) or its result.json` | check the path, and that you can read it |
 | `FileNotFoundError` | `No trials under …` | check the path, and that you can read it |
@@ -413,26 +423,31 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `HostedError` | (built at run time) | use a key that starts bfk_ (36 letters and digits after it) or bh_ |
 | `HostedError` | (built at run time) | use the service's https:// address |
 | `HostedError` | (built at run time) | wait for it with `bench hosted wait …` |
-| `HostedError` | `--endpoint and --endpoint-key go together` (unreleased) | e.g. --endpoint `https://cpa.example.com` --endpoint-key file:~/cpa_client.key |
-| `HostedError` | `--model-key takes KIND=SOURCE with KIND one of …` (unreleased) | e.g. --model-key deepseek=file:~/.config/benchflow/deepseek.key |
-| `HostedError` | `a key's source is file:PATH, env:VAR or - (standard input)` (unreleased) | never the key itself: a key on a command line stays in shell history and the process list |
-| `HostedError` | `cannot read the key file …` (unreleased) | write the key alone, as text |
-| `HostedError` | `cannot read the key file …: …` (unreleased) | set BENCHFLOW_HUB_KEY, or write the key to that file with mode 600 |
-| `HostedError` | `format … is not one of …` (unreleased) | pass --format atif or --format messages |
-| `HostedError` | `no API key: BENCHFLOW_HUB_KEY is not set and there is no key file` (unreleased) | set BENCHFLOW_HUB_KEY to your BenchFlow Hub key (bfk_...), or put it in ~/.config/benchflow/hub-key (mode 600) |
-| `HostedError` | `no hosted service named: pass --hub or set BENCHFLOW_HOSTED_URL` (unreleased) | pass --hub `https://<service>` or set BENCHFLOW_HOSTED_URL; nothing was sent |
-| `HostedError` | `no run id given` (unreleased) | pass the run id `bench hosted run` printed |
-| `HostedError` | `no version named` (unreleased) | pass a hub version id, e.g. PKG-TERMINALBENCH-2-0 |
-| `HostedError` | `not a hosted service address: …` (unreleased) | pass --hub `https://host` (or set BENCHFLOW_HOSTED_URL) |
-| `HostedError` | `refusing plain http to a hosted service that is not on this machine: …` (unreleased) | use the service's https:// address |
-| `HostedError` | `the key file … can be read by others (mode …)` (unreleased) | chmod 600 … |
-| `HostedError` | `the key file … is not a regular file` (unreleased) | point at the file itself |
-| `HostedError` | `the key … is not valid: its checksum does not match, so it was mistyped or cut short` (unreleased) | copy the whole key again |
-| `HostedError` | `… answered without a run_id` (unreleased) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
-| `HostedError` | `… did not answer JSON` (unreleased) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
-| `HostedError` | `… did not answer a list of traces` (unreleased) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
-| `HostedError` | `… did not answer a run record` (unreleased) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
-| `HostedTimeout` | `run … is still … after … s` (unreleased) | keep waiting with `bench hosted wait …`; the run goes on meanwhile |
+| `HostedError` | `--endpoint and --endpoint-key go together` (0.10) | e.g. --endpoint `https://cpa.example.com` --endpoint-key file:~/cpa_client.key |
+| `HostedError` | `--model-key takes KIND=SOURCE with KIND one of …` (0.10) | e.g. --model-key deepseek=file:~/.config/benchflow/deepseek.key |
+| `HostedError` | `a key's source is file:PATH, env:VAR or - (standard input)` (0.10) | never the key itself: a key on a command line stays in shell history and the process list |
+| `HostedError` | `an account key stores only these kinds: … (not …)` (0.10) | pick one of them with --kind; nothing was sent |
+| `HostedError` | `can't read …: it is not UTF-8 text` (0.10) | write the key alone, as text |
+| `HostedError` | `cannot read the key file …` (0.10) | write the key alone, as text |
+| `HostedError` | `cannot read the key file …: …` (0.10) | write the key alone, as text |
+| `HostedError` | `cannot read the key file …: …` (0.10) | write the key to that file with mode 600 (for the hub key, or set BENCHFLOW_HUB_KEY) |
+| `HostedError` | `format … is not one of …` (0.10) | pass --format atif or --format messages |
+| `HostedError` | `no API key: BENCHFLOW_HUB_KEY is not set and there is no key file` (0.10) | set BENCHFLOW_HUB_KEY to your BenchFlow Hub key (bfk_...), or put it in ~/.config/benchflow/hub-key (mode 600) |
+| `HostedError` | `no hosted service named: pass --hub or set BENCHFLOW_HOSTED_URL` (0.10) | pass --hub `https://<service>` or set BENCHFLOW_HOSTED_URL; nothing was sent |
+| `HostedError` | `no run id given` (0.10) | pass the run id `bench hosted run` printed |
+| `HostedError` | `no version named` (0.10) | pass a hub version id, e.g. PKG-TERMINALBENCH-2-0 |
+| `HostedError` | `not a hosted service address: …` (0.10) | pass --hub `https://host` (or set BENCHFLOW_HOSTED_URL) |
+| `HostedError` | `refusing plain http to a hosted service that is not on this machine: …` (0.10) | use the service's https:// address |
+| `HostedError` | `the endpoint must be https only, reachable from the internet: … is not` (0.10) | the hosted workers call it from the service, so a CLIProxy on your own machine can't be reached; give its public https:// address, and its key with --endpoint-key |
+| `HostedError` | `the key file … belongs to another user` (0.10) | use a key file of your own, with mode 600 |
+| `HostedError` | `the key file … can be read by others (mode …)` (0.10) | chmod 600 … |
+| `HostedError` | `the key file … is not a regular file` (0.10) | point at the file itself |
+| `HostedError` | `the key … is not valid: its checksum does not match, so it was mistyped or cut short` (0.10) | copy the whole key again |
+| `HostedError` | `… answered without a run_id` (0.10) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
+| `HostedError` | `… did not answer JSON` (0.10) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
+| `HostedError` | `… did not answer a list of traces` (0.10) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
+| `HostedError` | `… did not answer a run record` (0.10) | check that --hub (or BENCHFLOW_HOSTED_URL) names the hosted service; this answer came from something else |
+| `HostedTimeout` | `run … is still … after … s` (0.10) | keep waiting with `bench hosted wait …`; the run goes on meanwhile |
 | `HubError` | (built at run time) | pass --hub &lt;url&gt; or set BENCHFLOW_HUB_URL |
 | `HubError` | (built at run time) | set BENCHFLOW_HUB_TOKEN to an API key of this Hub with the scope this needs |
 | `HubError` | (built at run time) | use the Hub's HTTPS address; BenchFlow never sends a key over a downgrade |
@@ -471,12 +486,12 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `InvalidRecord` | `… records sandbox …; name its provider (daytona, docker, ...)` (0.10) | Pass `--sandbox-provider` with the provider of that sandbox, such as `--sandbox-provider docker` or `daytona`. |
 | `IsADirectoryError` | (built at run time) | check the path, and that you can read it |
 | `JobMatrixError` | `…this YAML job config runs … job(s) (…), and an Evaluation is one of them` | run them all with bench run --config …; from Python, pass job_cell=&lt;n&gt; for one of job_plan(path).cells |
-| `KeptServiceFreezerUnavailable` | `This task keeps services (x-keep-services) and its agent user has uid …, the uid BenchFlow runs as on the host, whose trial folders this sandbox bind-mounts: grading keeps the verifier's folder closed to that uid while the kept services run, which closes it to BenchFlow too, so BenchFlow cannot guarantee the grading (a reward it writes there would be lost). No agent code ran; the trial has no score. next: give the image's agent user another uid (useradd -u), run BenchFlow as another host user, or run on a sandbox that does not bind-mount the trial folders (--sandbox remote-docker)` (unreleased) | Give the image's agent user a uid other than the one BenchFlow runs as (`useradd -u`), run BenchFlow as another host user, or run with `--sandbox remote-docker`. |
+| `KeptServiceFreezerUnavailable` | `This task keeps services (x-keep-services) and its agent user has uid …, the uid BenchFlow runs as on the host, whose trial folders this sandbox bind-mounts: grading keeps the verifier's folder closed to that uid while the kept services run, which closes it to BenchFlow too, so BenchFlow cannot guarantee the grading (a reward it writes there would be lost). No agent code ran; the trial has no score. next: give the image's agent user another uid (useradd -u), run BenchFlow as another host user, or run on a sandbox that does not bind-mount the trial folders (--sandbox remote-docker)` (0.10) | Give the image's agent user a uid other than the one BenchFlow runs as (`useradd -u`), run BenchFlow as another host user, or run with `--sandbox remote-docker`. |
 | `KeptServiceFreezerUnavailable` | ``This task keeps services (x-keep-services), which BenchFlow holds in a frozen cgroup v2 of root's from the kill after the agent's turn until the verifier starts, and this sandbox cannot (the check's reason is below). No agent code ran. Run it where Docker uses cgroup v2 and knows writable-cgroups (`docker info` shows Cgroup Version: 2), or run the task without x-keep-services.…`` | Run the task where Docker uses cgroup v2 with writable cgroups (`docker info` shows Cgroup Version: 2), or run it without `x-keep-services`. |
 | `KeptServiceFreezerUnavailable` | `… declares kept services on port … (x-keep-services, from …); native Daytona cannot freeze them for an agent run as non-root user …. This trial is not scored: unsupported backend feature. next: run with --sandbox docker or --sandbox remote-docker, or supply a Compose environment on Daytona` | Run with `--sandbox docker` or `--sandbox remote-docker`, or give the task a Compose file (`environment/docker-compose.yaml`) to run it on Daytona. |
 | `MalformedTaskError` | `… task(s) still hold [REPLACE: ...] placeholders, so they would build and then score 0: … (first: …: …)` | fill in every placeholder; `bench check …` lists them |
 | `MissingCredentialError` | `A model is required with BENCHFLOW_PROVIDER_API_KEY.` | pass --model/model so the supplied provider key can be routed |
-| `MissingCredentialError` | `ANTHROPIC_AUTH_TOKEN is neither an Anthropic API key (sk-ant-api...) nor a Claude login token (sk-ant-oat...), and no ANTHROPIC_BASE_URL names the endpoint it is for: BenchFlow does not guess its route.` (unreleased) | set ANTHROPIC_API_KEY for an API key, CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) for a login, or pass ANTHROPIC_BASE_URL with the gateway's token through --agent-env |
+| `MissingCredentialError` | `ANTHROPIC_AUTH_TOKEN is neither an Anthropic API key (sk-ant-api...) nor a Claude login token (sk-ant-oat...), and no ANTHROPIC_BASE_URL names the endpoint it is for: BenchFlow does not guess its route.` | set ANTHROPIC_API_KEY for an API key, CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`) for a login, or pass ANTHROPIC_BASE_URL with the gateway's token through --agent-env |
 | `MissingCredentialError` | `AWS_BEARER_TOKEN_BEDROCK required for Bedrock model … but not set. Export it in your shell or put it in a .env file.` | `export AWS_BEARER_TOKEN_BEDROCK=... AWS_REGION=us-west-2` |
 | `MissingCredentialError` | `AWS_REGION or AWS_DEFAULT_REGION required for Bedrock model … but not set. Export one of them in your shell or put it in a .env file.` | `export AWS_REGION=us-west-2` |
 | `MissingCredentialError` | `GOOGLE_CLOUD_PROJECT required for Vertex AI model ….` | `export GOOGLE_CLOUD_PROJECT=<project>, or pass --agent-env GOOGLE_CLOUD_PROJECT=<project>` |
@@ -524,15 +539,16 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `RunCardError` | `…: [reference] … must be …, not …` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
 | `RunCardError` | `…: put every setting in one [reference] table` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
 | `RunCardError` | `…: unknown key… … in [reference]; known keys: …` (0.10) | fix …; docs/evaluate/before-you-run.md#the-run-card-010 lists its keys |
-| `RunConfigValueError` | `…--warm-pool … is more than concurrency (…)` (unreleased) | pass --warm-pool from 0 to …, or a higher --concurrency |
-| `RunConfigValueError` | `…: … is not a list of task names or patterns` (unreleased) | give … a list of strings |
-| `RunConfigValueError` | `…: … is not a list of task names or patterns` (unreleased) | write …: […] |
-| `RunConfigValueError` | `…: … is not a whole number of at least …` (unreleased) | write …: … (a number, without quotes) |
-| `RunConfigValueError` | `…environment: … is not a sandbox` (unreleased) | choose … |
-| `RunConfigValueError` | `…retry: BenchFlow reads no key … there` (unreleased) | its keys are … |
-| `RunConfigValueError` | `…retry: … is not a table of retry settings` (unreleased) | for N retries per task write max_retries: N (what --retry-attempts N sets), or retry: &#123;max_retries: N&#125; |
-| `RunConfigValueError` | `…timeout_multiplier: … is not a positive number` (unreleased) | write timeout_multiplier: 2.0 to double every agent's time limit |
-| `RunConfigValueError` | `…warm_pool: … is more than … (…)` (unreleased) | give warm_pool a number from 0 to … |
+| `RunConfigValueError` | `…--warm-pool … is more than concurrency (…)` (0.10) | pass --warm-pool from 0 to …, or a higher --concurrency |
+| `RunConfigValueError` | `…: … is not a list of task names or patterns` (0.10) | give … a list of strings |
+| `RunConfigValueError` | `…: … is not a list of task names or patterns` (0.10) | write …: […] |
+| `RunConfigValueError` | `…: … is not a whole number of at least …` (0.10) | write …: … (a number, without quotes) |
+| `RunConfigValueError` | `…effort_pin: … is not true or false` (0.10) | write effort_pin: true to pin every model call's reasoning effort to the run's (what --effort-pin sets) |
+| `RunConfigValueError` | `…environment: … is not a sandbox` (0.10) | choose … |
+| `RunConfigValueError` | `…retry: BenchFlow reads no key … there` (0.10) | its keys are … |
+| `RunConfigValueError` | `…retry: … is not a table of retry settings` (0.10) | for N retries per task write max_retries: N (what --retry-attempts N sets), or retry: &#123;max_retries: N&#125; |
+| `RunConfigValueError` | `…timeout_multiplier: … is not a positive number` (0.10) | write timeout_multiplier: 2.0 to double every agent's time limit |
+| `RunConfigValueError` | `…warm_pool: … is more than … (…)` (0.10) | give warm_pool a number from 0 to … |
 | `RunFolderError` | `--tasks-dir given but … does not exist; expected the task source for … there.` | Pass `--tasks-dir` the folder holding a subfolder named after the task, so `<tasks-dir>/<task name>` exists. |
 | `RunFolderError` | `Live continuation requires …; set it before continuing` | Export the variable the message names (the live model's provider key), or add it to `.env` in the current folder, then rerun `bench eval continue`. |
 | `RunFolderError` | `benchflow continue currently supports the 'openhands' agent only; this run used ….` | `bench eval continue` takes only a run made with the `openhands` agent; for another agent, run the task again with `bench run`. |
@@ -556,8 +572,13 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `RunFolderError` | `replay-only mode is only supported with host proxy mode.` | Rerun with `--proxy-mode host` (auto already does that for a Docker run); for a run on another sandbox, drop `--replay-only` and continue live with `--model`. |
 | `RunFolderError` | `run … has error_category=…, not a timeout/idle_timeout — continuing it may not be meaningful.` | Continue only a run that timed out (`error_category` `timeout` or `idle_timeout`), or drop `--require-timeout` to continue this one anyway. |
 | `RunFolderError` | `… contained no usable LLM exchanges — nothing to replay.` | Continue a run whose `trajectory/llm_trajectory.jsonl` holds recorded exchanges; this one is empty or every line is malformed, so rerun the task instead. |
-| `ScriptBackendError` | `script: runs only on …: its runner needs a trusted root transport the … backend does not have` (0.10) | use --sandbox docker, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
+| `ScopedCredentialRefused` | `…: --scoped-credential …: the cloud credential file can't be scoped; it goes into the sandbox only with --allow-cloud-credential-file.` (0.10) | Drop the name from `--scoped-credential`; pass `--allow-cloud-credential-file` if the run should stage the file, or run the model through the proxy on the host (Docker, `public`). |
+| `ScopedCredentialRefused` | `…: --scoped-credential …: the run's agent env does not set …; name a variable the run gives the agent.` (0.10) | Name a variable the run sets for the agent (with `--agent-env NAME=...` or your environment), or drop the name. |
+| `ScopedCredentialRefused` | `…: --scoped-credential …: … is not a credential variable (an API key or token the agent holds); --scoped-credential names credentials only.` (0.10) | Name the API key or token itself (for a hosted run, `ANTHROPIC_AUTH_TOKEN`), not a setting such as its base URL, or drop the name. |
+| `ScopedCredentialRefused` | `…: --scoped-credential …: … is staged as a file (a login file), not only in the agent's environment; --scoped-credential names environment credentials only.` (0.10) | Drop the name: a login staged as a file can't be scoped. Use an API key in the agent's environment, or pass `--allow-task-processes-with-credentials` to accept task processes beside it. |
+| `ScriptBackendError` | `script: runs only on …: its runner needs a trusted root transport the … backend does not have` | use --sandbox docker, or run the logic as an ACP agent (docs/agents/custom-agent.md) |
 | `SeparateVerifierRefusedError` | (built at run time) | Drop the listed tasks with `--exclude <task>`, or run without `--verifier-sandbox separate` (use `--integrity audit` instead of `--integrity strict`). |
+| `SetupCaptureRefused` | `…: a setup command's capture writes into BenchFlow's own environment on this machine, which a task can do only for a variable the operator lists: …. Nothing was started.` (0.10) | list each variable with --allow-task-env NAME (BENCHFLOW_ALLOW_TASK_ENV, allow_task_env() in the SDK), or drop the capture from the task; a BENCHFLOW_ name is never allowed |
 | `StaleExpectation` | `the log ends at event_seq … (…); the writer expected … (…); nothing was appended` (0.10) | reload the sidecar, re-check its state, then retry |
 | `TaskConfigKeyError` | (built at run time) | Fix or remove the `task.toml` key the message names (a typo comes with a suggested spelling), or set `BENCHFLOW_TASK_TOML_ALLOW_UNKNOWN_KEYS=1` to load unknown keys anyway. |
 | `TaskDocumentParseError` | `Expected integer value, got bool` | Write the role's `timeout_sec` or `idle_timeout_sec` under `agents.roles` in `task.md` as a whole number of seconds, not `true` or `false`. |
@@ -572,6 +593,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `TaskDocumentParseError` | `scene roles must be a list of role names` | Write the scene's `roles` in `task.md` as a YAML list of role names defined under `agents.roles`. |
 | `TaskDocumentParseError` | `scene turns must be a list` | Write the scene's `turns` in `task.md` as a YAML list; each turn is a role name or a mapping with `role` and an optional `prompt`. |
 | `TaskDocumentParseError` | `scenes must be a list` | Write `scenes` in `task.md` frontmatter as a YAML list of scenes (each a mapping with `name`, `roles`, `turns`), not a single mapping. |
+| `TaskDocumentParseError` | `task.md declares both 'environment:' and 'sandbox:': they are the same section ('environment:' is its name before July 2026); keep only 'sandbox:'` (0.10) | Move any setting only `environment:` has into `sandbox:`, then delete the `environment:` block from the task.md front matter. |
 | `TaskDocumentParseError` | `task.md frontmatter is missing closing ---` | Add a line holding only `---` after the frontmatter in `task.md`, before the prompt text. |
 | `TaskDocumentParseError` | `task.md frontmatter must be a mapping` | Write the `task.md` frontmatter as YAML `key: value` pairs between the two `---` lines, not a list or a bare value. |
 | `TaskDocumentParseError` | `task.md has duplicate section ## …` | Merge the two sections with that heading in `task.md` into one, or write a heading meant as prompt text with a leading backslash, like `\## prompt`. |
@@ -586,7 +608,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `TaskDocumentParseError` | `… path must be safe and relative` | Write the `verifier` or `oracle` path in `task.md` relative to the task folder, without a leading `/` or any `..` part. |
 | `TaskDocumentParseError` | `… references unknown role …` | Define that role under `agents.roles` in `task.md`, or correct the name in the scene's `roles` or the turn's `role`. |
 | `TaskDocumentParseError` | `…: the frontmatter is not valid YAML: … …` | Fix the YAML syntax at the `task.md` line the message names, then rerun `bench check <task>`. |
-| `TaskEnvNotAllowedError` | (built at run time) | Pass `--allow-task-env NAME` for each variable you trust the task with, or export `BENCHFLOW_ALLOW_TASK_ENV` (not from `.env`); for a path or hook outside the task, follow the printed remedy. |
+| `TaskEnvNotAllowedError` | (built at run time) | Pass `--allow-task-env NAME` for each variable you trust the task with, or export `BENCHFLOW_ALLOW_TASK_ENV` (not from `.env`); for a path or hook outside the task, or a pid namespace services share (a process in one can release the other's held waiter before its rules are in), follow the printed remedy. |
 | `TransitionRefused` | `a consumption is recorded by its consumer (actor.subject = consumer_id)` (0.10) | Record a consumption with `bench assess consume <sidecar> --consumer <id>`, which sets the actor to the consumer; don't append `label.consumed` events by hand. |
 | `TransitionRefused` | `a … must name the current effective answer …; … is superseded, retracted or unknown` (0.10) | Pass the current effective answer's event id to `--supersedes` (correct) or `--target` (retract); `bench assess show <sidecar> --events` lists the events. |
 | `TransitionRefused` | `an assessment starts with assessment.created` (0.10) | Start the sidecar with `bench assess create <sidecar>` before any other `bench assess` command; don't write its event log by hand. |
@@ -609,7 +631,7 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `TransitionRefused` | `the sidecar holds no assessment` (0.10) | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
 | `TransitionRefused` | `the sidecar holds no assessment yet` (0.10) | Point the command at the sidecar that holds the assessment, or start one there with `bench assess create <sidecar>`. |
 | `TransitionRefused` | `there is no effective answer to … (it was retracted)` (0.10) | Run `bench assess reduce <sidecar>` to record the retraction; for a new answer, start a new assessment with `bench assess create` in a new sidecar directory. |
-| `UnreadableSolverSnapshotError` | `… is truncated or unreadable (…), so the job cannot be resumed: it records that trial's finished solver, and a resume without it could run that solver again or leave its scoring unfinished.` (unreleased) | restore … from a copy of the job, or move the trial folder … out of the job to run its task again |
+| `UnreadableSolverSnapshotError` | `… is truncated or unreadable (…), so the job cannot be resumed: it records that trial's finished solver, and a resume without it could run that solver again or leave its scoring unfinished.` (0.10) | restore … from a copy of the job, or move the trial folder … out of the job to run its task again |
 | `UsageLimitError` | (built at run time) | switch to another login or wait for the reset, then resume the job (`bench eval resume <job_dir>`); `bench doctor` shows each login's headroom |
 | `VerifierDocumentParseError` | `expected a non-empty string` | Write a non-empty string for the `verifier.md` field that is empty or not text, such as `name`, `default_strategy`, an `outputs` path or a strategy field. |
 | `VerifierDocumentParseError` | `verifier.default_strategy must name one of verifier.strategies` | Set `verifier.default_strategy` in `verifier.md` to one of the names under `verifier.strategies`, or remove it to use the first strategy. |
@@ -640,6 +662,8 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `AgentManifestError` | `benchflow.agents.manifest` | A manifest.toml is unreadable, missing a required field, declares an unsupported contract major version, or collides with an existing agent. |
 | `AssessmentError` | `benchflow.assessment.errors` | Base class: an assessment operation was refused and nothing was appended. |
 | `BranchPlanError` | `benchflow.branch_run` | The branch request is inconsistent; nothing was started. |
+| `CloudCredentialFileRefused` | `benchflow.agents.operator_credentials` | A run that would stage a cloud credential file without the operator's flag; raised before any sandbox exists. |
+| `CloudMetadataOptInRefused` | `benchflow.sandbox.cloud_metadata` | A task asks to lift the cloud metadata block (its own ``allow_cloud_metadata = true``, or ``metadata.x-allow-cloud-metadata = true``) and the run did not grant it with ``--allow-cloud-metadata``. A task can't weaken its own isolation: the trial, or the whole job, is refused before anything starts. The message names the tasks, their key and the flag. |
 | `ConfigKeyError` | `benchflow._utils.config_keys` | A run config names a key BenchFlow does not read. |
 | `ConfigOverrideInvalidError` | `benchflow._utils.config_override` | A config overlay the task config refuses: a key it does not have, or a value of another type. Each problem is named by its field path and what the field takes, never by the value given (its errors hold no input): the overlay may hold a credential (a sandbox env, MCP headers). Still a pydantic ValidationError, as the task config's own is. |
 | `ConfigOverrideNeededError` | `benchflow._utils.config_override` | A recorded job, or a saved config, holds a config overlay whose record left values out, and the command that runs it again (or loads it) was not given them, or was given an overlay that is not the recorded one. |
@@ -680,8 +704,10 @@ These errors stop a command or a run. Each row is one message an error class is 
 | `RunCardError` | `benchflow.run_card` | A run-reference.toml that cannot be read, or a strict reference the run differs from without saying why. |
 | `RunConfigValueError` | `benchflow.evaluation` | A run config gives a setting a value the same flag refuses. |
 | `RunFolderError` | `benchflow.continue_run.run_folder` | Raised when a run folder is missing required artifacts or malformed. |
+| `ScopedCredentialRefused` | `benchflow.agents.operator_credentials` | A ``--scoped-credential`` name the run can't scope; raised before any sandbox exists. |
 | `ScriptBackendError` | `benchflow.agents.scripts` | A ``script:`` agent on a backend without the trusted root runner its script needs. Nothing was started. |
 | `SeparateVerifierRefusedError` | `benchflow.integrity.trial` | The run moves every verifier into the separate verifier sandbox, and some selected tasks cannot use it there. Raised before any job or shard folder exists and before any sandbox starts. The message ends with the next step. |
+| `SetupCaptureRefused` | `benchflow.rollout._setup_capture` | A setup command's capture would write a variable (or a dotenv file) the operator did not list, or a ``BENCHFLOW_*`` name: refused before anything starts. |
 | `StaleExpectation` | `benchflow.assessment.errors` | The writer's ``expected_event_seq``/``expected_previous_event_sha256`` no longer names the log's last event: another write came first. |
 | `TaskConfigKeyError` | `benchflow.task.imports` | A task.toml carries an unknown key the run refuses (typo/decision table). |
 | `TaskDocumentParseError` | `benchflow.task._document_normalize` | Raised when a ``task.md`` document cannot be parsed. |
@@ -724,6 +750,8 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `adopt` | `missing target` | pass a SOURCE (convert) or a benchmark SLUG (--verify / --scaffold-only) |
 | `agent` | (built at run time) | `bench agents` lists the agents |
 | `agent` | `Agent catalog incomplete (…): …` | the agents listed above work; BENCHFLOW_AGENTS_SOURCE names the catalog (off skips it) |
+| `agent` | `no manifest at …` (0.10) | pass the agent's manifest.toml (agents/&lt;name&gt;/manifest.toml) or its folder |
+| `agent` | `… is not a valid agent manifest (… problem…)` (0.10) | fix each line above, then run bench agents validate again |
 | `assessment` | `… already exists; a reference is never overwritten` (0.10) | pass a new --out path |
 | `assessment` | `… has no label yet (state …)` (0.10) | `bench assess reduce <sidecar>` records one once there is an answer |
 | `assessment` | `…'s label file differs from the label its log rebuilds` (0.10) | `bench assess label <sidecar> --write` rewrites it from the log |
@@ -732,6 +760,8 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `branch` | (built at run time) | `bench branch --help` shows the --child form and the flags |
 | `branch` | (built at run time) | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `cache` | (built at run time) | `bench cache --help` lists the kinds, backends and ages it takes |
+| `continue_cmd` | (built at run time) | name a variable the live model's env sets in --scoped-credential |
+| `continue_cmd` | (built at run time) | pass --allow-cloud-credential-file to accept the file |
 | `continue_cmd` | (built at run time) | pass a timed-out run's folder (it holds config.json and trajectory/llm_trajectory.jsonl) |
 | `continue_cmd` | `No such file or directory: …` | pass a timed-out run's folder (it holds config.json and trajectory/llm_trajectory.jsonl) |
 | `continue_cmd` | `not a directory: …` | pass a timed-out run's folder (it holds config.json and trajectory/llm_trajectory.jsonl), or a folder of them |
@@ -739,6 +769,8 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `daemon` | (built at run time) | `bench daemon stop` (with the installation that started it) or wait for it to stop, then start again |
 | `daemon` | `Local runtime is busy: … active calls.` | wait for them to finish, then `bench daemon stop` again |
 | `daemon` | `Local runtime is not running.` | `bench daemon start` starts it |
+| `daemon` | `The local runtime did not answer within … s.` (0.10) | it may be busy: `bench daemon status` again |
+| `daemon` | `The local runtime did not answer within … s; the stop may take effect when it does.` (0.10) | `bench daemon status` shows whether it is stopping |
 | `doctor` | (built at run time) | `bench eval smoke --help` describes --agent |
 | `doctor` | `Daytona is not ready for --sandbox daytona; no job was created.` | run `bench doctor --sandbox daytona` for the full report, or set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check |
 | `doctor` | `Docker is not ready for --sandbox docker; no job was created.` | run `bench doctor` for the full report, or set BENCHFLOW_SKIP_PREFLIGHT=1 to skip this check |
@@ -758,7 +790,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `embodied` | `no embodied trials in …` (0.10) | pass the job folder of an embodied run |
 | `embodied` | `no job directory …` | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `eval_artifacts` | (built at run time) | fix the --matrix file; docs/audit/compare-runs.md#choose-the-metric shows one |
-| `eval_artifacts` | `Refused before launch: …` (unreleased) | fix the --matrix entry; `bench run --help` lists the levels |
+| `eval_artifacts` | `Refused before launch: …` | fix the --matrix entry; `bench run --help` lists the levels |
 | `eval_artifacts` | `selected task count … != expected …` | Compare the tasks listed in the `--task-manifest-out` file with what you meant, then fix `--include`/`--exclude` or `--expected-tasks`. |
 | `eval_bundle` | (built at run time) | pass a job folder or a trial folder |
 | `eval_bundle` | `No such file or directory: …` | pass a job folder or a trial folder |
@@ -769,7 +801,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `explain` | `no explain page for …` | `bench explain` lists every code |
 | `explain` | `no explain page for …` | its pages are … |
 | `hosted` | (built at run time) | read what happened with `bench hosted events` and the run id |
-| `hosted` | `no stored key named …` (unreleased) | run `bench hosted secret list` to see the names this workspace keeps; nothing was deleted |
+| `hosted` | `no stored key named …` (0.10) | run `bench hosted secret list` to see the names this workspace keeps; nothing was deleted |
 | `hub` | (built at run time) | check this machine's network (or its proxy), then run the command again |
 | `hub` | (built at run time) | pass a registry JSON file or URL to --registry |
 | `hub` | `No such file or directory: …` | pass a folder that holds one folder per task |
@@ -777,6 +809,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `hub` | `No such file or directory: …` | pass an existing registry JSON file or URL to --registry |
 | `hub` | `Registry check failed: …` | check --registry and this machine's network, then run the check again |
 | `hub` | `… is not valid JSON` | pass a registry JSON file or URL to --registry |
+| `latest` | `` no job under … for `latest` `` (0.10) | run one first (bench run &lt;tasks&gt;), or name the job folder |
 | `main` | (built at run time) | `bench check <task folder>` validates the tasks; `bench doctor` checks this machine |
 | `main` | (built at run time) | `bench eval metrics --help` describes --k and --solve-threshold |
 | `main` | (built at run time) | `bench hub show …` lists the dataset's tasks; check --include and --exclude against their names |
@@ -806,7 +839,7 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `main` | `No tasks to run: no --config, --tasks-dir, --source-repo, --source-env or --dataset` | name a task, for example `bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation`; `bench run --help` describes each source |
 | `main` | `Not a directory: …` | pass a job folder or a folder of jobs (`bench run` writes them under ./jobs, or --jobs-dir) |
 | `main` | `Not a directory: …` | pass a task folder or a folder of tasks to --tasks-dir |
-| `main` | `Refused before launch: …` (unreleased) | fix the --matrix entry; `bench run --help` lists the levels |
+| `main` | `Refused before launch: …` | fix the --matrix entry; `bench run --help` lists the levels |
 | `main` | `Skipping branch snapshot cleanup: …` | `bench doctor --sandbox daytona` checks the Daytona key |
 | `main` | `Unsupported eval agent protocol: …` | name an ACP agent; `bench agents` lists them |
 | `main` | `` `bench …` was BenchFlow 0.8's; name one of its commands `` | the detail maps each 0.8 command to its spelling here |
@@ -822,13 +855,17 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `new_verbs` | `--idle-timeout … is not a duration` | pass seconds (600) or a number with s, m or h (90s, 10m, 1h); 0, none or null turns it off |
 | `new_verbs` | `--json, --attempts, --include-controls and --by read one job or compare two` | name the job: bench results &lt;job&gt; --json |
 | `new_verbs` | `--task-skills and --skill-mode both set the skill mode` | keep one: --task-skills is --skill-mode with-skill |
+| `new_verbs` | `BenchFlow's registry has no …@…; it has …` (0.10) | bench run …@… |
+| `new_verbs` | `bench agents validate needs a manifest` (0.10) | bench agents validate agents/&lt;name&gt;/manifest.toml |
+| `new_verbs` | `bench agents … takes no second argument` (0.10) | bench agents &lt;name&gt;, or bench agents validate &lt;manifest.toml&gt; |
 | `new_verbs` | `bench results reads one job or compares two; … were given` | bench results &lt;job&gt; &lt;job&gt; |
 | `new_verbs` | `bench run needs a target: a task folder, a folder of tasks, or a repository` | bench run tasks/ (or --dataset &lt;name&gt;@&lt;version&gt;, or --config run.yaml) |
 | `new_verbs` | `bench run takes a target or --dataset, not both` | drop the target to run the dataset, or drop --dataset |
 | `new_verbs` | `bench run takes a target or …, not both` | drop … (the target names the tasks) or drop the target |
 | `new_verbs` | `bench run takes one target; … were given` | run each target on its own, or put the tasks in one folder |
 | `new_verbs` | `no such task folder: …` | pass a task folder, a folder of tasks, or a repository as org/repo[/path][@ref] |
-| `new_verbs` | `the target … names its repository's path and ref, and … names one too` (unreleased) | drop … and put it in the target: org/repo/path@ref |
+| `new_verbs` | `the target … names its repository's path and ref, and … names one too` (0.10) | drop … and put it in the target: org/repo/path@ref |
+| `new_verbs` | `… has … versions in BenchFlow's registry: …` (0.10) | name one: bench run …@… |
 | `new_verbs` | `… …, but no agent runs it: without -a, bench run runs the oracle (the task's reference solution)` | add -a &lt;agent&gt; (`bench agents` lists them), or drop … to run the oracle |
 | `preferences` | (built at run time) | `bench preferences --help` lists each command's inputs |
 | `rescore` | `Scoring failed: …` | pass a saved trial folder and the task it ran with --tasks-root |
@@ -844,9 +881,9 @@ Errors a `bench` command prints before it exits, with the `next:` line it prints
 | `review` | (built at run time) | pass -a with a name `bench agents` lists |
 | `review` | (built at run time) | pass a finished rollout directory or a job directory |
 | `review` | `--passing and --failing cannot be used together` | pass one of them, or neither to review every rollout |
-| `review` | `--reasoning-effort: …` (unreleased) | pass --reasoning-effort with one of those efforts |
+| `review` | `--reasoning-effort: …` (0.10) | pass --reasoning-effort with one of those efforts |
 | `review` | `No such file or directory: …` | pass an existing path to … |
-| `review` | `Refused before launch: …` (unreleased) | ask for a level the model takes, in one way |
+| `review` | `Refused before launch: …` | ask for a level the model takes, in one way |
 | `review` | `Unknown sandbox: …` | pass --sandbox with one of: … |
 | `reviewer_options` | (built at run time) | `bench run --help-all` says what each flag takes |
 | `reviewer_options` | `expected whole seconds, 0 or 'none'` | `bench run --help-all` says what each flag takes |
@@ -1066,10 +1103,10 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `task.md` | `native task.md coexists with an incomplete legacy split definition` | Remove the stray `task.toml` or `instruction.md` beside `task.md`, or complete the pair so it matches `task.md`. |
 | `task.md` | `native task.md config and legacy task.toml config differ` | Make `task.toml` match the `task.md` frontmatter, or remove `task.toml` and `instruction.md` and keep `task.md` alone. |
 | `task.md` | `native task.md prompt and legacy instruction.md prompt differ` | Make `instruction.md` match the prompt in `task.md` (trailing spaces don't count), or remove `instruction.md` and `task.toml` and keep `task.md` alone. |
-|  | `network_mode='allowlist' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which enforce allowlists, or change the task's `network_mode`. |
+|  | `network_mode='allowlist' is not enforced by …` | Run the task with `--sandbox docker` or `remote-docker`, which enforce allowlists, or change the task's `network_mode`; Daytona and Modal refuse every restricted network policy. |
 | `sandbox.network_mode` | `network_mode='allowlist' with compose services needs a sandbox that checks they have no route out (…); … does not` (0.10) | Run the task with `--sandbox docker` or `--sandbox remote-docker`, the backends that check an allowlist task's Compose services, or drop the allowlist. |
-|  | `network_mode='denylist' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which enforce denylists, or change the task's `network_mode`. |
-|  | `network_mode='no-network' is not enforced by …` | Run the task with `--sandbox docker`, `remote-docker`, `daytona` or `modal`, which enforce `no-network`, or change the task's `network_mode`. |
+|  | `network_mode='denylist' is not enforced by …` | Run the task with `--sandbox docker` or `remote-docker`, which enforce denylists, or change the task's `network_mode`; Daytona and Modal refuse every restricted network policy. |
+|  | `network_mode='no-network' is not enforced by …` | Run the task with `--sandbox docker` or `remote-docker`, which enforce `no-network` for a model agent, or change the task's `network_mode`; Daytona and Modal run it only for an agent that calls no model. |
 | `artifacts` | `root artifact collection is implemented for docker and daytona` | Run the task with `--sandbox docker`, `remote-docker` or `daytona`, which collect root `artifacts`, or remove `artifacts` from the task. |
 | `verifier.sandbox.transfer` | `sandbox.workdir … overlaps verifier-owned …; the separate verifier would receive the workspace there` | Set `sandbox.workdir` to a path that neither lies under nor contains `/tests`, `/verifier`, `/logs/verifier`, `/logs/agent` or `/opt/runtime`, or run the verifier in the agent's sandbox. |
 | `verifier.strategies.…` | `script artifact not found at …` | Add the file the script strategy's `command` names at that path in the verifier folder, or correct the path in `command`. |
@@ -1077,15 +1114,15 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `steps[…].artifacts` | `step artifact transfer is parsed but not implemented` | Remove `artifacts` from each entry in `steps`: no sandbox transfers step artifacts yet. |
 | `steps[…].healthcheck` | `step healthchecks are parsed but not implemented` | Remove `healthcheck` from each entry in `steps`: no sandbox runs step healthchecks yet. |
 | `steps` | `step names must be unique (each is a folder under steps/)` (0.10) | Give each entry in `steps` a unique `name`, since each step is a folder under `steps/`. |
-| `environment.services` | `the task declares the service… … in environment.toml at the task's root ([[environment.services]]), which BenchFlow starts in main as root, outside the agent's network rules, and the agent's network policy is …: the agent would reach … on localhost, and through … what the policy refuses. A declared service cannot run beside a model agent under a restricted network policy: run it as a compose service on an internal network that main shares, or run the task with an open network` (unreleased) | Run the service as a Compose service on an internal network that `main` shares (`internal: true`), or run the task with an open network (no `allowlist`, `denylist` or agent `no-network`). |
-| `sandbox.network_mode` | ``the task's network policy (…) is not held on …: run restricted policies on Docker, or choose `open` explicitly (recorded as open)`` (unreleased) | Run the task with `--sandbox docker`, where BenchFlow's helper holds every restricted policy from outside the sandbox, or set the task's network to `open`. Daytona and Modal hold only an open network (with a public or separate verifier) and no-network with the oracle or a script; a shared verifier with a restricted network of its own is refused there too. |
+| `environment.services` | `the task declares the service… … in environment.toml at the task's root ([[environment.services]]), which BenchFlow starts in main as root, outside the agent's network rules, and the agent's network policy is …: the agent would reach … on localhost, and through … what the policy refuses. A declared service cannot run beside a model agent under a restricted network policy: run it as a compose service on an internal network that main shares, or run the task with an open network` | Run the service as a Compose service on an internal network that `main` shares (`internal: true`), or run the task with an open network (no `allowlist`, `denylist` or agent `no-network`). |
+| `sandbox.network_mode` | ``the task's network policy (…) is not held on …: run restricted policies on Docker, or choose `open` explicitly (recorded as open)`` | Run the task with `--sandbox docker`, where BenchFlow's helper holds every restricted policy from outside the sandbox, or set the task's network to `open`. Daytona and Modal hold only an open network (with a public or separate verifier) and no-network with the oracle or a script; a shared verifier with a restricted network of its own is refused there too. |
 | `metadata.x-keep-services` | `the tests talk to the services the agent leaves running on port … (from …), and a separate verifier sandbox has none of them, so every trial would score 0; run the verifier in the agent's sandbox (no --verifier-sandbox separate, --separate-verifier or --integrity strict, and no separate verifier sandbox_mode in the task), or remove …` | Run the verifier in the agent's sandbox: drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict`, and set the task's `verifier.sandbox_mode` to `shared`; or remove `metadata.x-keep-services`. |
 | `verifier.strategies.….command` | `the verifier package has no …` | Add the file the taskmd strategy's `command` names to the verifier folder, or correct `command` in `verifier.md`. |
 | `sandbox` | `unknown sandbox backend; use …` | Set `--sandbox` to one of `docker`, `remote-docker`, `daytona`, `modal`, `apple-container` or `agentcore`. |
 | `benchflow.verifier.implementation` | `verifier implementation metadata must be a mapping` | Write `benchflow.verifier.implementation` in `task.md` as a mapping with a `type` such as `test-script`, or remove it. |
 | `benchflow.verifier.implementation.strategies` | `verifier implementation strategies must be a mapping` | Write `benchflow.verifier.implementation.strategies` in `task.md` as a mapping keyed by strategy name, such as `script` or `llm-judge`, or remove it. |
 | `benchflow.verifier.implementation.type` | `verifier implementation type is parsed but not executable; use test-script/script or declare concrete verifier strategies` | Set `benchflow.verifier.implementation.type` to `test-script`, `script`, `deterministic`, or `hybrid` with known `strategies`; or remove it. |
-| `verifier.network_mode` | `verifier network allowlists are not enforced on … (the verifier runs outside the agent uid firewall there)` (unreleased) | Run the task on Docker, where hardening holds the verifier to its allowlist, or drop `verifier.network_mode`. |
+| `verifier.network_mode` | `verifier network allowlists are not enforced on … (the verifier runs outside the agent uid firewall there)` | Run the task on Docker, where hardening holds the verifier to its allowlist, or drop `verifier.network_mode`. |
 | `benchflow.verifier.implementation.strategies.…` | `verifier strategy … is an unknown value; choose one of: script, deterministic, test-script, llm-judge, agent-judge, ors-episode, criteria-runner` | Rename that key under `benchflow.verifier.implementation.strategies` to one of `script`, `deterministic`, `test-script`, `llm-judge`, `agent-judge`, `ors-episode` or `criteria-runner`. |
 | `verifier.strategies.…` | `… verifier strategies are parsed but not executable; select script, llm-judge, criteria-runner, agent-judge, or ors-episode` | Set `default_strategy` in `verifier.md` to a `script`, `llm-judge`, `criteria-runner`, `agent-judge` or `ors-episode` strategy. |
 
@@ -1104,7 +1141,7 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._separate_verifier` | `image from … would start compose services (…); a separate verifier sandbox has none` | Give the verifier its own image (a `tests/Dockerfile` or `[verifier.sandbox] docker_image`) instead of the agent's Compose environment, or run the verifier in the agent's sandbox. |
 | `benchflow.rollout._separate_verifier` | `the solution's outputs cannot reach the verifier: …` | Expect a 0 when an agent's outputs do this; if the oracle does, fix the solution so the workspace and declared artifacts stay at their declared paths within capture limits. |
 | `benchflow.rollout._separate_verifier` | `verifier output publication failed: …` | On a disk or connection error, free space or restore the connection, then run `bench eval resume <job dir>`; otherwise make `test.sh` leave only regular files in `/logs/verifier`. |
-| `benchflow.rollout._separate_verifier` | `verifier-inputs record not written` (unreleased) | Ignore it for the score: the detector's record (integrity/verifier-inputs.json) could not be written to the trial folder, and grading is unaffected; check the folder's disk space and permissions. |
+| `benchflow.rollout._separate_verifier` | `verifier-inputs record not written` (0.10) | Ignore it for the score: the detector's record (integrity/verifier-inputs.json) could not be written to the trial folder, and grading is unaffected; check the folder's disk space and permissions. |
 | `benchflow.rollout._separate_verifier` | `… in the verifier image is a link that leads to no folder, so … cannot land where it was packed` | In the verifier image, make that path a real folder or a link to an existing folder, then run the task again. |
 | `benchflow.rollout._separate_verifier` | `… in the verifier image is a link to …, so … would land at …, in …` | In the verifier image, replace that link with a real folder, or point it outside verifier-owned paths such as `/tests` and system folders, then run the task again. |
 | `benchflow.rollout._separate_verifier` | `… resolves to …, which overlaps verifier-owned …; before the agent ran it resolved to …` | Expect a 0 when an agent redirects the workspace or an artifact into a verifier-owned path; if the oracle does, make the solution keep those paths as real folders. |
@@ -1115,24 +1152,24 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._setup` | `Publishing for the verifier: … exited …: …` | Check that root can create folders under `/logs` in the sandbox and the agent's user can write `/logs/agent` (the stderr shown says which); BenchFlow retries once. |
 | `benchflow.rollout._setup` | `Publishing for the verifier: … failed: …` | Check the sandbox backend with `bench doctor`: the command could not run there, and BenchFlow retries once before failing the trial's verification. |
 | `benchflow.rollout._setup` | `Running verifier...` | Ignore it: this log line marks the start of grading; the verifier's output goes to the trial's `verifier/test-stdout.txt`. |
-| `benchflow.rollout._setup` | `The timed-out verifier's network verdict failed: …` (unreleased) | Nothing to change in the task: the trial keeps the timeout's score of 0. If it recurs, check the sandbox backend with `bench doctor`; the cause after the colon says what BenchFlow could not check. |
+| `benchflow.rollout._setup` | `The timed-out verifier's network verdict failed: …` (0.10) | Nothing to change in the task: the trial keeps the timeout's score of 0. If it recurs, check the sandbox backend with `bench doctor`; the cause after the colon says what BenchFlow could not check. |
 | `benchflow.rollout._setup` | `Verifier scored 0: …` | Fix the cause after the colon, usually in the task's `test.sh` (its output is in the trial's `verifier/test-stdout.txt`), then check with the oracle: `bench run <task> --fresh`. |
 | `benchflow.rollout._setup` | `Verifier start-receipt probe failed; retrying: …` | Wait: BenchFlow keeps the verifier running and probes again; if the trial then ends with a verifier error, check the backend with `bench doctor`. |
 | `benchflow.rollout._setup` | `Verifier test command ended (exit status …) but its exec did not return within the budget; scoring its outputs` | Ignore it unless it recurs; the outputs were scored. If it repeats, check the sandbox backend with `bench doctor`, whose exec lost the command's return. |
 | `benchflow.rollout._setup` | `Verifier test command start is unconfirmed (…); retrying it once` | Ignore it if the retry succeeds; if it recurs, keep `test.sh` from deleting files in `/run/runtime` and check the backend with `bench doctor`. |
 | `benchflow.rollout._setup` | `could not read the verifier's refusal stubs: …` | Run the task again (`bench run --fresh`); unreadable refusal markers count as a refused program, which scores 0. If it repeats, check the backend with `bench doctor`. |
-| `benchflow.rollout._setup` | `could not write verifier/network-policy.json` (unreleased) | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this record is missing, the trial still ends "network policy breached". |
+| `benchflow.rollout._setup` | `could not write verifier/network-policy.json` (0.10) | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this record is missing, the trial still ends "network policy breached". |
 | `benchflow.rollout._setup` | `could not write verifier/trusted-path.json` | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this PATH record is missing, the score stands. |
-| `benchflow.rollout._setup` | `kept on the verifier's PATH though absent when it was checked: every part of each that exists is root's alone, with no link another user controls, so only root could ever make it` (unreleased) | Nothing to do: a note in locked-system-path.json, not an error. The folder stays on the verifier's PATH because only root could make it. |
+| `benchflow.rollout._setup` | `kept on the verifier's PATH though absent when it was checked: every part of each that exists is root's alone, with no link another user controls, so only root could ever make it` | Nothing to do: a note in locked-system-path.json, not an error. The folder stays on the verifier's PATH because only root could make it. |
 | `benchflow.rollout._setup` | `pytest plugin guard not confirmed: it may have failed to load, stopped or refused a plugin; code run by test.sh can also print the diagnostic or change the markers. See verifier/test-stdout.txt and verifier/_runtime_guard_*…` (0.10) | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
 | `benchflow.rollout._setup` | `pytest plugin guard not confirmed: …; test.sh's reward is not used. See verifier/test-stdout.txt` (0.10) | Check `verifier/test-stdout.txt` and `verifier/_runtime_guard_*`; run pytest in `test.sh` without `python -I` or a replaced `PYTHONPATH`, and let it run to the end. |
 | `benchflow.rollout._setup` | `test.sh ran without the image's …: the root verifier clears these names, so a test that runs the image's own tools with them fails; set the value the test needs in test.sh or [verifier.env]` | Set each listed variable the tests need in `test.sh` or the task's `[verifier.env]`, since the root verifier clears the image's values. |
-| `benchflow.rollout._setup` | `the links into /logs/verifier could not all be looked for: …` (unreleased) | The reward's provenance is unverifiable for this trial. Deliver bfx to the sandbox (a release build, or `make bfx` in a checkout), or keep `readlink` in the image, so every link can be read. |
-| `benchflow.rollout._setup` | `the links into /logs/verifier could not be looked for: …` (unreleased) | The reward's provenance is unverifiable for this trial. Deliver bfx to the sandbox (a release build, or `make bfx` in a checkout), or keep `readlink` in the image, so the links can be walked. |
-| `benchflow.rollout._setup` | `the reward's provenance could not be decided` (unreleased) | A fault in BenchFlow's provenance code counts as a check that did not run: an agent user's attempt scores 0 with the reason, a root agent's reward stands as unverifiable. Report it with the run log's traceback. |
+| `benchflow.rollout._setup` | `the links into /logs/verifier could not all be looked for: …` (0.10) | The reward's provenance check did not complete; the reason after the colon says why. An agent that runs as its own user scores 0 for the trial (`provenance_incomplete`), and an agent that runs as root keeps the reward, marked `unverifiable`. Where the reason is BenchFlow's own (bfx can't run in the sandbox, or there is no record of the links from before the turn), an agent user's trial is unscored instead (`integrity_unavailable`); where bfx can't run at all, every agent but the oracle is refused before its turn. If the oracle shows this, run `bench doctor` and report it with the run's log. |
+| `benchflow.rollout._setup` | `the links into /logs/verifier could not be looked for: …` (0.10) | The reward's provenance check did not complete: the walk itself failed, and the error after the colon says why. An agent that runs as its own user scores 0 for the trial (`provenance_incomplete`), and an agent that runs as root keeps the reward, marked `unverifiable`. Where bfx can't run at all, every agent but the oracle is refused before its turn (`integrity_unavailable`). If the oracle shows this, run `bench doctor` and report it with the run's log. |
+| `benchflow.rollout._setup` | `the reward's provenance could not be decided` (0.10) | A fault in BenchFlow's provenance code counts as a check that did not run: an agent user's attempt scores 0 with the reason, a root agent's reward stands as unverifiable. Report it with the run log's traceback. |
 | `benchflow.rollout._setup` | `the verifier receipt response is incomplete or invalid` | Leave `/run/runtime` alone in `test.sh` (BenchFlow records the test's exit status there), and raise `verifier.timeout_sec` if the tests run near their limit. |
 | `benchflow.rollout._setup` | `verifier PATH refusal: a refusal marker names …, which only folders the verifier's PATH leaves out have: …` | Install that program into a root-owned `PATH` folder of the image, such as `/usr/local/bin`, or list it in `[verifier] optional_tools` if grading works without it. |
-| `benchflow.rollout._setup` | `verifier crashed: VerifierOutputsHeldError: … (… did not finish in the verifier's …s)` (unreleased) | Nothing to change in the task: a process the agent left running kept writing in /logs/verifier, so the trial counts as a verifier failure and is not retried. `--integrity strict` stops the agent's processes before grading. |
+| `benchflow.rollout._setup` | `verifier crashed: VerifierOutputsHeldError: … (… did not finish in the verifier's …s)` (0.10) | Nothing to change in the task: a process the agent left running kept writing in /logs/verifier, so the trial counts as a verifier failure and is not retried. `--integrity strict` stops the agent's processes before grading. |
 | `benchflow.rollout._setup` | `verifier crashed: …` | Read the cause after the colon: rerun a sandbox or connection failure with `bench eval resume <job dir>`; otherwise fix the task's verifier setup it names. |
 | `benchflow.rollout._setup` | `verifier evidence publication failed after 2 attempts` | Check that the sandbox answers commands promptly (`bench doctor`), then run the task again in a new job (`bench run --fresh`); a resume keeps this unscored trial. |
 | `benchflow.rollout._setup` | `verifier evidence publication failed after 2 attempts: …` | Fix the sandbox error after the colon (`bench doctor` checks the backend), then run the task again in a new job (`bench run --fresh`); a resume keeps this unscored trial. |
@@ -1142,7 +1179,7 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._setup` | `verifier start receipt is missing after two attempts: the command may not have started, or test.sh's user may have removed the receipt` | Keep `test.sh` from deleting or replacing files in `/run/runtime`; if it doesn't, the sandbox never started the command, so check it with `bench doctor` and run the task again. |
 | `benchflow.rollout._setup` | `verifier start receipt is missing: the command may not have started, or test.sh's user may have removed the receipt` | Keep `test.sh` from deleting or replacing files in `/run/runtime`; if it doesn't, the sandbox never started the command, so check it with `bench doctor` and run the task again. |
 | `benchflow.rollout._setup` | `verifier timed out after …s` | Install test dependencies in the image instead of in `test.sh`, or raise the task's `verifier.timeout_sec` if the tests are just slow. |
-| `benchflow.rollout._setup` | `verifier-inputs record not written` (unreleased) | Ignore it for the score: the detector's record (integrity/verifier-inputs.json) could not be written to the trial folder, and grading is unaffected; check the folder's disk space and permissions. |
+| `benchflow.rollout._setup` | `verifier-inputs record not written` (0.10) | Ignore it for the score: the detector's record (integrity/verifier-inputs.json) could not be written to the trial folder, and grading is unaffected; check the folder's disk space and permissions. |
 | `benchflow.rollout._verifier_recovery` | `Invalid verifier recovery reference` | Don't edit the trial's `verification.json` by hand; restore the trial folder from your copy, or run the task again in a new job. |
 | `benchflow.rollout._verifier_recovery` | `Missing original solver identity before verifier recovery` | Don't edit the trial's `solver.json` by hand; restore the trial folder from your copy, or run the task again in a new job. |
 | `benchflow.rollout._verifier_recovery` | `Task digest mismatch before verifier recovery` | Point `--tasks-root` at the exact task version the trial ran (its `task_digest` in `solver.json`); `bench tasks digest <task>` prints a folder's digest to compare. |
@@ -1154,11 +1191,12 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.rollout._verifier_recovery` | `task inputs changed while staging verifier recovery` | Leave the task folder unchanged while trials are re-verified, then retry with `bench eval score <trial folder> --tasks-root <tasks>`, using the task version the trial ran. |
 | `benchflow.rollout._verifier_recovery` | `verifier output capture failed: …` | On a disk or connection error, fix it and retry with `bench eval score <trial folder> --tasks-root <tasks>`; otherwise make `test.sh` leave only regular files in `/logs/verifier`. |
 | `benchflow.task.verifier_core` | `(listed in verifier/…)` | Read the named file in the trial's `verifier/` folder for the refused plugin, then apply the fix the surrounding plugin guard message gives. |
-| `benchflow.task.verifier_core` | `BF verifier-launch refused:` (unreleased) | Run with BenchFlow's bfx delivered (a release wheel ships it), or give the image util-linux setpriv; the trial's verifier/test-stdout.txt names what the launch found. |
+| `benchflow.task.verifier_core` | `BF verifier-launch refused:` | Run with BenchFlow's bfx delivered (a release wheel ships it), or give the image util-linux setpriv; the trial's verifier/test-stdout.txt names what the launch found. |
 | `benchflow.task.verifier_core` | `Cannot create … for the verifier start receipt; startup of this verifier cannot be confirmed` | Let root create `/run/runtime` in the image (no read-only `/run`, no file at that path); grading goes on, but the verifier's start can't be confirmed. |
 | `benchflow.task.verifier_core` | `Cannot read verifier/reward.txt or verifier/reward.json: … (invalid contents or unsafe file)` | Write `reward.txt` or `reward.json` from `test.sh` as a regular, readable UTF-8 file, not a link or FIFO, and without deeply nested JSON. |
 | `benchflow.task.verifier_core` | `Could not hand the mounted verifier outputs to the host user: …` | Make `test.sh` leave its reward files readable by others (for example `chmod 644 /logs/verifier/reward.txt`); BenchFlow couldn't hand root-only files on the mount to the host user. |
 | `benchflow.task.verifier_core` | `Could not recover verifier output …: …` | Expect that file to be missing from the trial's `verifier/` folder; the reward was recovered. If it repeats, check the sandbox connection with `bench doctor`. |
+| `benchflow.task.verifier_core` | `Could not remove the verifier env's folder …: …` (0.10) | Nothing to do for the score: the folder is root-only and goes with the sandbox at stop. If it repeats, check the sandbox connection with `bench doctor`. |
 | `benchflow.task.verifier_core` | `Criteria runner exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` | Ignore it: the reward the criteria runner wrote is scored; exit 0 from the runner if its nonzero exit is not meant as an error. |
 | `benchflow.task.verifier_core` | `Criteria-runner verifier directory download failed; recovered canonical verifier output files individually: …` | Ignore it if the trial scored: the reward files were recovered one by one. If it repeats, check the sandbox connection with `bench doctor`. |
 | `benchflow.task.verifier_core` | `Failed to add verifier directory to sandbox.` | Check the cause chained to the error: make the task's `tests/` or `verifier/` folder readable here and the sandbox reachable (`bench doctor`), then run the task again. |
@@ -1178,42 +1216,41 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.task.verifier_core` | `Unsafe verifier output capture: …` | Make `test.sh` (or the criteria runner) leave only regular files and folders in `/logs/verifier`; links and special files there make the capture unsafe. |
 | `benchflow.task.verifier_core` | `Verifier directory download failed; recovered canonical verifier output files individually: …` | Ignore it if the trial scored: the reward files were recovered one by one. If it repeats, check the sandbox connection with `bench doctor`. |
 | `benchflow.task.verifier_core` | `Verifier exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` | Ignore it: a test script that exits nonzero after writing its reward, such as pytest with failing tests, is scored normally. |
+| `benchflow.task.verifier_core` | `Verifier hardening failed: taking group and other write from the workspace before test.sh (…)` (0.10) | The step before test.sh couldn't take group and other write from the workspace the sandbox user's grant made root's and 1777 (the reason is in parentheses). Check that the workspace is a folder root can chmod (not a read-only mount); the trial is not scored. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: kept services cannot run beside a verifier in service …; run it in main` | Set the task's `verifier.service` to `main`: services the task keeps run in the agent's container, so the verifier must run there too. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: the verifier runs as uid … while agent code is alive, and … can pass its environment only on a command line the agent can read. Run the verifier as root ([verifier] user), or use a sandbox whose exec passes the environment on stdin (Docker, Apple container).` | Set the task's `[verifier] user` to `root`, or use `--sandbox docker`, `remote-docker`, `modal` or `apple-container`, whose exec passes the environment privately. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: the verifier user's uid could not be read (rc=…)` | Make the task's `[verifier] user` an account that exists in the image, or set it to `root`, then run the task again. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: … did not run` | Check the sandbox connection with `bench doctor`, then run `bench eval resume <job dir>`; BenchFlow tried the named setup step three times and the sandbox never ran it. |
 | `benchflow.task.verifier_core` | `Verifier setup failed: … exited with rc=…` | Check that root can write the folders the named step touches in the image (the tests folder, `/logs/verifier`), then run the trial again with `bench eval resume <job dir>`. |
-| `benchflow.task.verifier_core` | `Verifier setup failed: …: the verifier runs as uid …, and the file is …, made by BenchFlow on the host before the test command. Run the verifier as root ([verifier] user = "root") until BenchFlow leaves that file to the test command` (unreleased) | Set the task's `[verifier] user` to `root` (or leave it unset on an image whose `USER` is root): test.sh never ran, so the trial is unscored, not a failure; `bench explain verifier_output_unwritable` says more. |
-| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (not read back: …)` (unreleased) | Nothing to change in the task: a process the agent left running kept writing in /logs/verifier, so the trial counts as a verifier failure and is not retried. `--integrity strict` stops the agent's processes before grading. |
-| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (the close did not finish in … s)` (unreleased) | The trial is not scored. Run the agent as the default agent user, or use `--integrity strict`, which stops the agent's processes before grading. |
-| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (…)` (unreleased) | The trial is not scored. Run the agent as the default agent user, or use `--integrity strict`, which stops the agent's processes before grading. |
+| `benchflow.task.verifier_core` | `Verifier setup failed: …: the verifier runs as uid …, and the file is …, made by BenchFlow on the host before the test command. Run the verifier as root ([verifier] user = "root") until BenchFlow leaves that file to the test command` | Set the task's `[verifier] user` to `root` (or leave it unset on an image whose `USER` is root): test.sh never ran, so the trial is unscored, not a failure; `bench explain verifier_output_unwritable` says more. |
+| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (not read back: …)` (0.10) | Nothing to change in the task: a process the agent left running kept writing in /logs/verifier, so the trial counts as a verifier failure and is not retried. `--integrity strict` stops the agent's processes before grading. |
+| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (the close did not finish in … s)` (0.10) | The trial is not scored. Run the agent as the default agent user, or use `--integrity strict`, which stops the agent's processes before grading. |
+| `benchflow.task.verifier_core` | `agent processes kept writing in /logs/verifier while it was being closed (…)` (0.10) | The trial is not scored. Run the agent as the default agent user, or use `--integrity strict`, which stops the agent's processes before grading. |
 | `benchflow.task.verifier_core` | `clearing verifier output directory` | In a `Verifier setup failed` error, check that root can empty and recreate `/logs/verifier` in the sandbox, then run `bench eval resume <job dir>`. |
-| `benchflow.task.verifier_core` | `could not write verifier/verifier-network.json: …` (unreleased) | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this record (the network verdict and test.sh's launch line) is missing, the trial's outcome is unchanged. |
+| `benchflow.task.verifier_core` | `could not write verifier/verifier-network.json: …` (0.10) | Check that the disk holding the job folder has space and the trial's `verifier/` folder is writable; only this record (the network verdict and test.sh's launch line) is missing, the trial's outcome is unchanged. |
 | `benchflow.task.verifier_core` | `criteria-runner exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` (0.10) | Fix the criteria runner so it writes `$BENCHFLOW_REWARD_JSON` (or `$BENCHFLOW_REWARD_TEXT`) before exiting; its output and traceback are in the trial's `verifier/test-stdout.txt`. |
 | `benchflow.task.verifier_core` | `criteria-runner strategy with declared criteria must write reward.json metrics` | Have the criteria runner write per-criterion `metrics` to `$BENCHFLOW_REWARD_JSON`, since the strategy declares `criteria`; a `reward.txt` alone is refused. |
 | `benchflow.task.verifier_core` | `legacy verifier-mount symlink (… -> …) returned nonzero; verifier scripts hardcoding … may fail` | Make the test scripts find their files through `$TEST_DIR` instead of a hardcoded `/tests`; BenchFlow could not link `/tests` to the verifier folder in this image. |
 | `benchflow.task.verifier_core` | `legacy verifier-mount symlink skipped: …` | Make the test scripts find their files through `$TEST_DIR` instead of a hardcoded `/tests`; BenchFlow could not link `/tests` to the verifier folder in this image. |
 | `benchflow.task.verifier_core` | `llm-judge rubric not found at …. Set verifier.strategies.<name>.rubric in verifier.md or [verifier.judge].rubric_path in task.toml.` | Put the rubric file at that path, or point `verifier.strategies.<name>.rubric` in `verifier.md` (or `[verifier.judge] rubric_path` in `task.toml`) at it. |
 | `benchflow.task.verifier_core` | `llm-judge verifier: … criteria → reward …` | Ignore it: this log line reports the judge's score; the per-criterion verdicts are in the trial's `verifier/reward-details.json`. |
-| `benchflow.task.verifier_core` | ``no pytest of this run reached the pytest plugin guard …, though test.sh starts pytest where it reaches (`…`): the reward test.sh wrote does not stand`` (unreleased) | In `--integrity strict` a pass needs the plugin guard's record of the pytest test.sh starts. If that pytest runs under a Python or environment the guard cannot reach, make test.sh run it there or run the task in audit; if the agent's files kept pytest from starting, the 0 stands. |
+| `benchflow.task.verifier_core` | ``no pytest of this run reached the pytest plugin guard …, though test.sh starts pytest where it reaches (`…`): the reward test.sh wrote does not stand`` (0.10) | In `--integrity strict` a pass needs the plugin guard's record of the pytest test.sh starts. If that pytest runs under a Python or environment the guard cannot reach, make test.sh run it there or run the task in audit; if the agent's files kept pytest from starting, the 0 stands. |
 | `benchflow.task.verifier_core` | `ors-episode strategy … produced invalid ORS reward evidence: …` | Make the episode files the strategy's `inputs` name report a finite reward from 0 to 1 with no `metadata.error`; the text after the colon names the problem. |
 | `benchflow.task.verifier_core` | ``pytest could not load the plugin guard …: the verifier ran pytest in a Python that cannot import or register it (for example `python -I` or a replaced PYTHONPATH)…; its reward is not scored`` | Run pytest in `test.sh` without `python -I` and without replacing `PYTHONPATH` (append to it instead), so the plugin guard loads. |
 | `benchflow.task.verifier_core` | `pytest stopped while the plugin guard … was still checking pytest plugins, so it never decided whether to trust them; listed in verifier/…; this run is not scored` | If the oracle hits this, keep `test.sh` from killing or timing out pytest before the plugin check ends; in an agent's run, it counts as a failure. |
 | `benchflow.task.verifier_core` | `target verifier dir` | In a `Verifier setup failed` error, check that root can create `/logs/verifier` in the service `verifier.service` names, then run `bench eval resume <job dir>`. |
-| `benchflow.task.verifier_core` | `test.sh exited … and left no usable reward (…) after the verifier's network (… under …: verifier.network_mode, else the sandbox's policy) refused it …, so the run is not scored. If its tests need those hosts, set verifier.network_mode in the task (see verifier/verifier-network.json)` (unreleased) | If the tests need those hosts, add them to `verifier.allowed_hosts` with `verifier.network_mode = "allowlist"`; verifier/verifier-network.json lists what was refused. |
-| `benchflow.task.verifier_core` | `test.sh exited … with reward … after the verifier's network (… under …: verifier.network_mode, else the sandbox's policy) refused it …, so the run is not scored. If its tests need those hosts, set verifier.network_mode in the task (see verifier/verifier-network.json)` (unreleased) | If the tests need those hosts, add them to `verifier.allowed_hosts` with `verifier.network_mode = "allowlist"`; verifier/verifier-network.json lists what was refused. |
 | `benchflow.task.verifier_core` | `the pytest plugin guard … crashed inside pytest (…); traceback in verifier/…; its reward is not scored` | Read the traceback in the named `verifier/` file; fix the plugin or test setup it points to, or report a crash inside the guard at `https://github.com/benchflow-ai/benchflow/issues`. |
 | `benchflow.task.verifier_core` | `the pytest plugin guard … refused a pytest plugin it could not trust, a release of a plugin BenchFlow vouches for that its table of published releases lacks, so pytest stopped and this run is not scored (…); … was installed by the verifier after the agent stopped, and this machine could not read that release from PyPI before the verifier ran, or PyPI published it since` | Check that this machine reaches pypi.org, then run the task again; to avoid it, install the plugin into the image instead of from `test.sh`. |
-| `benchflow.task.verifier_core` | `the pytest plugin guard … refused a pytest plugin it could not trust, so pytest stopped and this run is not scored (…); listed in verifier/…; …` (unreleased) | If `test.sh` installs the plugin the listed `verifier/` file names, install it into the image instead (`bench check <task>` flags it); if the agent left it, the failure stands. |
+| `benchflow.task.verifier_core` | `the pytest plugin guard … refused a pytest plugin it could not trust, so pytest stopped and this run is not scored (…); listed in verifier/…; …` (0.10) | If `test.sh` installs the plugin the listed `verifier/` file names, install it into the image instead (`bench check <task>` flags it); if the agent left it, the failure stands. |
 | `benchflow.task.verifier_core` | ``the pytest plugin guard … refused a pytest plugin it could not trust, which the verifier installed after the agent stopped from inputs the agent could have changed, so pytest stopped and this run is not scored (…); …. A task problem: BenchFlow trusts such an install only as a release it can check byte for byte. Pin it in [verifier] pytest_plugin_releases (for example `pytest_plugin_releases = ["…"]`) or install it into the image`` | Pin the plugin's release in `[verifier] pytest_plugin_releases` (as `<name>==<version>`), or install it into the task's image instead of from `test.sh`. |
 | `benchflow.task.verifier_core` | `the pytest plugin guard … refused a pytest plugin it could not trust, with no complete record of the agent's files (…) to tell whether the verifier installed it after the agent stopped or the agent left it, so pytest stopped and this run is not scored (…); files listed in verifier/…. When test.sh installs pytest plugins, pin their releases in [verifier] pytest_plugin_releases or install them into the image (published pytest-json-ctrf releases load wherever installed)` | If `test.sh` installs pytest plugins, pin their releases in `[verifier] pytest_plugin_releases` or install them into the image; the listed `verifier/` file names the refused files. |
 | `benchflow.task.verifier_core` | `the verifier environment BenchFlow computes` | Ignore it: it is the reason BenchFlow records for uploading the verifier's environment file as trusted, not an error. |
-| `benchflow.task.verifier_core` | `the verifier outputs folder was made writable by every user after test.sh: the host could not add its records to it otherwise` (unreleased) | Expected on a mount the host user cannot write as root or as its own uid (rootless Docker with an unusual mapping): the agent's processes could then write the outputs while test.sh runs, and only the copy taken at test.sh's exit holds. Run the agent as a user whose uid is not the host user's, or use --integrity strict. |
-| `benchflow.task.verifier_core` | `the verifier runs as uid …, which cannot stop the agent's processes` (unreleased) | Leave `[verifier] user` unset (or set it to root) so BenchFlow can hold the agent's processes still while test.sh's outputs are copied. |
-| `benchflow.task.verifier_core` | `the verifier user's uid could not be read` (unreleased) | Check that the `[verifier] user` exists in the image; the reward's provenance is unverifiable for this trial. |
-| `benchflow.task.verifier_core` | `the verifier's uid could not be read (…)` (unreleased) | Check that `[verifier] user` names an account the image has; BenchFlow reads its uid with `id -u` before test.sh. |
+| `benchflow.task.verifier_core` | `the verifier outputs folder could not be given back to the host user after test.sh, and BenchFlow will not open it to every user while the agent's processes may run; its records for this trial can't be written` (0.10) | Expected only on a mount whose owner the container's root can set but the host user then can't write (an unusual user-namespace mapping). Run BenchFlow as root or under rootless Docker, or use a sandbox that doesn't bind-mount the trial folders (`--sandbox remote-docker`). |
+| `benchflow.task.verifier_core` | `the verifier runs as uid …, which cannot stop the agent's processes` (0.10) | Leave `[verifier] user` unset (or set it to root) so BenchFlow can hold the agent's processes still while test.sh's outputs are copied. |
+| `benchflow.task.verifier_core` | `the verifier user's uid could not be read` (0.10) | Check that the `[verifier] user` exists in the image. Until it does, an agent that runs as its own user scores 0 (`provenance_incomplete`), and a root agent's reward stands, marked `unverifiable`. |
+| `benchflow.task.verifier_core` | `the verifier's uid could not be read (…)` (0.10) | Check that `[verifier] user` names an account the image has; BenchFlow reads its uid with `id -u` before test.sh. |
 | `benchflow.task.verifier_core` | `verifier exited with rc=…; no reward file found at verifier/reward.txt or verifier/reward.json` (0.10) | Read `verifier/test-stdout.txt` for why `test.sh` failed, fix it, and make it write `/logs/verifier/reward.txt` (0 when tests fail) before exiting. |
-| `benchflow.task.verifier_core` | `verifier launch record dir failed: …` (unreleased) | Nothing to do: the launch's own check still refuses a held capability; the trial says so if the launch refused. |
+| `benchflow.task.verifier_core` | `verifier launch record dir failed: …` | Nothing to do: the launch's own check still refuses a held capability; the trial says so if the launch refused. |
 | `benchflow.task.verifier_core` | `verifier start receipt dir failed: …` | Check the sandbox connection with `bench doctor` if it repeats; without `/run/runtime` the verifier's start can't be confirmed, but grading goes on. |
 | `benchflow.task.verifier_core` | `verifier strategy … has type …, which is parsed but not executable yet` | Set `default_strategy` in `verifier.md` to a `script`, `criteria-runner`, `llm-judge`, `agent-judge`, `ors-episode` or `taskmd` strategy. |
 | `benchflow.task.verifier_core` | `verifier/reward.json is empty` | Make `test.sh` write a JSON object with a numeric `reward` to `reward.json`, and check the disk holding the job folder isn't full. |
@@ -1222,7 +1259,7 @@ Messages about the verifier and the reward, as a trial's `error`, its `warnings`
 | `benchflow.task.verifier_core` | `writing the verifier env` | In a `Verifier setup failed` error, keep `/`, `/var` and `/var/lib` root-owned real folders not writable by group or others, so root can create `/var/lib/benchflow/verifier-env`. |
 | `benchflow.task.verifier_core` | `… is empty: … (… free), so … could not write its reward` | Free space on the disk that holds the job folder, or pass another `--jobs-dir`, then run the task again with `bench run --fresh`; this trial's 0 is not the agent's. |
 | `benchflow.task.verifier_core` | ``… was installed after the agent stopped, by the verifier…, where the agent could write; the pytest plugin guard … refused it, so this run is not scored, and neither is any run of this task, the reference solution's included. This is a task problem: `…` flags it. Install the plugin into the image, or pin its release in [verifier] pytest_plugin_releases (for example `["…"]`), which BenchFlow installs into its protected verifier runtime before the agent's turn. Refused: … (listed in verifier/…)`` | Install the plugin into the task's image, or pin its release in `[verifier] pytest_plugin_releases` so BenchFlow installs it into its protected runtime; `bench check <task>` confirms. |
-| `benchflow.task.verifier_core` | `…, so the reward test.sh wrote does not stand` (unreleased) | In `--integrity strict` a pass needs the plugin guard's end-of-session record from every pytest it loaded in (`verifier/*.finished`), agreeing with pytest's own exit status. If test.sh kills or times out its own pytest, or changes pytest's exit status, fix test.sh or run the task in audit; if the agent's code ended pytest early, the 0 stands. |
+| `benchflow.task.verifier_core` | `…, so the reward test.sh wrote does not stand` (0.10) | In `--integrity strict` a pass needs the plugin guard's end-of-session record from every pytest it loaded in (`verifier/*.finished`), agreeing with pytest's own exit status. If test.sh kills or times out its own pytest, or changes pytest's exit status, fix test.sh or run the task in audit; if the agent's code ended pytest early, the 0 stands. |
 
 ## Warnings a run logs
 
@@ -1236,8 +1273,10 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow._paths` | `…: skipping non-regular path … (symlink or special file)` |
 | `benchflow._paths` | `…: skipping symlink … (refusing to follow)` |
 | `benchflow._paths` | `…: skipping symlinked directory … (refusing to follow)` |
+| `benchflow._utils.attempt_salvage` | `Could not read the logs of …: …` (0.10) |
 | `benchflow._utils.benchmark_repos` | `No source provenance recorded for …: …` |
 | `benchflow._utils.result_paths` | `Malformed rewards field in … for task …: expected dict or null, got … … — treating as no reward (task will count as errored)` |
+| `benchflow._utils.staged_secrets` | `The masking record was not written: …` (0.10) |
 | `benchflow._warm_pool` | `Warm pool could not prepare a trial` |
 | `benchflow.acp.client` | `ACP protocol version negotiated to … (client implements …)` |
 | `benchflow.acp.client` | `ACPClient received unsupported request … — replying method-not-found` |
@@ -1255,6 +1294,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.acp.session` | `Unknown tool call status: …` |
 | `benchflow.acp.timeout_cleanup` | `ACP prompt task did not finish within …s after cancellation` |
 | `benchflow.acp.timeout_cleanup` | `Failed to request ACP prompt cancellation` |
+| `benchflow.acp.timeout_cleanup` | `The model gate did not close before the stop` (0.10) |
 | `benchflow.acp.transport` | `Skipped oversized line: …` |
 | `benchflow.acp.watchdog` | `Ignoring …=…: expected whole seconds >= 1; using …x the idle timeout` |
 | `benchflow.adapters._toolathlon` | `Toolathlon task …: no MCP config for …; dropping server` |
@@ -1265,25 +1305,26 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.branch_run` | `Branch trial for …: …` |
 | `benchflow.branch_run` | `Job-level results.jsonl aggregation failed: …` |
 | `benchflow.branch_run` | `on_event callback failed for …` |
-| `benchflow.budget` | `…; stopping: no new rollouts, … running trial(s) cancelled` |
-| `benchflow.budget` | `…; stopping: no new rollouts, … running trial(s) finish` |
+| `benchflow.budget` | `…; no new trials start, and the … running trial(s) are cancelled` (0.10) |
+| `benchflow.budget` | `…; no new trials start, and the … running trial(s) finish` (0.10) |
 | `benchflow.checkpoint_retry` | `Checkpoint … recorded no agent session; the retry starts a fresh one` |
 | `benchflow.checkpoint_retry` | `Retry from checkpoint … failed: …` |
 | `benchflow.checkpoint_retry` | `Retry from … made no tool calls (reward …): it probably did no work. A fresh session knows only the retry prompt; include @instruction (and @verifier_feedback) in --retry-prompt, or use --retry-resume-session.` |
 | `benchflow.checkpoints` | `Checkpoint after prompt … failed (…: …); the run continues` |
 | `benchflow.checkpoints` | `Checkpoints requested, but … cannot snapshot; the run continues without them` |
+| `benchflow.checkpoints` | `Could not record snapshot leftovers in …: …` (0.10) |
 | `benchflow.continue_run.orchestrator` | `Continuation teardown step failed: …` |
-| `benchflow.continue_run.orchestrator` | `Continuation … not stopped before the verifier: …` (unreleased) |
+| `benchflow.continue_run.orchestrator` | `Continuation … not stopped before the verifier: …` (0.10) |
 | `benchflow.continue_run.replay_proxy` | `replay divergence at turn …: agent sent … messages, recorded turn had …` |
 | `benchflow.continue_run.run_folder` | `run … has error_category=…, not a timeout/idle_timeout — continuing it may not be meaningful.` |
 | `benchflow.continue_run.run_folder` | `skipping malformed llm_trajectory line …: …` |
-| `benchflow.cost_backfill` | `Could not backfill …: …` (unreleased) |
-| `benchflow.cost_backfill` | `Could not read the logs of …: …` (unreleased) |
+| `benchflow.cost_backfill` | `Could not backfill …: …` (0.10) |
+| `benchflow.cost_backfill` | `Could not read the logs of …: …` (0.10) |
 | `benchflow.eval_regrade` | `Regrade sandbox cleanup failed` |
 | `benchflow.evaluation` | `--verifier-sandbox separate moved … task(s) that declare no artifacts: …. Their verifier gets only the workspace and /logs/artifacts, so an answer kept elsewhere (a service, a database, a file outside the workspace) scores 0 like an agent failure; check each task's oracle under the switch before comparing these zeros with task-mode runs.` |
 | `benchflow.evaluation` | `Checkpoint retry of … failed` |
 | `benchflow.evaluation` | `Could not persist LearnerStore: …` |
-| `benchflow.evaluation` | `Could not record that attempt … of … is …: …` (unreleased) |
+| `benchflow.evaluation` | `Could not record that attempt … of … is …: …` (0.10) |
 | `benchflow.evaluation` | `Could not write the run card: …` (0.10) |
 | `benchflow.evaluation` | `Docker leftover sweep failed: …` |
 | `benchflow.evaluation` | `Ignoring malformed … at the tasks-dir root …: …` |
@@ -1309,17 +1350,19 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.evaluation` | `The config names agent_env … without values; pass them in agent_env (or the environment) if the agent needs them.` |
 | `benchflow.evaluation` | `The job ran pre_agent_hooks …, which … cannot store; pass pre_agent_hooks=[...] to Evaluation.resume() to run them again (without them the run is refused as one with other settings).` (0.10) |
 | `benchflow.evaluation` | `The run differs from its reference setup: …` (0.10) |
-| `benchflow.evaluation` | `The tasks-root rule skips … of the … tasks listed in ……: …` (unreleased) |
+| `benchflow.evaluation` | `The run's config override sets the sandbox's network, so for … it replaces the task's …: the operator's network holds in every phase` (0.10) |
+| `benchflow.evaluation` | `The tasks-root rule skips … of the … tasks listed in ……: …` (0.10) |
 | `benchflow.evaluation` | `This job's BenchFlow 0.7 summary said mean_reward=…, the mean over scored trials only. BenchFlow 0.8's mean_reward counts every trial, an unscored one as 0: …; its mean_reward_scored_only is 0.7's figure: ….` |
 | `benchflow.evaluation` | `Unknown agent … — not in registry. Available: …. Will attempt to use as raw command.` |
-| `benchflow.evaluation` | `summary.json has no spend_all_attempts: …` (unreleased) |
+| `benchflow.evaluation` | `summary.json has no spend_all_attempts: …` |
 | `benchflow.evaluation` | ``… task(s) lost the review or the verifier's sandbox to an infrastructure failure: the trial's result.json names it, and `bench eval score <trial> --tasks-root <tasks> --force` scores it again`` (0.10) |
-| `benchflow.evaluation` | `… task(s) were not scored: their verifier runs as a user other than root that cannot write its output file, which BenchFlow made on the host before the test command. Run the verifier as root ([verifier] user = "root")` (unreleased) |
+| `benchflow.evaluation` | `… task(s) were not scored: their verifier runs as a user other than root that cannot write its output file, which BenchFlow made on the host before the test command. Run the verifier as root ([verifier] user = "root")` |
 | `benchflow.evaluation` | `… tasks (…%) failed during verifier dependency install — check verifier_error_category in result.json and fix the task's index policy` |
 | `benchflow.evaluation` | `… tasks (…%) had verifier errors — check verifier scripts for bugs` |
-| `benchflow.evaluation` | `… tasks (…%) … (…) — each keeps that ending and is not retried; post_turn_failure_info in result.json names the step` (unreleased) |
-| `benchflow.evaluation` | `… tasks had a reward outside 0-1 (or the task's reward_range), recorded as test.sh wrote it: summary.json rewards_outside_range and each result.json's reward_out_of_range_info have the note` (unreleased) |
-| `benchflow.evaluation` | `…: refused before the turn, unscored: …` (unreleased) |
+| `benchflow.evaluation` | `… tasks (…%) … (…) — each keeps that ending and is not retried; post_turn_failure_info in result.json names the step` (0.10) |
+| `benchflow.evaluation` | `… tasks had a reward outside 0-1 (or the task's reward_range), recorded as test.sh wrote it: summary.json rewards_outside_range and each result.json's reward_out_of_range_info have the note` |
+| `benchflow.evaluation` | `…: refused before the turn, unscored: …` (0.10) |
+| `benchflow.evaluation` | `…: … attempt(s) ended with no result or receipt (their run stopped mid-turn: a host reset or a killed process): … counted from the logs they left, a floor; … with no record of what they spent` (0.10) |
 | `benchflow.evaluation` | `…job_name …: … is …; this run starts a new job instead` |
 | `benchflow.evaluation` | `…n_concurrent_trials: … at the top level wins over orchestrator.n_concurrent_trials: …` |
 | `benchflow.experimental.mcp.hooks` | `MCP reviewer server may not be ready on port …` |
@@ -1351,11 +1394,11 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.providers.litellm_runtime` | `Installing the proxy in the trial: …` |
 | `benchflow.providers.litellm_runtime` | `LiteLLM gateway refused … request(s) for model(s) this run does not serve: …` |
 | `benchflow.providers.litellm_runtime` | `Live token counter has stalled: the model-gateway log tail has not advanced past byte … in … polls (… bytes behind). The live token/cost figures now UNDERCOUNT this run; the final totals, imported from the full log, are unaffected.` |
-| `benchflow.providers.litellm_runtime` | `The in-sandbox model proxy's usage log may miss calls: …` (unreleased) |
-| `benchflow.providers.litellm_runtime` | `The model proxy's usage log may miss calls: …` (unreleased) |
+| `benchflow.providers.litellm_runtime` | `The in-sandbox model proxy's usage log may miss calls: …` (0.10) |
+| `benchflow.providers.litellm_runtime` | `The model proxy's usage log may miss calls: …` |
 | `benchflow.report` | `Could not write …: …` (0.10) |
 | `benchflow.review.evidence` | `Could not remove temporary evidence archive …` |
-| `benchflow.review.probe` | `Could not record the reviewer image's tools` (unreleased) |
+| `benchflow.review.probe` | `Could not record the reviewer image's tools` (0.10) |
 | `benchflow.review.resume` | `Could not resume scoring for …: …; its saved result is kept` |
 | `benchflow.rewards.builtins` | `Judge aggregate reward is invalid (…); returning 0.0` |
 | `benchflow.rewards.builtins` | `Judge error on criterion …: …` |
@@ -1377,37 +1420,43 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout.__init__` | `Cloud metadata: the agent runs as root on a sandbox provider; the provider's own metadata policy applies (no BenchFlow block)` |
 | `benchflow.rollout.__init__` | `Could not clean up an unused warm-pool sandbox` |
 | `benchflow.rollout.__init__` | `Could not keep the sandbox (deleting it): …` (0.10) |
-| `benchflow.rollout.__init__` | `Could not record the stopped trial's spend` (unreleased) |
+| `benchflow.rollout.__init__` | `Could not record the stopped trial's spend` |
 | `benchflow.rollout.__init__` | `Could not write agent/runtime.json: …` (0.10) |
 | `benchflow.rollout.__init__` | `Credential cleanup at disconnect failed: …` |
 | `benchflow.rollout.__init__` | `Egress denylist proxy stop failed: …` |
 | `benchflow.rollout.__init__` | `Installing … in the trial: …` |
 | `benchflow.rollout.__init__` | `Kept the sandbox for inspection: … (delete it with …)` (0.10) |
 | `benchflow.rollout.__init__` | `LLM trajectory write failed: …` |
+| `benchflow.rollout.__init__` | `No model gate holds this agent's calls and it runs as root: its harness's cancel is the stop` (0.10) |
 | `benchflow.rollout.__init__` | `Partial session-factory trajectory capture failed: …` |
 | `benchflow.rollout.__init__` | `Partial trajectory capture failed: …` |
+| `benchflow.rollout.__init__` | `Stopping the agent with … model call(s) its provider had not answered after … s; they are cut` (0.10) |
 | `benchflow.rollout.__init__` | `Teardown step … failed before the agent's sandbox stopped; cleanup runs it again` |
+| `benchflow.rollout.__init__` | `The agent's processes could not be stopped at its deadline: …` (0.10) |
 | `benchflow.rollout.__init__` | `The agent's sandbox did not stop before the verifier; cleanup stops it again: …` |
-| `benchflow.rollout.__init__` | `The agent's session log was not copied: …` (unreleased) |
-| `benchflow.rollout.__init__` | `The in-sandbox model proxy could not be stopped before the verifier; cleanup reads its log: …` (unreleased) |
+| `benchflow.rollout.__init__` | `The agent's session log was not copied: …` (0.10) |
+| `benchflow.rollout.__init__` | `The in-sandbox model proxy could not be stopped before the verifier; cleanup reads its log: …` (0.10) |
+| `benchflow.rollout.__init__` | `The model gate did not close at the agent's stop: …` (0.10) |
 | `benchflow.rollout.__init__` | `Usage telemetry runtime stop failed: …` |
 | `benchflow.rollout.__init__` | `Using scraped trajectory (… events) — UNTRUSTED` |
 | `benchflow.rollout.__init__` | `Verifier scored 0: preparation after an earlier test command failed: …` |
 | `benchflow.rollout.__init__` | `Verifier scored 0: publication after an earlier test command failed: …` |
-| `benchflow.rollout.__init__` | `links left in the trial were not checked` (unreleased) |
+| `benchflow.rollout.__init__` | `could not check the held services before the agent's turn` (0.10) |
+| `benchflow.rollout.__init__` | `links left in the trial were not checked` (0.10) |
 | `benchflow.rollout.__init__` | `oracle_access=True without a User — it has no effect: only a User reads the solution.` |
-| `benchflow.rollout.__init__` | `role transition not recorded: …` (unreleased) |
+| `benchflow.rollout.__init__` | `role transition not recorded: …` (0.10) |
 | `benchflow.rollout.__init__` | `sandbox_user=None — agent runs as root with no path lockdown.` |
+| `benchflow.rollout.__init__` | `…: the run's config override sets the sandbox's network, which replaces the task's … for this run` (0.10) |
 | `benchflow.rollout._artifacts` | `Collecting the artifacts of an unverified rollout timed out after … s` |
 | `benchflow.rollout._artifacts` | `Could not hand the mounted artifacts folder to the host user: …` (0.10) |
-| `benchflow.rollout._artifacts` | `a link left in …/ was not removed: …` (unreleased) |
+| `benchflow.rollout._artifacts` | `a link left in …/ was not removed: …` (0.10) |
 | `benchflow.rollout._collect_hooks` | `Collect hook in service … exited …: …` (0.10) |
 | `benchflow.rollout._collect_hooks` | `Collect hook in service … failed: …` (0.10) |
 | `benchflow.rollout._collect_hooks` | `Sidecar artifact … from … not collected: …` (0.10) |
 | `benchflow.rollout._config` | `--agent oracle was requested, but … pins scene agents (agents.roles / document scenes), which take precedence. Oracle mode will NOT run; the task's scene agent(s) will execute instead.` |
 | `benchflow.rollout._config` | `loop_strategy=single-shot suppresses the user declared by …/task.md` |
 | `benchflow.rollout._config` | `loop_strategy=… overrides the user declared by …/task.md` |
-| `benchflow.rollout._cost` | `The trial's token count is incomplete: …` (unreleased) |
+| `benchflow.rollout._cost` | `The trial's token count is incomplete: …` |
 | `benchflow.rollout._deadline` | `BENCHFLOW_ROLLOUT_HARD_DEADLINE=… is not a number; using computed deadline` |
 | `benchflow.rollout._keep_sandbox` | `Could not keep Daytona sandbox … (deleting it as usual): …` (0.10) |
 | `benchflow.rollout._results` | `ADP artifact write failed: …` |
@@ -1416,9 +1465,9 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout._results` | `Cannot record reported models in …: …` |
 | `benchflow.rollout._results` | `Cannot record the applied effort in …: …` (0.10) |
 | `benchflow.rollout._results` | `Cannot record the harness versions in …: …` (0.10) |
-| `benchflow.rollout._results` | `Could not record the idle timeout of … as an integration failure: …` (unreleased) |
-| `benchflow.rollout._results` | `Could not remove … either: …` (unreleased) |
-| `benchflow.rollout._results` | `Could not rewrite … of … after judging it (…); removing them` (unreleased) |
+| `benchflow.rollout._results` | `Could not record the idle timeout of … as an integration failure: …` (0.10) |
+| `benchflow.rollout._results` | `Could not remove … either: …` (0.10) |
+| `benchflow.rollout._results` | `Could not rewrite … of … after judging it (…); removing them` (0.10) |
 | `benchflow.rollout._results` | `Embodied trainer artifact write failed: …` |
 | `benchflow.rollout._results` | `Trainer artifact write failed: …` |
 | `benchflow.rollout._results` | `results.jsonl write failed: …` |
@@ -1430,16 +1479,16 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout._separate_verifier` | `Could not move the agent's verifier/ aside: …` |
 | `benchflow.rollout._separate_verifier` | `Verifier sandbox cleanup failed` |
 | `benchflow.rollout._separate_verifier` | `Verifier scored 0: verifier output publication failed: …` |
-| `benchflow.rollout._session_log` | `Could not empty agent/…: …` (unreleased) |
-| `benchflow.rollout._session_log` | `The agent's session log could not be redacted (…), so the copy … was not kept; the trial's token count is marked incomplete` (unreleased) |
-| `benchflow.rollout._session_mirror` | `Could not copy the agent's session log while its turn ran: …` (unreleased) |
-| `benchflow.rollout._session_mirror` | `Could not keep the agent's session-log copy: …` (unreleased) |
-| `benchflow.rollout._session_mirror` | `Could not start copying the agent's session log: …` (unreleased) |
-| `benchflow.rollout._session_mirror` | `The agent's session log could not be copied at teardown; the trial keeps the copy made while its turns ran (agent/…)` (unreleased) |
+| `benchflow.rollout._session_log` | `Could not empty agent/…: …` (0.10) |
+| `benchflow.rollout._session_log` | `The agent's session log could not be redacted (…), so the copy … was not kept; the trial's token count is marked incomplete` (0.10) |
+| `benchflow.rollout._session_mirror` | `Could not copy the agent's session log while its turn ran: …` (0.10) |
+| `benchflow.rollout._session_mirror` | `Could not keep the agent's session-log copy: …` (0.10) |
+| `benchflow.rollout._session_mirror` | `Could not start copying the agent's session log: …` (0.10) |
+| `benchflow.rollout._session_mirror` | `The agent's session log could not be copied at teardown; the trial keeps the copy made while its turns ran (agent/…)` (0.10) |
 | `benchflow.rollout._setup` | `Could not publish script.txt as the agent; trajectory retains its output` |
 | `benchflow.rollout._setup` | `Could not write the host copy of …: …` |
 | `benchflow.rollout._setup` | `Ending the kept services after grading failed: …` |
-| `benchflow.rollout._setup` | `Ending the sandbox user's processes after grading failed: …` (unreleased) |
+| `benchflow.rollout._setup` | `Ending the sandbox user's processes after grading failed: …` (0.10) |
 | `benchflow.rollout._setup` | `Keeping the timed-out verifier's output failed: …` (0.10) |
 | `benchflow.rollout._setup` | `Killing the verifier's processes failed: …` (0.10) |
 | `benchflow.rollout._setup` | `Listing git repositories in … for … failed; git may refuse them as 'dubious ownership'` |
@@ -1447,23 +1496,27 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.rollout._setup` | `Publishing for the verifier: … exited …: …` |
 | `benchflow.rollout._setup` | `Publishing for the verifier: … failed: …` |
 | `benchflow.rollout._setup` | `Publishing script.txt failed: …` |
-| `benchflow.rollout._setup` | `The oracle's start could not be read from /proc/uptime: the processes solve.sh leaves will not be stopped when it ends` (unreleased) |
-| `benchflow.rollout._setup` | `The pristine re-judgment of the pytest plugin guard's stop could not run: …: …` (unreleased) |
-| `benchflow.rollout._setup` | `The timed-out verifier's network verdict failed: …` (unreleased) |
-| `benchflow.rollout._setup` | `Trusting the git repositories in … for … failed; test.sh's git may refuse them as of dubious ownership` (unreleased) |
+| `benchflow.rollout._setup` | `The oracle's start could not be read from /proc/uptime: the processes solve.sh leaves will not be stopped when it ends` |
+| `benchflow.rollout._setup` | `The pristine re-judgment of the pytest plugin guard's stop could not run: …: …` (0.10) |
+| `benchflow.rollout._setup` | `The timed-out verifier's network verdict failed: …` (0.10) |
+| `benchflow.rollout._setup` | `Trusting the git repositories in … for … failed; test.sh's git may refuse them as of dubious ownership` (0.10) |
 | `benchflow.rollout._setup` | `Verifier scored 0: …` |
 | `benchflow.rollout._setup` | `Verifier start-receipt probe failed; retrying: …` |
 | `benchflow.rollout._setup` | `Verifier test command ended (exit status …) but its exec did not return within the budget; scoring its outputs` |
 | `benchflow.rollout._setup` | `Verifier test command start is unconfirmed (timed out with no output); retrying it once` |
+| `benchflow.rollout._setup` | `could not check test.sh's service` (0.10) |
+| `benchflow.rollout._setup` | `could not check the services for restarts` (0.10) |
 | `benchflow.rollout._setup` | `could not read the verifier's refusal stubs: …` |
-| `benchflow.rollout._setup` | `could not write locked-system-path.json` (unreleased) |
-| `benchflow.rollout._setup` | `could not write verifier/network-policy.json` (unreleased) |
+| `benchflow.rollout._setup` | `could not write locked-system-path.json` |
+| `benchflow.rollout._setup` | `could not write verifier/network-policy.json` (0.10) |
 | `benchflow.rollout._setup` | `could not write verifier/trusted-path.json` |
 | `benchflow.rollout._setup` | `script: the root runner printed … unexpected characters around its markers (an image loader or libc setting?)` |
 | `benchflow.rollout._setup` | `test.sh ran without the image's …: the root verifier clears these names, so a test that runs the image's own tools with them fails; set the value the test needs in test.sh or [verifier.env]` |
-| `benchflow.rollout._setup` | `the links into /logs/verifier could not all be looked for: …` (unreleased) |
-| `benchflow.rollout._setup` | `the links into /logs/verifier could not be looked for: …` (unreleased) |
-| `benchflow.rollout._setup` | `the reward's provenance could not be decided` (unreleased) |
+| `benchflow.rollout._setup` | `the agent's processes at test.sh: …` (0.10) |
+| `benchflow.rollout._setup` | `the links into /logs/verifier could not all be looked for: …` (0.10) |
+| `benchflow.rollout._setup` | `the links into /logs/verifier could not be looked for: …` (0.10) |
+| `benchflow.rollout._setup` | `the reward's provenance could not be decided` (0.10) |
+| `benchflow.rollout._setup` | `the workspace's mode after solve.sh could not be given back` (0.10) |
 | `benchflow.rollout._setup` | `verifier PATH refusal: a refusal marker names …, which only folders the verifier's PATH leaves out have: …` |
 | `benchflow.rollout._teardown_queue` | `Cleanup of … failed: …` |
 | `benchflow.rollout._teardown_queue` | `Counting the stop of … failed: …` |
@@ -1491,26 +1544,33 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox._docker_sweep` | `Could not mark the kept sandbox … on the Docker daemon: a BenchFlow run with another HOME may remove it as a leftover` (0.10) |
 | `benchflow.sandbox._docker_sweep` | ``Docker leftover sweep: `docker …` failed: …`` |
 | `benchflow.sandbox._docker_sweep` | ``… BenchFlow container(s) are still running although the BenchFlow process that started them has exited: ……. BenchFlow force-removes such a container only when its label proves which process made it; if you did not keep these on purpose, `docker rm -f …` removes them (their networks go at the next run).`` |
-| `benchflow.sandbox._image_manifest` | `image manifest not recorded (rc …): the detector records this trial as unchecked; in strict, the conftest sweep removes every conftest.py outside the verifier's tests, as before (no keep rule)` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `image manifest not recorded: …` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `image manifest not written back: …` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `the interpreters could not be looked at: …` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `the post-turn walk failed (rc …)` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `the post-turn walk failed: …` (unreleased) |
-| `benchflow.sandbox._image_manifest` | `the shell walk failed: …` (unreleased) |
+| `benchflow.sandbox._image_manifest` | `image manifest not recorded (rc …): the detector records this trial as unchecked; in strict, the conftest sweep removes every conftest.py outside the verifier's tests, as before (no keep rule)` (0.10) |
+| `benchflow.sandbox._image_manifest` | `image manifest not recorded: …` (0.10) |
+| `benchflow.sandbox._image_manifest` | `image manifest not written back: …` (0.10) |
+| `benchflow.sandbox._image_manifest` | `the interpreters could not be looked at: …` (0.10) |
+| `benchflow.sandbox._image_manifest` | `the post-turn walk failed (rc …)` (0.10) |
+| `benchflow.sandbox._image_manifest` | `the post-turn walk failed: …` (0.10) |
+| `benchflow.sandbox._image_manifest` | `the post-turn walk lost its exec to the sandbox's transport (…); asking again` (0.10) |
+| `benchflow.sandbox._image_manifest` | `the shell walk failed: …` (0.10) |
+| `benchflow.sandbox._metadata_helper` | `BuildKit never started the metadata firewall helper image's build (try … of …), building again in … s: …` (0.10) |
+| `benchflow.sandbox._metadata_helper` | `The metadata firewall helper's prebuilt image … was refused (…): it is never run; building it here` (0.10) |
 | `benchflow.sandbox._prepull` | `Pre-pull of … failed; its trial pulls it: …` |
 | `benchflow.sandbox._recovery_baseline` | `Could not release verifier recovery image lease …: …` |
 | `benchflow.sandbox._sdk_ops` | `Daytona build keys keep the SDK's folder order: … in daytona … is not the source BenchFlow's sorted context hash was written against, so a task with a COPY folder can get another build key on another machine` (0.10) |
 | `benchflow.sandbox._sdk_ops` | `Invalid …=…; pinging every …s` |
 | `benchflow.sandbox._sdk_ops` | `daytona get_session_command_logs malformed payload (attempt …/…) for session=… command=…: …` |
 | `benchflow.sandbox._snapshot_credentials` | `Credential put-back of … not done: …` |
-| `benchflow.sandbox._verifier_links` | `the links before the agent's turn were not all recorded: …` (unreleased) |
-| `benchflow.sandbox._verifier_links` | `the record of the links before the turn was not saved: …` (unreleased) |
+| `benchflow.sandbox._verifier_dir` | `… was still open to other users before this turn (…) after three closes: a process left from an earlier turn may be giving it away. The turn went on; the close before test.sh keeps test.sh's outputs to the verifier.` (0.10) |
+| `benchflow.sandbox._verifier_links` | `bfx … lost its exec to the sandbox's transport (…); asking again` (0.10) |
+| `benchflow.sandbox._verifier_links` | `the links before the agent's turn were not all recorded: …` (0.10) |
+| `benchflow.sandbox._verifier_links` | `the record of the links before the turn was not saved: …` (0.10) |
+| `benchflow.sandbox._verifier_links` | `the walk before the agent's turn failed (…); trying it once more` (0.10) |
 | `benchflow.sandbox._verifier_runtime` | `verifier runtime (…): …` |
 | `benchflow.sandbox._verifier_runtime` | `verifier runtime: BenchFlow's pytest is not in the offline cache; building the plugins without the protected runner` |
+| `benchflow.sandbox._walk_pause` | `the agent's processes may still be stopped: …` (0.10) |
 | `benchflow.sandbox.agent_otel` | `The agent's OpenTelemetry is not received: …` (0.10) |
-| `benchflow.sandbox.agent_otel` | `The agent's OpenTelemetry was still arriving after …s; stopping it` (unreleased) |
-| `benchflow.sandbox.agent_otel` | `The agent's last OpenTelemetry export was not awaited: …` (unreleased) |
+| `benchflow.sandbox.agent_otel` | `The agent's OpenTelemetry was still arriving after …s; stopping it` (0.10) |
+| `benchflow.sandbox.agent_otel` | `The agent's last OpenTelemetry export was not awaited: …` (0.10) |
 | `benchflow.sandbox.agentcore` | `AgentCore runtime … points at …, not … — updating` |
 | `benchflow.sandbox.agentcore` | `Failed to stop AgentCore session: …` |
 | `benchflow.sandbox.agentcore_builder` | `Could not delete uploaded build context s3://…/…: …. It will expire with the bucket lifecycle policy.` |
@@ -1530,10 +1590,11 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.daytona` | `Could not delete sandbox … that failed to start: …` |
 | `benchflow.sandbox.daytona` | `Could not look up a sandbox the failed create left: …` |
 | `benchflow.sandbox.daytona` | `Could not read Daytona file info for …; treating search hit as a file: …` |
+| `benchflow.sandbox.daytona` | `Could not remove the execs' env and session files before the sandbox's delete: …; they go with the sandbox` (0.10) |
 | `benchflow.sandbox.daytona` | `Could not renew the run lease of Daytona sandbox …: …; it lapses at … unless a later renewal goes through` |
 | `benchflow.sandbox.daytona` | `Could not write daytona-execs.json: …` |
 | `benchflow.sandbox.daytona` | `Daytona batch download failed for … (… files); retrying files individually: …` (0.10) |
-| `benchflow.sandbox.daytona` | `Invalid …=…; retrying for …s` (unreleased) |
+| `benchflow.sandbox.daytona` | `Invalid …=…; retrying for …s` (0.10) |
 | `benchflow.sandbox.daytona` | ``No Daytona sandbox handle to delete, but a create request did not finish, so a sandbox may still exist on Daytona. It is looked for by its create-attempt label until it is found and deleted, up to the job's exit; one still not found then is recorded for `bench sandbox cleanup`.`` |
 | `benchflow.sandbox.daytona` | `Sandbox … started from the image rebuilt with Dockerfile salt …; later runs reuse that build` (0.10) |
 | `benchflow.sandbox.daytona` | `The create with Dockerfile salt … failed the same way (…): …` (0.10) |
@@ -1542,6 +1603,8 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.daytona_dind` | `Environment vars override BenchFlow compose variable(s): …` |
 | `benchflow.sandbox.daytona_dind` | `Retrying docker compose up inside DinD after network create/attach race (attempt …/…, retrying in …s): …` |
 | `benchflow.sandbox.daytona_dind` | `docker compose down failed: …` |
+| `benchflow.sandbox.daytona_exec_env` | `Could not remove Daytona's session files (…): …; they go with the sandbox` (0.10) |
+| `benchflow.sandbox.daytona_exec_env` | `Could not remove the execs' environment files (…): …; they go with the sandbox` (0.10) |
 | `benchflow.sandbox.daytona_ledger` | `Could not compact …: …` |
 | `benchflow.sandbox.daytona_ledger` | `Could not delete sandbox … of create attempt …: …; it stays in the ledger and is retried` |
 | `benchflow.sandbox.daytona_ledger` | ``Daytona: … sandbox(es) or create attempt(s) could not be confirmed deleted before exit: …. They are recorded in …; `bench sandbox cleanup` deletes them.`` |
@@ -1552,6 +1615,14 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.daytona_reaper` | `Failed to delete snapshot …` |
 | `benchflow.sandbox.daytona_reaper` | `Not deleting Daytona sandbox …: it is still building (…), and a delete now would make Daytona keep its build as failed ("context canceled") for every later create of the image` (0.10) |
 | `benchflow.sandbox.daytona_reaper` | ``… Daytona sandbox(es) carry a benchflow label namespace but not the …=… ownership label, so the age-based reaper will never reclaim them (possible orphan leak): …. Not deleting. They may belong to other users of this API key: delete one only if you started it, with `bench sandbox cleanup --id <sandbox id>`.`` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `Could not write …: …` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | ``Daytona snapshot … could not be deleted (last state …). With no BENCHFLOW_DAYTONA_OWNER, `bench sandbox cleanup` can't tell it is yours: delete it in Daytona`` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | ``Daytona snapshot … could not be deleted (last state …); `bench sandbox cleanup` removes it once it is stale`` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `Daytona snapshot … is active, but its sandbox is still snapshotting; the run goes on` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `Daytona snapshot …: the create failed (…) but the snapshot was active …s later; it is kept` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `Daytona snapshot …: the create failed (…); …` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `Invalid …=…; a Daytona snapshot gets …s` (0.10) |
+| `benchflow.sandbox.daytona_snapshot_create` | `… could not be read (…); it is now …` (0.10) |
 | `benchflow.sandbox.daytona_strategies` | `Could not start from content snapshot …; building the image instead (…)` |
 | `benchflow.sandbox.daytona_strategies` | `Daytona could not build the cached install layers on this image; installing in the sandbox instead (…)` |
 | `benchflow.sandbox.daytona_strategies` | ``Daytona snapshot … could not be deleted (…); `bench sandbox cleanup` removes it once it is stale`` |
@@ -1576,10 +1647,11 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.docker` | `Retrying docker compose up for … after network create/attach race (attempt …/…, retrying in …s): …` |
 | `benchflow.sandbox.docker` | ``Snapshot image … is still in use (kept container?); remove it with `docker image rm …` when done`` |
 | `benchflow.sandbox.docker` | `Snapshot image … removal failed: …` |
+| `benchflow.sandbox.docker` | `service … waits in the hold again: BenchFlow's command there did not run` (0.10) |
 | `benchflow.sandbox.egress_denylist` | `Egress log … not collected: …` (0.10) |
 | `benchflow.sandbox.egress_gateway` | `Egress log … not collected: …` (0.10) |
-| `benchflow.sandbox.egress_gateway` | `egress gateway: rollout … not deregistered: …` (unreleased) |
-| `benchflow.sandbox.egress_gateway` | `egress gateway: … not written: …` (unreleased) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: rollout … not deregistered: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: … not written: …` (0.10) |
 | `benchflow.sandbox.env_layers` | `Not reusing …: no BenchFlow build on this machine made it; building the … layer again` |
 | `benchflow.sandbox.env_layers` | `Pruning build records of layer … failed: …` |
 | `benchflow.sandbox.env_layers` | `Pruning old … layers failed: …` |
@@ -1600,6 +1672,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.lockdown` | `Kept service pid … was not frozen before grading (state …)` |
 | `benchflow.sandbox.lockdown` | `Kept service pid … writes to the terminal …, which ended with the agent's terminal tool: its writes there fail, so it may not answer; start it with its output in a file` |
 | `benchflow.sandbox.lockdown` | ``Killed instead of kept: port … pid … `…` ran without no_new_privs (not the agent's launch), so it could use a set-ID file or a file capability put back before grading`` (0.10) |
+| `benchflow.sandbox.lockdown` | `Main's processes before the task's code: not listed: …` (0.10) |
 | `benchflow.sandbox.lockdown` | `Protected runtime in … holds no Python: …` |
 | `benchflow.sandbox.lockdown` | `Root's preparation steps do not run …: …` |
 | `benchflow.sandbox.lockdown` | `Sandbox user … setup step failed.…` |
@@ -1625,13 +1698,13 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.lockdown` | `task [verifier.hardening] unknown/invalid: …=…` |
 | `benchflow.sandbox.lockdown` | `task.md parse error in …: …` |
 | `benchflow.sandbox.lockdown` | `task.toml parse error in …: …` |
-| `benchflow.sandbox.lockdown` | `workspace … absent in image; grant skipped` (unreleased) |
+| `benchflow.sandbox.lockdown` | `workspace … absent in image; grant skipped` (0.10) |
 | `benchflow.sandbox.metadata` | `Failed to persist sandbox.json for …: …` |
 | `benchflow.sandbox.modal_impl` | `Could not end the refused Modal sandbox` |
-| `benchflow.sandbox.modal_impl` | `Could not read the task's Dockerfile: …` (unreleased) |
+| `benchflow.sandbox.modal_impl` | `Could not read the task's Dockerfile: …` (0.10) |
 | `benchflow.sandbox.modal_impl` | `Error terminating Modal sandbox: …` |
-| `benchflow.sandbox.modal_impl` | `Modal ended sandbox … before BenchFlow stopped it (returncode …: …)` (unreleased) |
-| `benchflow.sandbox.modal_impl` | `Modal sets … in every sandbox, and …, so these keep Modal's values on Modal only` (unreleased) |
+| `benchflow.sandbox.modal_impl` | `Modal ended sandbox … before BenchFlow stopped it (returncode …: …)` (0.10) |
+| `benchflow.sandbox.modal_impl` | `Modal sets … in every sandbox, and …, so these keep Modal's values on Modal only` (0.10) |
 | `benchflow.sandbox.modal_impl` | `bfx: the mounted volume is not usable (…)` |
 | `benchflow.sandbox.process._base` | `Invalid …=…; using default …s` |
 | `benchflow.sandbox.process._base` | `Skipped an output line over … bytes` |
@@ -1645,6 +1718,7 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.setup` | `Clamping cpus … -> … for Daytona (override with BENCHFLOW_DAYTONA_MAX_CPUS)` |
 | `benchflow.sandbox.setup` | `Clamping memory_mb … -> … for Daytona (override with BENCHFLOW_DAYTONA_MAX_MEMORY_MB)` |
 | `benchflow.sandbox.setup` | `Clamping storage_mb … -> … for Daytona (override with BENCHFLOW_DAYTONA_MAX_STORAGE_MB)` |
+| `benchflow.sandbox.setup` | `services share a pid namespace (…), which BENCHFLOW_ALLOW_TASK_HOST_ACCESS grants: a process in one can release the other's hold before its rules are in` (0.10) |
 | `benchflow.sandbox.setup` | `stage_dockerfile_deps: COPY has fewer than 2 arguments, leaving unchanged: …` |
 | `benchflow.sandbox.setup` | `stage_dockerfile_deps: could not parse COPY arguments, leaving unchanged: …` |
 | `benchflow.sandbox.setup` | `stage_dockerfile_deps: could not parse JSON-form COPY, leaving unchanged: …` |
@@ -1661,27 +1735,30 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.task.formats` | `task format … failed to inspect …: …` |
 | `benchflow.task.formats` | `task format … failed to load: …` |
 | `benchflow.task.imports` | `…: ignored … task.toml key(s) BenchFlow does not know: …` |
-| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not read test.sh: …` (unreleased) |
-| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not run on a fresh image: …` (unreleased) |
-| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not run: …` (unreleased) |
+| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not read test.sh: …` |
+| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not run on a fresh image: …` |
+| `benchflow.task.test_sh_preflight` | `The test.sh preflight could not run: …` |
 | `benchflow.task.verifier_core` | `Cannot create … for the verifier start receipt; startup of this verifier cannot be confirmed` |
 | `benchflow.task.verifier_core` | `Could not hand the mounted verifier outputs to the host user: …` |
-| `benchflow.task.verifier_core` | `Could not let the host read … of test.sh's outputs: …` (unreleased) |
-| `benchflow.task.verifier_core` | `Could not make the uploaded tests root's alone (chown -R 0:0): …` (unreleased) |
+| `benchflow.task.verifier_core` | `Could not make the uploaded tests root's alone (chown -R 0:0): …` |
+| `benchflow.task.verifier_core` | `Could not remove the verifier env's folder …: …` (0.10) |
 | `benchflow.task.verifier_core` | `Criteria runner exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` |
 | `benchflow.task.verifier_core` | `Criteria-runner verifier directory download failed; recovered canonical verifier output files individually: …` |
-| `benchflow.task.verifier_core` | `No folder for test.sh's launch record (exit …): the launch's own check is the only proof of this run` (unreleased) |
+| `benchflow.task.verifier_core` | `No folder for test.sh's launch record (exit …): the launch's own check is the only proof of this run` |
 | `benchflow.task.verifier_core` | `Plugin guard …'s markers were not all read (…); deciding on the verdicts that were` |
 | `benchflow.task.verifier_core` | `Reading the pytest plugin guard …'s markers failed (…); retrying in …s` (0.10) |
-| `benchflow.task.verifier_core` | `The sandbox's processes may still be stopped: …` (unreleased) |
+| `benchflow.task.verifier_core` | `The sandbox's processes may still be stopped: …` (0.10) |
 | `benchflow.task.verifier_core` | `Verifier directory download failed; recovered canonical verifier output files individually: …` |
 | `benchflow.task.verifier_core` | `Verifier exited with rc=… after writing its reward; the reward is scored (reward files were cleared before this run)` |
-| `benchflow.task.verifier_core` | `could not write verifier/verifier-network.json: …` (unreleased) |
-| `benchflow.task.verifier_core` | `test.sh's outputs not copied at its exit: …` (unreleased) |
-| `benchflow.task.verifier_core` | `the stop after test.sh was not cancelled: …` (unreleased) |
-| `benchflow.task.verifier_core` | `the verifier outputs folder was made writable by every user after test.sh: the host could not add its records to it otherwise` (unreleased) |
-| `benchflow.task.verifier_outputs` | `verifier outputs not restored from their copy at exit` (unreleased) |
-| `benchflow.task.verifier_plugin_installs` | `pytest plugin releases not checked before the run: …` (unreleased) |
+| `benchflow.task.verifier_core` | `bfx serve for the read grant did not start (…); one call per name instead` (0.10) |
+| `benchflow.task.verifier_core` | `could not write verifier/verifier-network.json: …` (0.10) |
+| `benchflow.task.verifier_core` | `test.sh's outputs not copied at its exit: …` (0.10) |
+| `benchflow.task.verifier_core` | `test.sh's unreadable outputs were not made readable: …` (0.10) |
+| `benchflow.task.verifier_core` | `test.sh's … could not be made readable to the host: …` (0.10) |
+| `benchflow.task.verifier_core` | `the stop after test.sh was not cancelled: …` (0.10) |
+| `benchflow.task.verifier_outputs` | `names test.sh did not write … the trial's verifier/ after grading: ……` (0.10) |
+| `benchflow.task.verifier_outputs` | `verifier outputs not restored from their copy at exit` (0.10) |
+| `benchflow.task.verifier_plugin_installs` | `pytest plugin releases not checked before the run: …` (0.10) |
 | `benchflow.taskmd.verify` | `Could not restore the paths hidden from the judge: …` |
 | `benchflow.taskmd.verify` | `The judges' copy of the saved outputs was not published: …` |
 | `benchflow.traces.huggingface` | `Unknown format …, skipping row …` |

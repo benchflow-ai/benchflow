@@ -130,6 +130,9 @@ def _install_trial(tmp_path: Path, agent: str, **kwargs) -> Rollout:
     trial._rollout_dir.mkdir()
     trial._rollout_paths = MagicMock()
     trial._task = MagicMock()
+    # A task with no verifier user (the default: test.sh runs as root). A MagicMock
+    # user has no uid to read, and the RB2 check before the turn (F7) refuses that.
+    trial._task.config.verifier.user = None
     trial._effective_locked = []
     return trial
 

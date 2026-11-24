@@ -205,7 +205,8 @@ def test_bfx_clear_empties_the_folder_and_leaves_what_a_link_names(box):
     listing = _run(
         box, "ls -A /logs/verifier; stat -c %a /logs/verifier; cat /data/keep.txt"
     )
-    assert listing.stdout.split() == ["777", "keep"]
+    # Closed at 0755 (#1247), never 0777.
+    assert listing.stdout.split() == ["755", "keep"]
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="docker required")
@@ -518,4 +519,5 @@ def test_clearing_verifier_output_restores_root_ownership(box, bfx):
         box, "stat -c '%u %a' /logs/verifier; test ! -e /logs/verifier/stale"
     )
     assert checked.returncode == 0, checked.stderr
-    assert checked.stdout.strip() == "0 777"
+    # Root's and closed at 0755 (#1247), never 0777.
+    assert checked.stdout.strip() == "0 755"

@@ -25,8 +25,10 @@ flag never changes the reward.
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
+import posixpath
 import re
 import shlex
 from collections.abc import Mapping
@@ -34,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from benchflow._root_python import root_python_sh
-from benchflow._runtime_tree import KIT_PYTHON, VERIFIER_DIR
+from benchflow._runtime_tree import KIT_PYTHON, RUNTIME_ROOT, VERIFIER_DIR
 from benchflow.sandbox import _image_trees
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,12 @@ PRUNED = (
     "/root/.cache",
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+# The entries both walks may walk through folder links, in all: a link past
+# it is kept unwalked, which flags it.
+LINK_CAP = 200_000
+# A kept link's target is hashed only when it is a regular file this size or
+# smaller; anything else is kept by its type.
+LINK_TARGET_CAP = 64 << 20
 
 # argv: the names, the suffixes and the pruned paths (JSON each), when it
 # was taken, where it goes ("" for nowhere: the walk after the turn), and
@@ -86,10 +94,22 @@ _RECORD_SCRIPT = (
     r"""
 import hashlib, json, os, re, stat, sys
 names = set(json.loads(sys.argv[1]))
+manifest_names = frozenset(names)
 suffixes = tuple(json.loads(sys.argv[2]))
 pruned = set(json.loads(sys.argv[3]))
 taken, target = sys.argv[4], sys.argv[5]
+options = json.loads(sys.argv[6]) if len(sys.argv) > 6 else {}
 stdlib = re.compile(r"python[0-9][0-9.]*$")
+# After the turn, the Python trees the walk before found: a folder named like
+# one that wasn't one then is walked like any other.
+known_roots = set(options["roots"]) if isinstance(options.get("roots"), list) else None
+link_cap = int(options.get("link_cap", 200000))
+# BenchFlow's runtime tree, root's alone: a Python tree installed there after
+# the walk before (the model proxy's managed CPython, agent tools) stays one.
+runtime = (options.get("runtime_root") or "").rstrip("/")
+# The names pytest before 8.3 looks for in a prefix's bin/ to take it as a venv.
+ACTIVATES = {"activate", "activate.csh", "activate.fish", "Activate", "Activate.bat", "Activate.ps1"}
+target_cap = int(options.get("target_cap", 64 << 20))
 sectioned = {"pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml"}
 def pytest_section(name, data):
     # The text pytest reads its options from: a pytest file whole, else its
@@ -115,32 +135,155 @@ def pytest_section(name, data):
             kept.append(line.rstrip())
     return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest() if kept else ""
 sites = []
+# The folders the files walk leaves to the trees section (and links named
+# like one), as python_named decides.
+roots = []
+def by_name(name, parent):
+    # A Python tree by its name: a site folder, a lib/pythonX.Y standard
+    # library, conda's package cache.
+    if name in ("site-packages", "dist-packages"):
+        return True
+    if stdlib.match(name) and os.path.basename(parent) == "lib":
+        return True
+    return name == "pkgs" and os.path.isdir(os.path.join(parent, "conda-meta"))
+def in_runtime(path):
+    return bool(runtime) and path.startswith(runtime + "/")
+def interpreter_tree(name, parent):
+    # The prefix of a folder named like a Python tree that the walk before
+    # didn't find, when it sits under a prefix every pytest skips: a venv
+    # (pyvenv.cfg, which pytest 8.3 and later look for, and an activate
+    # script in bin/, which earlier ones do) at its own prefix, or a user
+    # site (<home>/.local, a dot folder); "" for any other. A conda env made
+    # in the turn is walked like any folder (pytest before 8.3 collects it).
+    if name in ("site-packages", "dist-packages"):
+        lib = os.path.dirname(parent)
+        if not (stdlib.match(os.path.basename(parent)) and os.path.basename(lib) == "lib"):
+            return ""
+        prefix = os.path.dirname(lib)
+    elif stdlib.match(name) and os.path.basename(parent) == "lib":
+        prefix = os.path.dirname(parent)
+    else:
+        return ""
+    if os.path.isfile(os.path.join(prefix, "pyvenv.cfg")):
+        try:
+            if ACTIVATES & set(os.listdir(os.path.join(prefix, "bin"))):
+                return prefix
+        except OSError:
+            pass
+    home = os.path.dirname(prefix)
+    if os.path.basename(prefix) == ".local" and (home == "/root" or os.path.dirname(home) == "/home"):
+        return prefix
+    return ""
+def python_named(path, name, parent):
+    # Which folders the files walk leaves to the trees section: by name
+    # before the turn; after it, a tree found then, one in BenchFlow's
+    # runtime tree, or one made in the turn under a venv or user site. Any
+    # other is walked like any folder, so a conftest.py planted in
+    # /app/tests/site-packages is seen.
+    if known_roots is not None:
+        if path in known_roots:
+            return True
+        if in_runtime(path):
+            return by_name(name, parent)
+        return bool(interpreter_tree(name, parent))
+    return by_name(name, parent)
+# The trees made in the turn under a venv prefix: their conftest.py
+# and pytest configuration names are kept with the prefix, which the host
+# drops unless the prefix held a file the walk before recorded (a venv made
+# in the turn holds none; /app/tests made into one does).
+new_trees = []
 def left_out(path, name, parent):
     if path in pruned:
         return True
+    if not python_named(path, name, parent):
+        return False
+    roots.append(path)
+    if known_roots is not None and path not in known_roots and not in_runtime(path):
+        prefix = interpreter_tree(name, parent)
+        # A user site is a dot folder pytest never enters, whatever it held.
+        if not prefix.endswith("/.local"):
+            new_trees.append((path, prefix))
     if name in ("site-packages", "dist-packages"):
         sites.append(path)
-        return True
-    if stdlib.match(name) and os.path.basename(parent) == "lib":
+    elif name != "pkgs":
         sites.extend(os.path.join(path, sub) for sub in ("site-packages", "dist-packages"))
-        return True
-    return name == "pkgs" and os.path.isdir(os.path.join(parent, "conda-meta"))
+    return True
+KINDS = {stat.S_IFIFO: "fifo", stat.S_IFCHR: "char", stat.S_IFBLK: "block", stat.S_IFSOCK: "socket"}
+def resolved(path):
+    # What a kept link points at: a regular file's sha256 (within the cap),
+    # else its type, never read: a FIFO or a device must not stall the walk.
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "dangling"
+    if stat.S_ISDIR(st.st_mode):
+        return "folder"
+    if not stat.S_ISREG(st.st_mode):
+        return KINDS.get(stat.S_IFMT(st.st_mode), "other") + ":not-hashed"
+    if st.st_size > target_cap:
+        # Not read: what the kernel keeps of it, which no task can set back
+        # but the ctime a snapshot moves.
+        return "regular:%d:not-hashed:%d:%d:%d:%d:%d:%o" % (
+            st.st_size, st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns,
+            st.st_uid, st.st_mode & 0o7777)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return "unreadable"
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return "other:not-hashed"
+        data = handle.read(target_cap)
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+class OverCap(Exception):
+    pass
 files = {}
-def walk(top):
+folder_links = []
+def walk(top, via=None, into=files, links=folder_links, budget=None, tree=None):
+    # *via*: the folder link this walk reached *top* through (its files are
+    # recorded by their path through it); *budget*: entries it may still
+    # walk (OverCap past it); *tree*: the interpreter prefix of a tree made in
+    # the turn (only conftest.py and pytest configuration names, kept with it).
     try:
         listing = os.scandir(top)
     except OSError:
         return
     with listing:
         for entry in listing:
+            if budget is not None:
+                budget[0] -= 1
+                if budget[0] < 0:
+                    raise OverCap()
             path = entry.path
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    if not left_out(path, entry.name, top):
-                        walk(path)
+                    if via is not None or tree is not None or not left_out(path, entry.name, top):
+                        walk(path, via, into, links, budget, tree)
                     continue
-                wanted = entry.name in names or entry.name.endswith(suffixes)
-                if not wanted or not entry.is_file(follow_symlinks=False):
+                if tree is None and entry.is_symlink() and entry.is_dir():
+                    if via is not None:
+                        links.append(path)
+                    elif path not in pruned:
+                        if python_named(path, entry.name, top):
+                            roots.append(path)
+                        else:
+                            links.append(path)
+                wanted = entry.name in names or (tree is None and entry.name.endswith(suffixes))
+                if not wanted:
+                    continue
+                if entry.is_symlink():
+                    # pytest and Python read through a link: it is kept by its
+                    # target and what that holds, so one planted, retargeted or
+                    # whose target changed in the turn differs.
+                    link = os.readlink(path)
+                    into[path] = {"sha256": "link:" + link, "size": 0, "link": link,
+                                  "target": resolved(path)}
+                    if via is not None:
+                        into[path]["via"] = via
+                    if tree is not None:
+                        into[path]["tree"] = tree
+                    continue
+                if not entry.is_file(follow_symlinks=False):
                     continue
                 fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             except OSError:
@@ -157,13 +300,126 @@ def walk(top):
                     size += len(chunk)
                     if entry.name in sectioned and size <= (8 << 20):
                         text.append(chunk)
-            files[path] = {"sha256": digest.hexdigest(), "size": size}
+            into[path] = {"sha256": digest.hexdigest(), "size": size}
             if entry.name in sectioned:
-                files[path]["pytest"] = pytest_section(entry.name, b"".join(text))
+                into[path]["pytest"] = pytest_section(entry.name, b"".join(text))
+            if via is not None:
+                into[path]["via"] = via
+            if tree is not None:
+                into[path]["tree"] = tree
+def under(path, tops):
+    return any(path == t or path.startswith(t.rstrip("/") + "/") for t in tops)
+def recorded(real):
+    # Whether the walk by real path records (and flags) what is at *real*:
+    # not in a pruned folder nor in a Python tree (the trees section records
+    # those, and flags no conftest.py there).
+    if under(real, pruned):
+        return False
+    parts = real.split("/")
+    for i in range(1, len(parts)):
+        parent = "/".join(parts[:i]) or "/"
+        if python_named("/".join(parts[: i + 1]), parts[i], parent):
+            return False
+    return True
+def root_only(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return st.st_uid == 0 and not st.st_mode & 0o022
+def exposed(tree):
+    # A Python tree the files walk leaves to the trees section (which flags no
+    # conftest.py), that pytest would collect in through a link to a folder
+    # above it: one made in the turn, or one the agent user could write (its
+    # folder, or its own site-packages or dist-packages, not root's alone: an
+    # image that lets the agent pip install by giving it the site). BenchFlow's
+    # runtime tree is root's alone.
+    if in_runtime(tree):
+        return False
+    if known_roots is not None and tree not in known_roots:
+        return True
+    if not root_only(tree):
+        return True
+    for site in ("site-packages", "dist-packages"):
+        below = os.path.join(tree, site)
+        if os.path.lexists(below) and not root_only(below):
+            return True
+    return False
+def hides_tree(real):
+    # Whether an exposed Python tree is at or below *real*.
+    start = real.rstrip("/") + "/"
+    return any((r == real or r.startswith(start)) and exposed(r) for r in set(roots))
+def unwalked(link, why, via):
+    entry = dict(files.get(link) or {})
+    if not entry:
+        try:
+            text = os.readlink(link)
+        except OSError:
+            text = "?"
+        entry = {"sha256": "link:" + text, "size": 0, "link": text, "target": "folder"}
+    entry["unwalked"] = why
+    if via is not None:
+        entry["via"] = via
+    files[link] = entry
+def follow_links():
+    # Each folder link once, by its link path (pytest collects through one),
+    # after the walk by real path: skipped when the walk already records its
+    # target by its real path (the kernel's target is the textual real path
+    # and lies in a walked tree) and no exposed Python tree is below it
+    # (merged /usr's /lib -> usr/lib), or when the target is in /proc or
+    # /sys, where nothing can be planted. Each real folder is walked once (a cycle
+    # stops) and nested links are followed in turn, depth first, in path
+    # order, up to link_cap entries in all. A link left unwalked (past the
+    # cap, or a folder root can't read) is kept with why, which flags it.
+    seen, left = set(), [link_cap]
+    stack = [(l, None) for l in sorted(folder_links, reverse=True)]
+    while stack:
+        link, parent = stack.pop()
+        try:
+            st = os.stat(link)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode):
+            continue
+        key = (st.st_dev, st.st_ino)
+        real = os.path.realpath(link)
+        try:
+            rst = os.stat(real)
+            same = (rst.st_dev, rst.st_ino) == key
+        except OSError:
+            same = False
+        if same and (
+            under(real, ("/proc", "/sys")) or (recorded(real) and not hides_tree(real))
+        ):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        if left[0] < 1:
+            unwalked(link, "over-cap", parent)
+            continue
+        try:
+            os.scandir(link).close()
+        except OSError:
+            unwalked(link, "unreadable", parent)
+            continue
+        found, nested, budget = {}, [], [left[0] - 1]
+        try:
+            walk(link, link, found, nested, budget)
+        except (OverCap, RecursionError):
+            unwalked(link, "over-cap", parent)
+            left[0] = 0
+            continue
+        left[0] = budget[0]
+        files.update(found)
+        stack.extend((l, link) for l in sorted(nested, reverse=True))
 """
     + _image_trees.SECTIONS_SCRIPT
     + r"""
 walk("/")
+for top, prefix in new_trees:
+    walk(top, tree=prefix)
+follow_links()
 # Each installed pytest's version, from its metadata's name (pip's
 # pytest-X.Y.Z.dist-info, conda's or setuptools' pytest-X.Y.Z-py3.6.egg-info),
 # read without running anything of the image's.
@@ -179,7 +435,7 @@ for site in dict.fromkeys(sites):
         if found:
             pytests[os.path.join(site, name)] = found.group(1)
 record = {"version": 1, "taken": taken, "files": files, "pytest": pytests}
-_bf_trees(record, pruned, json.loads(sys.argv[6]) if len(sys.argv) > 6 else {})
+_bf_trees(record, pruned, options)
 text = json.dumps(record, sort_keys=True)
 if target:
     folder = os.path.dirname(target)
@@ -238,6 +494,15 @@ class ImageManifest:
         )
 
 
+def _kept_entry(entry: Mapping[str, Any]) -> bool:
+    """A file's sha256, or a link's target (``link:<target>``, with its
+    ``link``)."""
+    digest, link = entry.get("sha256"), entry.get("link")
+    if isinstance(link, str):
+        return digest == "link:" + link
+    return isinstance(digest, str) and _SHA256.fullmatch(digest) is not None
+
+
 def load(text: str | None) -> ImageManifest | None:
     """The manifest in *text*, or None when it is missing or not one."""
     if not text:
@@ -254,13 +519,16 @@ def load(text: str | None) -> ImageManifest | None:
         return None
     clean = {
         path: {"sha256": entry["sha256"], "size": entry.get("size")}
-        | ({"pytest": entry["pytest"]} if isinstance(entry.get("pytest"), str) else {})
+        | {
+            key: entry[key]
+            for key in ("pytest", "link", "target", "via", "unwalked", "tree")
+            if isinstance(entry.get(key), str)
+        }
         for path, entry in files.items()
         if isinstance(path, str)
         and path.startswith("/")
         and isinstance(entry, dict)
-        and isinstance(entry.get("sha256"), str)
-        and _SHA256.fullmatch(entry["sha256"])
+        and _kept_entry(entry)
     }
     found = data.get("pytest")
     pytests = (
@@ -275,6 +543,15 @@ def load(text: str | None) -> ImageManifest | None:
     return ImageManifest(
         taken=taken, files=clean, pytests=pytests, **_image_trees.parse(data)
     )
+
+
+def _with_caps(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "link_cap": LINK_CAP,
+        "target_cap": LINK_TARGET_CAP,
+        "runtime_root": RUNTIME_ROOT,
+        **dict(options or {}),
+    }
 
 
 def record_command(
@@ -293,7 +570,7 @@ def record_command(
         json.dumps(list(PRUNED)),
         taken,
         target,
-        json.dumps(dict(options or {})),
+        json.dumps(_with_caps(options)),
     )
     return (
         f"if [ -x {KIT_PYTHON} ] || command -v python3 >/dev/null 2>&1; "
@@ -355,7 +632,7 @@ async def _shell_walk(
     from benchflow.sandbox._exec_output import exec_raw
 
     command = _image_trees.shell_walk_command(
-        PRUNED, NAMES, SUFFIXES, SECTIONED, options
+        PRUNED, NAMES, SUFFIXES, SECTIONED, _with_caps(options)
     )
     try:
         result = await exec_raw(env.exec, command, user="root", timeout_sec=timeout_sec)
@@ -418,7 +695,80 @@ def _fingerprint(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
     found = {"sha256": entry.get("sha256"), "size": entry.get("size")}
     if "pytest" in entry:
         found["pytest_section"] = entry["pytest"] or None
+    for key in ("target", "via", "unwalked"):
+        if key in entry:
+            found[key] = entry[key]
     return found
+
+
+def _snapshot_moved_target(
+    was: Any, now: Any, context: Mapping[str, Any] | None
+) -> str:
+    """For a kept link's target over the hash cap (kept by size, device,
+    inode, mtime, ctime, owner and mode): a note when the ctime is the one
+    field that moved, into a snapshot window the trial recorded
+    (``context["snapshot_windows"]``, :func:`_image_trees.snapshot_during`),
+    on the same file (device and inode) that only root can write in place
+    (:func:`_image_trees.only_root_writes`). A snapshot sets the ctime of
+    every file in the sandbox's writable layer, an edited one's too, so any
+    other target is compared as without a snapshot. "" otherwise."""
+    windows = (context or {}).get("snapshot_windows") or ()
+    if not windows or not isinstance(was, str) or not isinstance(now, str):
+        return ""
+    old, new = was.split(":"), now.split(":")
+    if len(old) != 9 or len(new) != 9 or old[0] != "regular" or old[2] != "not-hashed":
+        return ""
+    if [old[i] for i in (0, 1, 2, 3, 4, 5, 7, 8)] != [
+        new[i] for i in (0, 1, 2, 3, 4, 5, 7, 8)
+    ]:
+        return ""
+    try:
+        root_only = _image_trees.only_root_writes(int(new[8], 8), int(new[7]))
+        start = _image_trees.snapshot_during(int(new[6]) / 1e9, windows)
+    except ValueError:
+        return ""
+    if not root_only or start is None:
+        return ""
+    return _image_trees.snapshot_note(start)
+
+
+def _uv_owned(path: str, owned: Mapping[str, str]) -> bool:
+    """A file of a wheel in BenchFlow's own uv cache, as unpacked: the walk
+    found its archive entry's RECORD lists it (``uv:``), and it is there. Only
+    a path in normal form (no ``..``, ``.`` or empty component), as the walk
+    gives one."""
+    return (
+        posixpath.normpath(path) == path
+        and path.startswith(_image_trees.UV_ARCHIVE + "/")
+        and owned.get(path, "").startswith("uv:")
+    )
+
+
+def _installed(path: str, owned: Mapping[str, str]) -> bool:
+    """A package's own conftest.py or pytest configuration file: a wheel's in
+    BenchFlow's uv cache (:func:`_uv_owned`), or one dpkg lists with its md5
+    (apt-get installing python3-numpy in a Python tree made in the turn).
+    dpkg's database is root's alone."""
+    return _uv_owned(path, owned) or owned.get(path, "").startswith("dpkg:")
+
+
+def _new_tree_entries(before: ImageManifest, after: ImageManifest) -> set[str]:
+    """The paths the walk after kept in a Python tree made in the turn
+    (``tree``: its interpreter prefix) whose prefix held no file the walk
+    before recorded: a venv or user site made in the turn, where pytest
+    doesn't collect. A folder that held files before (the tests' own) made
+    into a venv prefix keeps them, so a conftest.py there is compared."""
+    keys = sorted(before.files)
+    dropped = set()
+    for path, entry in after.files.items():
+        prefix = entry.get("tree")
+        if not isinstance(prefix, str):
+            continue
+        start = prefix.rstrip("/") + "/"
+        at = bisect.bisect_left(keys, start)
+        if not (at < len(keys) and keys[at].startswith(start)):
+            dropped.add(path)
+    return dropped
 
 
 def _diff_files(
@@ -432,22 +782,68 @@ def _diff_files(
     Flags: a conftest; a pytest configuration file whose pytest section
     changed (its own hash; an edit elsewhere in tox.ini, setup.cfg or
     pyproject.toml is a change); a ``.pth`` or customize module added or
-    changed, unless a package owns it as installed. Anything else is a
-    change."""
+    changed, unless a package owns it as installed. A link (kept by its
+    target and what that holds) is never a package's: one planted,
+    retargeted, or whose target changed is a flag whatever it points at. A
+    folder link the walk left unwalked (``unwalked``: past the cap, or a
+    folder root can't read) is a ``walk-failed`` flag, unless it is the same
+    link, unwalkable before the turn too. Anything else is a change."""
     flags: list[dict[str, Any]] = []
     changes: list[dict[str, Any]] = []
     owned = _image_trees.owned(after)
-    paths = sorted(set(before.files) | set(after.files))
+    paths = sorted(
+        (set(before.files) | set(after.files)) - _new_tree_entries(before, after)
+    )
     for path in paths:
         was, now = before.files.get(path), after.files.get(path)
+        if now is not None and now.get("unwalked"):
+            if (
+                was is not None
+                and was.get("unwalked")
+                and was.get("sha256") == now.get("sha256")
+                and was.get("target") == now.get("target")
+            ):
+                # The same link, unwalkable before the turn too (an image's
+                # own): unchanged.
+                continue
+            # A folder link the walk could not follow (past the cap, or a
+            # folder root can't read), new or changed: what is behind it is
+            # unknown.
+            flags.append(
+                {
+                    "where": "files",
+                    "path": path,
+                    "kind": "failed",
+                    "category": "walk-failed",
+                    "before": _fingerprint(was),
+                    "after": _fingerprint(now),
+                }
+            )
+            continue
         if (
             was is not None
             and now is not None
             and was.get("sha256") == now.get("sha256")
         ):
-            continue
+            if was.get("target") == now.get("target"):
+                continue
+            note = _snapshot_moved_target(was.get("target"), now.get("target"), context)
+            if note:
+                changes.append(
+                    {
+                        "where": "files",
+                        "path": path,
+                        "kind": "edited",
+                        "category": "snapshot-ctime",
+                        "before": _fingerprint(was),
+                        "after": _fingerprint(now),
+                        "note": note,
+                    }
+                )
+                continue
         kind = "planted" if was is None else "removed" if now is None else "edited"
         found = category(path)
+        linked = bool((now or {}).get("link"))
         if found == "pytest-config":
             old = was.get("pytest") if was is not None else ""
             new = now.get("pytest") if now is not None else ""
@@ -455,14 +851,20 @@ def _diff_files(
             flag = old is None or new is None or old != new
             if not flag:
                 found = "config"
+            elif kind != "removed" and not linked and _installed(path, owned):
+                flag, found = False, "pytest-config-owned"
         elif found == "startup":
             flag = kind != "removed"
-            if flag and path in owned:
+            if flag and not linked and path in owned:
                 # A package's own, as installed: apt-get installing python3.12
                 # writes /etc/python3.12/sitecustomize.py (a conffile).
                 flag, found = False, "startup-owned"
         else:
             flag = found == "conftest"
+            if flag and kind != "removed" and not linked and _installed(path, owned):
+                # A wheel's own conftest.py, as BenchFlow's uv cache unpacked
+                # it for the model proxy (its dist RECORD lists it): an install.
+                flag, found = False, "conftest-owned"
         row = {
             "where": "files",
             "path": path,
@@ -477,8 +879,9 @@ def _diff_files(
 
 #: Each section of the walks and its diff: (before, after, context) ->
 #: (flags, changes, paths compared). *context* has ``tool_names``, the tools
-#: test.sh names (_image_trees.tool_names), and ``own_processes``,
-#: BenchFlow's own daemons (_image_trees.own_processes).
+#: test.sh names (_image_trees.tool_names), ``own_processes``, BenchFlow's
+#: own daemons (_image_trees.own_processes), and ``snapshot_windows``, the
+#: snapshots the trial took (_image_trees.snapshot_during).
 SECTION_DIFFS: dict[str, Any] = {
     "files": _diff_files,
     "python_trees": _image_trees.diff_python_trees,
@@ -506,16 +909,35 @@ async def walk_after(
             env, "post-turn", options, timeout_sec=timeout_sec
         )
         return walked
-    try:
-        result = await exec_raw(
-            env.exec,
-            record_command("post-turn", "", options),
-            user="root",
-            timeout_sec=timeout_sec,
-        )
-    except Exception as exc:
-        logger.warning("the post-turn walk failed: %s", exc)
-        return None
+    from benchflow.diagnostics import TransientSandboxTransportError
+    from benchflow.sandbox._verifier_links import READ_ATTEMPTS
+
+    # Asked again when the sandbox's transport loses the exec (a Daytona
+    # snapshot drops the command channel), as bfx's reads are: the walk
+    # writes nothing in the sandbox.
+    attempt = 1
+    while True:
+        try:
+            result = await exec_raw(
+                env.exec,
+                record_command("post-turn", "", options),
+                user="root",
+                timeout_sec=timeout_sec,
+            )
+            break
+        except TransientSandboxTransportError as exc:
+            if attempt >= READ_ATTEMPTS:
+                logger.warning("the post-turn walk failed: %s", exc)
+                return None
+            attempt += 1
+            logger.warning(
+                "the post-turn walk lost its exec to the sandbox's transport "
+                "(%s); asking again",
+                exc,
+            )
+        except Exception as exc:
+            logger.warning("the post-turn walk failed: %s", exc)
+            return None
     if getattr(result, "return_code", 1) != 0:
         logger.warning(
             "the post-turn walk failed (rc %s)", getattr(result, "return_code", None)
@@ -592,7 +1014,7 @@ async def _walk_failed(env: Any, before: ImageManifest, *, timeout_sec: int):
     ``walk-failed`` flag, and a shell-only look at the interpreters."""
     from benchflow.sandbox._exec_output import exec_raw
 
-    found = [
+    found: list[dict[str, Any]] = [
         {
             "where": "walk",
             "path": "",
@@ -604,17 +1026,26 @@ async def _walk_failed(env: Any, before: ImageManifest, *, timeout_sec: int):
     ]
     command = _image_trees.interpreter_stat_command(before)
     if command:
+        output = ""
         try:
             result = await exec_raw(
                 env.exec, command, user="root", timeout_sec=timeout_sec
             )
-            found.extend(
-                _image_trees.interpreter_stat_flags(
-                    before, getattr(result, "stdout", "") or ""
-                )
-            )
+            output = getattr(result, "stdout", "") or ""
         except Exception as exc:
             logger.warning("the interpreters could not be looked at: %s", exc)
+        notes: list[dict[str, Any]] = []
+        found.extend(
+            _image_trees.interpreter_stat_flags(
+                before, output, getattr(env, "_snapshot_windows", ()), notes
+            )
+        )
+        if notes:
+            found[0]["ctime_not_compared"] = notes
+        unchecked = _image_trees.interpreter_stat_unchecked(before, output)
+        if unchecked:
+            # Not checked: the walk-failed flag stands, and says which.
+            found[0]["interpreters_not_checked"] = unchecked
     return found
 
 
@@ -649,6 +1080,8 @@ async def detect(
         context={
             "tool_names": _image_trees.tool_names(test_script),
             "own_processes": _image_trees.own_processes(env),
+            "own_shells": _image_trees.session_shells(env),
+            "snapshot_windows": tuple(getattr(env, "_snapshot_windows", None) or ()),
         },
         walk_failed=walk_failed,
     )
@@ -657,14 +1090,17 @@ async def detect(
 
 
 def write_detector_record(record_dir: Any, record: Mapping[str, Any]) -> None:
-    """Write *record* to the trial's ``integrity/verifier-inputs.json``."""
+    """Write *record* to the trial's ``integrity/verifier-inputs.json``, the
+    credentials BenchFlow staged for the trial masked: its process rows hold
+    command lines (``_utils.staged_secrets``)."""
     from pathlib import Path
+
+    from benchflow._utils import staged_secrets
 
     folder = Path(record_dir) / "integrity"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / DETECTOR_RECORD).write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n"
-    )
+    text = json.dumps(record, indent=2, sort_keys=True)
+    (folder / DETECTOR_RECORD).write_text(staged_secrets.mask(text) + "\n")
 
 
 # Up to this size the host's copy goes in the exec's own text (a quoted

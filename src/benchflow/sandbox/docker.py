@@ -16,6 +16,7 @@ import math
 import os
 import platform
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -53,6 +54,7 @@ from benchflow.sandbox import (
     _bind_targets,
     _bounded_exec,
     _direct_docker,
+    _held_mounts,
     _inert_bootstrap,
     _metadata_helper,
     _transport,
@@ -177,7 +179,7 @@ from benchflow.sandbox.env_layers import (
     alias_owner_tag,
     fresh_record,
 )
-from benchflow.sandbox.image_build import image_build_error
+from benchflow.sandbox.image_build import BUILDKIT_NEVER_STARTED, image_build_error
 from benchflow.sandbox.protocol import (
     ExecTimeoutError,
     SandboxImage,
@@ -386,6 +388,7 @@ _DOCKER_BUILD_RETRYABLE_ERRORS = (
     re.compile(r"readtimeouterror", re.IGNORECASE),
     re.compile(r"read timed out", re.IGNORECASE),
     re.compile(r"connection (?:timed out|reset by peer)", re.IGNORECASE),
+    BUILDKIT_NEVER_STARTED,
 )
 
 # Two jobs building the same task at once (every main image is tagged
@@ -438,13 +441,54 @@ _FORCE_KILL_CALL_TIMEOUT_SEC = 10
 async def _reap(proc: asyncio.subprocess.Process) -> None:
     """Kill a docker CLI call that outlived its timeout and wait for it inside
     the loop: one left running keeps a transport that closes only after the
-    loop has ended, and asyncio then prints ``Event loop is closed``."""
-    if proc.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+    loop has ended, and asyncio then prints ``Event loop is closed``. Its
+    pipes are read to their end first (bfx_delivery.stop_process), bounded."""
     with contextlib.suppress(Exception):
-        await asyncio.wait_for(proc.wait(), timeout=5)
+        await bfx_delivery.stop_process(proc)
 
+
+def _mount_id(mount: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return mount.get("Destination"), mount.get("Source"), mount.get("Name")
+
+
+def _host_mountpoints() -> list[str]:
+    """Every mount point of this machine's mount namespace."""
+    try:
+        lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    except OSError:
+        return ["/"]
+    points = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) > 4:
+            points.append(
+                re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4])
+            )
+    return points
+
+
+def _same_or_nested_source(a: tuple[str, str], b: tuple[str, str]) -> bool:
+    """Whether two mount sources share files: the same volume, or host paths
+    at, above or below one another, or the same folder by device and inode."""
+    if a[0] != b[0]:
+        return False
+    if a[0] == "volume":
+        return a[1] == b[1]
+    if (
+        a[1] == b[1]
+        or _held_mounts.beneath(a[1], b[1])
+        or _held_mounts.beneath(b[1], a[1])
+    ):
+        return True
+    try:
+        first, second = os.stat(a[1]), os.stat(b[1])
+    except OSError:
+        return False
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+#: How long one docker call on a held container's start may take.
+_HELD_CALL_SEC = 60.0
 
 # How many times a sandbox restarts an exec channel whose helper died.
 _EXEC_CHANNEL_RESTARTS = 3
@@ -489,6 +533,7 @@ def route_exec_argv(
     shell_argv: list[str] | None = None,
     remove: Sequence[str] = (),
     launch: tuple[str, ...] | None = None,
+    hold: Sequence[str] = (),
 ) -> list[str]:
     """``docker exec`` argv (after ``docker``, or after ``docker compose``
     with ``-T`` added by the caller) for one root step on *route* (C8).
@@ -509,6 +554,8 @@ def route_exec_argv(
     *launch*: :func:`benchflow.sandbox._bounded_exec.launch_for` of the step,
     once the agent's turn has started: bfx launch goes ahead of the
     route's shell, or ``()`` puts the launch in the shell's own text.
+    *hold* (``_inert_bootstrap.run_if_released``) goes ahead of both: in a
+    held service the step runs only once the service is released.
     """
     if route.pin is None:
         raise ValueError("route_exec_argv is for root's plumbing routes")
@@ -532,14 +579,14 @@ def route_exec_argv(
             ):
                 argv.extend(["-e", f"{name}={value}"])
         argv.extend(
-            ["-e", f"PATH={route.pin}", container, *(launch or ()), *shell_argv]
+            ["-e", f"PATH={route.pin}", container, *hold, *(launch or ()), *shell_argv]
         )
         _transport.sent("Docker", argv)
         return argv
     inner = with_system_path(command, route.pin)
     if launch == ():
         inner = _bounded_exec.shell_launch(route.shell, inner, kit=route.kit)
-    argv.extend([container, *(launch or ()), route.shell, "-c", inner])
+    argv.extend([container, *hold, *(launch or ()), route.shell, "-c", inner])
     # Its commands are constant scripts; the bound still holds here.
     _transport.sent("Docker", argv)
     return argv
@@ -996,6 +1043,7 @@ class DockerSandbox(BaseSandbox):
     # Docker's answers turn it off (tests/conftest.py); BENCHFLOW_EXEC_CHANNEL=0
     # turns it off for a run.
     exec_channel: ClassVar[bool] = True
+    bfx_launch: ClassVar[str] = "argv"  # docker exec starts /.bfx/bfx itself
     # Inside a job this sandbox's stop runs in the job's background queue
     # (rollout/_teardown_queue.py). Docker and remote Docker only: a
     # provider sandbox (Daytona, Modal, AgentCore) stops inline, since an
@@ -1267,24 +1315,65 @@ class DockerSandbox(BaseSandbox):
         Docker VM that does not share the directory (Colima on a Mac with the
         job outside ``$HOME``). Anywhere else it stays a warning.
         """
+        from benchflow.sandbox._verifier_dir import (
+            check_verifier_dir,
+            close_host_mount_cmd,
+            close_verifier_dir_cmd,
+            host_owner_shown,
+            verifier_dir_problem,
+        )
+
         if self.rollout_paths is None:
+            # Nothing of the host's is mounted there: root's, checked.
+            closed = await exec_raw(
+                self.exec, close_verifier_dir_cmd(), user="root", timeout_sec=10
+            )
+            check_verifier_dir(getattr(closed, "stdout", "") or "")
             return
 
         probe_name = f".runtime-mount-probe-{uuid.uuid4().hex}"
         host_probe = self.rollout_paths.verifier_dir / probe_name
         sandbox_probe = SandboxPaths.verifier_dir / probe_name
         host_probe.parent.mkdir(parents=True, exist_ok=True)
-        host_probe.write(b"")
+        host_uid = os.getuid() if hasattr(os, "getuid") else 0
         try:
-            result = await exec_raw(
-                self.exec,
-                f"test -f {shlex.quote(str(sandbox_probe))}",
-                user="root",
-                timeout_sec=10,
+            host_probe.write(b"")
+        except PermissionError:
+            # The host made this folder: only a sandbox holding it can have
+            # taken it from the host user since (a task service's start-up
+            # code, as root).
+            result = await self._close_taken_verifier_dir(
+                self.rollout_paths.verifier_dir, host_uid
             )
+        else:
+            try:
+                # The same root exec removes the probe and closes
+                # /logs/verifier (#1247): the host's mount keeps or gets the
+                # host user (BenchFlow writes its records there), anything
+                # else is root's; 0755 either way. Its status is the probe's.
+                result = await exec_raw(
+                    self.exec,
+                    f"test -f {shlex.quote(str(sandbox_probe))}; bf_mounted=$?; "
+                    f"if [ $bf_mounted = 0 ]; then "
+                    f"{close_host_mount_cmd(str(sandbox_probe), host_uid=host_uid)}; "
+                    f"else {close_verifier_dir_cmd()}; fi; exit $bf_mounted",
+                    user="root",
+                    timeout_sec=10,
+                )
+            finally:
+                # Gone already where it is mounted; a task service may take
+                # the folder from the host at any moment, and a probe left
+                # there goes with the folder's clear before test.sh.
+                with contextlib.suppress(PermissionError):
+                    host_probe.unlink(missing_ok=True)
             self._logs_are_mounted = result.return_code == 0
-        finally:
-            host_probe.unlink(missing_ok=True)
+            self._host_owner_in_sandbox = host_owner_shown(
+                getattr(result, "stdout", "") or ""
+            )
+        if verifier_dir_problem(getattr(result, "stdout", "") or "") is not None:
+            # A task service gave the folder away within that close: closed
+            # again, as before a turn.
+            await self.close_verifier_dir_before_turn()
 
         if self._logs_are_mounted:
             return
@@ -1317,6 +1406,65 @@ class DockerSandbox(BaseSandbox):
             "daemon cannot see %s, so it may be remote or reached without path "
             "translation (check DOCKER_HOST and `docker context ls`).",
             verifier_dir,
+        )
+
+    async def _close_taken_verifier_dir(self, host_dir: Any, host_uid: int) -> Any:
+        """The mount probe where the host can no longer write its own
+        verifier folder. It is the mount where the sandbox shows the host's
+        device and inode for /logs/verifier; the host user is then the host's
+        uid there where the sandbox shows the folder's owner as the host does
+        (a rootful daemon), else root (a rootless one). Closed for that user,
+        as the probe's own exec closes it."""
+        from benchflow.sandbox._verifier_dir import (
+            VERIFIER_DIR,
+            close_verifier_dir_cmd,
+        )
+
+        st = host_dir.stat()
+        shown = await exec_raw(
+            self.exec, f"stat -c '%d %i %u' {VERIFIER_DIR}", user="root", timeout_sec=10
+        )
+        seen = (getattr(shown, "stdout", "") or "").split()
+        self._logs_are_mounted = seen[:2] == [str(st.st_dev), str(st.st_ino)]
+        owner = None
+        if self._logs_are_mounted:
+            gid = os.getgid() if hasattr(os, "getgid") else 0
+            owner = (host_uid, gid) if seen[2:] == [str(st.st_uid)] else (0, 0)
+        self._host_owner_in_sandbox = owner
+        command = (
+            close_verifier_dir_cmd(host_uid=host_uid, host_owner=owner)
+            if owner is not None
+            else close_verifier_dir_cmd()
+        )
+        return await exec_raw(self.exec, command, user="root", timeout_sec=10)
+
+    async def close_verifier_dir_before_turn(self, *, first_turn: bool = True) -> None:
+        """Close ``/logs/verifier`` again right before an agent's turn (or the
+        oracle's solve.sh), as the start's mount probe closed it (#1247).
+
+        The task's services are released just before that probe, so their own
+        start-up code (an entrypoint that, as root, gives the folder to the
+        image's user) can land after it, or inside the close itself. That is
+        the task's doing, not the agent's: the folder is closed again here
+        (:func:`~benchflow.sandbox._verifier_dir.close_again`: refused only
+        before the first turn). What the agent's turn does to it is handled by
+        the close before test.sh."""
+        from benchflow.sandbox._verifier_dir import close_again, close_verifier_dir_cmd
+
+        if getattr(self, "rollout_paths", None) is not None and getattr(
+            self, "_logs_are_mounted", False
+        ):
+            command = close_verifier_dir_cmd(
+                host_uid=os.getuid() if hasattr(os, "getuid") else 0,
+                host_owner=getattr(self, "_host_owner_in_sandbox", None),
+            )
+        else:
+            command = close_verifier_dir_cmd()
+        await close_again(
+            partial(exec_raw, self.exec, user="root", timeout_sec=10),
+            command,
+            first_turn=first_turn,
+            logger=getattr(self, "logger", logger),
         )
 
     def _docker_client_env(self) -> dict[str, str] | None:
@@ -1703,6 +1851,8 @@ class DockerSandbox(BaseSandbox):
                 project=project,
                 read_only_binds=self._bfx_read_only_binds(),
                 read_only_volumes=self._bfx_read_only_volumes(),
+                # The freezer's writable-cgroups on main is BenchFlow's own.
+                kept_freezer_main=compose_needs_kept_freezer(self),
             ),
             host_access=host_access,
             provided=provided,
@@ -1813,11 +1963,14 @@ class DockerSandbox(BaseSandbox):
             return [(source, BFX_DIR)]
         return []
 
-    def _check_bfx_mounts(self, inspected: dict[str, Any]) -> None:
-        """main as created (its inspect, from the bind proof every start and
-        restore takes before any task process or bfx runs): nothing but
-        BenchFlow's own read-only helper mount sits at or beneath /.bfx,
-        whatever put it there (bfx_delivery.mount_problems)."""
+    def _check_bfx_mounts(
+        self, inspected: dict[str, Any], *, service: str = "main"
+    ) -> None:
+        """main, or a service BenchFlow's waiter holds, as created (its
+        inspect, from the bind proof every start and restore takes before any
+        task process runs): nothing but BenchFlow's own read-only helper mount
+        sits at or beneath /.bfx, whatever put it there
+        (bfx_delivery.mount_problems)."""
         mode = getattr(self, "bfx_delivery", None)
         if mode is None:
             # No bfx runs here; the launch check still refuses such mounts.
@@ -1827,9 +1980,277 @@ class DockerSandbox(BaseSandbox):
         )
         if problems:
             raise RuntimeError(
-                f"main has mounts at or beneath {BFX_DIR}, where only "
+                f"{service} has mounts at or beneath {BFX_DIR}, where only "
                 f"BenchFlow's read-only bfx may be: {'; '.join(problems)}"
             )
+
+    async def _create_held(self, *options: str) -> None:
+        """Under BenchFlow's waiter, the held containers are made first
+        (``up --no-start``), and each passes :meth:`_before_held_start`
+        before any of them starts."""
+        created = _inert_bootstrap.up_args(self, *options, detach="--no-start")
+        if created is None:
+            return
+        await self._run_docker_compose_command(created)
+        await self._check_held_starts(
+            await compose_container_ids(self._run_docker_compose_command)
+        )
+
+    async def _check_held_starts(self, ids: list[str]) -> None:
+        """Before the held containers among *ids* start: each passes
+        :meth:`_before_held_start` (all at once)."""
+        held = getattr(self, "_hold_tokens", None) or {}
+        holds_none = await self._nesting_rule(ids)
+        checks = []
+        for cid in ids:
+            inspected = await self._inspect_container(cid)
+            service = ((inspected.get("Config") or {}).get("Labels") or {}).get(
+                "com.docker.compose.service"
+            )
+            if service in held:
+                checks.append(self._before_held_start(cid, inspected, holds_none))
+        try:
+            await _held_mounts.gather_all(*checks)
+        except _held_mounts.HeldStartRefused as exc:
+            raise _held_mounts.HeldStartRefused(
+                f"sandbox startup refused: {exc}; no held service started"
+            ) from None
+
+    async def _before_held_start(
+        self,
+        cid: str,
+        inspected: dict[str, Any] | None = None,
+        holds_none: Callable[[dict[str, Any] | None], str | None] | None = None,
+    ) -> None:
+        """Before every start of the held container *cid* (created or
+        stopped, so nothing runs in it): its mounts land nowhere on, beneath
+        or over /.bfx and not inside one another (_held_mounts), and the
+        /.bfx/bfx it would run holds the pinned bfx. Raises
+        :class:`~benchflow.sandbox._held_mounts.HeldStartRefused`."""
+        if self._bfx_arch is None:
+            return
+        if inspected is None:
+            inspected = await self._inspect_container(cid)
+        if holds_none is None:
+            holds_none = await self._nesting_rule(
+                await compose_container_ids(self._run_docker_compose_command)
+            )
+        service = ((inspected.get("Config") or {}).get("Labels") or {}).get(
+            "com.docker.compose.service", "main"
+        )
+        try:
+            self._check_bfx_mounts(inspected, service=service)
+        except RuntimeError as exc:
+            raise _held_mounts.HeldStartRefused(str(exc)) from None
+        await _held_mounts.check(
+            inspected,
+            lambda path: self._path_entry(cid, path),
+            own=self._own_mount,
+            holds_none=holds_none,
+        )
+        want = bfx_delivery.pinned_sha(self._bfx_arch)
+        transport = bfx_delivery.DockerTransport(
+            ["docker", *self._docker_args()], self._docker_process_env()
+        )
+        got = await transport.file_digest(cid, BFX_PATH)
+        if got != want:
+            raise _held_mounts.HeldStartRefused(
+                f"in service {service!r}, {BFX_PATH} is not BenchFlow's bfx "
+                f"(sha256 {got}, pinned {want})"
+            )
+
+    async def _nesting_rule(
+        self, ids: list[str]
+    ) -> Callable[[dict[str, Any] | None], str | None]:
+        """Why a mount of a held container may not hold another of its
+        service's mounts, or None when it may. It may when Docker made it
+        read-only (its inspect's RW), when nothing of the trial writes its
+        source (no writable mount of any container of *ids*, BenchFlow's own
+        included, at, above or below it: binds by real path, device and
+        inode, named volumes by name, a local volume bound to a host path as
+        that path), and, for a bind, when its source holds no other mount (a
+        read-only bind is read-only below only where the kernel makes it so).
+        A bind only where the daemon sees this machine's files."""
+        local = _daemon_sees_this_filesystem(self)
+        bound: dict[str, str | None] = {}
+
+        async def source(mount: dict[str, Any]) -> tuple[str, str] | None:
+            kind = mount.get("Type")
+            if kind == "bind":
+                return "path", os.path.realpath(str(mount.get("Source") or ""))
+            if kind == "volume":
+                name = str(mount.get("Name") or "")
+                if name not in bound:
+                    bound[name] = await self._volume_host_path(name)
+                path = bound[name]
+                return ("path", os.path.realpath(path)) if path else ("volume", name)
+            return None
+
+        keys: dict[tuple[Any, Any, Any], tuple[str, str] | None] = {}
+        writers: list[tuple[tuple[str, str], str]] = []
+        for cid in ids:
+            inspected = await self._inspect_container(cid)
+            service = ((inspected.get("Config") or {}).get("Labels") or {}).get(
+                "com.docker.compose.service", "main"
+            )
+            for mount in inspected.get("Mounts") or ():
+                if not isinstance(mount, dict):
+                    continue
+                key = await source(mount)
+                keys[_mount_id(mount)] = key
+                if key is not None and mount.get("RW") is not False:
+                    writers.append(
+                        (key, f"the mount at {mount.get('Destination')} of {service}")
+                    )
+        mounted = _host_mountpoints() if local else []
+
+        def holds_none(mount: dict[str, Any] | None) -> str | None:
+            if mount is None:
+                return "a tmpfs or a device may not hold another mount"
+            if mount.get("RW") is not False:
+                return "it is writable in its service"
+            key = keys.get(_mount_id(mount))
+            if key is None:
+                return f"a {mount.get('Type')} mount may not hold another"
+            if key[0] == "path" and not local:
+                return (
+                    "the daemon doesn't share this machine's files, so a "
+                    "read-only bind's source can't be checked"
+                )
+            if key[0] == "path" and any(
+                _held_mounts.beneath(point, key[1]) for point in mounted
+            ):
+                return (
+                    f"its source {key[1]} holds another mount, so it may not be "
+                    "read-only below"
+                )
+            for writer, who in writers:
+                if _same_or_nested_source(key, writer):
+                    return f"its source is written through {who}"
+            return None
+
+        return holds_none
+
+    async def _volume_host_path(self, name: str) -> str | None:
+        """The host folder a local volume binds (driver_opts ``device`` with
+        ``o: bind`` or ``type: none``), or None for a volume of its own."""
+        result = await self._docker_cli(
+            ["volume", "inspect", name], check=False, raw_output=True
+        )
+        try:
+            (volume,) = json.loads(result.stdout or "[]")
+        except (TypeError, ValueError):
+            return None
+        options = (volume or {}).get("Options") or {}
+        if (volume or {}).get("Driver") != "local" or not options.get("device"):
+            return None
+        flags = {f.strip() for f in str(options.get("o") or "").split(",")}
+        if "bind" in flags or "rbind" in flags or options.get("type") == "none":
+            return str(options["device"])
+        return None
+
+    def _own_mount(self, mount: dict[str, Any]) -> bool:
+        """Whether *mount* (an entry of a container's inspect ``Mounts``) is
+        one BenchFlow puts there itself, by its source and destination: bfx,
+        the log folders, the operator's ``--mount`` entries."""
+        values = self._env_vars.to_env_dict(include_os_env=False)
+        pairs = [
+            (values.get(f"ENV_{kind}_PATH"), values.get(f"HOST_{kind}_PATH"))
+            for kind in ("VERIFIER_LOGS", "AGENT_LOGS", "ARTIFACTS")
+        ]
+        pairs += [
+            (m.get("target"), m.get("source"))
+            for m in self._mounts_json or ()
+            if isinstance(m, dict)
+        ]
+        pairs.append((BFX_DIR, getattr(self, "_bfx_source", None)))
+        destination = mount.get("Destination")
+        name = mount.get("Name")
+        source = os.path.realpath(str(mount.get("Source") or ""))
+        return any(
+            destination == target
+            and (name == own or source == os.path.realpath(str(own)))
+            for target, own in pairs
+            if target and own
+        )
+
+    async def _path_entry(self, cid: str, path: str) -> _held_mounts.Entry:
+        """What *path* is in the created or stopped container *cid*: the
+        first member of ``docker cp``'s archive of it, the rest cut off."""
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            *self._docker_args(),
+            "cp",
+            f"{cid}:{path}",
+            "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=self._docker_process_env(),
+        )
+        assert process.stdout is not None
+        data = b""
+        entry = None
+        timed_out = False
+        try:
+            async with asyncio.timeout(_held_mounts.READ_SEC):
+                while entry is None and len(data) < _held_mounts.FIRST_MEMBER_LIMIT:
+                    chunk = await process.stdout.read(1 << 16)
+                    if not chunk:
+                        break
+                    data += chunk
+                    entry = _held_mounts.first_member(data)
+        except TimeoutError:
+            timed_out = True
+        finally:
+            # The rest of the archive is read and dropped: a pipe left unread
+            # would keep the process's exit from being reported.
+            said = await bfx_delivery.stop_process(process)
+        if timed_out:
+            raise _held_mounts.HeldStartUnread(
+                f"sandbox startup failed: reading {path} in the held container "
+                f"{cid[:12]} took over {_held_mounts.READ_SEC:g}s; the Docker "
+                "daemon did not answer"
+            )
+        if entry is not None:
+            return entry
+        if b"Could not find the file" in said or b"No such container:path" in said:
+            return "missing", ""
+        raise _held_mounts.HeldStartRefused(
+            f"cannot read {path} in the held container {cid[:12]} "
+            f"({said.decode(errors='replace').strip()[-200:]})"
+        )
+
+    async def _held_call(self, args: list[str]) -> ExecResult:
+        """One docker call of a held container's start, bounded by
+        :data:`_HELD_CALL_SEC` (the client is stopped when it runs over)."""
+        try:
+            return await asyncio.wait_for(
+                self._docker_cli(args, check=False, raw_output=True), _HELD_CALL_SEC
+            )
+        except TimeoutError:
+            raise RuntimeError(
+                f"docker {args[0]} did not answer within {_HELD_CALL_SEC:g}s; "
+                "the Docker daemon is not answering"
+            ) from None
+
+    async def _start_held_again(self, name: str, cid: str) -> None:
+        """BenchFlow's own start of the held *name*, which exited at start-up
+        and whose task's restart policy would start it again (Docker never
+        does: its policy is ``no``). The checks come first, the same
+        container starts (its state kept), and its binds are proven again
+        before anything of the task's runs. Raises HeldStartRefused when
+        the checks or the proof refuse it; the container stays down."""
+        await self._before_held_start(cid)
+        started = await self._held_call(["start", cid])
+        if getattr(started, "return_code", 1) != 0:
+            raise RuntimeError(
+                f"Cannot start task service {name!r} again; inspect the task logs"
+            )
+        try:
+            await _bind_targets.verify_one(self, cid, self._bind_baseline)
+        except RuntimeError as exc:
+            await self._held_call(["kill", cid])
+            raise _held_mounts.HeldStartRefused(str(exc)) from None
 
     async def _fill_bfx_volume(self) -> None:
         """Before any container starts: the volume the overlay names holds
@@ -2208,6 +2629,7 @@ class DockerSandbox(BaseSandbox):
                     if down is not None:
                         await down()
                     else:
+                        await self._kill_project_containers()
                         await self._run_docker_compose_command(
                             ["down", "--remove-orphans"]
                         )
@@ -2534,19 +2956,32 @@ class DockerSandbox(BaseSandbox):
                 )
 
         ticker = asyncio.create_task(heartbeat())
+        built = False
         try:
             yield
+            built = True
         finally:
             ticker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await ticker
             if self.image_build == "building":
-                self.image_build = "built"
-                self.logger.info(
-                    "Built the task image for %s in %s",
-                    self.environment_name,
-                    _elapsed(time.monotonic() - started),
-                )
+                took = _elapsed(time.monotonic() - started)
+                if built:
+                    self.image_build = "built"
+                    self.logger.info(
+                        "Built the task image for %s in %s",
+                        self.environment_name,
+                        took,
+                    )
+                else:
+                    # A build that failed is never shown as built: the live
+                    # cell goes back to the phase, the error says why.
+                    self.image_build = ""
+                    self.logger.info(
+                        "The task image for %s did not build (after %s)",
+                        self.environment_name,
+                        took,
+                    )
 
     async def _run_docker_compose_build(
         self, *, invocation: ComposeBuild | None = None
@@ -2631,6 +3066,8 @@ class DockerSandbox(BaseSandbox):
                     "--no-build",
                 )
                 if command is not None:
+                    if getattr(self, "_hold_tokens", None):
+                        await self._create_held("--no-build")
                     await self._run_docker_compose_command(command)
                 return
             except RuntimeError as exc:
@@ -2771,6 +3208,7 @@ class DockerSandbox(BaseSandbox):
                 # the first `up` the project (a name no other sandbox uses,
                 # _unique_compose_project_name) has nothing to remove.
                 with contextlib.suppress(RuntimeError):
+                    await self._kill_project_containers()
                     await self._run_docker_compose_command(["down", "--remove-orphans"])
 
             # Every volume Docker would make anonymous gets a name and the
@@ -2807,6 +3245,8 @@ class DockerSandbox(BaseSandbox):
                         "never",
                     )
                     if command is not None:
+                        if getattr(self, "_hold_tokens", None):
+                            await self._create_held("--no-build", "--pull", "never")
                         await self._run_docker_compose_command(command)
 
                 await self._up_on_own_subnets(recovery_up)
@@ -2852,6 +3292,7 @@ class DockerSandbox(BaseSandbox):
                 with contextlib.suppress(Exception):
                     await self._direct_down()
             else:
+                await self._kill_project_containers()
                 await self._run_docker_compose_command(
                     ["down", "--remove-orphans"], check=False
                 )
@@ -3064,15 +3505,43 @@ class DockerSandbox(BaseSandbox):
 
     async def _release_inert_bootstrap(self) -> None:
         direct = getattr(self, "_direct", None)
-        if direct is not None:
+        try:
+            if direct is not None:
+                await _inert_bootstrap.release(
+                    self,
+                    self._run_docker_compose_command,
+                    ids=await direct.container_ids(),
+                    start_native=direct.start,
+                    recover=self._cover_restarted_service,
+                )
+                return
             await _inert_bootstrap.release(
                 self,
                 self._run_docker_compose_command,
-                ids=await direct.container_ids(),
-                start_native=direct.start,
+                recover=self._cover_restarted_service,
             )
+        finally:
+            # main is looked up again after its release, as the release by
+            # Docker's kill did (a kill drops the cached id): BenchFlow's
+            # waiter is released with an exec, which keeps it.
+            self._main_container = None
+
+    async def _cover_restarted_service(self, name: str, cid: str) -> None:
+        """A held service Docker restarted at start-up, waiting in the
+        bootstrap again: its new network namespace gets its rules, from the
+        helper, before it is released again. Its record is keyed by the
+        container, so the old namespace's is dropped first. Nothing to cover
+        where the start covers nothing (its binds are what held it)."""
+        args = getattr(self, "_start_cover", None)
+        if not isinstance(args, dict):
             return
-        await _inert_bootstrap.release(self, self._run_docker_compose_command)
+        from benchflow.sandbox import service_cover
+
+        covered = getattr(self, "_start_covered_services", None)
+        covered = dict(covered) if isinstance(covered, dict) else {}
+        covered.pop(cid, None)
+        await service_cover.cover_task_services(self, covered=covered, **args)
+        self._start_covered_services = covered
 
     # -- The direct Docker path (_direct_docker, PERF-E) ---------------------
 
@@ -3302,6 +3771,7 @@ class DockerSandbox(BaseSandbox):
                     await plan.remove(plan.container, force=True)
                     plan.container = None
                 cid = await plan.create(service, files, replace=True)
+                await self._check_held_starts([cid])
                 await plan.start(cid)
                 break
             except RuntimeError as exc:
@@ -3405,7 +3875,8 @@ class DockerSandbox(BaseSandbox):
                 "from outside main, and its processes would have the cloud "
                 "metadata endpoints and the network open to them; only the "
                 "task's own opt-out (allow_cloud_metadata = true in its "
-                "[environment] table) on an open network starts it without them"
+                "[environment] table), granted by the run's --allow-cloud-metadata, "
+                "on an open network starts it without them"
             ) from exc
         self._rules_by_helper = True
 
@@ -3612,6 +4083,13 @@ class DockerSandbox(BaseSandbox):
         if helper is not None and helper.unavailable:
             return helper.unavailable
         return _metadata_helper.build_failure(self._helper_daemon())
+
+    @property
+    def metadata_rules_image(self) -> str:
+        """Where the helper image came from: "pulled" (the release's prebuilt
+        image), "built", or an earlier process's ("recorded:pulled",
+        "recorded:built"); "" when this process has none."""
+        return _metadata_helper.image_source(self._helper_daemon())
 
     def metadata_rules_close(self) -> None:
         """The block has its proof: remove the helper in the background."""
@@ -4403,15 +4881,18 @@ class DockerSandbox(BaseSandbox):
                 )
 
     async def _prepare_log_dirs_after_up(self) -> None:
-        """Make the mounted log folders writable and check the mount is shared.
+        """Make the mounted agent log folder writable, check the mount is
+        shared, and close ``/logs/verifier`` to the agent (#1247).
 
         The chmod runs as the default user, in one exec with that user's
         ``pwd`` and ``id -u``, which the sandbox keeps until it stops or is
-        restored (``start_with_identity_probe``, PY8 U12).
+        restored (``start_with_identity_probe``, PY8 U12). The default user
+        may not be root, so ``/logs/verifier`` is closed by root in the
+        mount probe's exec (:meth:`_probe_verifier_log_mount`).
         """
         await start_with_identity_probe(
             self,
-            f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}",
+            f"chmod 777 {SandboxPaths.agent_dir}",
             partial(exec_raw, self.exec),
             user=self._resolve_user(None),
             env=self._merge_env(None),
@@ -4821,6 +5302,7 @@ class DockerSandbox(BaseSandbox):
             pending.cancel()
         # Before main goes: the helper shares its network namespace.
         await self._close_metadata_helper()
+        await _inert_bootstrap.stop_exit_watch(self)
         # Bounded chown: a hung agent container will make `docker exec` block
         # forever. We don't need the chown to succeed for correctness — it just
         # makes host-side log reading nicer. Time out fast and continue to the
@@ -4844,8 +5326,9 @@ class DockerSandbox(BaseSandbox):
                 "Both `keep_containers` and `--delete` option are set. "
                 "keep_containers takes precedence."
             )
-        # Kept containers stop with `-t 5` (SIGKILL after 5 s instead of the
-        # default 10 s). Otherwise teardown kills every container at once and
+        # Kept containers are killed (SIGKILL), then stopped with `-t 5`: a
+        # held service's stop signal would be its release. Otherwise teardown
+        # kills every container at once and
         # removes them with `down -t 0` (_compose_teardown), then removes the
         # images this project built. Each call has a hard deadline. If the
         # daemon is wedged we fall through to a force-kill by compose project
@@ -4854,6 +5337,7 @@ class DockerSandbox(BaseSandbox):
         listing: asyncio.Future[ExecResult] | None = None
         try:
             if self._keep_containers:
+                await self._kill_project_containers()
                 await self._run_docker_compose_command(
                     ["stop", "-t", "5"], timeout_sec=90
                 )
@@ -5609,6 +6093,12 @@ class DockerSandbox(BaseSandbox):
         # commands get them back (capture_pid1_image_env).
         kit_snapshot = image.meta.get(_SNAPSHOT_KIT_META) == "1"
         entrypoint = f"{KIT_BIN}/sleep" if kit_snapshot else "/bin/sleep"
+        # main's own mount of bfx comes with the replayed host config.
+        token = (
+            secrets.token_hex(16)
+            if getattr(self, "bfx_delivery", None) is not None
+            else None
+        )
         had = _container_env(inspected)
         pid1_env: list[str] = []
         for env_name in SYSTEM_SHELL_EMPTY_VARS:
@@ -5633,16 +6123,28 @@ class DockerSandbox(BaseSandbox):
             *replayed,
             "--security-opt",
             "no-new-privileges:true",
-            *_inert_bootstrap.run_args(
-                shell=f"{KIT_BIN}/sh" if kit_snapshot else SYSTEM_SHELL
+            *(
+                ["--entrypoint", _inert_bootstrap.WAITER, "--no-healthcheck"]
+                if token is not None
+                else _inert_bootstrap.run_args(
+                    shell=f"{KIT_BIN}/sh" if kit_snapshot else SYSTEM_SHELL
+                )
             ),
             *pid1_env,
             "--label",
             f"{_inert_bootstrap.LABEL}={_inert_bootstrap.config_receipt(original)}",
             image.ref,
-            "-c",
-            _inert_bootstrap.restore_bootstrap(kit_snapshot),
-            "benchflow-restore",
+            *(
+                # BenchFlow's waiter holds it: nothing of the snapshot's runs
+                # before main's rule is in again.
+                ["hold", "--token", token, "--"]
+                if token is not None
+                else [
+                    "-c",
+                    _inert_bootstrap.restore_bootstrap(kit_snapshot),
+                    "benchflow-restore",
+                ]
+            ),
             entrypoint,
             "infinity",
         ]
@@ -5654,13 +6156,20 @@ class DockerSandbox(BaseSandbox):
             )
         replacement = result.stdout.strip()
         try:
-            await _inert_bootstrap.wait_ready(self, replacement)
+            await _inert_bootstrap.wait_ready(self, replacement, token=token)
             await self._verify_replacement_bind_targets(replacement, expected)
             # A new network namespace, without main's metadata rule: it goes
             # in again, proven, before the replacement's processes run
             # (the rule ledger's start entry becomes the replacement's).
             await self._cover_main_before_release(replacement)
-            await self._docker_cli(["kill", "--signal", "USR1", replacement])
+            if token is not None:
+                if await _inert_bootstrap._waiter(self, replacement, "release", token):
+                    raise RuntimeError(
+                        "Cannot release the restored main from BenchFlow's "
+                        "waiter; start a fresh trial"
+                    )
+            else:
+                await self._docker_cli(["kill", "--signal", "USR1", replacement])
         except BaseException:
             await self._docker_cli(["rm", "-f", replacement], check=False)
             raise
@@ -5839,6 +6348,10 @@ class DockerSandbox(BaseSandbox):
             return None
         state = inspected.get("State") or {}
         if state.get("Running") is not False:
+            return None
+        if str(state.get("StartedAt") or "").startswith("0001-01-01"):
+            # Never started (the stopped prototype): the start failed before
+            # main's release, for a reason of its own, which stands.
             return None
         configs = getattr(self, "_bootstrap_configs", None)
         config = configs.get("main") if isinstance(configs, dict) else None
@@ -6255,6 +6768,10 @@ class DockerSandbox(BaseSandbox):
         # (benchflow.sandbox._bounded_exec): bfx launch ahead of the route's
         # shell, or the shell text's own launch where bfx is not delivered.
         launch = _bounded_exec.launch_for(self, route, service)
+        # A command BenchFlow runs in a held service other than main runs
+        # only once that service is released: where its waiter still holds
+        # it, bfx runs nothing.
+        hold = () if container else _inert_bootstrap.run_if_released(self, service)
 
         if cwd:
             exec_command.extend(["-w", cwd])
@@ -6304,7 +6821,7 @@ class DockerSandbox(BaseSandbox):
             # root once the sandbox has one (C8).
             if launch == ():
                 inner = _bounded_exec.shell_launch(route.shell, inner, kit=route.kit)
-            return [*exec_command, *(launch or ()), route.shell, "-c", inner]
+            return [*exec_command, *hold, *(launch or ()), route.shell, "-c", inner]
 
         # The env goes on the exec's stdin (wrap_command_with_env_stdin): no
         # value on the host's or the container's command lines, no size limit
@@ -6363,9 +6880,21 @@ class DockerSandbox(BaseSandbox):
         if removed:
             # The bare names must not be filled in from Compose's environment.
             extra["unset_env"] = removed
-        return await self._run_docker_compose_command(
+        result = await self._run_docker_compose_command(
             exec_command, check=False, timeout_sec=timeout_sec, **extra
         )
+        if (
+            hold
+            and result.return_code in _inert_bootstrap.REFUSED_EXEC
+            and await _inert_bootstrap.waits_in_hold(self, service)
+        ):
+            _inert_bootstrap.note_held_refusal(self, service, result.return_code)
+            self.logger.warning(
+                "service %r waits in the hold again: BenchFlow's command there "
+                "did not run",
+                service,
+            )
+        return result
 
     async def _exec_on_channel(
         self,

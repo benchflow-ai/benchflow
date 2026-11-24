@@ -185,9 +185,13 @@ def test_directory_override_wins_over_source(source_dir, monkeypatch, tmp_path):
 
 
 def test_directory_override_activates_before_builtin_lookup(source_dir, monkeypatch):
-    """Guards PR #1090 local overrides of directly resolvable built-ins."""
+    """Guards PR #1090 local overrides of directly resolvable built-ins. A
+    manifest that differs from the core agent replaces it only when asked for
+    by name (never silently; test_agent_manifest_validate has the
+    default)."""
     root, _registered = source_dir
     monkeypatch.setenv(remote_manifests.AGENTS_DIR_ENV, str(root))
+    monkeypatch.setenv(remote_manifests.OVERRIDE_CORE_ENV, "1")
     _write_manifest(root, "mimo", "mimo")
 
     config = resolve_agent("mimo")

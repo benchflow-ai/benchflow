@@ -1661,7 +1661,14 @@ class RemoteDockerSandbox(DockerSandbox):
         await super().start(force_build)
 
     async def _prepare_log_dirs_after_up(self) -> None:
-        """Create the log folders in the container; nothing is mounted."""
+        """Create the log folders in the container; nothing is mounted.
+        ``/logs/verifier`` is root's 0755, checked (#1247); the others are
+        writable by every user."""
+        from benchflow.sandbox._verifier_dir import (
+            check_verifier_dir,
+            close_verifier_dir_cmd,
+        )
+
         dirs = " ".join(
             str(p)
             for p in (
@@ -1670,14 +1677,19 @@ class RemoteDockerSandbox(DockerSandbox):
                 SandboxPaths.artifacts_dir,
             )
         )
+        open_dirs = f"{SandboxPaths.agent_dir} {SandboxPaths.artifacts_dir}"
         result = await exec_raw(
-            self.exec, f"mkdir -p {dirs} && chmod 777 {dirs}", user="root"
+            self.exec,
+            f"mkdir -p {dirs} && chmod 777 {open_dirs} || exit $?; "
+            f"{close_verifier_dir_cmd()}",
+            user="root",
         )
         if result.return_code != 0:
             raise RuntimeError(
                 f"could not create the log folders in the remote container: "
                 f"{diagnostic_result(result).stdout.render() or diagnostic_result(result).stderr.render()}"
             )
+        check_verifier_dir(getattr(result, "stdout", "") or "")
         self._logs_are_mounted = False
 
     async def _chown_to_host_user(

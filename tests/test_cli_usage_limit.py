@@ -68,7 +68,7 @@ def test_a_stopped_job_is_reported_and_exits_1(tmp_path, monkeypatch):
     )
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert "Score: 0/1" in result.output
+    assert "0/1 passed" in result.output  # the run's final screen
     assert "Traceback" not in result.output
 
 

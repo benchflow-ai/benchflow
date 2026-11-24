@@ -457,6 +457,14 @@ _NOT_SECRET_NAMES = frozenset(
         ("attempt", "key"),
         ("idempotency", "key"),
         ("atif", "session", "id"),
+        # The record of which operator credentials a trial staged (names,
+        # never values), and the run flag that accepts task processes beside
+        # them.
+        ("operator", "credentials"),
+        ("allow", "task", "processes", "with", "credentials"),
+        # The names the operator scoped to the run (--scoped-credential).
+        ("scoped", "credentials"),
+        ("scoped", "credential"),
     }
 )
 #: A provider's word. Anywhere in the name it keeps the tokenizer and id

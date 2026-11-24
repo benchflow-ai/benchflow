@@ -1,0 +1,22 @@
+# Differences from Harbor 0.26.0's oracle that the 0.10.0rc4 gate read and accepted, each with its reason.
+# A difference passes only with both values as written here; any other value of the same task is a regression.
+
+[[accepted]]
+key = "algotune/algotune-robust-kalman-filter"
+benchflow = 1.0
+harbor = 1.0079
+reason = "test.sh's own reward is the measured speedup, floored at 1.0 on slower hardware (0.996x on the gate's VM); never 0"
+
+# Unscored where Harbor scores, for a reason that is the task's, not BenchFlow's.
+
+[[unscored]]
+pattern = "TaskConfigKeyError: .*unknown task\\.toml key"
+reason = "a Harbor-format task.toml key BenchFlow refuses (sandbox.resources.cpus, verifier.parser_name, verifier.restart_environment)"
+
+[[unscored]]
+pattern = "Oracle requires oracle/solve\\.sh or legacy solution/solve\\.sh"
+reason = "the task ships no reference solution"
+
+[[unscored]]
+pattern = "task refused before the turn"
+reason = "on BenchFlow's refusal list (src/benchflow/task/refused_tasks.json)"

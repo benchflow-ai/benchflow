@@ -12,6 +12,12 @@ counts add up in ``killed_total``, so a later empty kill cannot hide earlier
 work. ``killed`` is the latest kill's own count (K2), and ``quiesce_killed``
 is the turn-end share (K1). Outside such a block (a soft verify
 between rounds) nothing is recorded.
+
+In integrity audit and off there is no kill before grading: the agent's
+processes live through it, and the quiesce after it ends them. That quiesce
+writes ``kill-after-grading.json`` beside, with the same ``user``,
+``killed`` and ``killed_total``, and the processes it ended
+(:mod:`benchflow.sandbox._quiesce_listing`).
 """
 
 from __future__ import annotations
@@ -25,6 +31,8 @@ from typing import Any
 
 #: The file in the trial folder.
 KILL_BEFORE_GRADING_RECORD = "kill-before-grading.json"
+#: The record of the quiesce after grading (audit and off), beside it.
+KILL_AFTER_GRADING_RECORD = "kill-after-grading.json"
 
 _current: ContextVar[dict[str, Any] | None] = ContextVar(
     "benchflow_kill_before_grading", default=None
@@ -54,10 +62,19 @@ def record_kill_before_grading(sandbox_user: str, killed: int) -> None:
         record["killed"] = killed
 
 
-def write_kill_record(rollout_dir: str | Path, record: dict[str, Any]) -> None:
-    """Write ``record`` to ``kill-before-grading.json`` in the trial folder."""
-    path = Path(rollout_dir) / KILL_BEFORE_GRADING_RECORD
-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+def write_kill_record(
+    rollout_dir: str | Path,
+    record: dict[str, Any],
+    name: str = KILL_BEFORE_GRADING_RECORD,
+) -> None:
+    """Write ``record`` to ``kill-before-grading.json`` (or *name*) in the
+    trial folder, the credentials BenchFlow staged for the trial masked: a
+    process's command line can hold one (``_utils.staged_secrets``)."""
+    from benchflow._utils import staged_secrets
+
+    path = Path(rollout_dir) / name
+    text = json.dumps(record, indent=2, sort_keys=True)
+    path.write_text(staged_secrets.mask(text) + "\n")
 
 
 def record_kept_services(

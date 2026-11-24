@@ -302,7 +302,7 @@ def test_publication_waits_for_the_tagged_commits_tests() -> None:
     for name, job in jobs.items():
         commands = " ".join(step.get("run", "") for step in job.get("steps", []))
         if "uv publish" in commands or "gh release" in commands:
-            assert job["needs"] == ["tests"], name
+            assert job["needs"] == ["tests", "gate-receipts"], name
             condition = job["if"]
             assert condition.startswith("success() &&"), name
             for status in ("always()", "failure()", "cancelled()"):

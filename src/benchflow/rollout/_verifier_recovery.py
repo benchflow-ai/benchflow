@@ -35,7 +35,10 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.task_authoring import task_digest
 from benchflow._utils.text import describe_exception
-from benchflow._utils.trial_warnings import recording_trial_warnings
+from benchflow._utils.trial_warnings import (
+    keep_trial_warnings,
+    recording_trial_warnings,
+)
 from benchflow._verifier_setup import recorded_verifier_setup_timeout
 from benchflow.agents.registry import is_scripted_agent
 from benchflow.contracts import default_rollout_planes
@@ -683,8 +686,7 @@ async def _recover_verifier(
                 # The recovery's LLM judge calls: a re-score (`bench eval
                 # score`) publishes them with the solver's.
                 record["judge_usage"] = judge_usage.usage_block(judged)
-                kept = vars(rollout).setdefault("_warnings", [])
-                kept.extend(w for w in warnings if w not in kept)
+                keep_trial_warnings(rollout, warnings)
         # Keep the raw out-of-range number the recovery verifier wrote, as
         # the first verification does (reward_out_of_range_info).
         diagnostics = getattr(rollout, "_diagnostics", None)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+from typing import Any
 
 import pytest
 
@@ -23,10 +24,13 @@ ALIVE = {
 }
 NONE_ALIVE = {"flags": [], "changes": [], "after": {"taken": "post-turn"}}
 RAN = {"ran": True, "why": None, "links": []}
+#: Rule S's records (sandbox/_agent_alive.py).
+NOT_ALIVE = {"user": "agent", "uid": 1000, "alive": False, "by": "ionice", "why": None}
+STILL_ALIVE = {"user": "agent", "uid": 1000, "alive": True, "by": "ionice", "why": None}
 
 
 def _verdict(**given):
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "agent": "claude-agent-acp",
         "sandbox_user": None,
         "record": NONE_ALIVE,
@@ -105,9 +109,16 @@ def test_verified_with_links_unchecked_is_impossible():
             assert all(c["ran"] and c["passed"] for c in found["checks"]), found
 
 
-def test_an_agent_user_and_the_oracle_are_not_marked_for_processes():
-    assert _verdict(record=ALIVE, sandbox_user="agent")["verdict"] == "verified"
-    assert _verdict(record=ALIVE, agent="oracle")["verdict"] == "verified"
+def test_an_agent_user_is_not_marked_for_processes_and_the_oracle_is():
+    """An agent user's processes are rule S's (asked, none alive); the
+    oracle's are listed as a root agent's are (#1247)."""
+    assert (
+        _verdict(record=ALIVE, sandbox_user="agent", alive_at_test=NOT_ALIVE)["verdict"]
+        == "verified"
+    )
+    found = _verdict(record=ALIVE, agent="oracle")
+    assert found["verdict"] == "unverifiable", found
+    assert found["reasons"] == [provenance.ORACLE_PROCESSES], found
 
 
 def test_a_folder_not_closed_or_a_link_left_is_unverifiable():
@@ -200,3 +211,124 @@ def test_a_backend_with_no_bfx_route_says_so_in_plain_words():
     assert why.startswith(links.BFX_UNAVAILABLE), why
     assert "Modal can't run BenchFlow's integrity check yet" in why, why
     assert "Docker or Daytona" in why, why
+
+
+# -- rule S (C3) ------------------------------------------------------------------------------------------------------
+
+
+def test_s_a_process_of_the_agent_s_alive_at_test_sh_keeps_the_reward_unverifiable():
+    """Rule S: a non-root agent's process alive when test.sh started reads `unverifiable` with the reason and the
+    record; none alive reads `verified`. Root agents keep `root-agent-processes`; the oracle is asked only when its
+    solve.sh ran as the task's `[agent].user` (#1247).
+
+    Mutant: rule S's question skipped."""
+    from benchflow.sandbox import _agent_alive
+
+    found = _verdict(sandbox_user="agent", alive_at_test=STILL_ALIVE)
+    assert found["verdict"] == "unverifiable", found
+    assert found["reasons"] == [_agent_alive.ALIVE], found
+    row = next(c for c in found["checks"] if c["check"] == _agent_alive.CHECK)
+    assert row["ran"] is True and row["passed"] is False and "uid 1000" in row["why"], (
+        row
+    )
+    assert found["alive_at_test"] == STILL_ALIVE, found
+    assert (
+        _verdict(sandbox_user="agent", alive_at_test=NOT_ALIVE)["verdict"] == "verified"
+    )
+    found = _verdict(alive_at_test=STILL_ALIVE)
+    assert _agent_alive.CHECK not in [c["check"] for c in found["checks"]], found
+    found = _verdict(agent="oracle")
+    assert _agent_alive.CHECK not in [c["check"] for c in found["checks"]], found
+    found = _verdict(sandbox_user="agent", agent="oracle", alive_at_test=STILL_ALIVE)
+    assert found["verdict"] == "unverifiable", found
+    assert found["alive_at_test"] == STILL_ALIVE, found
+
+
+@pytest.mark.parametrize(
+    "asked",
+    [
+        None,
+        {
+            "user": "agent",
+            "alive": None,
+            "why": "whether ... could not be told: PID 1 runs as the agent's uid",
+        },
+    ],
+    ids=["not-made", "unanswered"],
+)
+def test_s_a_question_not_made_or_unanswered_is_never_verified(asked):
+    """Fail closed: rule S's question not made (a verify that ended before it) or unanswered is a check that did
+    not run, `unverifiable` with its reason; never `verified`. It never zeroes the reward (only a link check
+    does)."""
+    from benchflow.rollout import _grading_outcome
+
+    found = _verdict(sandbox_user="agent", alive_at_test=asked)
+    assert found["verdict"] == "unverifiable", found
+    (reason,) = found["reasons"]
+    assert reason.startswith("the agent-processes-at-test check could not run ("), (
+        reason
+    )
+    assert _grading_outcome.incomplete_reason(found) is None, found
+
+
+def _final(provenance, reward=1.0):
+    from benchflow.rollout import _grading_outcome
+
+    return _grading_outcome.final_outcome(
+        _grading_outcome.Attempt(
+            rewards={"reward": reward},
+            verifier_error=None,
+            diagnostic=None,
+            test_sh_reward=True,
+            provenance=provenance,
+            agent="claude-agent-acp",
+            sandbox_user="agent",
+        )
+    )
+
+
+def test_s_keeps_the_reward_test_sh_wrote():
+    """Rule S stops a `verified`, never a score: the reward test.sh wrote is kept."""
+    rewards, error, _ = _final(
+        _verdict(sandbox_user="agent", alive_at_test=STILL_ALIVE)
+    )
+    assert rewards == {"reward": 1.0} and error is None
+
+
+@pytest.mark.parametrize(
+    "how", ["walk-incomplete", "link-after-grading", "link-not-removed"]
+)
+def test_s_never_overrides_a_link_check_s_own_outcome(how):
+    """Precedence: a link check that could not run, or that found a link, keeps its own outcome (the Q6 0), even
+    with the agent's process alive at test.sh; rule S applies only where the trial would otherwise read
+    `verified`.
+
+    Mutant: the precedence flipped (rule S's kept reward over the Q6 0)."""
+    from benchflow._utils.scoring import PROVENANCE_INCOMPLETE
+    from benchflow.rollout import _grading_outcome
+
+    link = {"path": "/app/x", "target": "/logs/verifier/reward.txt", "removed": False}
+    given: dict[str, Any] = {
+        "walk-incomplete": {
+            "links_before": {
+                "ran": False,
+                "why": "1 name vanished during the walk",
+                "links": [],
+            }
+        },
+        "link-after-grading": {
+            "links_after": {"ran": True, "why": None, "links": [link]}
+        },
+        "link-not-removed": {
+            "links_before": {"ran": True, "why": None, "links": [link]}
+        },
+    }[how]
+    provenance = _verdict(sandbox_user="agent", alive_at_test=STILL_ALIVE, **given)
+    rewards, error, _ = _final(provenance)
+    assert rewards == {"reward": 0.0} and error is None, provenance
+    assert provenance["outcome"] == PROVENANCE_INCOMPLETE, provenance
+    assert provenance["outcome_reason"] in (
+        _grading_outcome.NOT_COMPLETE + " (1 name vanished during the walk)",
+        _grading_outcome.APPEARED,
+        _grading_outcome.NOT_REMOVED,
+    ), provenance

@@ -1,0 +1,8 @@
+Resumed: 1 finished trial(s) kept, 1 ran now
+Task  Outcome  Reward  Cost  Tokens  Time
+0     passed        1  $0         —   40s
+1     passed        1  $0         —   41s
+
+Score       Model cost  Tokens  Wall time
+2/2 passed  $0          —       1m 10s (this run)
+Results: jobs/2026-11-18__03-30-13/

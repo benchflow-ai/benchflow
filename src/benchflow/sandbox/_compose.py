@@ -106,6 +106,28 @@ def compose_definition_path(environment_dir: Path) -> Path | None:
     return None
 
 
+def unread_compose_file(environment_dir: Path) -> Path | None:
+    """A compose file of the task's that the Docker and remote Docker
+    backends never read: one of the other names (``docker-compose.yml``, ``compose.yaml``,
+    ``compose.yml``) where there is no ``docker-compose.yaml``, which is the
+    only one stacked (:func:`compose_file_paths`)."""
+    if (environment_dir / COMPOSE_DEFINITION_NAMES[0]).is_file():
+        return None
+    for name in COMPOSE_DEFINITION_NAMES[1:]:
+        if (environment_dir / name).is_file():
+            return environment_dir / name
+    return None
+
+
+def unread_compose_warning(path: Path) -> str:
+    """The start's warning and the trial's record line for :func:`unread_compose_file`."""
+    return (
+        f"environment/{path.name} is not read: on Docker BenchFlow reads only "
+        "environment/docker-compose.yaml, so this task runs as main alone, "
+        "without the services that file declares"
+    )
+
+
 def compose_file_paths(
     environment_dir: Path,
     config: SandboxConfig,

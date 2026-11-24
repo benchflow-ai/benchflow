@@ -145,7 +145,7 @@ Credential scrubbing was chosen over refusing the sandbox layer: each child star
 
 Custody: in-place children hold the parent's mounted log entries aside under the fork directory. Parent entries and mutable result state (timing, native usage, solver recovery markers) are restored after a child or environment restore failure when the child was quiesced. If disconnect or provider cleanup cannot finish within its grace period, the entries stay held and world restore is deferred (`parent_restore: deferred`). The rollout keeps an unsafe-world marker and refuses further work; a failed parent restore does the same. Child artifact links appear only after observation writing and custody succeed. A `tree.json` publication failure keeps the previous valid file.
 
-Already-active shared provider runtimes are rejected before branching: background callback writers and cumulative usage need a runtime fork contract. The bounded custody path supports native-subscription and provider-free continuations; it is not general proxy-runtime isolation.
+A fork hands an active BenchFlow LiteLLM proxy off before the checkpoint, as a Scene role switch does: the proxy stops (its background callback writer ends and its final log is imported), it stays in the rollout's retired runtimes so the trial's cumulative usage and budget keep its calls, and the agent env goes back to the controller-held env the first connect started from. Each child and the parent's continuation start their own proxy; an in-place child's starts with none of the parent's before it. A runtime with no controller-held env (not BenchFlow's LiteLLM proxy) is still rejected before branching.
 
 ## Next steps
 

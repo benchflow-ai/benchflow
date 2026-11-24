@@ -120,6 +120,9 @@ def test_a_team_key_is_found_in_any_case_and_inside_a_branch_name(team, spell):
         "openai/gpt-oss-120b and gpt-oss-20b",
         "locale en-US, en_12, pen-12, OPEN-12, token-12, BEN-3, EN-12a",
         "SHA-256, UTF-8, ISO-8601",
+        # A benchmark's own zero-padded ids (gate 1's mmmlu/bn-bd-00018): a
+        # tracker numbers its issues from 1, never with a leading zero.
+        "mmmlu/bn-bd-00018, en-0001, oss-007",
     ],
     ids=[
         "labels",
@@ -129,6 +132,7 @@ def test_a_team_key_is_found_in_any_case_and_inside_a_branch_name(team, spell):
         "model-names",
         "near-misses",
         "standards",
+        "zero-padded-ids",
     ],
 )
 def test_text_that_only_looks_like_a_key_is_not_one(tmp_path, text):

@@ -29,9 +29,45 @@ jobs:
   # without them: a flaky failure is re-run from the run's page ("Re-run
   # failed jobs", kept in the run's history with who started it); a real one
   # is fixed on main and released as a new version.
+  # The gate runs on the accepted source that the acceptance record names
+  # (schema 2): each passed, is the workflow its name stands for, and ran on
+  # that commit or one whose diff from it is the version alone
+  # (tools/check_gate_receipts.py). The runs are in the private repository;
+  # without GATE_RECEIPTS_TOKEN (actions:read there) the check is skipped
+  # with a warning on the run's page, and the release owner checks each gate
+  # link by hand (docs/contributing/release-checklist.md).
+  gate-receipts:
+    name: Gate receipts of the accepted source
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi-public
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Check the gate runs the acceptance record names
+        env:
+          GATE_RECEIPTS_TOKEN: ${{ secrets.GATE_RECEIPTS_TOKEN }}
+        run: uv run --with packaging --no-project python tools/check_gate_receipts.py
+
   publish:
     name: Publish public release
-    needs: [tests]
+    needs: [tests, gate-receipts]
     if: success() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi-public
@@ -42,7 +78,7 @@ jobs:
 
     steps:
       - name: Check out tag
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           fetch-depth: 0
 

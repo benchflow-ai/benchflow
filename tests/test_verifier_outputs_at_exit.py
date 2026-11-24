@@ -50,7 +50,8 @@ def test_the_copy_at_exit_goes_back_and_each_change_is_a_flag(tmp_path):
     (trial / "verifier" / "verifier-network.json").write_text("{}")
     written = {"verifier-network.json": b"{}"}
 
-    flags = vo.put_back(trial, taken, written)
+    # The pass after the sandbox's stop: the first one only names a plant.
+    flags = vo.put_back(trial, taken, written, remove=True)
     vo.record_flags(trial, flags)
 
     assert (trial / "verifier" / "reward.txt").read_text() == "0\n"
@@ -67,7 +68,7 @@ def test_the_copy_at_exit_goes_back_and_each_change_is_a_flag(tmp_path):
     assert record["status"] == "flagged"
     assert record["sections"]["verifier_output"]["flags"] == 3
     # Restoring again finds nothing and adds no flag twice.
-    assert vo.put_back(trial, taken, written) == []
+    assert vo.put_back(trial, taken, written, remove=True) == []
     vo.record_flags(trial, flags)
     again = json.loads((trial / "integrity" / "verifier-inputs.json").read_text())
     assert len(again["flags"]) == 3

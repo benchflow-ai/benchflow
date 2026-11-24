@@ -114,7 +114,14 @@ def test_every_script_step_is_well_formed():
                 # The model refusing (fake_llm.plan_reply): no text, no tool.
                 assert step == {"refusal": True}, (name, step)
                 continue
-            assert set(step) <= {"text", "tool", "input", "delay_sec"}, (name, step)
+            assert set(step) <= {
+                "text",
+                "tool",
+                "input",
+                "delay_sec",
+                "side_delay_sec",
+                "side_hold_sec",
+            }, (name, step)
             # Text on every step: the scenario checks count one agent
             # message per model call.
             assert step.get("text"), (name, step)
@@ -122,6 +129,20 @@ def test_every_script_step_is_well_formed():
             # A slow model's pause (fake_llm.script_delay)
             delay = step.get("delay_sec", 0)
             assert isinstance(delay, int | float) and delay >= 0, (name, step)
+        # Side-call timing (fake_llm.side_timing) is the first step's.
+        assert not any(
+            {"side_delay_sec", "side_hold_sec"} & set(step) for step in steps[1:]
+        ), name
+
+
+def test_a_side_call_takes_its_scripts_timing():
+    def title(script: str) -> list[dict]:
+        return [{"role": "user", "content": f"<session>Go. [[fake-llm:{script}]]"}]
+
+    assert fake.side_timing(title("slow-title"), SCRIPTS) == (3, 0)
+    assert fake.side_timing(title("held-title"), SCRIPTS) == (0, 3)
+    assert fake.side_timing(title("hello-pass"), SCRIPTS) == (0, 0)
+    assert fake.side_timing([{"role": "user", "content": "none"}], SCRIPTS) == (0, 0)
 
 
 def _post(url: str, body: dict) -> tuple[int, str, str]:

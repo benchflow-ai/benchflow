@@ -997,6 +997,27 @@ def _at_readlink(name, directory):
     return os.readlink(name, dir_fd=directory)
 
 
+#: Told of each completed write through a held capability: (the anchor's
+#: folder, the names below it, the bytes written or None for a tree or a
+#: rename). benchflow.task.verifier_outputs notes BenchFlow's own writes to a
+#: trial's verifier/ after test.sh's exit this way (#1247).
+WriteObserver = Callable[[Path, tuple[str, ...], "bytes | None"], None]
+_WRITE_OBSERVERS: list[WriteObserver] = []
+
+
+def observe_writes(observer: WriteObserver) -> None:
+    """Call *observer(folder, parts, data)* after every write, publish and
+    rename through a :class:`ReachablePath`; it must not raise."""
+    if observer not in _WRITE_OBSERVERS:
+        _WRITE_OBSERVERS.append(observer)
+
+
+def _wrote(target: ReachablePath, data: bytes | None) -> None:
+    for observer in _WRITE_OBSERVERS:
+        with contextlib.suppress(Exception):
+            observer(target._anchor.path, target._parts, data)
+
+
 class ReachablePath:
     """A held directory and names under it, deliberately NOT an os.PathLike.
 
@@ -1259,6 +1280,7 @@ class ReachablePath:
             source.write(payload)
             source.seek(0)
             _publish_stream(source, self, mode=mode, refuse_special=refuse_special)
+        _wrote(self, payload)
 
     def write_text(
         self,
@@ -1322,6 +1344,7 @@ class ReachablePath:
                     parents=False,
                     refuse_special=refuse_special,
                 )
+            _wrote(self, None)
             return
         _install(
             source,
@@ -1331,6 +1354,7 @@ class ReachablePath:
             refuse_special=refuse_special,
             root_fd=self._anchor.fd,
         )
+        _wrote(self, None)
 
     def publish_entries(self, source: Path) -> None:
         for child in sorted(source.iterdir()):
@@ -1353,6 +1377,7 @@ class ReachablePath:
         if isinstance(target, ReachablePath):
             with self._folders() as source, target._folders(parents=True) as dest:
                 _at_rename(self.name, target.name, source[-1], dest[-1])
+            _wrote(target, None)
         else:
             # A private custody destination; never used to publish shared data.
             with self._folders() as source:

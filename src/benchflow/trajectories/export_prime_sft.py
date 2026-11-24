@@ -11,7 +11,7 @@ exporters.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -381,35 +381,142 @@ def _normalize_tool_call(
     }
 
 
+#: How each tool the request declares is named in the export, with the one
+#: string parameter a custom call's input becomes (None: the tool takes no
+#: single string). See :func:`_declared_tools`.
+_Declared = Mapping[str, str | None]
+
+
+def _one_string_parameter(schema: Any) -> str | None:
+    """The parameter of a schema taking exactly one required string, else None."""
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if (
+        isinstance(properties, dict)
+        and len(properties) == 1
+        and schema.get("required") == list(properties)
+    ):
+        ((name, spec),) = properties.items()
+        if isinstance(spec, dict) and spec.get("type") == "string":
+            return str(name)
+    return None
+
+
+def _declared_tools(request_body: dict[str, Any]) -> dict[str, str | None]:
+    """The request's tools by the name their calls take in the export, each
+    with the parameter a custom call's freeform input becomes: ``input`` for
+    a Responses ``custom`` tool (:func:`_custom_tool_definition`); for a
+    function of exactly one required string, that string, which is the form
+    LiteLLM's Responses-to-chat bridge sends a custom tool upstream
+    (``apply_patch(content)``); None for any other tool. A name declared
+    twice keeps its first declaration (and is refused as ``custom`` when one
+    of them is a custom tool)."""
+    tools = request_body.get("tools") or request_body.get("tool_defs") or []
+    declared: dict[str, str | None] = {}
+    for tool in tools if isinstance(tools, list) else []:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "custom":
+            declared.setdefault(str(tool.get("name")), "input")
+        elif tool.get("type") == "namespace":
+            for member in tool.get("tools") or []:
+                if isinstance(member, dict) and member.get("type") == "function":
+                    declared.setdefault(
+                        f"{tool.get('name')}.{member.get('name')}",
+                        _one_string_parameter(member.get("parameters")),
+                    )
+        else:
+            function = tool.get("function")
+            function = function if isinstance(function, dict) else tool
+            declared.setdefault(
+                str(function.get("name")),
+                _one_string_parameter(
+                    function.get("parameters", function.get("input_schema"))
+                ),
+            )
+    return declared
+
+
+def _responses_tool_call(
+    item: dict[str, Any], declared: _Declared | None = None
+) -> dict[str, Any]:
+    """A Responses ``function_call`` or ``custom_tool_call`` item as a chat
+    tool call, named and shaped as the request declares the tool
+    (:func:`_declared_tools`). A custom call's freeform input becomes the one
+    string argument of the function its tool is exported as: ``input`` for a
+    Responses custom tool, the bridged function's own parameter otherwise. A
+    call into a namespace is named ``namespace.name``, or ``namespace__name``
+    where only that is declared (the bridge's names)."""
+    declared = declared or {}
+    name = item.get("name")
+    namespace = item.get("namespace")
+    if isinstance(namespace, str) and namespace and isinstance(name, str):
+        dotted, joined = f"{namespace}.{name}", f"{namespace}__{name}"
+        name = joined if joined in declared and dotted not in declared else dotted
+    if item.get("type") == "custom_tool_call":
+        arguments: Any = {declared.get(str(name)) or "input": item.get("input")}
+    else:
+        arguments = item.get("arguments", {})
+    return {
+        "id": item.get("call_id") or item.get("id"),
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+#: A custom tool's one parameter, as its exported function takes it.
+_CUSTOM_TOOL_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {"input": {"type": "string"}},
+    "required": ["input"],
+    "additionalProperties": False,
+}
+
+
+def _custom_tool_definition(tool: dict[str, Any]) -> dict[str, Any]:
+    """A Responses ``custom`` tool as a function tool with one string
+    parameter, ``input``. ``custom`` keeps the original definition's format
+    (a grammar, or text) verbatim, which marks the tool: a call to it inverts
+    to ``custom_tool_call`` with ``input`` exactly."""
+    return {
+        "type": "function",
+        "function": {
+            "name": str(tool["name"]),
+            "description": tool.get("description", ""),
+            "parameters": deepcopy(_CUSTOM_TOOL_PARAMETERS),
+        },
+        "custom": {key: tool[key] for key in ("format",) if key in tool},
+    }
+
+
 def _normalize_message(
     message: dict[str, Any],
     index: int,
     *,
     redact: bool = True,
     synthetic_ids: bool = True,
+    declared: _Declared | None = None,
 ) -> dict[str, Any]:
     message_type = message.get("type")
-    if message_type in {"function_call", "tool_call"}:
+    if message_type in {"function_call", "tool_call", "custom_tool_call"}:
         return {
             "role": "assistant",
             "content": "",
             "tool_calls": [
                 _normalize_tool_call(
-                    {
-                        "id": message.get("call_id") or message.get("id"),
-                        "type": "function",
-                        "function": {
-                            "name": message.get("name"),
-                            "arguments": message.get("arguments", {}),
-                        },
-                    },
+                    _responses_tool_call(message, declared),
                     index,
                     redact=redact,
                     synthetic_ids=synthetic_ids,
                 )
             ],
         }
-    if message_type in {"function_call_output", "tool_call_output"}:
+    if message_type in {
+        "function_call_output",
+        "tool_call_output",
+        "custom_tool_call_output",
+    }:
         return {
             "role": "tool",
             "tool_call_id": str(message.get("call_id") or message.get("id") or ""),
@@ -483,7 +590,11 @@ def prime_sft_last_user_training_window(
 
 
 def _messages_from_chat_request(
-    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
+    body: dict[str, Any],
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
+    declared: _Declared | None = None,
 ) -> list[dict[str, Any]]:
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -559,13 +670,23 @@ def _messages_from_chat_request(
                     )
                 continue
         normalized.append(
-            _normalize_message(message, idx, redact=redact, synthetic_ids=synthetic_ids)
+            _normalize_message(
+                message,
+                idx,
+                redact=redact,
+                synthetic_ids=synthetic_ids,
+                declared=declared,
+            )
         )
     return normalized
 
 
 def _messages_from_responses_request(
-    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
+    body: dict[str, Any],
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
+    declared: _Declared | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     instructions = body.get("instructions")
@@ -582,7 +703,11 @@ def _messages_from_responses_request(
             if item.get("type") != "reasoning":
                 messages.append(
                     _normalize_message(
-                        item, idx, redact=redact, synthetic_ids=synthetic_ids
+                        item,
+                        idx,
+                        redact=redact,
+                        synthetic_ids=synthetic_ids,
+                        declared=declared,
                     )
                 )
     return messages
@@ -595,6 +720,33 @@ def _tool_defs_from_body(body: dict[str, Any]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     for item in raw_tools:
         if not isinstance(item, dict):
+            continue
+        if item.get("type") == "custom":
+            if item.get("name"):
+                tools.append(_custom_tool_definition(item))
+            continue
+        if item.get("type") == "namespace":
+            # Its function members, named as their calls are: namespace.name.
+            prefix = item.get("name")
+            for member in item.get("tools") or []:
+                if (
+                    isinstance(member, dict)
+                    and member.get("type") == "function"
+                    and member.get("name")
+                ):
+                    name = f"{prefix}.{member['name']}" if prefix else member["name"]
+                    tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": str(name),
+                                "description": member.get("description", ""),
+                                "parameters": member.get(
+                                    "parameters", {"type": "object", "properties": {}}
+                                ),
+                            },
+                        }
+                    )
             continue
         if isinstance(item.get("function"), dict):
             function = dict(item["function"])
@@ -654,7 +806,11 @@ def _assistant_from_anthropic_content(
 
 
 def _assistant_from_chat_response(
-    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
+    body: dict[str, Any],
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
+    declared: _Declared | None = None,
 ) -> dict[str, Any] | None:
     choices = body.get("choices")
     if isinstance(choices, list) and choices:
@@ -677,7 +833,7 @@ def _assistant_from_chat_response(
             return assistant
         return {"role": "assistant", "content": _content_to_text(content)}
     assistant = _assistant_from_responses_response(
-        body, redact=redact, synthetic_ids=synthetic_ids
+        body, redact=redact, synthetic_ids=synthetic_ids, declared=declared
     )
     if assistant is not None:
         return assistant
@@ -685,7 +841,11 @@ def _assistant_from_chat_response(
 
 
 def _assistant_from_responses_response(
-    body: dict[str, Any], *, redact: bool = True, synthetic_ids: bool = True
+    body: dict[str, Any],
+    *,
+    redact: bool = True,
+    synthetic_ids: bool = True,
+    declared: _Declared | None = None,
 ) -> dict[str, Any] | None:
     output = body.get("output")
     if not isinstance(output, list):
@@ -698,17 +858,8 @@ def _assistant_from_responses_response(
         item_type = item.get("type")
         if item_type == "message":
             texts.append(_content_to_text(item.get("content")))
-        elif item_type in {"function_call", "tool_call"}:
-            tool_calls.append(
-                {
-                    "id": item.get("call_id") or item.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": item.get("name"),
-                        "arguments": item.get("arguments", {}),
-                    },
-                }
-            )
+        elif item_type in {"function_call", "tool_call", "custom_tool_call"}:
+            tool_calls.append(_responses_tool_call(item, declared))
     if not texts and not tool_calls:
         return None
     message: dict[str, Any] = {
@@ -741,6 +892,100 @@ def _has_custom_tool_definition(tools: Any) -> bool:
     return False
 
 
+_TEXT_PARTS = frozenset({"input_text", "output_text", "text"})
+
+
+def _unrepresentable_custom_tools(
+    request_body: dict[str, Any], response_body: dict[str, Any]
+) -> set[str]:
+    """What in this exchange the custom-tool export cannot represent, by kind:
+
+    - ``custom``: a custom tool declared inside a namespace or an
+      ``additional_tools`` item, or a custom tool's name declared twice;
+    - ``custom_tool_call``: a call whose name the request declares neither as
+      a custom tool nor as a function of one required string (the bridged
+      form, :func:`_declared_tools`), with no call id, or whose input is not
+      a string;
+    - ``custom_tool_call_output``: an output with no custom call before it in
+      the request, or with a part that is not text.
+
+    Only typed declaration lists and items are read, never payloads.
+    """
+    unsupported: set[str] = set()
+    tools = request_body.get("tools") or request_body.get("tool_defs") or []
+    names: list[tuple[str, bool]] = []
+    for tool in tools if isinstance(tools, list) else []:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "namespace":
+            members = tool.get("tools")
+            if _has_custom_tool_definition(members):
+                unsupported.add("custom")
+            names.extend(
+                (f"{tool.get('name')}.{member.get('name')}", False)
+                for member in (members if isinstance(members, list) else [])
+                if isinstance(member, dict)
+            )
+            continue
+        function = tool.get("function")
+        name = tool.get("name") or (
+            function.get("name") if isinstance(function, dict) else None
+        )
+        names.append((str(name), tool.get("type") == "custom"))
+    unused = (
+        request_body.get("tool_defs") if tools is request_body.get("tools") else None
+    )
+    if _has_custom_tool_definition(unused):
+        unsupported.add("custom")
+    custom = {name for name, is_custom in names if is_custom}
+    if any(sum(1 for n, _ in names if n == name) > 1 for name in custom):
+        unsupported.add("custom")
+    carriers = _declared_tools(request_body)
+
+    requested = [
+        item
+        for items in (request_body.get("input"), request_body.get("messages"))
+        if isinstance(items, list)
+        for item in items
+        if isinstance(item, dict)
+    ]
+    if any(
+        item.get("type") == "additional_tools"
+        and _has_custom_tool_definition(item.get("tools"))
+        for item in requested
+    ):
+        unsupported.add("custom")
+    output = response_body.get("output")
+    produced = (
+        [i for i in output if isinstance(i, dict)] if isinstance(output, list) else []
+    )
+    called = {
+        item.get("call_id")
+        for item in requested
+        if item.get("type") == "custom_tool_call"
+    }
+    for item in [*requested, *produced]:
+        kind = item.get("type")
+        if kind == "custom_tool_call" and (
+            carriers.get(str(item.get("name"))) is None
+            or not item.get("call_id")
+            or not isinstance(item.get("input"), str)
+        ):
+            unsupported.add(kind)
+        elif kind == "custom_tool_call_output":
+            result = item.get("output")
+            text = isinstance(result, str) or (
+                isinstance(result, list)
+                and all(
+                    isinstance(part, dict) and part.get("type") in _TEXT_PARTS
+                    for part in result
+                )
+            )
+            if item.get("call_id") not in called or not item.get("call_id") or not text:
+                unsupported.add(kind)
+    return unsupported
+
+
 def _exchange_to_messages_and_tools(
     exchange: dict[str, Any],
     *,
@@ -767,40 +1012,31 @@ def _exchange_to_messages_and_tools(
         else {}
     )
 
-    # Custom tools carry arbitrary string input, not function JSON arguments.
-    # This export cannot represent those calls or their replayed results. Refuse
-    # before normalizing either side, including replies that also contain text.
-    unsupported = {
-        item["type"]
-        for items in (
-            request_body.get("input"),
-            request_body.get("messages"),
-            response_body.get("output"),
-        )
-        if isinstance(items, list)
-        for item in items
-        if isinstance(item, dict)
-        and item.get("type") in {"custom_tool_call", "custom_tool_call_output"}
-    }
-    declarations = [request_body.get("tools"), request_body.get("tool_defs")]
-    for items in (request_body.get("input"), request_body.get("messages")):
-        if isinstance(items, list):
-            declarations.extend(
-                item.get("tools")
-                for item in items
-                if isinstance(item, dict) and item.get("type") == "additional_tools"
-            )
-    if any(_has_custom_tool_definition(tools) for tools in declarations):
-        unsupported.add("custom")
+    # Custom tools (Codex's apply_patch) take freeform string input. They are
+    # exported as functions of one string: ``input``, marked ``custom``
+    # (_custom_tool_definition), or on LiteLLM's Responses-to-chat bridge the
+    # function the model was offered upstream. What that cannot represent is
+    # refused before either side is normalized, including replies that also
+    # contain text.
+    unsupported = _unrepresentable_custom_tools(request_body, response_body)
     if unsupported:
         return [], [], "unsupported_tool_protocol: " + ", ".join(sorted(unsupported))
 
+    declared = _declared_tools(request_body)
     if "messages" in request_body:
-        messages = _messages_from_chat_request(request_body, redact=redact)
-        assistant = _assistant_from_chat_response(response_body, redact=redact)
+        messages = _messages_from_chat_request(
+            request_body, redact=redact, declared=declared
+        )
+        assistant = _assistant_from_chat_response(
+            response_body, redact=redact, declared=declared
+        )
     else:
-        messages = _messages_from_responses_request(request_body, redact=redact)
-        assistant = _assistant_from_responses_response(response_body, redact=redact)
+        messages = _messages_from_responses_request(
+            request_body, redact=redact, declared=declared
+        )
+        assistant = _assistant_from_responses_response(
+            response_body, redact=redact, declared=declared
+        )
 
     if assistant is None:
         return [], [], "no_assistant"

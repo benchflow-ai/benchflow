@@ -26,6 +26,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from benchflow._bfx import client as bfx_client
 from benchflow._bfx import delivery as bfx_delivery
 from benchflow._bfx.locate import SANDBOX_DIR as BFX_DIR
 from benchflow._bfx.locate import SANDBOX_PATH as BFX_PATH
@@ -36,6 +37,7 @@ from benchflow._utils.modal_gpu import modal_gpu_request
 from benchflow.sandbox import _transport
 from benchflow.sandbox._base import (
     IMAGE_ENV_PREFIX,
+    KIT_PROBE_ROUTE,
     STARTUP_ENV_ARGV,
     SYSTEM_PATH,
     SYSTEM_SHELL_EMPTY_VARS,
@@ -78,6 +80,12 @@ if TYPE_CHECKING:
     from benchflow.sandbox.process import LiveProcess
 
 logger = logging.getLogger(__name__)
+#: The "Modal sets ... in every sandbox" lines given as warnings in this
+#: process (names, why): each once per run (_read_image_env).
+_KEPT_ENV_SAID: set[tuple[str, str]] = set()
+_KEPT_ENV_LINE = (
+    "Modal sets %s in every sandbox, and %s, so these keep Modal's values on Modal only"
+)
 
 #: Inert Secret names for the values a Modal command re-exports by name
 #:: no loader or shell reads them.
@@ -257,6 +265,9 @@ RLIMITS_CONF = "/etc/security/limits.d/benchflow-rlimits.conf"
 PRLIMIT = "/usr/bin/prlimit"
 TIMEOUT = "/usr/bin/timeout"
 SETPRIV = "/usr/bin/setpriv"
+#: The folder of the three: on the kit, root runs them only when the kit's
+#: proof lists it as root's alone (:meth:`ModalSandbox.hold_argv`).
+HELD_TOOLS_DIR = "/usr/bin"
 #: ``pam_limits``'s unit for each limit, in that limit's bytes (KiB stacks).
 _PAM_UNIT = {"nofile": 1, "stack": 1024}
 
@@ -419,8 +430,9 @@ def rlimit_check_problems(out: str, limits: Rlimits) -> list[str]:
 
 
 class ModalRlimitsRefused(RuntimeError):
-    """The sandbox cannot hold ``BENCHFLOW_MODAL_RLIMITS``'s limits; it was
-    ended."""
+    """The sandbox cannot hold ``BENCHFLOW_MODAL_RLIMITS``'s limits: refused
+    at start (and ended), or a command on the protected kit where the held
+    programs' folder is not proven root's alone (:meth:`ModalSandbox.hold_argv`)."""
 
 
 #: How long a check for Modal's own end of a sandbox waits for ``poll``.
@@ -454,6 +466,29 @@ def modal_ending_error(exc: BaseException) -> bool:
 #: (``benchflow._utils.scoring``).
 MODAL_ENDED = "Sandbox not found: Modal ended the sandbox"
 
+#: The start of the error for a sandbox Modal ended because a process in it
+#: went over its hard memory limit. Not an infrastructure error: the task's
+#: own processes used the memory (on Docker the kernel kills that process and
+#: the trial goes on; Modal ends the whole sandbox), so a retry is not owed.
+MODAL_MEMORY_KILL = (
+    "Modal ended the sandbox: a process in it went over its memory limit"
+)
+
+#: The start of the error for a sandbox whose lifetime ran out (Modal's
+#: ``TIMEOUT``). Not an infrastructure error either: the task's budgets
+#: outlived the lifetime, so a rerun ends the same way and is not owed.
+MODAL_LIFETIME_END = "Modal ended the sandbox: its lifetime ran out"
+
+#: The exit status Modal gives a command its sandbox's end killed (SIGKILL).
+#: Measured with modal 1.6.2: a command running when the lifetime ran out, or
+#: when the sandbox was terminated from outside, returns 137 rather than
+#: raising, and ``poll`` answers None for a moment after.
+KILLED_RETURNCODE = 137
+#: How long a command that returned :data:`KILLED_RETURNCODE` waits for
+#: ``poll`` to say whether the sandbox ended (an end shows within about 2 s,
+#: measured; a command killed inside a running sandbox waits this long once).
+PLATFORM_END_KILLED_SETTLE_SEC = 5.0
+
 
 def platform_end_reason(returncode: int) -> str:
     """What the ``returncode`` Modal reports for an ended sandbox says ended it.
@@ -472,9 +507,82 @@ def platform_end_reason(returncode: int) -> str:
     return f"its main process exited with {returncode}"
 
 
+def modal_end_status(sandbox: Any) -> tuple[str | None, str]:
+    """Modal's own status for an ended sandbox (``TIMEOUT``, ``TERMINATED``,
+    ``FAILURE``, ``MEMORY_MANAGER_EVICTION``, ...) and its message, from the
+    result ``poll`` stored; ``(None, "")`` when the client keeps none.
+
+    The public API gives only the return code, and 137 is both a process over
+    the hard memory limit (status ``FAILURE``, exit code 137, no message) and
+    a terminate from outside (``TERMINATED``, "Sandbox terminated by user
+    request"); a lifetime end is ``TIMEOUT`` (all measured, modal 1.6.2). The
+    result is the client's private ``_result``, so any other client shape
+    reads as unknown and the return code alone names the end."""
+    try:
+        result = getattr(sandbox, "_result", None)
+        if result is None:
+            from modal._utils.async_utils import synchronizer
+
+            result = getattr(synchronizer._translate_in(sandbox), "_result", None)
+        if result is None or not result.status:
+            return None, ""
+        name = type(result).GenericStatus.Name(result.status)
+        return name.removeprefix("GENERIC_STATUS_"), str(result.exception or "")
+    except Exception:
+        return None, ""
+
+
+def platform_end_record(
+    returncode: int, status: str | None, detail: str, seen_at: str
+) -> dict[str, Any]:
+    """:attr:`ModalSandbox.platform_end` for an end Modal reported with
+    *returncode* and, when the client kept it, its *status* and *detail*.
+    ``memory_kill``: a process went over the hard memory limit (``FAILURE``
+    with 137), which is the task's, not the infrastructure's. ``lifetime``:
+    the sandbox lived out its lifetime (``TIMEOUT``, or 124 where the client
+    kept no status), which a rerun meets again."""
+    memory_kill = status == "FAILURE" and returncode == KILLED_RETURNCODE
+    lifetime = status == "TIMEOUT" or (status is None and returncode == 124)
+    if memory_kill:
+        reason = (
+            "a process went over the sandbox's hard memory limit (the task's "
+            "memory_mb); Modal ends the whole sandbox, where Docker kills that "
+            "process"
+        )
+    elif status == "TIMEOUT":
+        reason = "its lifetime ran out (BENCHFLOW_MODAL_SANDBOX_TIMEOUT)"
+    elif status in ("TERMINATED", "MEMORY_MANAGER_EVICTION"):
+        reason = (
+            f"Modal ended it ({status.lower()}"
+            + (f": {detail}" if detail else "")
+            + "): an eviction, a preemption or a terminate from outside this run"
+        )
+    else:
+        reason = platform_end_reason(returncode)
+    return {
+        "returncode": returncode,
+        "status": status,
+        "reason": reason,
+        "memory_kill": memory_kill,
+        "lifetime": lifetime,
+        "seen_at": seen_at,
+    }
+
+
 def modal_ended_message(end: Mapping[str, Any], what: str) -> str:
     """The error for *what* failing in a sandbox Modal ended (*end*:
-    :attr:`ModalSandbox.platform_end`)."""
+    :attr:`ModalSandbox.platform_end`). A memory kill's and a lifetime end's
+    name no infrastructure marker (:data:`MODAL_MEMORY_KILL`,
+    :data:`MODAL_LIFETIME_END`), so neither is rerun as one."""
+    if end.get("memory_kill"):
+        return f"{MODAL_MEMORY_KILL} (returncode {end['returncode']}: {end['reason']}); {what}"
+    if end.get("lifetime"):
+        return (
+            f"{MODAL_LIFETIME_END} (returncode {end['returncode']}, "
+            f"BENCHFLOW_MODAL_SANDBOX_TIMEOUT); {what}. A rerun would end the "
+            "same way: give the sandbox a longer lifetime (at most 86400 s) or "
+            "the task smaller budgets"
+        )
     return (
         f"{MODAL_ENDED} before BenchFlow stopped it (returncode "
         f"{end['returncode']}: {end['reason']}); {what}"
@@ -483,7 +591,9 @@ def modal_ended_message(end: Mapping[str, Any], what: str) -> str:
 
 class ModalSandboxEndedError(RuntimeError):
     """An exec failed because Modal ended the sandbox before BenchFlow stopped
-    it. The message starts with :data:`MODAL_ENDED`."""
+    it. The message starts with :data:`MODAL_ENDED`, with
+    :data:`MODAL_MEMORY_KILL` for a process over the memory limit, or with
+    :data:`MODAL_LIFETIME_END` for a lifetime that ran out."""
 
 
 #: ``Sandbox.filesystem``'s errors and the builtin ones the legacy file API
@@ -530,6 +640,12 @@ class ModalSandbox(BaseSandbox):
 
     agent_exec_shell = "/bin/bash"
 
+    # bfx starts by argv here (Sandbox.exec), with nothing of the image's in
+    # between, from a read-only Volume. The route serves the walker
+    # and read_back; root's own scripts and strict's kill keep their forms.
+    bfx_launch = "argv"
+    bfx_in_scripts = False
+
     # exec passes the env as a Modal Secret, never in the command (exec below),
     # so another verifier user gets it privately (b173 PY8-MAIN-40).
     exec_env_is_private = True
@@ -550,7 +666,10 @@ class ModalSandbox(BaseSandbox):
 
     @classmethod
     def preflight(cls) -> None:
-        modal_config = Path.home() / ".modal.toml"
+        # Where Modal's own client reads its token (modal.config).
+        modal_config = Path(
+            os.environ.get("MODAL_CONFIG_PATH") or Path.home() / ".modal.toml"
+        )
         has_env_token = os.environ.get("MODAL_TOKEN_ID") and os.environ.get(
             "MODAL_TOKEN_SECRET"
         )
@@ -623,11 +742,21 @@ class ModalSandbox(BaseSandbox):
         secrets_config: Sequence[object],
         volumes_config: Mapping[str, object],
     ) -> object:
+        """Make the sandbox. Every start makes it here (this class's start
+        and sandbox/setup.py's ``BenchFlowModalSandbox.start``), so bfx's
+        read-only Volume goes in here, set when the sandbox is created, and
+        is checked before anything else runs in it (:meth:`_check_bfx`:
+        argv execs and Modal's fs tool, no shell, so the start-up names
+        refusal that follows does not bear on it)."""
         from modal import Sandbox
 
         from benchflow.sandbox import egress_gateway
 
         self._image_env = self._read_image_env()
+        volumes = dict(volumes_config)
+        bfx_volume = await self._bfx_volume(volumes)
+        if bfx_volume is not None:
+            volumes[BFX_DIR] = bfx_volume
         sandbox = await Sandbox.create.aio(
             app=self._app,
             image=self._image,
@@ -639,7 +768,7 @@ class ModalSandbox(BaseSandbox):
             gpu=gpu_config,
             block_network=not self.task_env_config.allow_internet,
             secrets=secrets_config,
-            volumes=volumes_config,
+            volumes=volumes,
             env=self._image_env.create or None,
             # A denylist sandbox held at the egress gateway reaches its
             # address alone (benchflow.sandbox.egress_gateway).
@@ -647,7 +776,30 @@ class ModalSandbox(BaseSandbox):
         )
         self.platform_end = None
         self._stopping = False
+        if bfx_volume is not None:
+            self._sandbox = sandbox
+            await self._check_bfx()
         return sandbox
+
+    async def _bfx_volume(self, volumes: Mapping[str, object]) -> object | None:
+        """bfx's read-only Volume for a new sandbox (TRUSTED-RUNTIME.md §6),
+        or None, with why. On since its live run (``delivery.PROVEN_LIVE``);
+        ``BENCHFLOW_BFX_DELIVERY=off`` turns it off, and the kit path stays."""
+        self.bfx_delivery = None
+        self.bfx_unavailable_why = None
+        if BFX_DIR in volumes:
+            self.bfx_unavailable_why = "the run mounts a volume of its own at /.bfx"
+            return None
+        if not bfx_delivery.provider_enabled("modal"):
+            return None
+        import modal
+
+        try:
+            return await asyncio.to_thread(bfx_delivery.modal_volume, modal)
+        except BfxUnavailable as exc:
+            self.logger.debug("bfx: not delivered (%s)", exc)
+            self.bfx_unavailable_why = f"the Modal bfx volume is not usable ({exc})"
+            return None
 
     def _read_image_env(self) -> ModalImageEnv:
         """The image's values of the names Modal sets (:func:`modal_image_env`),
@@ -675,19 +827,46 @@ class ModalSandbox(BaseSandbox):
                     "the task's Dockerfile gives no value of its own BenchFlow "
                     "can read for them"
                 )
-            logger.warning(
-                "Modal sets %s in every sandbox, and %s, so these keep "
-                "Modal's values on Modal only",
-                ", ".join(image.kept),
-                source,
-            )
+            # Few Dockerfiles set these, so nearly every task would repeat
+            # it: a warning once per run for each such case, debug after.
+            said = (", ".join(image.kept), source)
+            if said in _KEPT_ENV_SAID:
+                logger.debug(_KEPT_ENV_LINE, *said)
+            else:
+                logger.warning(_KEPT_ENV_LINE, *said)
+                _KEPT_ENV_SAID.add(said)
         return image
 
-    def hold_argv(self, argv: Sequence[str]) -> list[str]:
+    def hold_argv(self, argv: Sequence[str], route: Any = None) -> list[str]:
         """*argv* behind :func:`held_argv` once the sandbox holds
-        ``BENCHFLOW_MODAL_RLIMITS``'s limits, else unchanged."""
+        ``BENCHFLOW_MODAL_RLIMITS``'s limits, else unchanged.
+
+        The prefix runs the image's ``prlimit``, ``timeout`` and ``setpriv``
+        as root ahead of the command. On a *route* on the protected kit (C8:
+        after the agent's turn has begun, root runs only the kit's programs
+        and those in system folders proven root's alone), that is allowed only
+        where :data:`HELD_TOOLS_DIR` is one of the proven folders; elsewhere
+        the command is refused (:class:`ModalRlimitsRefused`) rather than run
+        on a program the agent's user could have replaced."""
         limits = self._rlimits
-        return list(argv) if limits is None else held_argv(argv, limits)
+        if limits is None:
+            return list(argv)
+        if route == KIT_PROBE_ROUTE:
+            # BenchFlow's own read of the kit's record, on the kit's shell
+            # alone: no image program goes ahead of it, or a refusal here
+            # would read as "no kit" and drop the kit's routes without a word.
+            return list(argv)
+        if route is not None and getattr(route, "kit", False):
+            proven = str(getattr(route, "tools", "")).split(":")
+            if HELD_TOOLS_DIR not in proven:
+                raise ModalRlimitsRefused(
+                    f"{RLIMITS_ENV} is set, and root would run {PRLIMIT}, "
+                    f"{TIMEOUT} and {SETPRIV} ahead of this command, but this "
+                    f"image's {HELD_TOOLS_DIR} is not proven root's alone "
+                    "(BenchFlow's protected runtime kit); run it without "
+                    f"{RLIMITS_ENV}"
+                )
+        return held_argv(argv, limits)
 
     async def _hold_rlimits(self) -> None:
         """With ``BENCHFLOW_MODAL_RLIMITS``, run every later exec with its
@@ -804,21 +983,8 @@ class ModalSandbox(BaseSandbox):
             for mount_path, volume_name in self._volumes.items()
         }
 
-        # bfx at /.bfx: a read-only Volume, set when the sandbox is created
-        # (TRUSTED-RUNTIME.md §6). Until it passes a live run it is opt-in
-        # (bfx_delivery.provider_enabled); without it the kit path stays.
-        self.bfx_delivery = None
-        bfx_volume = None
-        if BFX_DIR not in volumes_config and bfx_delivery.provider_enabled("modal"):
-            import modal
-
-            try:
-                bfx_volume = await asyncio.to_thread(bfx_delivery.modal_volume, modal)
-            except BfxUnavailable as exc:
-                self.logger.debug("bfx: not delivered (%s)", exc)
-        if bfx_volume is not None:
-            volumes_config[BFX_DIR] = bfx_volume
-
+        # bfx's read-only Volume goes in where the sandbox is made
+        # (_create_sandbox).
         self._sandbox = await self._create_sandbox(
             gpu_config=gpu_config,
             secrets_config=secrets_config,
@@ -828,12 +994,19 @@ class ModalSandbox(BaseSandbox):
 
         await self._make_log_dirs()
 
-        await exec_raw(
-            self.exec, f"chmod 777 {SandboxPaths.agent_dir} {SandboxPaths.verifier_dir}"
+        # /logs/verifier is root's 0755 from here on, checked (#1247).
+        from benchflow.sandbox._verifier_dir import (
+            check_verifier_dir,
+            close_verifier_dir_cmd,
         )
+
         await self._hold_rlimits()
-        if bfx_volume is not None:
-            await self._check_bfx()
+
+        closed = await exec_raw(
+            self.exec,
+            f"chmod 777 {SandboxPaths.agent_dir}; {close_verifier_dir_cmd()}",
+        )
+        check_verifier_dir(getattr(closed, "stdout", "") or "")
         from benchflow.sandbox import egress_gateway
 
         # Last: the relay, its proofs and the task's denylist at the gateway.
@@ -873,8 +1046,20 @@ class ModalSandbox(BaseSandbox):
             raise StartupNamesRefused(refusal)
 
     async def _check_bfx(self) -> None:
-        """The mounted bfx reports the pinned hash (argv exec, no shell,
-        no environment); then it is this sandbox's helper."""
+        """Before the agent's first byte, the mounted volume is this
+        sandbox's bfx only when all of these hold:
+
+        - the mounted bfx reports the pinned hash and x86_64 (argv exec, no
+          shell, no environment);
+        - Modal's own fs tool, never the image's, reads uid 0 for a process
+          exec starts;
+        - a root write into /.bfx is refused, so the read-only mount took
+          effect.
+
+        It holds against a non-root agent only (``_bfx_root_held``): the live
+        run (MR, 11-18) found /.bfx a link in the sandbox's own filesystem to
+        the volume's mount (``/__modal/volumes/vo-…``), which root may
+        replace, and root with CAP_SYS_PTRACE (CapBnd a80c05fb)."""
         try:
             _transport.sent("Modal", [BFX_PATH, "version"])
             process = await self._sandbox.exec.aio(BFX_PATH, "version", timeout=60)
@@ -882,11 +1067,80 @@ class ModalSandbox(BaseSandbox):
             code = await process.wait.aio()
             if code != 0:
                 raise BfxUnavailable(f"bfx version exited {code}")
-            bfx_delivery.check_version(bfx_delivery.version_answer(out), "x86_64")
+            report = bfx_delivery.version_answer(out)
+            bfx_delivery.check_version(report, "x86_64")
+            if report.get("arch") != "x86_64":
+                raise BfxUnavailable(
+                    f"the mounted bfx reports arch {report.get('arch')!r}"
+                )
+            try:
+                status = await self._sandbox.filesystem.read_bytes.aio(
+                    "/proc/self/status"
+                )
+            except Exception as exc:
+                raise BfxUnavailable(
+                    f"Modal's fs tool could not read its status ({exc})"
+                ) from exc
+            uid = bfx_delivery.status_uid(bytes(status).decode(errors="replace"))
+            if uid != 0:
+                raise BfxUnavailable(f"exec runs as uid {uid}, not root")
+            await self._bfx_write_refused()
         except BfxUnavailable as exc:
+            self.bfx_unavailable_why = (
+                f"the Modal bfx volume did not pass its checks ({exc})"
+            )
             self.logger.warning("bfx: the mounted volume is not usable (%s)", exc)
             return
+        self._bfx_arch = "x86_64"
+        self._bfx_root_held = False
+        self.bfx_unavailable_why = None
         self.bfx_delivery = bfx_delivery.VOLUME
+
+    async def _bfx_write_refused(self) -> None:
+        """A root write into /.bfx, through Modal's fs tool, must be refused
+        by the filesystem (a probe that landed is removed again); raises
+        :class:`BfxUnavailable` otherwise."""
+        probe = f"{BFX_DIR}/.benchflow-write-probe"
+        try:
+            await self._sandbox.filesystem.write_bytes.aio(b"", probe)
+        except Exception as exc:
+            # The fs tool ran and refused: a filesystem error, never a
+            # transport one, is the read-only mount taking effect.
+            refused = isinstance(exc, PermissionError) or any(
+                c.__name__ == "SandboxFilesystemError" for c in type(exc).__mro__
+            )
+            if not refused:
+                raise BfxUnavailable(
+                    f"the write probe could not be made ({exc})"
+                ) from exc
+            return
+        with contextlib.suppress(Exception):
+            await self._sandbox.filesystem.remove.aio(probe)
+        raise BfxUnavailable("root could write into /.bfx: it is not read-only")
+
+    async def bfx_call(
+        self, cmd: str, args: Mapping[str, Any], *, timeout_sec: int
+    ) -> dict[str, Any]:
+        """Run one bfx command as root (I1's bfx route on Modal): Modal's
+        exec of the read-only volume's bfx by argv, with no shell, no
+        environment and no secrets, its arguments as the first stdin line.
+        Raises :class:`BfxUnavailable` where bfx is not delivered."""
+        if getattr(self, "bfx_delivery", None) is None or not getattr(
+            self, "_sandbox", None
+        ):
+            raise BfxUnavailable("bfx is not delivered to this sandbox")
+        argv = bfx_client.one_shot_argv(cmd, args_on_stdin=True)
+        _transport.sent("Modal", argv)
+        process = await self._sandbox.exec.aio(
+            *argv, timeout=modal_exec_timeout(timeout_sec)
+        )
+        process.stdin.write(bfx_client.stdin_args_line(args))
+        process.stdin.write_eof()
+        await process.stdin.drain.aio()
+        out = await process.stdout.read.aio()
+        await process.stderr.read.aio()
+        await process.wait.aio()
+        return bfx_client.parse_answer(out)
 
     @retry(
         stop=stop_after_attempt(2),
@@ -900,7 +1154,8 @@ class ModalSandbox(BaseSandbox):
     async def check_platform_end(
         self, seen_at: str, *, settle_sec: float = 0.0
     ) -> dict[str, Any] | None:
-        """Whether Modal ended the sandbox itself, from its public ``poll``.
+        """Whether Modal ended the sandbox itself, from its public ``poll``
+        (and Modal's own status for the end, :func:`modal_end_status`).
 
         Modal ends a sandbox on its own when its lifetime runs out, when a
         process goes over a hard memory limit, and when it evicts or
@@ -931,11 +1186,8 @@ class ModalSandbox(BaseSandbox):
             if time.monotonic() >= deadline:
                 return None
             await asyncio.sleep(PLATFORM_END_SETTLE_STEP_SEC)
-        self.platform_end = {
-            "returncode": code,
-            "reason": platform_end_reason(code),
-            "seen_at": seen_at,
-        }
+        status, detail = modal_end_status(sandbox)
+        self.platform_end = platform_end_record(code, status, detail, seen_at)
         logger.warning(
             "Modal ended sandbox %s before BenchFlow stopped it (returncode %d: %s)",
             getattr(sandbox, "object_id", "?"),
@@ -1406,8 +1658,9 @@ class ModalSandbox(BaseSandbox):
         agent = command if hasattr(command, "agent_target") else None
 
         def held(command: str) -> list[str]:
-            # Behind BENCHFLOW_MODAL_RLIMITS's limits once they are held.
-            return self.hold_argv(argv_for(command))
+            # Behind BENCHFLOW_MODAL_RLIMITS's limits once they are held
+            # (on the kit, only where /usr/bin is proven root's alone).
+            return self.hold_argv(argv_for(command), route)
 
         fitted = fit(held, command, cat=reader_cat(route), agent=agent)
         _transport.sent("Modal", fitted.sent)
@@ -1440,6 +1693,18 @@ class ModalSandbox(BaseSandbox):
             raise ModalSandboxEndedError(
                 modal_ended_message(end, "an exec failed with it")
             ) from exc
+        if return_code == KILLED_RETURNCODE:
+            # A command running when Modal ends the sandbox (its lifetime, a
+            # terminate from outside) is killed and returns 137 instead of
+            # raising (measured): ask poll before anything reads it as the
+            # command's own exit.
+            end = await self.check_platform_end(
+                "command", settle_sec=PLATFORM_END_KILLED_SETTLE_SEC
+            )
+            if end is not None:
+                raise ModalSandboxEndedError(
+                    modal_ended_message(end, "an exec was killed with it")
+                )
 
         return ExecResult(
             stdout=stdout,

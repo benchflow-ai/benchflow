@@ -34,6 +34,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal
 
+from benchflow._utils.aware_time import aware
 from benchflow._utils.reachable_write import ReachablePath
 from benchflow.branch_api import BranchChildResult
 from benchflow.errors import UserError
@@ -324,7 +325,7 @@ class Trial:
         r = self.result
         if r.started_at is None or r.finished_at is None:
             return None
-        return (r.finished_at - r.started_at).total_seconds()
+        return (aware(r.finished_at) - aware(r.started_at)).total_seconds()
 
     @property
     def reward(self) -> float | None:

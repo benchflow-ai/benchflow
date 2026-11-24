@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, PrivateAttr
 
@@ -247,6 +247,32 @@ def wrap_command_with_env_stdin(command: str) -> str:
     return f"{ENV_FROM_STDIN}{command}"
 
 
+def env_lines(env: dict[str, str]) -> str:
+    """*env* as the shell text a staged payload starts with: the ``export``
+    lines between the pending parameter and its check. Data that travels as
+    a file (``benchflow.sandbox._transport``), never on a command line."""
+    return f"{_ENV_PENDING}{env_file_body(env)}{_ENV_APPLIED_LINE}{_ENV_CHECK}"
+
+
+#: The descriptor root's session shell opens an exec's env file on before the
+#: command starts (:mod:`benchflow.sandbox.daytona_exec_env`).
+ENV_FD = 8
+
+
+def env_from_descriptor(cat: str, fd: int = ENV_FD) -> str:
+    """Shell text that sets the env :func:`env_stdin_body` wrote into a file
+    root's shell opened on descriptor *fd*, then closes *fd*.
+
+    For a transport with no stdin of its own (Daytona's session commands):
+    the file is root's, mode 0600, so the command reads it through the
+    descriptor it inherited, with *cat* by absolute path, never by its name,
+    and an account below root reads it all the same. No value is in any
+    command. The pending parameter and check are the stdin form's: an env
+    not read to its end (no descriptor, a cut file) stops the command.
+    """
+    return f'{_ENV_PENDING}eval "$({cat} <&{fd})" || exit 1; exec {fd}<&-; {_ENV_CHECK}'
+
+
 def wrap_command_with_env_file(
     env: dict[str, str],
     command: str,
@@ -257,11 +283,11 @@ def wrap_command_with_env_file(
 ) -> str:
     """Return *command* prefixed to set *env* without any program or file.
 
-    For a transport with no stdin of its own (Daytona's session commands).
-    An env of any size is written this way; when the command would pass the
-    transport bound, the whole text travels as data
-    (:mod:`benchflow.sandbox._transport`). Docker and Apple container feed
-    the env on stdin (:func:`wrap_command_with_env_stdin`).
+    The values are in the command, as octal escapes: no backend sends this
+    any more. Daytona's session commands keep their text in the provider's
+    API and logs, so Daytona and DinD read the env from a file root opens
+    (:func:`env_from_descriptor`); Docker and Apple container feed it on
+    stdin (:func:`wrap_command_with_env_stdin`).
 
     The ``export KEY=value`` lines are written into the command as octal
     escapes of every byte (``\\101\\102...``), so no value is visible as
@@ -1164,15 +1190,35 @@ class BaseSandbox(ABC):
     # 0555 folder before the agent: holds against a non-root agent), or None
     # (not delivered; the backend keeps the kit path). See bfx_guarantee.
     bfx_delivery: str | None = None
+    # How this backend starts bfx: "argv", by absolute path with no
+    # program of the image's in between, or "image-shell", through the
+    # image's own shell, which a root agent can replace (bfx_guarantee). A
+    # backend says which; the default is the weaker.
+    bfx_launch: ClassVar[str] = "image-shell"
+    # Whether root's own scripts may start bfx from /.bfx where a delivery
+    # puts it there: bounded root execs (bfx launch), the bfx_sh steps and
+    # strict's K1 kill (_bounded_exec.bfx_delivered). False keeps a route to
+    # the walker and read_back alone (Modal, AgentCore, Apple's
+    # container).
+    bfx_in_scripts: ClassVar[bool] = True
+    # Why bfx is not delivered here, where the backend knows (a route that is
+    # not on yet, a check that failed): the walker's refusal reads it.
+    bfx_unavailable_why: str | None = None
 
     @property
     def bfx_guarantee(self) -> str | None:
-        """Who bfx's delivery holds against: "any-agent", "non-root-agent",
-        or None when bfx is not delivered."""
-        from benchflow._bfx.delivery import GUARANTEE
+        """Who bfx holds against here: "any-agent", "non-root-agent", or
+        None when bfx is not delivered. It follows the delivery, how this
+        backend starts bfx (``bfx_launch``), and whether root here could
+        get at it anyway (``_bfx_root_held``, False where a backend found it
+        could: Modal)."""
+        from benchflow._bfx.delivery import IMAGE_SHELL, guarantee
 
-        mode = getattr(self, "bfx_delivery", None)
-        return GUARANTEE.get(mode) if mode else None
+        return guarantee(
+            getattr(self, "bfx_delivery", None),
+            launch=getattr(type(self), "bfx_launch", IMAGE_SHELL),
+            root_held=getattr(self, "_bfx_root_held", True) is not False,
+        )
 
     async def identity_container_config(
         self, service: str = "main"

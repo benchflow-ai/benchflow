@@ -784,6 +784,114 @@ def validate_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
     return overlay
 
 
+#: The sandbox keys that make an overlay the operator's network policy.
+_SANDBOX_NETWORK_KEYS = (
+    "network_mode",
+    "allow_internet",
+    "allowed_hosts",
+    "blocked_hosts",
+    "blocked_urls",
+)
+#: Each network mode's openness: a phase key above the operator's is replaced.
+_NETWORK_RANK = {"no-network": 0, "allowlist": 1, "denylist": 2, "public": 3}
+
+
+def _mode(section: dict[str, Any]) -> str:
+    """A merged section's network mode, ``allow_internet = false`` first."""
+    if section.get("allow_internet") is False:
+        return "no-network"
+    mode = section.get("network_mode")
+    mode = getattr(mode, "value", mode)
+    return str(mode) if mode in _NETWORK_RANK else "public"
+
+
+def _replace_phase_networks(
+    overlay: dict[str, Any], merged: dict[str, Any]
+) -> list[str]:
+    """The operator's network wins over the task's phase keys: when *overlay*
+    sets the sandbox's network, each task key of a phase (the verifier's
+    ``network_mode``/``allowed_hosts``, a separate verifier sandbox's network,
+    the agent's ``network_mode``/``allowed_hosts`` the sandbox folds in, and the
+    same in each step) that is looser than the operator's policy, or a
+    different allowlist, is set to the operator's in *merged*. A stricter phase
+    key (an agent's own no-network) stays. Returns what was replaced, for the
+    record; empty when the overlay sets no network."""
+    asked = overlay.get("sandbox")
+    if not isinstance(asked, dict) or not any(
+        k in asked for k in _SANDBOX_NETWORK_KEYS
+    ):
+        return []
+    sandbox = merged.get("sandbox") or {}
+    policy = _mode(sandbox)
+    hosts = list(sandbox.get("allowed_hosts") or [])
+    set_by_operator = {
+        section: set(overlay.get(section) or {})
+        if isinstance(overlay.get(section), dict)
+        else set()
+        for section in ("agent", "verifier")
+    }
+    replaced: list[str] = []
+
+    def hold(
+        section: dict[str, Any] | None, where: str, operator_keys: set[str]
+    ) -> None:
+        if not isinstance(section, dict) or "network_mode" in operator_keys:
+            return
+        mode = section.get("network_mode")
+        mode = getattr(mode, "value", mode)
+        if mode is None and section.get("allow_internet") is not False:
+            return
+        own = _mode(section)
+        looser = _NETWORK_RANK[own] > _NETWORK_RANK[policy]
+        other_list = (
+            own == policy == "allowlist"
+            and list(section.get("allowed_hosts") or []) != hosts
+        )
+        if not (looser or other_list):
+            return
+        replaced.append(f"{where}.network_mode = {own}")
+        section["network_mode"] = policy if mode is not None else None
+        if "allow_internet" in section and section.get("allow_internet") is False:
+            section["allow_internet"] = sandbox.get("allow_internet", True)
+        if "allowed_hosts" in section:
+            section["allowed_hosts"] = (
+                hosts if policy == "allowlist" and mode is not None else None
+            )
+        for key in ("blocked_hosts", "blocked_urls"):
+            if key in section:
+                section[key] = (
+                    list(sandbox.get(key) or []) if policy == "denylist" else []
+                )
+
+    hold(merged.get("agent"), "agent", set_by_operator["agent"])
+    verifier = merged.get("verifier")
+    hold(verifier, "verifier", set_by_operator["verifier"])
+    if isinstance(verifier, dict):
+        own_sandbox = verifier.get("sandbox")
+        if isinstance(own_sandbox, dict):
+            hold(own_sandbox, "verifier.sandbox", set())
+    for index, step in enumerate(merged.get("steps") or ()):
+        if isinstance(step, dict):
+            hold(step.get("agent"), f"steps[{index}].agent", set())
+            hold(step.get("verifier"), f"steps[{index}].verifier", set())
+    return replaced
+
+
+def operator_network_replacements(
+    config: Any, overlay: dict[str, Any] | None
+) -> list[str]:
+    """What :func:`apply_config_override` replaces of *config*'s phase network
+    keys under *overlay* (empty when the overlay sets no sandbox network):
+    result.json's and the run card's record."""
+    if not overlay:
+        return []
+    base = config.model_dump(by_alias=False)
+    merged = deep_merge(
+        base, {k: v for k, v in overlay.items() if k not in _COMPUTED_SECTIONS}
+    )
+    return _replace_phase_networks(overlay, merged)
+
+
 def apply_config_override(config: Any, overlay: dict[str, Any] | None) -> Any:
     """Deep-merge a validated ``C``-axis ``overlay`` into a ``TaskConfig``.
 
@@ -807,6 +915,8 @@ def apply_config_override(config: Any, overlay: dict[str, Any] | None) -> Any:
     merged = deep_merge(
         base, {k: v for k, v in overlay.items() if k not in _COMPUTED_SECTIONS}
     )
+    # An operator's sandbox network holds in every phase (operator_network_replacements).
+    _replace_phase_networks(overlay, merged)
     for key in _ADDITIVE_SECTIONS & set(overlay):
         added = overlay[key]
         if not isinstance(added, list):

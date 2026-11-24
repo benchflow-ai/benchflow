@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -71,7 +70,10 @@ def _task():
         name="precedence-task",
         task_dir=None,
         config=SimpleNamespace(
-            verifier=SimpleNamespace(timeout_sec=0.2, reward_range=None, env={})
+            verifier=SimpleNamespace(timeout_sec=0.2, reward_range=None, env={}),
+            # Every Task's config has an [agent] table; the oracle's provenance
+            # reads its user (none here: solve.sh runs as root).
+            agent=SimpleNamespace(user=None),
         ),
     )
 
@@ -83,7 +85,7 @@ def _walks(monkeypatch, *, ran=True, why=None, before=(), after=()):
     calls: list[str] = []
 
     def record(links, step):
-        async def fake(env, *, timeout_sec=None):
+        async def fake(env, *, timeout_sec=None, **_kwargs):
             calls.append(step)
             return {
                 "ran": ran,
@@ -96,6 +98,20 @@ def _walks(monkeypatch, *, ran=True, why=None, before=(), after=()):
 
     monkeypatch.setattr(_verifier_links, "remove_turn_links", record(before, "before"))
     monkeypatch.setattr(_verifier_links, "links_after_grading", record(after, "after"))
+
+    async def none_alive(env, user, *, timeout_sec=None):
+        # Rule S (sandbox/_agent_alive.py) in the walks' empty sandbox.
+        return {
+            "user": user,
+            "uid": 1000,
+            "alive": False,
+            "by": "getpriority",
+            "why": None,
+        }
+
+    from benchflow.sandbox import _agent_alive
+
+    monkeypatch.setattr(_agent_alive, "ask", none_alive)
     return calls
 
 
@@ -210,8 +226,6 @@ def _ending(kind, monkeypatch):
         harden = AsyncMock(side_effect=breach)
     elif kind == "2 breach at the end of test.sh":
         verify = _raises(breach)
-    elif kind == "3 network refused":
-        verify = _raises(errors.VerifierNetworkRefusedError("pypi.org refused"))
     elif kind == "4 launch refused":
         verify = _raises(errors.VerifierLaunchRefusedError("no launch record"))
     elif kind == "5 tools refused":
@@ -251,7 +265,6 @@ EARLIER_ENDINGS = (
     "1c timeout with a breach",
     "2 breach at the end of the turn",
     "2 breach at the end of test.sh",
-    "3 network refused",
     "4 launch refused",
     "5 tools refused",
     "6 network not held",
@@ -264,6 +277,152 @@ EARLIER_ENDINGS = (
     "14 wedge left to recovery",
     "20 disk full",
 )
+
+_TIMED_OUT_0 = "Verifier scored 0: verifier timed out after 0.2s"
+_BREACH = "network policy breached: the ipv6 rule is gone"
+# 813-U1: each ending as main has it, literally: (rewards, verifier_error, category, diagnostic
+#: type, reruns, reruns on resume, the ending's own warning or None). Taken once from the unmutated tree
+#: (14abd830) and read against F2b-FXSTRICT-ENDINGS.md §1. A checks-passing run that a mutant changes the same way
+#: as its defeated run (M1, the gate unconditional) no longer hides here.
+E_EXPECTED = {
+    "1 timeout, scored 0": (
+        {"reward": 0.0},
+        None,
+        None,
+        "VerifierTimeoutDiagnostic",
+        False,
+        False,
+        _TIMED_OUT_0,
+    ),
+    "1c timeout with a breach": (
+        None,
+        _BREACH,
+        "network_policy_breached",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "2 breach at the end of the turn": (
+        None,
+        _BREACH,
+        "network_policy_breached",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "2 breach at the end of test.sh": (
+        None,
+        _BREACH,
+        "network_policy_breached",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "4 launch refused": (
+        None,
+        "verifier launch refused: no launch record",
+        "verifier_launch_refused",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "5 tools refused": (
+        None,
+        "verifier tools refused: pytest only in /home/agent/bin",
+        "verifier_tools_refused",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "6 network not held": (
+        None,
+        "verifier network not held: rules not proven",
+        "verifier_network_unheld",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "7 guard markers unreadable": (
+        {"reward": 0.0},
+        None,
+        None,
+        "NoneType",
+        False,
+        False,
+        "Verifier scored 0: pytest plugin guard not confirmed: markers cut short; test.sh's reward is not used. "
+        "See verifier/test-stdout.txt",
+    ),
+    "9 setup failure": (
+        None,
+        "verifier crashed: VerifierSetupError: chmod of test.sh failed",
+        "verifier_failure",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "10 infrastructure crash": (
+        None,
+        "verifier crashed: VerifierInfrastructureError: upload of tests/ failed",
+        "verifier_failure",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "11 no usable reward": (
+        None,
+        "verifier wrote no usable reward: verifier/reward.txt",
+        "verifier_failure",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+    "12 crash": (
+        None,
+        "verifier crashed: ConnectionResetError: connection reset",
+        "verifier_infra",
+        "NoneType",
+        True,
+        True,
+        None,
+    ),
+    "13 start never confirmed": (
+        {"reward": 0.0},
+        None,
+        None,
+        "VerifierTimeoutDiagnostic",
+        False,
+        False,
+        _TIMED_OUT_0,
+    ),
+    "14 wedge left to recovery": (
+        {"reward": 0.0},
+        None,
+        None,
+        "NoneType",
+        False,
+        False,
+        "Verifier scored 0: verifier start receipt is missing: the command may not have started, or test.sh's user "
+        "may have removed the receipt",
+    ),
+    "20 disk full": (
+        None,
+        "verifier crashed: OSError: [Errno 28] No space left on device",
+        "verifier_failure",
+        "NoneType",
+        False,
+        False,
+        None,
+    ),
+}
 
 
 @pytest.mark.asyncio
@@ -305,6 +464,19 @@ async def test_an_earlier_ending_is_kept_as_it_is(kind, defeat, tmp_path, monkey
                 got.reruns_on_resume,
             )
         )
+        # 813-U1: each run, the checks-passing one too, is the ending itself, literally: its own warning, never
+        # the Q6 one, and no provenance outcome.
+        rewards, error, category, diagnostic, reruns, on_resume, own = E_EXPECTED[kind]
+        assert (got.rewards, got.error, got.category, got.diagnostic) == (
+            rewards,
+            error,
+            category,
+            diagnostic,
+        ), (kind, defeat, defeated, got)
+        assert (got.reruns, got.reruns_on_resume) == (reruns, on_resume), (kind, got)
+        assert not any(w.startswith(INCOMPLETE) for w in got.warnings), got.warnings
+        assert own is None or own in got.warnings, (own, got.warnings)
+        assert got.provenance.get("outcome") is None, got.provenance
     assert seen[0] == seen[1], (kind, defeat, seen)
     rewards, error = seen[1][0], seen[1][1]
     assert error is None or ("provenance" not in error and "link check" not in error)
@@ -383,6 +555,38 @@ def test_nothing_sets_the_ending_after_final_outcome():
     assert not late, f"set after final_outcome (line {after}): {late}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("uids", "refused"),
+    [
+        (("2000", "1000"), False),
+        (("1000", "1000"), True),
+        ((None, "1000"), True),
+        (("2000", None), True),
+    ],
+    ids=["own-user", "same-uid", "verifier-unreadable", "agent-unreadable"],
+)
+async def test_rb2_a_uid_that_cannot_be_read_refuses_before_the_turn(uids, refused):
+    """REVIEW-FINAL F7. RB2 compares the verifier user's uid with the agent's, read before the turn. Where either
+    can't be read, nothing shows they differ: the trial is refused before the turn with the reason (fail closed),
+    never let through.
+
+    Mutant: an unreadable uid let through (today's ``uid is not None`` guard)."""
+    from benchflow.rollout import _grading_outcome
+
+    refusal = getattr(_grading_outcome, "rb2_refusal", None)
+    assert refusal is not None, "RB2's uid check has no fail-closed form"
+    said = await refusal("grader", "agent", lambda user: _uid(uids, user))
+    if refused:
+        assert said is not None and ("uid" in said), said
+    else:
+        assert said is None, said
+
+
+async def _uid(uids, user):
+    return uids[0] if user == "grader" else uids[1]
+
+
 # -- D: the class rule, by agent user and by the way the check failed ---------
 
 INCOMPLETE_PATHS = {
@@ -395,6 +599,401 @@ USERS = {
     "root": (None, AGENT),
     "oracle": ("agent", "oracle"),
 }
+
+
+# == 0.10.0-final, B1 (map-H1; map-H2 §1.2; DESIGN.md §2.1-2.8; rulings R-810, R-811, R-812, R-816, R1: yes) =========
+
+# why the link checks did not run when the record from before the turn is incomplete.
+INCOMPLETE_RECORD = "the record of the links before the turn is incomplete"
+IU_HEADER = "integrity checks unavailable before the turn: "
+
+
+def _listing_bfx(entries, calls):
+    """A bfx whose walk lists *entries* (and one mount, /); *calls* records each command."""
+
+    async def bfx_call(cmd, args=None, *, timeout_sec=None):
+        args = dict(args or {})
+        calls.append((cmd, args))
+        if args.get("walks"):
+            return {"entries": [dict(e) for e in entries], "errors": [], "mounts": []}
+        if args.get("mounts"):
+            return {
+                "entries": [],
+                "mounts": [{"id": 1, "mount_point": "/"}],
+                "errors": [],
+            }
+        return {"entries": [], "errors": [], "mounts": []}
+
+    return bfx_call
+
+
+@pytest.mark.asyncio
+async def test_t_an_incomplete_record_removes_nothing():
+    """809-U1 (/ probe P4). The walk before the turn failed (a timeout), so its record holds no
+    link: every image link (/dev/stdin, /dev/fd, /etc/mtab) would read as the turn's. Neither check acts on it:
+    nothing is walked or removed, and each reports that it did not run, with BenchFlow's reason.
+
+    Mutant: the record's ``complete`` not read (the image's /dev/stdin removed before test.sh)."""
+    calls = []
+    env = SimpleNamespace(
+        exec=AsyncMock(),
+        bfx_call=_listing_bfx(
+            [
+                {
+                    "path": "/dev/stdin",
+                    "type": "link",
+                    "link": "/proc/self/fd/0",
+                    "dev": 5,
+                    "ino": 9,
+                }
+            ],
+            calls,
+        ),
+        bfx_delivery="bind",
+    )
+    _verifier_links.inherit_record(
+        env,
+        _verifier_links.Walked(
+            "bfx", complete=False, why="bfx scan failed: simulated: the walk timed out"
+        ),
+    )
+    for check in (
+        _verifier_links.remove_turn_links,
+        _verifier_links.links_after_grading,
+    ):
+        got = await check(env, timeout_sec=5)
+        assert got["ran"] is False, got
+        assert str(got["why"]).startswith(INCOMPLETE_RECORD), got
+        assert got["links"] == [], got
+    assert calls == [], calls
+    env.exec.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", list(USERS))
+async def test_t_an_incomplete_record_is_benchflow_s_gap_never_the_agent_s_zero(
+    who, tmp_path, monkeypatch
+):
+    """809-U2 (Q4/Q6). A verify whose record from before the turn is incomplete (the refusal before the
+    turn was bypassed: an inherited record, a recovery, a regrade): a non-root agent's attempt is unscored with
+    BenchFlow's reason (``integrity_unavailable``, never retried), never the counted 0; a root agent's is scored,
+    unverifiable; the oracle's is not marked.
+
+    Mutant: the reason missing from ``benchflow_gap`` (the agent's 0)."""
+    from benchflow._utils import scoring
+
+    user, agent = USERS[who]
+    why = f"{INCOMPLETE_RECORD}: bfx scan failed: simulated"
+    _walks(monkeypatch, ran=False, why=why)
+    got = await _attempt(
+        _env(), _planes(_returns(1.0)), tmp_path, "t809", agent=agent, user=user
+    )
+    assert not any(w.startswith(INCOMPLETE) for w in got.warnings), got.warnings
+    if who == "non-root":
+        assert got.rewards is None, got
+        assert got.error == scoring.INTEGRITY_UNAVAILABLE_VERIFIER + why, got
+        assert got.category == scoring.INTEGRITY_UNAVAILABLE
+        assert got.reruns is False and got.reruns_on_resume is False
+    else:
+        assert (got.rewards, got.error) == ({"reward": 1.0}, None), got
+
+
+def _branch_calls(fn_name: str) -> list[str]:
+    """The names called directly in the ``if present["baseline"]`` branch of *fn_name* in rollout/__init__.py."""
+    tree = ast.parse((SRC / "rollout/__init__.py").read_text())
+    for fn in ast.walk(tree):
+        if (
+            isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and fn.name == fn_name
+        ):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.If) and "present" in ast.dump(node.test):
+                    return [
+                        getattr(c.func, "id", getattr(c.func, "attr", None))
+                        for stmt in node.body
+                        for c in ast.walk(stmt)
+                        if isinstance(c, ast.Call)
+                    ]
+    return []
+
+
+@pytest.mark.parametrize("record", ["fresh", "inherited", "bfx-unavailable"])
+def test_t_an_incomplete_record_refuses_before_the_turn(record):
+    """809-U3 (the generic guard). Known before the turn, BenchFlow's gap is a refusal
+    before the turn (Q4): unscored, ``integrity_unavailable``, for every model agent, non-root or root; the oracle
+    is exempt and runs. A fresh sandbox's record, an inherited one (a branch child, a resume), and a walk whose
+    bfx could not run all refuse.
+
+    Mutant: the refusal removed (the turn runs and ends unscored after it)."""
+    from benchflow.rollout import _grading_outcome
+
+    refusal = getattr(_grading_outcome, "pre_turn_refusal", None)
+    assert refusal is not None, "no refusal before the turn for an incomplete record"
+    why = (
+        f"{_verifier_links.BFX_UNAVAILABLE} (not delivered)"
+        if record == "bfx-unavailable"
+        else "bfx scan failed: simulated"
+    )
+    walked = _verifier_links.Walked("bfx", complete=False, why=why)
+    said = refusal(walked, primary_agent=AGENT)
+    assert said is not None and said.startswith(IU_HEADER), said
+    assert why in said, said
+    if record != "bfx-unavailable":
+        assert INCOMPLETE_RECORD in said, said
+    assert refusal(walked, primary_agent="oracle") is None
+    assert refusal(_verifier_links.Walked("bfx"), primary_agent=AGENT) is None
+    if record == "inherited":
+        assert "pre_turn_refusal" in _branch_calls("verifier_baseline"), (
+            "the inherited record's path never asks"
+        )
+    else:
+        calls = [
+            name for _, name in _calls_in("rollout/__init__.py", "seed_then_runtime")
+        ]
+        made = (
+            calls.index("record_before_turn") if "record_before_turn" in calls else -1
+        )
+        assert "pre_turn_refusal" in calls[made + 1 :], calls
+
+
+@pytest.mark.asyncio
+async def test_t_the_walk_before_the_turn_is_tried_once_more_on_a_failure_never_on_a_cap():
+    """809-U4. No agent process exists yet, so a walk that failed (an exception: a timeout on a loaded
+    host) is tried once more before the trial is refused; a walk over a cap (``too-many``, ``too-large``) would
+    only fail the same way, and is not.
+
+    Mutants: no retry; a retry on a cap."""
+    from benchflow._bfx.client import BfxError
+
+    for how in ("exception", "capped"):
+        walks = []
+
+        async def bfx_call(cmd, args=None, *, timeout_sec=None, how=how, walks=walks):
+            args = dict(args or {})
+            if args.get("walks"):
+                walks.append(1)
+                if how == "capped":
+                    raise BfxError("too-many", "more than 4000000 entries")
+                if len(walks) == 1:
+                    raise RuntimeError("simulated: the walk before the turn timed out")
+                return {"entries": [], "errors": [], "mounts": []}
+            if args.get("mounts"):
+                return {
+                    "entries": [],
+                    "mounts": [{"id": 1, "mount_point": "/"}],
+                    "errors": [],
+                }
+            return {"entries": [], "errors": [], "mounts": []}
+
+        env = SimpleNamespace(exec=AsyncMock(), bfx_call=bfx_call, bfx_delivery="bind")
+        await _verifier_links.record_before_turn(env, timeout_sec=5)
+        walked = getattr(env, _verifier_links.INVENTORY)
+        if how == "exception":
+            assert walked.complete is True and len(walks) == 2, (how, walked, walks)
+        else:
+            assert walked.complete is False and len(walks) == 1, (how, walked, walks)
+
+
+@pytest.mark.asyncio
+async def test_q4_a_first_bfx_call_that_fails_refuses_before_the_turn():
+    """Z11 (folded into). Delivery was planned, but the first real bfx call fails (an upload
+    that never landed, a noexec mount): the record before the turn says bfx cannot run, and the trial is refused
+    before the turn with that reason, never a warning and a turn that ends unscored after it.
+
+    Mutant: the guard removed."""
+    from benchflow._bfx.locate import BfxUnavailable
+    from benchflow.rollout import _grading_outcome
+
+    async def unavailable(cmd, args=None, *, timeout_sec=None):
+        raise BfxUnavailable("the per-call upload did not land")
+
+    env = SimpleNamespace(
+        exec=AsyncMock(), bfx_call=unavailable, bfx_delivery="per-call"
+    )
+    await _verifier_links.record_before_turn(env, timeout_sec=5)
+    record = getattr(env, _verifier_links.INVENTORY)
+    assert record.complete is False, record
+    assert str(record.why).startswith(_verifier_links.BFX_UNAVAILABLE), record
+    refusal = getattr(_grading_outcome, "pre_turn_refusal", None)
+    assert refusal is not None, (
+        "no refusal before the turn: the turn runs and ends unscored after it"
+    )
+    assert refusal(record, primary_agent=AGENT) == IU_HEADER + record.why
+
+
+def _root_verdict(guarantee):
+    try:
+        return _verdict(
+            sandbox_user=None,
+            # The root agent's processes were listed, and none was alive.
+            record={"processes_at_grading": []},
+            walker={"engine": "bfx", "guarantee": guarantee, "why": None},
+        )
+    except TypeError as exc:
+        pytest.fail(
+            f"verdict() takes no walker record ({exc}): a shell-launched walker is never named"
+        )
+
+
+@pytest.mark.parametrize("guarantee", ["non-root-agent", "any-agent"])
+def test_a_root_agent_on_a_shell_launched_walker_is_unverifiable(guarantee):
+    """Z6 (map-H2 §1.2b, ruling R1: yes). Where bfx starts through the image's shell (Daytona native and DinD
+    per-call, AgentCore), a root agent can replace that shell and own the walk: its reward is kept, marked
+    ``unverifiable`` by a root row of its own, as live root processes are. Where the walker holds against any agent
+    (an argv launch), the row passes.
+
+    Mutant: the row removed (a root agent on Daytona reads `verified`)."""
+    found = _root_verdict(guarantee)
+    row = next(
+        (c for c in found["checks"] if c.get("check") == "walker-holds-against-root"),
+        None,
+    )
+    assert row is not None and row["ran"] is True, found["checks"]
+    if guarantee == "any-agent":
+        assert row["passed"] is True and found["verdict"] == "verified", found
+    else:
+        assert row["passed"] is False and found["verdict"] == "unverifiable", found
+        assert any("image's shell" in r for r in found["reasons"]), found["reasons"]
+    non_root = _verdict(
+        walker={"engine": "bfx", "guarantee": "non-root-agent", "why": None}
+    )
+    assert not [
+        c for c in non_root["checks"] if c["check"] == "walker-holds-against-root"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("delivery", "kit"), [("per-call", True), ("bind", False), (None, True)]
+)
+async def test_z_daytona_freeze_keeps_its_channels(tmp_path, delivery, kit):
+    """Z10 (map-H2 §1.2f; R2-2). Which channels the freeze leaves running follows the channel actually in use:
+    ``bfx serve`` only where bfx sits at /.bfx (``bfx_delivered``); per-call (Daytona native, DinD's default) and
+    bfx off use the kit's helpers, so the step text carries the kit's and Daytona's patterns.
+
+    Mutant: the predicate back to ``bfx_delivery is None`` (per-call: Daytona's helper stopped, the thaw hangs)."""
+    from unittest.mock import MagicMock
+
+    from benchflow.task.verifier_core import Verifier
+
+    task = MagicMock()
+    task.config.verifier.user = "root"
+    sandbox = SimpleNamespace(bfx_delivery=delivery)
+    verifier = Verifier(
+        task=task, rollout_paths=RolloutPaths(tmp_path), sandbox=sandbox
+    )
+    verifier.freeze_at_exit = True
+    step = await verifier._freeze_step("main")
+    daytona = "/opt/runtime/rt/channel/python/bin/python3.12-I-S-B/opt/runtime/run/"
+    assert (daytona in step) is kit, (delivery, step[:400])
+    assert ("python3-I-S-B-c" in step) is kit, delivery
+
+
+def test_s_a_close_never_due_leaves_a_row_that_does_not_count():
+    """R2-3. A verify that runs no test command was never due a close: the record says so with a row
+    (``applies: false``), which a reader can tell from a record made before the check existed, and which counts
+    toward nothing.
+
+    Mutant: the row counted (every honest non-root judge trial scores 0, as J's rows show)."""
+    from benchflow.rollout._grading_outcome import incomplete_reason
+
+    found = _verdict(outputs_closed=None, outputs_close_applies=False)
+    row = next((c for c in found["checks"] if c.get("check") == "outputs-closed"), None)
+    assert row is not None, found["checks"]
+    assert row.get("applies") is False and row.get("ran") is False, row
+    assert found["verdict"] == _reward_provenance.VERIFIED, found
+    assert incomplete_reason(found) is None
+
+
+_HELD = (
+    "verifier crashed: VerifierOutputsHeldError: agent processes kept writing in /logs/verifier while it was "
+    "being closed"
+)
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "rc=1: rm: cannot remove '/logs/verifier/connection reset': Directory not empty",
+        "rc=1: chown: /logs/verifier/x/broken pipe: command timed out after 9s",
+        "the clear before test.sh: temporarily unavailable",
+    ],
+)
+@pytest.mark.parametrize("preserved", [False, True])
+def test_a_held_ending_with_infra_words_in_its_detail_is_never_retried(
+    detail, preserved
+):
+    """812-U1 (the retry hole). A held ending's detail carries sandbox stderr that names the
+    agent's own files. Words in it that read as infrastructure (``connection reset``, ``broken pipe``, ``command
+    timed out after``) must not make it VERIFIER_INFRA: then the trial is retried, agent and all, or recovered.
+    The held head decides, before any phrase in its detail: the verifier's failure, never retried or recovered.
+
+    Mutant: the anchored head removed (classification by phrase anywhere)."""
+    from benchflow._utils.scoring import VERIFIER_FAILED, classify_verifier_error
+    from benchflow.rollout._verifier_recovery import needs_verifier_recovery
+
+    error = f"{_HELD} ({detail})"
+    if preserved:
+        error = "[solver-preserved] " + error
+    assert classify_verifier_error(error) == VERIFIER_FAILED, error
+    assert verifier_error_reruns_trial(error) is False
+    assert verifier_error_reruns_trial(error, on_resume=True) is False
+    assert needs_verifier_recovery(error) is False
+
+
+# -- B, widened: every root read of a sandbox path, by any user that may be root, guarded on the same path ---------
+
+_SYNTHETIC = {
+    "variable-user": (
+        "rollout/_synthetic.py",
+        "async def f(env, who):\n"
+        "    await exec_raw(env.exec, 'cat /logs/verifier/reward.txt', user=who)\n",
+    ),
+    "system-shell": (
+        "rollout/_synthetic.py",
+        "async def f(env):\n"
+        "    await exec_raw(system_shell_exec, env, 'cat /logs/verifier/x.log')\n",
+    ),
+    "guard-on-another-path": (
+        "task/_synthetic.py",
+        "async def f(self):\n"
+        "    await self._read_back('/logs/verifier/a', 'main')\n"
+        "    await exec_raw(self._sandbox.exec, 'cat /logs/verifier/b', user='root')\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_SYNTHETIC))
+def test_the_registry_catches_synthetic_bypasses(case):
+    """(the narrow read_back registry). The registry saw four files, only a literal ``user="root"``, and
+    took any earlier ``read_back`` in the function as the guard. Each synthetic bypass is a root read it must
+    catch: a variable user (root at run time), the system shell's exec (root), and a guard on another path.
+
+    Mutants: the literal-root rule; any earlier guard accepted."""
+    _rel, source = _SYNTHETIC[case]
+    reads_in = globals().get("_root_reads_in")
+    guarded_in = globals().get("_guarded_in")
+    assert reads_in is not None and guarded_in is not None, (
+        "the registry reads only named files"
+    )
+    tree = ast.parse(source)
+    reads = list(reads_in(tree))
+    assert reads, f"{case}: the read was not seen"
+    assert not any(guarded_in(tree, fn, line) for fn, line, _call in reads), case
+
+
+def test_the_registry_scans_every_module_that_runs_after_the_turn():
+    """. Every module under task/, rollout/ and taskmd/ is scanned, not four named files.
+
+    Mutant: the four-file list put back."""
+    modules = globals().get("REGISTRY_MODULES")
+    assert modules is not None, "the registry reads only VERIFIER_CODE"
+    for rel in (
+        "rollout/__init__.py",
+        "rollout/_verifier_recovery.py",
+        "taskmd/grading.py",
+    ):
+        assert rel in modules, rel
 
 
 @pytest.mark.asyncio
@@ -613,21 +1212,41 @@ def test_an_out_of_scope_verify_never_publishes_a_score(rel):
 
 # -- B: every root read of a sandbox path goes through read_back --------------
 
-#: Where the verifier's code runs as root against the sandbox.
-VERIFIER_CODE = (
-    "task/verifier_core.py",
-    "rollout/_setup.py",
-    "taskmd/verify.py",
-    "task/verifier_outputs.py",
+# Every module that may run during or after grading (the registry
+#: read four named files): all of task/, rollout/ and taskmd/.
+REGISTRY_MODULES = tuple(
+    sorted(
+        str(path.relative_to(SRC))
+        for folder in ("task", "rollout", "taskmd")
+        for path in (SRC / folder).rglob("*.py")
+    )
 )
 #: A command that reads a file's bytes or metadata back.
 READS = ("cat ", "head ", "tail ", "base64 ", " od ", "readlink ", "stat ")
 #: Read calls that are not commands.
 READ_CALLS = {"download_file", "download_dir", "read_file", "copy_to"}
+#: Calls that run their command as root whatever user they are given.
+ROOT_RUNNERS = {"system_shell_exec"}
 
 
-def _root_reads(rel):
-    tree = ast.parse((SRC / rel).read_text())
+def _may_be_root(node: ast.Call) -> bool:
+    """A call that may run as root: a ``user`` that isn't a literal non-root
+    name (a variable is root at run time when the task says so), or the
+    system shell's exec, which is root's."""
+    names = {getattr(a, "id", getattr(a, "attr", None)) for a in ast.walk(node)}
+    if names & ROOT_RUNNERS:
+        return True
+    for k in node.keywords:
+        if k.arg == "user":
+            value = k.value
+            return not (
+                isinstance(value, ast.Constant) and value.value not in ("root", 0, "0")
+            )
+    return False
+
+
+def _root_reads_in(tree: ast.AST):
+    """Every root read of a sandbox path in *tree*: (function, line, call)."""
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -640,12 +1259,14 @@ def _root_reads(rel):
                 for s in ast.walk(node)
                 if isinstance(s, ast.Constant) and isinstance(s.value, str)
             )
-            as_root = any(
-                k.arg == "user" and getattr(k.value, "value", None) == "root"
-                for k in node.keywords
-            )
-            if name in READ_CALLS or (as_root and any(r in text for r in READS)):
+            if name in READ_CALLS or (
+                _may_be_root(node) and any(r in text for r in READS)
+            ):
                 yield fn.name, node.lineno, name
+
+
+def _root_reads(rel):
+    yield from _root_reads_in(ast.parse((SRC / rel).read_text()))
 
 
 #: Root reads that are not read-backs of BenchFlow's own state, each named
@@ -658,30 +1279,82 @@ READ_BACK_EXEMPT = {
     ("taskmd/verify.py", "_tar_kept_dir"): (
         "a judge's copy of the agent's own files, by design"
     ),
+    # Seen once the registry read every module, each named:
+    ("rollout/__init__.py", "_soft_verify"): (
+        "soft verify's log for the simulated user, never a score (the system shell, C8)"
+    ),
+    ("rollout/__init__.py", "_capture_setup_command_dir"): (
+        "a task setup command's output folder, before the agent's turn"
+    ),
+    ("rollout/_collect_hooks.py", "collect_sidecar_artifacts"): (
+        "the agent's own artifacts, kept as evidence; no score reads them"
+    ),
+    ("rollout/_recovery_submission.py", "capture_submission"): (
+        "the agent's submission, by design: it is graded, never trusted"
+    ),
+    ("rollout/_separate_verifier.py", "_publish_verifier_outputs"): (
+        "strict's separate verifier, whose sandbox runs no agent process (Q7)"
+    ),
+    ("rollout/_session_mirror.py", "sync"): (
+        "the agent's own session log, mirrored for the trajectory"
+    ),
+    ("rollout/_user_loop.py", "_export_generated_skills"): (
+        "the skills the agent wrote, exported as its output"
+    ),
+    ("rollout/_verifier_recovery.py", "_recover_verifier"): (
+        "a host copy of the recovery's own trial folder, not a sandbox read"
+    ),
+    ("task/equivalence.py", "check_equivalence_async"): (
+        "an internal tool that publishes no score (Q7)"
+    ),
+    ("task/verifier_core.py", "_recover_main_verifier_outputs"): (
+        "each canonical name in the output folder, after read_back of that folder"
+    ),
 }
 
 
-def _guarded(rel, fn_name, line):
+def _same_path(guard: ast.expr, read: ast.Call) -> bool:
+    """Whether the read names the path the guard checked: the guard's path
+    expression is part of the read, or its literal text is in the read's."""
+    if isinstance(guard, ast.Constant) and isinstance(guard.value, str):
+        return any(
+            isinstance(s, ast.Constant)
+            and isinstance(s.value, str)
+            and guard.value in s.value
+            for s in ast.walk(read)
+        )
+    want = ast.dump(guard)
+    return any(ast.dump(n) == want for n in ast.walk(read) if n is not guard)
+
+
+def _guarded_in(tree: ast.AST, fn_name: str, line: int) -> bool:
     """Whether the read at *line* in *fn_name* follows a ``read_back`` (or
-    the verifier's ``_read_back``) in the same function."""
-    tree = ast.parse((SRC / rel).read_text())
+    the verifier's ``_read_back``) of the same path in the same function."""
     for fn in ast.walk(tree):
         if (
             not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
             or fn.name != fn_name
+            or not (fn.lineno <= line <= (fn.end_lineno or fn.lineno))
         ):
             continue
-        if not (fn.lineno <= line <= (fn.end_lineno or fn.lineno)):
-            continue
+        reads = [
+            n for n in ast.walk(fn) if isinstance(n, ast.Call) and n.lineno == line
+        ]
         for node in ast.walk(fn):
             if (
                 isinstance(node, ast.Call)
                 and getattr(node.func, "id", getattr(node.func, "attr", None))
                 in ("read_back", "_read_back")
                 and node.lineno <= line
+                and node.args
+                and any(_same_path(node.args[0], read) for read in reads)
             ):
                 return True
     return False
+
+
+def _guarded(rel, fn_name, line):
+    return _guarded_in(ast.parse((SRC / rel).read_text()), fn_name, line)
 
 
 def test_every_root_read_of_a_sandbox_path_goes_through_read_back():
@@ -691,7 +1364,7 @@ def test_every_root_read_of_a_sandbox_path_goes_through_read_back():
     bypasses it fails here, by file, function and line."""
     from benchflow.task import _read_back  # noqa: F401  (the primitive exists)
 
-    reads = [(rel, *site) for rel in VERIFIER_CODE for site in _root_reads(rel)]
+    reads = [(rel, *site) for rel in REGISTRY_MODULES for site in _root_reads(rel)]
     assert reads, "precondition: the scan finds the verifier's root reads"
     bypass = sorted(
         f"{rel}:{line} {fn}() {call}"
@@ -711,6 +1384,8 @@ def _verdict(**changes):
         "outputs_open_why": None,
         "links_before": {"ran": True, "why": None, "links": []},
         "links_after": {"ran": True, "why": None, "links": []},
+        # Rule S's answer (sandbox/_agent_alive.py): none of the agent's alive.
+        "alive_at_test": {"user": "agent", "uid": 1000, "alive": False, "why": None},
     }
     found.update(changes)
     return _reward_provenance.verdict(**found)
@@ -734,7 +1409,8 @@ def test_s_a_close_never_due_is_no_check():
     give `verified`. Mutant: a close never due counted as one that did not
     run (every honest non-root judge trial scored 0)."""
     found = _verdict(outputs_closed=None, outputs_close_applies=False)
-    assert [c for c in found["checks"] if c.get("check") == "outputs-closed"] == []
+    rows = [c for c in found["checks"] if c.get("check") == "outputs-closed"]
+    assert all(r.get("applies") is False for r in rows), rows
     assert found["verdict"] == _reward_provenance.VERIFIED, found
 
 
@@ -1014,102 +1690,75 @@ async def test_a_loop_makes_the_walk_incomplete_and_a_dangling_link_elsewhere_do
     assert removed == []
 
 
-# -- Z (F36, Q4): bfx on Daytona native, through a fake exec stream -----------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", list(USERS))
+async def test_s_is_asked_after_the_walk_before_test_sh_and_its_answer_is_used(
+    tmp_path, monkeypatch, who
+):
+    """S-2. Rule S is asked once in the verify itself, for the trial's non-root agent, after the walk before
+    test.sh and before the verifier runs; its answer is the one the provenance uses (alive: the reward kept,
+    `unverifiable`, with the record). The oracle and a root agent are not asked.
 
+    Mutant: S never asked, taken as none alive (``_setup._ask_alive_at_test``)."""
+    from benchflow.sandbox import _agent_alive
 
-def _daytona_fake(tmp_path, monkeypatch, *, machine="x86_64", sha_rc=0):
-    """A DaytonaSandbox's bfx methods on a fake: exec answers by command,
-    upload_file records what it put where."""
-    import types
+    user, agent = USERS[who]
+    calls = _walks(monkeypatch)
+    asked: list[str] = []
 
-    from benchflow._bfx import locate
-    from benchflow.sandbox.daytona import DaytonaSandbox
+    async def alive(env, user, *, timeout_sec=None):
+        calls.append("alive")
+        asked.append(user)
+        return {
+            "user": user,
+            "uid": 1000,
+            "alive": True,
+            "by": "getpriority",
+            "why": None,
+        }
 
-    binary = tmp_path / "bfx-pinned"
-    binary.write_bytes(b"\x7fELF pinned")
-    monkeypatch.setattr(locate, "verified_binary", lambda arch: binary)
-    calls: list[str] = []
-    uploads: list[tuple[str, str]] = []
+    monkeypatch.setattr(_agent_alive, "ask", alive)
 
-    async def exec(command, user=None, timeout_sec=None, **_):
-        calls.append(command)
-        if command == "uname -m":
-            return SimpleNamespace(stdout=machine + "\n", stderr="", return_code=0)
-        if "sha256sum" in command and sha_rc:
-            return SimpleNamespace(
-                stdout="", stderr="bfx pin mismatch", return_code=sha_rc
-            )
-        if "bfx" in command and "--json" in command:
-            return SimpleNamespace(
-                stdout='{"ok": true, "result": {"entries": []}}\n', return_code=0
-            )
-        return SimpleNamespace(stdout="", stderr="", return_code=0)
+    async def verify():
+        calls.append("verify")
+        return SimpleNamespace(rewards={"reward": 1.0})
 
-    async def upload_file(source, target, *, mode=None, admission=None):
-        uploads.append((str(source), target))
-
-    fake = SimpleNamespace(
-        exec=exec,
-        upload_file=upload_file,
-        logger=logging.getLogger("z"),
-        bfx_delivery=None,
+    got = await _attempt(
+        _env(), _planes(verify), tmp_path, f"s-asked-{who}", agent=agent, user=user
     )
-    for name in ("plan_bfx_upload", "_bfx_binary", "bfx_call"):
-        setattr(fake, name, types.MethodType(getattr(DaytonaSandbox, name), fake))
-    return fake, calls, uploads
+    assert (got.rewards, got.error) == ({"reward": 1.0}, None), (who, got)
+    if who == "non-root":
+        assert calls == ["before", "alive", "verify", "after"], calls
+        assert asked == [user], asked
+        found = got.provenance
+        assert found["verdict"] == "unverifiable", found
+        assert found["alive_at_test"]["alive"] is True, found
+    else:
+        assert "alive" not in calls and asked == [], (who, calls)
 
 
 @pytest.mark.asyncio
-async def test_z_daytona_native_plans_an_upload_where_a_pin_exists(
+async def test_a_refused_packet_in_test_sh_is_scored_as_test_sh_says_and_flagged(
     tmp_path, monkeypatch
 ):
-    """Z. Daytona native, x86_64 with a pinned bfx: delivery "per-call", and
-    BenchFlow's walker can run there (no refusal before the turn); an arch
-    without a pinned bfx: no delivery, refused before the turn."""
-    fake, _, uploads = _daytona_fake(tmp_path, monkeypatch)
-    await fake.plan_bfx_upload()
-    assert fake.bfx_delivery == "per-call" and uploads == []
-    assert _verifier_links.walker_unavailable(fake) is None
-    other, _, _ = _daytona_fake(tmp_path, monkeypatch, machine="riscv64")
-    await other.plan_bfx_upload()
-    assert other.bfx_delivery is None
-    assert _verifier_links.walker_unavailable(other) is not None
-
-
-@pytest.mark.asyncio
-async def test_z_bfx_is_uploaded_afresh_after_the_turn_and_checked_each_call(
-    tmp_path, monkeypatch
-):
-    """Z. The pinned bfx goes into a root-only folder made for it before the
-    turn (for the record), and into a fresh one once the turn is over; every
-    call checks its SHA-256 against the pin first."""
-    from benchflow._bfx import pins
-    from benchflow.sandbox._bounded_exec import end_agent_turn
-
-    fake, calls, uploads = _daytona_fake(tmp_path, monkeypatch)
-    await fake.plan_bfx_upload()
-    await fake.bfx_call("scan", {"paths": ["/"]}, timeout_sec=5)
-    await fake.bfx_call("scan", {"paths": ["/"]}, timeout_sec=5)
-    assert len(uploads) == 1
-    before = uploads[0][1]
-    end_agent_turn(fake)
-    await fake.bfx_call("scan", {"paths": ["/"]}, timeout_sec=5)
-    assert len(uploads) == 2 and uploads[1][1] != before
-    made = [c for c in calls if c.startswith("umask 077 && mkdir -m 0700 ")]
-    assert len(made) == 2
-    runs = [c for c in calls if "--json" in c]
-    assert len(runs) == 3
-    pin = pins.SHA256[fake._bfx_arch]
-    assert all("sha256sum " in r and pin in r for r in runs), runs
-
-
-@pytest.mark.asyncio
-async def test_z_a_bfx_that_does_not_match_its_pin_never_runs(tmp_path, monkeypatch):
-    """Z. The uploaded file's hash differs from the pin: the call is refused
-    (bfx unavailable), so the walk did not run, never one taken from it."""
-    from benchflow._bfx.locate import BfxUnavailable
-
-    fake, _, _ = _daytona_fake(tmp_path, monkeypatch, sha_rc=98)
-    await fake.plan_bfx_upload()
-    with pytest.raises(BfxUnavailable):
-        await fake.bfx_call("scan", {"paths": ["/"]}, timeout_sec=5)
+    """The verifier's network refused test.sh something: no ending of its
+    own (its packets can be test.sh's or the agent's code it ran), so the
+    reward is test.sh's, and the trial's warnings carry the read flag."""
+    _walks(monkeypatch)
+    planes = _planes(_returns(0.0))
+    planes.verifier().network_refusal = {
+        "phase": "test.sh",
+        "where": "in-container",
+        "mode": "no-network",
+        "refused": 3,
+        "refused_words": "3 packets",
+        "exit_code": 1,
+        "passed": False,
+    }
+    got = await _attempt(_env(), planes, tmp_path, "refused")
+    assert (got.rewards, got.error, got.category) == ({"reward": 0.0}, None, None)
+    assert got.reruns is False
+    assert any(
+        "refused test.sh 3 packets" in w and "scored as test.sh says" in w
+        for w in got.warnings
+    ), got.warnings

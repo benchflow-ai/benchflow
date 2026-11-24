@@ -64,7 +64,10 @@ def _env_with_probe_output(stdout: str):
     # A sandbox BenchFlow's walker runs in, with its record from before the
     # turn: the reward's provenance is checked, and finds nothing.
     env.bfx_delivery = "bind"
-    env.bfx_call = AsyncMock(return_value={"entries": []})
+    # bfx's answer for an empty sandbox: one mount, /, and no links.
+    env.bfx_call = AsyncMock(
+        return_value={"entries": [], "errors": [], "mounts": [{"mount_point": "/"}]}
+    )
     _verifier_links.inherit_record(env, _verifier_links.Walked("bfx"))
     return env
 
@@ -215,6 +218,58 @@ async def test_rollout_with_recovery_contract_leaves_wedge_to_recovery(
     assert len(attempts) == 1
     assert rollout._verifier_error is None
     assert "Verifier scored 0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_rollout_with_recovery_contract_leaves_wedge_to_recovery_assessed_non_root_defeated(
+    tmp_path, monkeypatch, caplog
+):
+    """813-U2. The wedge control above runs where no check is defeated, so the provenance gate
+    never has a say, and it stays green with the gate unconditional (M1). Here the trial is assessed (audit), its
+    agent a non-root model agent, and every link check defeated: the wedge's own 0 is kept as it is, with its own
+    warning, and no provenance outcome is put in its place.
+
+    Mutant: M1, the gate unconditional (the Q6 0 with its own warning and outcome)."""
+    from benchflow.sandbox import _verifier_links
+
+    async def defeated(env, *, timeout_sec=None, **_kwargs):
+        return {
+            "ran": False,
+            "why": "the walk was made to fail by this row",
+            "engine": "bfx",
+            "links": [],
+        }
+
+    monkeypatch.setattr(_verifier_links, "remove_turn_links", defeated)
+    monkeypatch.setattr(_verifier_links, "links_after_grading", defeated)
+    attempts = []
+
+    async def verify():
+        attempts.append(1)
+        await asyncio.sleep(3600)
+
+    rollout = _rollout(tmp_path, verify, recovery=True)
+    rollout._env.exec.return_value.return_code = 1  # no start receipt
+    assert rollout._config.integrity in ("audit", "off"), rollout._config.integrity
+    assert rollout._config.sandbox_user == "agent", rollout._config.sandbox_user
+    assert rollout._config.primary_agent not in (None, "oracle"), (
+        rollout._config.primary_agent
+    )
+    monkeypatch.setattr(
+        "benchflow.rollout._publish_trajectory_for_verifier", AsyncMock()
+    )
+    monkeypatch.setattr("benchflow.rollout.capture_terminal_workspace", AsyncMock())
+
+    assert await rollout.verify() == {"reward": 0.0}
+    assert len(attempts) == 1
+    assert rollout._verifier_error is None
+    assert "Verifier scored 0" in caplog.text
+    assert "provenance incomplete" not in caplog.text, caplog.text
+    found = (getattr(rollout._env, "_benchflow_verifier_inputs", None) or {}).get(
+        "provenance"
+    ) or {}
+    assert found.get("checks"), "precondition: the trial was assessed"
+    assert found.get("outcome") is None, found
 
 
 @pytest.mark.asyncio

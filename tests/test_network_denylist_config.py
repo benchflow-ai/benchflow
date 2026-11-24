@@ -6,6 +6,7 @@ Guards the denylist egress mode.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from textwrap import dedent
 
@@ -309,17 +310,29 @@ def test_rubric_checks_v_network_denylist_outcomes() -> None:
     assert stray[1] == "fail"
 
 
-def test_review_pack_normalizes_denylist_cells() -> None:
-    """The review pack maps a denylist cell onto the V-NETWORK gate with its lists."""
-    base = {"task": "citation-check", "agent": "openhands", "network_mode": "denylist"}
-    hardened = pack_mod.normalize_cell(
-        {**base, "id": "cit-deny", "blocked_hosts": ["arxiv.org"]}
+def test_review_pack_grades_a_denylist_cell_on_what_ran() -> None:
+    """A denylist cell is graded on its trial's records, not its label or lists.
+    No record holds a denylist's lists, so a run that recorded denylist is na."""
+    cell = pack_mod.normalize_cell(
+        {
+            "task": "citation-check",
+            "agent": "openhands",
+            "network_mode": "denylist",
+            "id": "cit-deny",
+            "blocked_hosts": ["arxiv.org"],
+        }
     )
-    bare = pack_mod.normalize_cell({**base, "id": "cit-bare"})
-
-    assert pack_mod._cell_network_config(hardened) == "denylist"
-    md = pack_mod.hardening_summary_md(
-        slots=[], cells=[hardened, bare], verifier_or_sandbox_pr=True
+    with tempfile.TemporaryDirectory() as tmp:
+        job = Path(tmp) / "cit-deny" / "2026-11-21__12-00-00"
+        trial = job / "citation-check__0d83aff7"
+        trial.mkdir(parents=True)
+        (trial / "result.json").write_text("{}")
+        (job / "run-card.json").write_text('{"network": {"denylist": 1}}')
+        slot = pack_mod.Slot(cell=cell, rollouts=[trial])
+        md = pack_mod.hardening_summary_md(
+            slots=[slot], cells=[cell], verifier_or_sandbox_pr=True
+        )
+    assert (
+        "cit-deny: V-NETWORK=na — denylist ran, blocked hosts and URLs not recorded"
+        in md
     )
-    assert "cit-deny: V-NETWORK=pass" in md
-    assert "cit-bare: V-NETWORK=fail" in md

@@ -7,6 +7,23 @@ import pytest
 from benchflow.agents.codex_config import apply_codex_launch_config
 
 
+def _only_analytics_added(updated_env, agent_env, before):
+    """A launch that doesn't own the model leaves the caller's env as it was and changes nothing in the copy but
+    Codex's analytics, off in every launch unless the run sets them: no model, no effort is claimed."""
+    assert agent_env == before
+    changed = {
+        k
+        for k in set(updated_env) | set(agent_env)
+        if updated_env.get(k) != agent_env.get(k)
+    }
+    assert changed <= {"CODEX_CONFIG"}, changed
+    if changed:
+        config = json.loads(updated_env["CODEX_CONFIG"])
+        assert config.pop("analytics") == {"enabled": False}
+        raw = agent_env.get("CODEX_CONFIG")
+        assert config == (json.loads(raw) if raw else {})
+
+
 @pytest.mark.parametrize(
     "raw_config",
     [None, "{", "[]", "{}", '{"model":"another-model"}'],
@@ -20,13 +37,14 @@ def test_launch_config_rejects_missing_invalid_or_mismatched_model(raw_config):
     }
     if raw_config is not None:
         agent_env["CODEX_CONFIG"] = raw_config
+    before = dict(agent_env)
 
     updated_env, owns_model = apply_codex_launch_config(
         "codex-acp", agent_env, model="openai/gpt-5.4-mini", reasoning_effort="high"
     )
 
-    assert updated_env is agent_env
     assert not owns_model
+    _only_analytics_added(updated_env, agent_env, before)
 
 
 def test_launch_config_applies_effort_to_exact_model():
@@ -54,13 +72,14 @@ def test_launch_config_rejects_alias_for_a_different_requested_model():
         "BENCHFLOW_LITELLM_MODEL_VIA_ENV": "1",
         "CODEX_CONFIG": '{"model":"runtime-openai-gpt-5.4-mini"}',
     }
+    before = dict(agent_env)
 
     updated_env, owns_model = apply_codex_launch_config(
         "codex-acp", agent_env, model="openai/gpt-5.5", reasoning_effort="high"
     )
 
-    assert updated_env is agent_env
     assert not owns_model
+    _only_analytics_added(updated_env, agent_env, before)
 
 
 @pytest.mark.parametrize("sandboxed", [True, False])

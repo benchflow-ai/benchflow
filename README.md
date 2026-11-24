@@ -20,7 +20,7 @@ These docs describe BenchFlow 0.10. `bench --version` prints the version you hav
 
 ## Quick start
 
-You need [Docker](https://docs.docker.com/get-started/get-docker/) running and [uv](https://docs.astral.sh/uv/getting-started/installation/). Steps 1 and 2 need no model and no API key.
+You need [Docker](https://docs.docker.com/get-started/get-docker/) running and [uv](https://docs.astral.sh/uv/getting-started/installation/). On Linux, [Docker on Linux](./docs/start/install.md#docker-on-linux) has the Compose, buildx and docker-group steps. Steps 1 and 2 need no model and no API key.
 
 **1. Install BenchFlow and check this machine.**
 
@@ -40,7 +40,7 @@ bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
   --agent oracle --sandbox docker --jobs-dir jobs/oracle
 ```
 
-BenchFlow downloads only that task from [SkillsBench](https://github.com/benchflow-ai/skillsbench), builds its image, runs its solution and verifier, and prints `Score: 1/1`. A cold-cache first run took 6 minutes 12 seconds, including the verifier's package downloads; allow longer on a slow connection.
+BenchFlow downloads only that task from [SkillsBench](https://github.com/benchflow-ai/skillsbench), builds its image, runs its solution and verifier, and ends with the score, `1/1 passed`, and the job folder on its `Results:` line. A cold-cache first run took 6 minutes 12 seconds, including the verifier's package downloads; allow longer on a slow connection.
 
 **3. Run a model.** With a Claude subscription, no API key is needed. `claude setup-token` comes with [Claude Code](https://code.claude.com/docs/en/quickstart) and prints a login token that lasts a year:
 
@@ -48,7 +48,7 @@ BenchFlow downloads only that task from [SkillsBench](https://github.com/benchfl
 claude setup-token
 export CLAUDE_CODE_OAUTH_TOKEN='<token>'
 bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
-  --agent claude --model claude-haiku-4-5-20251001 --sandbox docker --jobs-dir jobs/claude
+  --agent claude --model claude-haiku-4-5-20251001 --sandbox docker --jobs-dir jobs/model
 ```
 
 > **Billing:** an exported `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` wins over the token and is billed. Unset both to use your subscription.
@@ -67,11 +67,11 @@ The agent may pass or fail. Either way, the run worked. Version 0.9.0 of `bench 
 
 ```bash
 bench results jobs/              # one row per job, named by its folder, with its score
-bench eval metrics jobs/claude   # pass rate, solve rate, pass@k, tool calls and time
-bench view jobs/claude           # trajectory, verifier output and score, in your browser
+bench eval metrics jobs/model    # pass rate, solve rate, pass@k, tool calls and time
+bench view jobs/model            # trajectory, verifier output and score, in your browser
 ```
 
-`jobs/claude` is a jobs directory; each timestamped child is one job. Copy the exact `Artifacts:` path printed by `bench run` to inspect or resume that job with `bench results <job>` or `bench eval resume <job>`. If you skipped the model run, use `jobs/oracle` instead.
+`jobs/model` is a jobs directory; each timestamped child is one job. Copy the exact `Results:` path printed by `bench run` to inspect or resume that job with `bench results <job>` or `bench eval resume <job>`. If you skipped the model run, use `jobs/oracle` instead.
 
 Each run writes its rewards, token usage and trajectory under `--jobs-dir`. A trial's reward is in `verifier/reward.txt` and in `result.json` under `rewards.reward`; its transcript is in `trajectory/`. Run the same command again to resume the latest matching job: finished tasks are kept, not rerun. Add `--fresh` to start over.
 
@@ -82,7 +82,7 @@ Each run writes its rewards, token usage and trajectory under `--jobs-dir`. A tr
 - [Export runs for training](./docs/train/export.md): rewards and rollouts as JSONL.
 - Run a whole benchmark: [Quick start](./docs/start/quick-start.md).
 - Check every agent login at once: `bench eval smoke` runs a bundled hello-world task once per logged-in agent.
-- [Run from Python](./docs/start/quick-start.md): [`quickstart.py`](./docs/examples/python-sdk/quickstart.py) runs a task with the oracle, with no key.
+- [Run from Python](./docs/start/quick-start.md#from-python): [`quickstart.py`](./docs/examples/python-sdk/quickstart.py) runs a task with the oracle, with no key.
 - Learn the words: [Core concepts](./docs/start/how-it-works.md).
 - Upgrading from 0.7? Read [What's new in 0.9](./docs/versions/upgrade-from-0.7.md).
 
@@ -115,7 +115,7 @@ To have a coding agent do the quick start for you, paste the [agent quickstart p
 |------------------|------|
 | Run several agents in one task: coder and reviewer, simulated user | [Scenes and simulated users](./docs/tasks/multi-turn.md) |
 | Give one agent hints over several rounds | [Progressive disclosure](docs/tasks/multi-turn.md#a-scripted-user) |
-| Fork a run at a checkpoint into scored children | [Branching](docs/train/environment.md) |
+| Fork a run at a checkpoint into scored children | [Branching](docs/train/environment.md#branch-a-rollout-at-a-checkpoint) |
 | Evaluate a skill rather than a workspace | [Skill eval](docs/evaluate/skills.md) |
 | Run robots and simulators | [Embodied rollouts](docs/tasks/task-format.md#other-task-formats) |
 
@@ -204,7 +204,7 @@ BenchFlow also runs older split tasks (`task.toml`, `instruction.md`, `solution/
 
 ## Contributing
 
-For a source build, prepare the pinned `bfx` binaries first; see [Build from a checkout](./docs/start/install.md). Without them, Docker uses the fallback root steps.
+For a source build, prepare the pinned `bfx` binaries first; see [Build from a checkout](./docs/start/install.md). Without them, a model agent's Docker trial is refused before its turn (`integrity_unavailable`); the oracle and script agents still run.
 
 Open pull requests against `main`. CI runs ruff (lint and format), `ty`, the unit tests, a Docker integration tier and `pip-audit`. Run the same checks before you push:
 
@@ -216,7 +216,7 @@ uv run ty check
 uv run python -m pytest tests/ -k 'not cloud_metadata'
 ```
 
-A checkout has no `bfx` binaries (BenchFlow's helper for root's steps on Docker; they are not in git). An editable install runs without them, as with `BENCHFLOW_BFX_DELIVERY=off`. To run Docker trials with `bfx`, or before you build a wheel, build them on Linux with `rustup` installed: `BFX_REQUIRE_PIN=1 scripts/build_bfx.sh` (or `make bfx`). See [Try a pre-release](./docs/start/install.md).
+A checkout has no `bfx` binaries (BenchFlow's helper for root's steps on Docker; they are not in git). Without them, as with `BENCHFLOW_BFX_DELIVERY=off`, an editable install still runs the oracle and script agents, and refuses a model agent's Docker trial before its turn (`integrity_unavailable`). To run Docker trials with `bfx`, or before you build a wheel, build them on Linux with `rustup` installed: `BFX_REQUIRE_PIN=1 scripts/build_bfx.sh` (or `make bfx`). See [Try a pre-release](./docs/start/install.md).
 
 Merges to `main` publish an internal preview once CI passes. A release tag publishes the public release. See [Stable and preview releases](./docs/start/install.md); maintainers, see [Publishing a release](./docs/contributing/release.md).
 

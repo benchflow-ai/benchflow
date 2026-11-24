@@ -167,10 +167,12 @@ class SandboxStartupError(RuntimeError):
 
 class EnvironmentStartTimeoutError(SandboxStartupError):
     """The whole environment start ran past its budget: a YAML job config's
-     environment build phase (``environment.build_timeout_sec`` times its
-     build timeout multiplier), which bounds the whole start
-    . A sandbox startup error, not a ``TimeoutError``:
-     ``Rollout.run`` reads a ``TimeoutError`` as the agent's timeout."""
+    environment build phase (``environment.build_timeout_sec`` times its
+    build timeout multiplier), which bounds the whole start, or without
+    one the task's build budget and the start's own allowance after it
+    (``rollout._setup.default_start_deadline``). A sandbox startup error,
+    not a ``TimeoutError``: ``Rollout.run`` reads a ``TimeoutError`` as the
+    agent's timeout."""
 
 
 SandboxStartupFailure = SandboxStartupError

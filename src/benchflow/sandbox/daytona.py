@@ -21,7 +21,7 @@ import shlex
 import time
 import types
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -59,11 +59,13 @@ except ImportError:  # base install without ``sandbox-daytona`` extras (#358)
 
 from benchflow._paths import iter_safe_tree
 from benchflow._runtime_tree import KIT_BIN
+from benchflow._utils.text import describe_exception
 from benchflow.sandbox import _transport, daytona_start
 from benchflow.sandbox._base import (
     ABSOLUTE_HIDE_BASH_ENV,
     BASH_STARTUP_PREFIX,
     BASH_STARTUP_VARS,
+    ENV_FD,
     HIDE_BASH_ENV,
     IMAGE_BASH_ENV,
     IMAGE_ENV_PREFIX,
@@ -75,6 +77,8 @@ from benchflow.sandbox._base import (
     ExecRoute,
     StartupNamesRefused,
     _root_exec_command,
+    env_from_descriptor,
+    env_stdin_body,
     restore_bash_env,
     restore_image_env,
     startup_name,
@@ -102,6 +106,16 @@ from benchflow.sandbox._transport import (
 from benchflow.sandbox.daytona_build_keys import BUILD_SALTS, salted_params
 from benchflow.sandbox.daytona_delete import SandboxStillBuilding, delete_sandbox
 from benchflow.sandbox.daytona_dind import _DaytonaDinD
+from benchflow.sandbox.daytona_exec_env import REFUSED as EXEC_ENV_REFUSED
+from benchflow.sandbox.daytona_exec_env import ExecEnvFiles, ExecEnvUnavailable
+from benchflow.sandbox.daytona_exec_env import opening as exec_env_opening
+from benchflow.sandbox.daytona_exec_env import (
+    prepare_folder as prepare_exec_env_folder,
+)
+from benchflow.sandbox.daytona_exec_env import proof as exec_env_proof
+from benchflow.sandbox.daytona_exec_env import refuse_nul as refuse_exec_env_nul
+from benchflow.sandbox.daytona_exec_env import root_tools as exec_env_root_tools
+from benchflow.sandbox.daytona_exec_env import scrub_sessions as scrub_exec_sessions
 from benchflow.sandbox.daytona_layers import (
     InstallLayer,
     InstallLayerPlan,
@@ -121,7 +135,7 @@ from benchflow.sandbox.daytona_pty import (
     _exec_failure_output,  # noqa: F401
     _is_daytona_transient_retry_error,
     _reject_non_main_service,  # noqa: F401
-    _wrap_daytona_command_with_env_file,
+    _wrap_daytona_command_with_env_file,  # noqa: F401
     stamp_transient_transport,
 )
 
@@ -357,6 +371,12 @@ _SECOND_PAYLOAD_FD = 9
 
 def _on_stdin(payload: bytes | None) -> dict[int, bytes] | None:
     return None if payload is None else {0: payload}
+
+
+#: How long removing the execs' env and session files may hold up a stop or
+#: a restore (``DaytonaSandbox._remove_exec_traces``): best effort, unlike the
+#: delete that follows.
+_EXEC_TRACES_TIMEOUT_SEC = 20
 
 
 # Files per SDK ``upload_files`` call where a sandbox has no tar to unpack
@@ -822,8 +842,24 @@ EXEC_COUNTS_FILE = "daytona-execs.json"
 # DaytonaSandbox.exec_transient) is polled, so its status requests are counted
 # apart. A context variable, not an attribute: the live token counter's reads
 # run as their own task alongside the trial's other execs.
+#: A session's first command: the pid and start (clock ticks after boot) of the
+#: shell Daytona started for it, the child of PID 1 its own process runs under.
+#: In a subshell, so the session's shell keeps its own settings.
+_SESSION_SHELL_PROBE = (
+    '( set -f; p=$$; while [ "$p" -gt 1 ]; do '
+    'read -r s < "/proc/$p/stat" || exit 0; s=${s##*") "}; set -- $s; '
+    'if [ "$2" = 1 ]; then printf "BF-SESSION-SHELL %s %s\\n" "$p" "${20}"; exit 0; fi; '
+    "p=$2; done )"
+)
+_SESSION_SHELL_LINE = re.compile(r"^BF-SESSION-SHELL (\d+) (\d+)$", re.MULTILINE)
+
 _IN_TRANSIENT_EXEC: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "benchflow_daytona_in_transient_exec", default=False
+)
+# Whether the exec running is a session's shell probe (_note_session_shell),
+# counted apart from the execs it comes before.
+_IN_SESSION_PROBE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "benchflow_daytona_in_session_probe", default=False
 )
 
 
@@ -839,11 +875,16 @@ class _ExecCounts:
 
     Both groups count every exec, whether it ran in a session or through the
     command channel. Session execs are exec_calls + transient_exec_calls
-    - channel_exec_calls + channel_fallbacks."""
+    - channel_exec_calls + channel_fallbacks, and each kept session's probe
+    (session_probes) comes before its exec."""
 
     exec_calls: int = 0
     # Status requests of the polls, retries included.
     status_requests: int = 0
+    # The probe each kept session's first command is (its shell's pid and
+    # start for the integrity check), and the status requests of its polls.
+    session_probes: int = 0
+    session_probe_status_requests: int = 0
     # Wall time of each exec, from its start (creating the session, or
     # handing the command to the channel) to the result, summed; execs that
     # run at the same time are each counted in full.
@@ -884,6 +925,10 @@ class _ExecCounts:
 class DaytonaSandbox(BaseSandbox):
     _daytona_contexts: _ContextStage | None = None
     exec_channel: ClassVar[bool] = True
+    # The toolbox starts every command through the image's shell (the note on
+    # _TOOLBOX_STARTUP_PROBE): so does bfx, which then holds against a
+    # non-root agent only.
+    bfx_launch: ClassVar[str] = "image-shell"
     # a root agent here runs under the provider's own metadata
     # policy (the block's record says provider-managed).
     cloud_metadata_provider_managed = True
@@ -1746,7 +1791,9 @@ class DaytonaSandbox(BaseSandbox):
     ) -> object:
         sandbox = self._require_sandbox()
         counts = self._exec_counts()
-        if _IN_TRANSIENT_EXEC.get():
+        if _IN_SESSION_PROBE.get():
+            counts.session_probe_status_requests += 1
+        elif _IN_TRANSIENT_EXEC.get():
             counts.transient_status_requests += 1
         else:
             counts.status_requests += 1
@@ -1875,6 +1922,7 @@ class DaytonaSandbox(BaseSandbox):
         *,
         route: ExecRoute,
         stdin_payload: bytes | None = None,
+        stdin_file: str | None = None,
     ) -> ExecResult:
         """Run ``command`` as a Daytona session command and poll to completion.
 
@@ -1902,18 +1950,29 @@ class DaytonaSandbox(BaseSandbox):
         (:meth:`_sandbox_session_exec`), and a constant reader in its place.
         *stdin_payload*: the caller's own data for the command's stdin (the
         DinD VM's ``docker compose exec`` carrying a container's staged
-        command), sent the same way. A K1 agent command
-        (``AgentExecCommand``) gets its env through ``uploaded_agent_env``
-        (staged by root on root's plumbing route) and runs inside K1's
-        barrier, on the same route.
+        command), sent the same way. *stdin_file*: an env file of this box
+        (:mod:`benchflow.sandbox.daytona_exec_env`) as the command's stdin,
+        opened by root as *env*'s is (a DinD container's env, which ``docker
+        compose exec`` passes on). A K1 agent command (``AgentExecCommand``)
+        gets its env through ``uploaded_agent_env`` (staged by root on root's
+        plumbing route) and runs inside K1's barrier, on the same route.
+
+        Every other exec's *env* is a file of this box, uploaded once per
+        distinct env and opened by root's session shell on
+        :data:`~benchflow.sandbox._base.ENV_FD` before the command runs
+        (:mod:`benchflow.sandbox.daytona_exec_env`): no value is in the
+        session command. A file that cannot be uploaded refuses the exec.
         """
         self._require_sandbox()
         from benchflow.sandbox.agent_exec import AgentExecCommand
 
         cat = reader_cat(route)
+        # Root's opening of a non-agent exec's env file (and stdin_file),
+        # around the whole session command: set below.
+        open_kept: Callable[[str], str] | None = None
 
         def session(inner: str, **kw: Any) -> str:
-            return self._session_command(
+            text = self._session_command(
                 inner,
                 timeout_sec=timeout_sec,
                 shell=shell,
@@ -1922,6 +1981,7 @@ class DaytonaSandbox(BaseSandbox):
                 route=route,
                 **kw,
             )
+            return text if open_kept is None else open_kept(text)
 
         if isinstance(command, AgentExecCommand):
             # A root body (the env upload's own mkdir and cleanup) has no
@@ -1977,55 +2037,70 @@ class DaytonaSandbox(BaseSandbox):
                 timeout_sec=timeout_sec,
                 cleanup_session=cleanup_session,
             )
-        # Env vars are set inside the command rather than passed as ``env
-        # KEY=value ...`` argv. The argv form would leak verifier API keys /
-        # agent secrets into the remote process list and any provider-side
-        # command audit log (#412). The env is written into the command (octal,
-        # set by the shell's own printf and eval); an env (or command) too
-        # large for one session command travels with it as staged data.
-        # The wrapping must happen before the ``timeout``/``su`` prefixes so
-        # they too see the exported vars; the wrapper itself runs under
-        # ``sh``-compatible POSIX constructs so the surrounding shells handle
-        # it fine. Ordinary commands recover the image's value only inside the
-        # command shell, after its bash startup. System-shell plumbing never
-        # restores that activation state.
+        # The env is never in the command (#412: ``env KEY=value`` argv put
+        # verifier keys and agent secrets in the process list and the
+        # provider's command log; the octal form after it was still the
+        # session command's text). Root's session shell opens the env's file
+        # on ENV_FD before the ``timeout``/``su`` prefixes, and the innermost
+        # shell reads it from there (_inner_text). Ordinary commands recover
+        # the image's value only inside the command shell, after its bash
+        # startup. System-shell plumbing never restores that activation state.
         #
         # C8: a plumbing command (route.pin: root or the system shell) pins PATH
         # and never gets the loader variables back; every other command gets
         # the image's values (the sandbox keeps them aside, see
         # _create_sandbox_without_toolbox_bash_env) after its env.
+        if stdin_payload is not None and stdin_file is not None:
+            raise ValueError("an exec takes stdin_payload or stdin_file, not both")
+        kept: dict[int, str] = {}
+        if env:
+            refuse_exec_env_nul(env)
+            kept[ENV_FD] = await self._exec_env().path(self, env_stdin_body(env), route)
+        if stdin_file is not None:
+            kept[0] = stdin_file
+        if kept:
+            open_kept = await exec_env_opening(self, kept, route)
         inner = self._inner_text(command, env, route)
-        if stdin_payload is not None:
+        if stdin_payload is not None or stdin_file is not None:
             # The caller's data is the stdin (the DinD VM's ``docker compose
-            # exec`` carrying a container's staged command). This command
-            # keeps the bound too (DX-1 review A M2): over it, it is staged
-            # beside that stdin and read from its own descriptor.
+            # exec`` carrying a container's env or staged command). This
+            # command keeps the bound too: over it, it is
+            # staged beside that stdin and read from its own descriptor.
             fitted = fit(session, inner, cat=cat, fd=_SECOND_PAYLOAD_FD)
-            payloads = {0: stdin_payload}
+            payloads = {} if stdin_payload is None else {0: stdin_payload}
             if fitted.payload is not None:
                 payloads[_SECOND_PAYLOAD_FD] = fitted.payload
-            return await self._sandbox_session_exec(
-                fitted.sent,
-                payloads=payloads,
-                route=route,
-                timeout_sec=timeout_sec,
-                cleanup_session=cleanup_session,
-                use_channel=True,
-            )
-        fitted = fit(session, inner, cat=cat)
-        return await self._sandbox_session_exec(
+        else:
+            fitted = fit(session, inner, cat=cat)
+            payloads = _on_stdin(fitted.payload)
+        result = await self._sandbox_session_exec(
             fitted.sent,
-            payloads=_on_stdin(fitted.payload),
+            payloads=payloads,
             route=route,
             timeout_sec=timeout_sec,
             cleanup_session=cleanup_session,
             use_channel=True,
         )
+        if (
+            kept
+            and result.return_code == _transport.READ_FAILED
+            and EXEC_ENV_REFUSED in (result.stderr or "")
+        ):
+            # Nothing ran. A refused env file is never the command's status
+            # (a caller that tolerates a failing exec would read on): the exec
+            # raises, and the next one uploads its env into a new folder.
+            self._exec_env().refused()
+            raise ExecEnvUnavailable(
+                f"{(result.stderr or '').strip()[-400:]}; the next exec uploads "
+                "its environment afresh"
+            )
+        return result
 
     @staticmethod
     def _inner_text(command: str, env: dict[str, str] | None, route: ExecRoute) -> str:
         """What the innermost shell of a (non-agent) exec runs: *command*
-        after the image's values and *env*."""
+        after the image's values and *env*, which it reads from the file
+        root's shell opened on :data:`~benchflow.sandbox._base.ENV_FD`."""
         if not route.pin and not route.own_vm:
             command = (
                 restore_image_env(
@@ -2033,13 +2108,7 @@ class DaytonaSandbox(BaseSandbox):
                 )
                 + command
             )
-        return (
-            _wrap_daytona_command_with_env_file(
-                env, command, path=route.tools, private=route.kit and route.root
-            )
-            if env
-            else command
-        )
+        return env_from_descriptor(reader_cat(route)) + command if env else command
 
     def _session_command(
         self,
@@ -2154,6 +2223,73 @@ class DaytonaSandbox(BaseSandbox):
             # Root's own folder, unreachable to anyone else: a leftover is
             # removed with the sandbox.
             logger.debug("could not remove staged command %s: %s", folder, exc)
+
+    async def _scrub_sessions_before_snapshot(self) -> None:
+        """Right before the provider's snapshot create: no session file of
+        Daytona's daemon goes into the snapshot (after the strategy's
+        credential take-out, whose execs delete their own sessions). Raises
+        when the files may still be there: the snapshot is not taken."""
+        counts = self._exec_counts()
+        sessions = (
+            counts.exec_calls
+            + counts.transient_exec_calls
+            - counts.channel_exec_calls
+            + counts.channel_fallbacks
+        )
+        await scrub_exec_sessions(
+            self,
+            await system_shell_route(self),
+            required=True,
+            ran_sessions=sessions > 0,
+        )
+
+    async def _remove_exec_traces(
+        self, route: ExecRoute | None = None
+    ) -> asyncio.CancelledError | None:
+        """Before a stop's or a restore's delete: the execs' env files and the
+        session files Daytona's daemon kept (each command's text) on the box
+        *route* runs on (root's system-shell route by default).
+
+        Best effort, the delete after it is not: bounded by
+        :data:`_EXEC_TRACES_TIMEOUT_SEC`, and it never raises. A failure or
+        the bound is logged, and the delete takes the files. A cancel that
+        arrives during it (a caller's own stop bound) is returned, for the
+        caller to raise once the delete, or its left-behind record, is done."""
+        try:
+            async with asyncio.timeout(_EXEC_TRACES_TIMEOUT_SEC):
+                if route is None:
+                    route = await system_shell_route(self)
+                await self._exec_env().remove(self)
+                await scrub_exec_sessions(self, route, required=False)
+        except asyncio.CancelledError as cancelled:
+            return cancelled
+        except Exception as exc:
+            logger.warning(
+                "Could not remove the execs' env and session files before the "
+                "sandbox's delete: %s; they go with the sandbox",
+                describe_exception(exc),
+            )
+        return None
+
+    def _exec_env(self) -> ExecEnvFiles:
+        """This sandbox's exec env files (:mod:`benchflow.sandbox.daytona_exec_env`)."""
+        files = getattr(self, "_exec_env_files", None)
+        if files is None:
+            files = self._exec_env_files = ExecEnvFiles()
+        return files
+
+    async def _exec_env_proof(self, route: ExecRoute, files: list[str]) -> str:
+        """:func:`~benchflow.sandbox.daytona_exec_env.proof` for the env files
+        *files* on the box *route* runs on, with its root tools (as
+        :meth:`_stage_proof`)."""
+        shell, path, _ = await exec_env_root_tools(self, route)
+        return exec_env_proof(files, shell=shell, path=path)
+
+    async def _prepare_exec_env_folder(self, route: ExecRoute, folder: str) -> None:
+        """Make the env folder *folder* root's, in root's prepared staging
+        folder on the box *route* runs on, before anything is uploaded there
+        (:func:`~benchflow.sandbox.daytona_exec_env.prepare_folder`)."""
+        await prepare_exec_env_folder(self, folder, route)
 
     async def _stage_proof(self, route: ExecRoute, files: list[str]) -> str:
         """:func:`~benchflow.sandbox._transport.stage_proof` for *files* on
@@ -2270,6 +2406,10 @@ class DaytonaSandbox(BaseSandbox):
                         return result
             session_id = str(uuid4())
             await sandbox.process.create_session(session_id)
+            if not cleanup_session and getattr(
+                self, "_benchflow_record_session_shells", False
+            ):
+                await self._note_session_shell(session_id)
             transient_token = _IN_TRANSIENT_EXEC.set(cleanup_session)
             try:
                 if _sync_exec_eligible(timeout_sec):
@@ -2309,6 +2449,42 @@ class DaytonaSandbox(BaseSandbox):
             if staged is not None:
                 folder = next(iter(staged.values())).rsplit("/", 1)[0]
                 await asyncio.shield(self._unstage_payload(folder))
+
+    async def _note_session_shell(self, session_id: str) -> None:
+        """Record on the host the shell Daytona started for *session_id*, by
+        pid and start, from a probe in that session before its command. It is
+        BenchFlow's own: the integrity check's process diff exempts that shell,
+        never what runs under it (``_image_trees.diff_processes``). A probe
+        that fails records nothing, so the shell then counts as the turn's."""
+        from benchflow.sandbox._image_trees import SESSION_SHELLS_ATTR
+
+        sandbox = self._require_sandbox()
+        self._exec_counts().session_probes += 1
+        token = _IN_SESSION_PROBE.set(True)
+        try:
+            response = await sandbox.process.execute_session_command(
+                session_id,
+                SessionExecuteRequest(command=_SESSION_SHELL_PROBE, run_async=True),
+                timeout=30,
+            )
+            if response.cmd_id is None:
+                return
+            result = await self._poll_response(
+                session_id, response.cmd_id, timeout_sec=30
+            )
+        except Exception as exc:
+            logger.debug("Daytona session shell not recorded: %s", exc)
+            return
+        finally:
+            _IN_SESSION_PROBE.reset(token)
+        found = _SESSION_SHELL_LINE.search(result.stdout or "")
+        if found is None:
+            return
+        shells = getattr(self, SESSION_SHELLS_ATTR, None)
+        if not isinstance(shells, list):
+            shells = []
+            setattr(self, SESSION_SHELLS_ATTR, shells)
+        shells.append((int(found[1]), int(found[2])))
 
     async def _sync_exec(
         self, session_id: str, command: str, timeout_sec: int
@@ -2362,7 +2538,9 @@ class DaytonaSandbox(BaseSandbox):
         overran from a request that failed (see :meth:`_sync_exec`)."""
         sandbox = self._require_sandbox()
         counts = self._exec_counts()
-        if _IN_TRANSIENT_EXEC.get():
+        if _IN_SESSION_PROBE.get():
+            counts.session_probe_status_requests += 1
+        elif _IN_TRANSIENT_EXEC.get():
             counts.transient_status_requests += 1
         else:
             counts.status_requests += 1
@@ -2852,6 +3030,12 @@ class DaytonaSandbox(BaseSandbox):
             return await self._strategy.main_restart_refusal()
         return ""
 
+    async def close_verifier_dir_before_turn(self, *, first_turn: bool = True) -> None:
+        """``/logs/verifier`` closed again right before a turn where the task's
+        own services start after setup's close: a Docker-in-Docker task's."""
+        if isinstance(self._strategy, _DaytonaDinD):
+            await self._strategy.close_verifier_dir_before_turn(first_turn=first_turn)
+
     async def script_container_config(self) -> dict[str, Any] | None:
         if isinstance(self._strategy, _DaytonaDinD):
             return await self._strategy.script_container_config()
@@ -2882,7 +3066,15 @@ class DaytonaSandbox(BaseSandbox):
         # Written after the strategy stops, so the execs of stopping (a
         # compose task's ``compose down``) are counted too.
         try:
-            return await self._strategy.stop(delete)
+            # DinD removes them itself, after ``compose down``.
+            cancelled = None
+            if sandbox is not None and not isinstance(self._strategy, _DaytonaDinD):
+                cancelled = await self._remove_exec_traces()
+            try:
+                return await self._strategy.stop(delete)
+            finally:
+                if cancelled is not None:
+                    raise cancelled
         finally:
             if sandbox is not None:
                 self._release_command_channels(sandbox)
@@ -2915,6 +3107,19 @@ class DaytonaSandbox(BaseSandbox):
             if retired is None:
                 retired = self._retired_command_channels = []
             retired.append(channels)
+
+    def _renew_command_channels(self) -> None:
+        """Start the next command on a new command-channel set. A Daytona
+        snapshot drops the channel's PTY websocket, and the restarts tried
+        while the sandbox was snapshotting use up the set's restart budget,
+        after which every exec took the session path for the rest of the
+        trial. The set is retired with channels kept on, so the next eligible
+        exec starts a new one (its first execs take the session path until it
+        is up, as at start-up). The cut set is closed in the background, as
+        at start, stop and restore: its PTY session and staged helper go."""
+        self._retire_command_channels()
+        self._command_channels_closing = False
+        self._queue_command_channel_cleanup()
 
     def _queue_command_channel_cleanup(self) -> None:
         for channels in getattr(self, "_retired_command_channels", ()):
@@ -3100,12 +3305,15 @@ class DaytonaSandbox(BaseSandbox):
         await self._strategy.upload_file(source_path, target_path)
         await self._apply_upload_mode(target_path, mode)
 
-    # -- bfx (Q4): uploaded by root, checked before every call --------
+    # -- bfx (Q4): one checked copy before the turn, one after ---
 
     async def plan_bfx_upload(self, timeout_sec: int = 30) -> None:
-        """Whether BenchFlow's pinned bfx can run here: the sandbox's arch,
-        and a pinned binary for it on this machine. Sets ``bfx_delivery`` to
-        ``"per-call"`` (nothing is uploaded yet), else leaves it None."""
+        """Whether BenchFlow's pinned bfx can run here, decided before the
+        agent's turn by doing it: the sandbox's arch, a pinned binary for it
+        on this machine, then the first copy made and checked as every later
+        one is (:meth:`_bfx_binary`). Sets ``bfx_delivery`` to
+        ``"per-call"`` when all of that held; otherwise leaves it None, with
+        why, so the trial is refused before its turn (Q4)."""
         from benchflow._bfx.locate import (
             BfxUnavailable,
             normalize_arch,
@@ -3113,6 +3321,7 @@ class DaytonaSandbox(BaseSandbox):
         )
 
         self.bfx_delivery = None
+        self._bfx_path = None
         from benchflow.sandbox._exec_output import exec_raw
 
         result = await exec_raw(
@@ -3122,18 +3331,23 @@ class DaytonaSandbox(BaseSandbox):
         try:
             arch = normalize_arch(machine)
             verified_binary(arch)
+            self._bfx_arch = arch
+            await self._bfx_binary(timeout_sec)
         except BfxUnavailable as exc:
+            self._bfx_path = None
+            self.bfx_unavailable_why = f"BenchFlow's bfx could not be delivered ({exc})"
             self.logger.debug("bfx: not delivered (%s)", exc)
             return
-        self._bfx_arch = arch
-        self._bfx_path = None
         from benchflow._bfx.delivery import PER_CALL
 
         self.bfx_delivery = PER_CALL
 
     async def _bfx_binary(self, timeout_sec: int) -> str:
-        """The path of the uploaded bfx: a fresh root-only folder before the
-        turn, and another once the turn is over (the agent never saw it)."""
+        """The path of this sandbox's copy of the pinned bfx: a fresh
+        root-only folder before the turn, and another once the turn is over
+        (the agent never saw it). Each copy is checked before its first use
+        (:meth:`_bfx_check_copy`); raises :class:`BfxUnavailable` when it
+        can't be made or does not pass."""
         import uuid
 
         from benchflow._bfx.locate import BfxUnavailable, verified_binary
@@ -3164,51 +3378,123 @@ class DaytonaSandbox(BaseSandbox):
         await self.upload_file(
             verified_binary(self._bfx_arch), f"{folder}/bfx", admission=admission
         )
-        held = await exec_raw(
-            self.exec,
-            f"chown 0:0 {folder}/bfx && chmod 0500 {folder}/bfx",
-            user="root",
-            timeout_sec=timeout_sec,
-        )
-        if getattr(held, "return_code", 1) != 0:
-            raise BfxUnavailable("the uploaded bfx could not be made root's")
+        await self._bfx_check_copy(folder, f"{folder}/bfx", timeout_sec)
         self._bfx_path = f"{folder}/bfx"
         self._bfx_after_turn = after
         return self._bfx_path
+
+    async def _bfx_check_copy(self, folder: str, path: str, timeout_sec: int) -> None:
+        """No program of the image's checks the copy (a root agent can
+        replace them, and an image may lack them):
+
+        1. the toolbox's file API reads the bytes back, and their SHA-256,
+           taken here, must be the pin's; nothing in the folder has run yet;
+        2. one root exec makes it root's, mode 0500, and has it report its
+           own hash and arch (``bfx version``), which also proves it starts
+           here (no noexec folder, no other arch);
+        3. in the same exec, its own look (``bfx scan``, no link followed)
+           must find a file of root's, mode 0500, in a folder of root's, mode
+           0700, below folders only root may change.
+
+        The copy starts through the image's shell, as every command on
+        Daytona does, so this holds against a non-root agent and not a root
+        one (``bfx_launch``). Raises :class:`BfxUnavailable` on any miss."""
+        import tempfile
+
+        from benchflow._bfx import client as bfx_client
+        from benchflow._bfx import pins
+        from benchflow._bfx.delivery import (
+            check_version,
+            per_call_problems,
+            version_answer,
+        )
+        from benchflow._bfx.locate import BfxUnavailable, normalize_arch, sha256_of
+        from benchflow.sandbox._exec_output import exec_raw
+
+        want = pins.SHA256[self._bfx_arch]
+        with tempfile.TemporaryDirectory(prefix="benchflow-bfx-read-back-") as d:
+            local = Path(d) / "bfx"
+            try:
+                await self.download_file(path, local)
+                got = sha256_of(local)
+            except Exception as exc:
+                raise BfxUnavailable(
+                    f"the uploaded bfx could not be read back ({exc})"
+                ) from exc
+        if got != want:
+            raise BfxUnavailable(
+                f"the uploaded bfx reads back as {got}, not the pinned {want}"
+            )
+        look = {"paths": [folder, path], "acl": False, "mounts": False}
+        command = " && ".join(
+            [
+                shlex.join(["chown", "0:0", path]),
+                shlex.join(["chmod", "0500", path]),
+                shlex.join([path, "version"]),
+                shlex.join(bfx_client.one_shot_argv("scan", look, bfx=path)),
+            ]
+        )
+        result = await exec_raw(
+            self.exec, command, user="root", timeout_sec=timeout_sec
+        )
+        code = getattr(result, "return_code", 1)
+        lines = [
+            line
+            for line in (getattr(result, "stdout", "") or "").splitlines()
+            if line.strip()
+        ]
+        if code != 0 or len(lines) != 2:
+            raise BfxUnavailable(
+                f"the uploaded bfx could not be made root's or did not start "
+                f"here (exit {code})"
+            )
+        report = version_answer(lines[0])
+        check_version(report, self._bfx_arch)
+        if normalize_arch(str(report.get("arch") or "?")) != self._bfx_arch:
+            raise BfxUnavailable(
+                f"the uploaded bfx reports arch {report.get('arch')!r}, "
+                f"not {self._bfx_arch}"
+            )
+        try:
+            entries = bfx_client.parse_answer(lines[1]).get("entries") or []
+        except (bfx_client.BfxError, bfx_client.BfxProtocolError) as exc:
+            raise BfxUnavailable(
+                f"the uploaded bfx could not look at itself ({exc})"
+            ) from exc
+        problems = per_call_problems(entries, folder=folder, binary=path)
+        if problems:
+            raise BfxUnavailable(
+                "the uploaded bfx is not root's alone: " + "; ".join(problems)
+            )
 
     async def bfx_call(
         self, cmd: str, args: Mapping[str, Any], *, timeout_sec: int
     ) -> dict[str, Any]:
         """Run one bfx command as root (I1's bfx route on Daytona): the
-        uploaded binary by absolute path, only after its SHA-256 matched the
-        pin. Raises :class:`BfxUnavailable` where bfx is not delivered."""
+        checked copy's path (per-call), or DinD's read-only mount at /.bfx,
+        started by the image's shell with nothing before it (Daytona has no
+        other way to start one: ``bfx_launch``). Raises
+        :class:`BfxUnavailable` where bfx is not delivered."""
         import shlex
 
         from benchflow._bfx import client as bfx_client
-        from benchflow._bfx import pins
+        from benchflow._bfx.delivery import PER_CALL
         from benchflow._bfx.locate import BfxUnavailable
 
         mode = getattr(self, "bfx_delivery", None)
-        if mode in ("bind", "volume", "upload"):
-            # The DinD VM's read-only mount at /.bfx: holds against any agent.
-            path, check = bfx_client.SANDBOX_PATH, ""
-        elif mode == "per-call":
+        if mode in ("bind", "volume"):
+            # The DinD VM's read-only mount at /.bfx.
+            path = bfx_client.SANDBOX_PATH
+        elif mode == PER_CALL:
             path = await self._bfx_binary(timeout_sec)
-            pin = pins.SHA256[self._bfx_arch]
-            check = (
-                f"bf_h=$(sha256sum {shlex.quote(path)} 2>/dev/null) || exit 98; "
-                f'[ "${{bf_h%% *}}" = {pin} ] || {{ echo bfx pin mismatch >&2; exit 98; }}; '
-            )
         else:
             raise BfxUnavailable("bfx is not delivered to this sandbox")
-        command = check + shlex.join(bfx_client.one_shot_argv(cmd, args, bfx=path))
+        command = shlex.join(bfx_client.one_shot_argv(cmd, args, bfx=path))
         from benchflow.sandbox._exec_output import exec_raw
 
         result = await exec_raw(
             self.exec, command, user="root", timeout_sec=timeout_sec
         )
-        if getattr(result, "return_code", None) == 98:
-            raise BfxUnavailable("the uploaded bfx does not match its pin")
         return bfx_client.parse_answer(getattr(result, "stdout", "") or "")
 
     async def upload_dir(
@@ -3333,14 +3619,24 @@ class DaytonaSandbox(BaseSandbox):
         from benchflow.sandbox import _path_inspector_state
         from benchflow.trust import state as trust_state
 
-        return trust_state.stamp_snapshot(
-            self,
-            _path_inspector_state.checkpoint(self, await self._strategy.snapshot(name)),
-        )
+        # A snapshot keeps the filesystem: no exec env file is in one, and
+        # the next exec uploads its env afresh.
+        async with self._exec_env().snapshotting(self):
+            return trust_state.stamp_snapshot(
+                self,
+                _path_inspector_state.checkpoint(
+                    self, await self._strategy.snapshot(name)
+                ),
+            )
 
     async def restore(self, image: SandboxImage) -> None:
         from benchflow.sandbox import _path_inspector_state
 
+        # The sandbox being replaced is deleted: its env and session files go
+        # first. A cancel there stops the restore before anything is deleted.
+        cancelled = await self._remove_exec_traces()
+        if cancelled is not None:
+            raise cancelled
         path_inspector = _path_inspector_state.read(image)
         # What the start probe kept describes the state being replaced.
         self._forget_kept_identity()

@@ -115,14 +115,14 @@ def test_the_evidence_sentence_is_read_from_the_description(description, named):
     ],
 )
 def test_an_abbreviation_does_not_end_the_evidence_sentence(description, named):
-    """Guards PR #1239 (xdotli's review, 11-19): the period of e.g., i.e.,
+    """Guards PR #1239 (its review, 11-19): the period of e.g., i.e.,
     Fig., Eq., Sec., et al. and vs. is not a sentence end; it cut the list
     short (``the report, e.g``, ``Fig``)."""
     assert criterion_evidence(description) == named
 
 
 def test_a_line_break_ends_the_evidence_sentence():
-    """Guards PR #1239 (xdotli's review, 11-19): a sentence with no period
+    """Guards PR #1239 (its review, 11-19): a sentence with no period
     before its line break ran on into the next line, which put the rest of
     the description, hidden from the reviewer, into its guidance."""
     description = (

@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from benchflow.providers.litellm_logging import STREAM_INTERRUPTED
 from tests.integration.deterministic import harness as h
 
 pytestmark = pytest.mark.deterministic
@@ -343,13 +344,26 @@ def _golden_view(facts: dict[str, Any]) -> dict[str, Any]:
     Daytona), so the golden file keeps agent-loop calls only and reports
     usage net of side calls. _check_trial still checks every captured call,
     side calls included, against the recorded totals.
+
+    The title request can also reach the proxy and be cut by the teardown
+    (HTTP 499, ``stream_interrupted``): the trial then marks its usage
+    incomplete, with LiteLLM's count of that call, the fake's side usage.
+    While no agent-loop call was cut, those marks are left out too
+    (main's eval-hello-pass on 2026-11-20).
     """
     view = json.loads(json.dumps(facts))
     view["result"]["timing_keys"] = [
         k for k in view["result"]["timing_keys"] if k not in _UNSHARED_TIMING_KEYS
     ]
     n_side = sum(c["kind"] == "side" for c in view["llm_calls"])
+    cut_side = [
+        c
+        for c in view["llm_calls"]
+        if c["kind"] == "side" and "stream_interrupted" in c
+    ]
     view["llm_calls"] = [c for c in view["llm_calls"] if c["kind"] == "main"]
+    if cut_side and not any("stream_interrupted" in c for c in view["llm_calls"]):
+        _drop_cut_side_marks(view, len(cut_side))
     side = h.SIDE_CALL_USAGE
     per_call = {
         "input": side["input"],
@@ -369,6 +383,33 @@ def _golden_view(facts: dict[str, Any]) -> dict[str, Any]:
                 value = block[key] - n_side * per_call[quantity]
                 block[key] = round(value, 9) if quantity == "cost" else value
     return view
+
+
+def _drop_cut_side_marks(view: dict[str, Any], n_cut: int) -> None:
+    """Take out what ``n_cut`` side calls cut at the teardown add to the
+    golden view: the agent's ``interrupted_streams`` details and each
+    block's incomplete-usage marks, where the cut stream is their reason."""
+    agent = view["result"]["agent_result"]
+    details = agent.get("usage_details") or {}
+    if (details.get("interrupted_streams") or {}).get("calls_cut") != n_cut:
+        return
+    del details["interrupted_streams"]
+    if not details:
+        agent.pop("usage_details")
+    blocks = [agent, view["result"]["final_metrics"].get("extra")]
+    if view.get("atif"):
+        blocks.append((view["atif"].get("final_metrics") or {}).get("extra"))
+    for block in blocks:
+        reason = (
+            block.get("usage_incomplete_reason") if isinstance(block, dict) else None
+        )
+        if isinstance(reason, str) and reason.startswith(STREAM_INTERRUPTED):
+            for key in (
+                "usage_incomplete",
+                "usage_incomplete_reason",
+                "cost_incomplete",
+            ):
+                block.pop(key, None)
 
 
 def _check_trial(
@@ -409,11 +450,21 @@ def _check_trial(
         assert calls == []
         main = [{"kind": "main"}] * n_agent_messages
         usage = h.expected_usage(main)
-        assert agent_result["usage_source"] == "end_of_turn"
         assert agent_result["usage_source_legacy"] == "agent_native_acp"
         if agent_result.get("price_source") == "agent_session_log":
-            # An unbranched run is priced from Claude Code's own session log,
-            # an estimate; Claude Code's session-title call may be in it.
+            # An unbranched run is counted and priced from Claude Code's own
+            # session log: its totals add the calls the end-of-turn
+            # report leaves out, here Claude Code's session-title call (the
+            # fake answers a side call with 0 input and 1 output token).
+            assert agent_result["usage_source"] == "session_log"
+            count = agent_result["usage_details"]["token_count"]
+            assert count["scope"] in (
+                "main session, subagents and Claude Code's side calls",
+                "main session and subagents",
+            ), count
+            n_side = agent_result["n_output_tokens"] - usage["n_output_tokens"]
+            assert n_side >= 0, agent_result
+            usage = h.expected_usage(main + [{"kind": "side"}] * n_side)
             estimate = agent_result["usage_details"]["cost_estimate"]
             assert estimate["source"] == "claude-code-session-log", estimate
             assert (trial_dir / estimate["path"]).is_dir()
@@ -422,6 +473,7 @@ def _check_trial(
             )
             assert metrics["total_cost_usd"] == agent_result["cost_usd"]
         else:
+            assert agent_result["usage_source"] == "end_of_turn"
             # A branched run is not: its children share the session log. Its
             # own end-of-turn tokens are priced at the model's list price
             # , which the fake's price matches (claude-haiku-4-5).
@@ -860,6 +912,24 @@ def _metadata_trial_main(_cid: str, labels: dict[str, str]) -> bool:
 
 @pytest.fixture(scope="session")
 def metadata_job(det_root, fake_url) -> h.CliRun:
+    return _metadata_run(det_root, fake_url, "metadata", ["metadata-probe"])
+
+
+@pytest.fixture(scope="session")
+def metadata_optout_job(det_root, fake_url) -> h.CliRun:
+    """The task's opt-out, in a job of its own that grants it: since 0.10.1 a
+    task's key takes effect only with the run's --allow-cloud-metadata (a job
+    without the flag refuses the task before it starts)."""
+    return _metadata_run(
+        det_root,
+        fake_url,
+        "metadata-optout",
+        ["metadata-opt-out"],
+        flags=["--allow-cloud-metadata"],
+    )
+
+
+def _metadata_run(det_root, fake_url, job, names, flags=()) -> h.CliRun:
     from tests._metadata_mock import MockWatcher
 
     if SANDBOX != "docker":
@@ -870,7 +940,7 @@ def metadata_job(det_root, fake_url) -> h.CliRun:
     # Only this session's trials, and only its own mocks: two suites on one
     # daemon run the same variant names, and each watcher mocked the other's
     # mains (MG's pass D: four mains for two variants).
-    tasks = str(_job_dirs(det_root, "metadata")[0]) + "/"
+    tasks = str(_job_dirs(det_root, job)[0]) + "/"
 
     def ours(cid: str, labels: dict[str, str]) -> bool:
         return _metadata_trial_main(cid, labels) and tasks in labels.get(
@@ -880,14 +950,14 @@ def metadata_job(det_root, fake_url) -> h.CliRun:
     with MockWatcher(ours, f"bf.test.det-metadata-mock={uuid.uuid4().hex}") as mock:
         run = _run(
             det_root,
-            "metadata",
+            job,
             ["eval", "run"],
-            list(METADATA_VARIANTS.values()),
+            [METADATA_VARIANTS[name] for name in names],
             fake_url,
-            extra=["--concurrency", "2", "--retry-attempts", "0"],
+            extra=["--concurrency", "2", "--retry-attempts", "0", *flags],
         )
     assert not mock.errors, mock.errors
-    assert len(mock.mains) == len(METADATA_VARIANTS), mock.mains
+    assert len(mock.mains) == len(names), mock.mains
     return run
 
 
@@ -940,11 +1010,11 @@ def test_open_network_refuses_the_cloud_metadata_endpoints(metadata_job):
 
 
 @needs_sandbox
-def test_cloud_metadata_opt_out_is_recorded_and_installs_nothing(metadata_job):
+def test_cloud_metadata_opt_out_is_recorded_and_installs_nothing(metadata_optout_job):
     """Guards PY8 S2's opt-out: metadata.x-allow-cloud-metadata = true leaves
     the endpoints as an open network always had them, and the trial folder
     says so."""
-    trial = metadata_job.trial("metadata-opt-out")
+    trial = metadata_optout_job.trial("metadata-opt-out")
     record = h.read_json(trial / "cloud-metadata.json")
     assert record["state"] == "off", record
     assert "x-allow-cloud-metadata" in record["why"], record
@@ -1304,17 +1374,7 @@ def test_native_eval_job_summary_matches_acp(native_eval_job):
     [
         ("hello-pass", "eval-hello-pass"),
         ("wrong-answer", "eval-wrong-answer"),
-        pytest.param(
-            "timeout-pass",
-            "eval-timeout-pass",
-            marks=pytest.mark.xfail(
-                strict=False,
-                reason=(
-                    "native Claude Code makes one more model call after the "
-                    "wall-clock timeout on slow machines (fixed before 0.10.0)"
-                ),
-            ),
-        ),
+        ("timeout-pass", "eval-timeout-pass"),
         ("agent-crash", "eval-agent-crash"),
         ("verifier-error", "eval-verifier-error"),
     ],
@@ -1338,6 +1398,92 @@ def test_native_timeout_kills_the_cli_and_keeps_the_pending_call(native_eval_job
     trial = native_eval_job.trial("timeout-pass")
     (turn,) = h.read_json(trial / "agent" / "native-turns.json")
     assert turn["cancelled"] is True and turn["stop_reason"] == "cancelled"
+    # The kill saw the CLI it stopped (D3): nothing of the run is left.
+    assert turn["stopped"] is True and turn.get("left") == [], turn
+
+
+# R5: the agent's tool returns 50 s into a 45 s budget, so its next
+# model call comes after the deadline whatever the machine's speed. rc5 found
+# the wall clock only at the watchdog's next poll (55 s) and forwarded it.
+LATE_TOOL = h.TaskVariant("late-tool", "late-tool", agent_timeout_sec=45.0)
+# The same on the OpenAI Responses wire (Codex): the model's answer is held
+# 50 s, so it is in flight at the deadline, and the next call comes after it.
+LATE_MODEL = h.TaskVariant("late-model", "late-model", agent_timeout_sec=45.0)
+
+
+@pytest.fixture(scope="session")
+def late_tool_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return {
+        "acp": _run(
+            det_root,
+            "late-tool-acp",
+            ["eval", "run"],
+            [LATE_TOOL],
+            fake_url,
+            extra=_concurrency(),
+        ),
+        "native": _run(
+            det_root,
+            "late-tool-native",
+            ["eval", "run"],
+            [LATE_TOOL],
+            fake_url,
+            extra=[*_concurrency(), *NATIVE],
+        ),
+        "codex-acp": _run(
+            det_root,
+            "late-model-codex-acp",
+            ["eval", "run"],
+            [LATE_MODEL],
+            fake_url,
+            route="codex",
+            extra=_concurrency(),
+        ),
+        "codex-native": _run(
+            det_root,
+            "late-model-codex-native",
+            ["eval", "run"],
+            [LATE_MODEL],
+            fake_url,
+            route="codex",
+            extra=[*_concurrency(), *NATIVE],
+        ),
+    }
+
+
+def _guard_events(trial: Path) -> list[dict[str, Any]]:
+    path = trial / "trajectory" / "provider_requests.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+@needs_sandbox
+@pytest.mark.parametrize("harness", ["acp", "native", "codex-acp", "codex-native"])
+def test_no_model_call_reaches_the_provider_after_the_wall_clock_deadline(
+    late_tool_jobs, harness
+):
+    """Every call the proxy forwarded started before the deadline: the first
+    call comes after the prompt starts, so first call + 45 s is at or after
+    it. The gate closed once, and nothing went upstream after it."""
+    variant = LATE_MODEL if harness.startswith("codex") else LATE_TOOL
+    trial = late_tool_jobs[harness].trial(variant.name)
+    result = h.read_json(trial / "result.json")
+    timeout = result.get("agent_timeout_info") or {}
+    assert timeout.get("reason") == "wall_clock_timeout", result.get("error")
+    events = _guard_events(trial)
+    starts = [e["time"] for e in events if e.get("event") == "request_start"]
+    upstream = [e["time"] for e in events if e.get("event") == "upstream_start"]
+    assert starts and upstream, events
+    first = min(starts)
+    late = [
+        round(t - first, 1) for t in upstream if t > first + LATE_TOOL.agent_timeout_sec
+    ]
+    assert late == [], f"{harness}: forwarded {late} s after the first call"
+    closed = [e for e in events if e.get("event") == "gate_closed"]
+    assert len(closed) == 1, events
+    assert all(t < closed[0]["time"] for t in upstream)
+    if harness.endswith("native"):
+        (turn,) = h.read_json(trial / "agent" / "native-turns.json")
+        assert turn["stopped"] is True and turn.get("left") == [], turn
 
 
 @needs_sandbox
@@ -2723,3 +2869,146 @@ def test_a_token_budget_counts_the_subagents_calls_and_stops_the_agent(budget_jo
     subagents = result["trial_budget"]["subagents"]
     assert subagents is not None and subagents["source"] == "claude-code-session-log"
     assert subagents["turns"] >= 1 and subagents["tokens"] > 0, subagents
+
+
+# ----- a sub-agent with another model and effort (benchflow#1246) ------------
+
+# The main agent hands hello.txt to a sub-agent through Claude Code's Agent
+# tool with model "haiku" and effort "low" (the run is claude-opus-5-5 at
+# max), then writes the file itself, so the trial passes whether or not the
+# sub-agent ran.
+OVERRIDE_VARIANT = h.TaskVariant("subagent-override", "subagent-override")
+OVERRIDE_MODEL = "claude-opus-5-5"
+OVERRIDE_EFFORT = "max"
+OVERRIDE_JOBS = {
+    # BenchFlow's sub-agent model pin (the default) and the effort pin.
+    "pinned": ["--effort-pin"],
+    # The run turns the model pin off itself: the override goes out and the
+    # gateway refuses it.
+    "unpinned": ["--agent-env", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE=0"],
+    # The model pin, no effort pin: the sub-agent runs at low, counted.
+    "effort-off": [],
+}
+
+
+@pytest.fixture(scope="session")
+def override_jobs(det_root, fake_url) -> dict[str, h.CliRun]:
+    return {
+        name: _run(
+            det_root,
+            f"subagent-override-{name}",
+            ["eval", "run"],
+            [OVERRIDE_VARIANT],
+            fake_url,
+            model=OVERRIDE_MODEL,
+            extra=[
+                "--retry-attempts",
+                "0",
+                "--reasoning-effort",
+                OVERRIDE_EFFORT,
+                *extra,
+            ],
+        )
+        for name, extra in OVERRIDE_JOBS.items()
+    }
+
+
+def _override_trial(job: h.CliRun) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    trial = job.trial(OVERRIDE_VARIANT.name)
+    result = h.read_json(trial / "result.json")
+    assert result["rewards"] == {"reward": 1.0}, (
+        result.get("error"),
+        job.output[-4000:],
+    )
+    return trial, result, h.read_json(trial / "model-calls.json")
+
+
+def _child_requests(job: h.CliRun) -> list[dict[str, Any]] | None:
+    """The requests that reached LiteLLM (after the guard) for the sub-agent:
+    its conversation opens with the child's marker (the main loop's later
+    requests quote it only inside the Agent tool call). None where the proxy
+    runs in the sandbox (Daytona), whose wire log stays there; the trial's
+    model-calls.json says the same either way."""
+    if h.proxy_runs_in_sandbox(SANDBOX):
+        return None
+    return [
+        r
+        for r in _requests(job)
+        if r["body"].get("tools")
+        and CLAUDE_SUBAGENT_MARKER in json.dumps((r["body"].get("messages") or [{}])[0])
+    ]
+
+
+@needs_sandbox
+def test_the_pinned_subagent_runs_on_the_run_s_model_and_effort(override_jobs):
+    """J3, J6: CLAUDE_CODE_SUBAGENT_MODEL(_FORCE) holds the sub-agent to the
+    run's model, so nothing is refused; --effort-pin rewrites its low to the
+    run's max, and model-calls.json counts each rewrite."""
+    from benchflow.providers.litellm_config import safe_model_alias
+
+    job = override_jobs["pinned"]
+    trial, _result, calls = _override_trial(job)
+    child = _child_requests(job)
+    if child is not None:
+        assert child, _requests(job)
+        assert {r["body"]["model"] for r in _requests(job)} <= {
+            safe_model_alias(OVERRIDE_MODEL),
+            OVERRIDE_MODEL,
+        }
+        assert {r["body"].get("output_config", {}).get("effort") for r in child} == {
+            OVERRIDE_EFFORT
+        }
+    asked_low = len(child) if child is not None else 1
+    assert calls["refused_calls"] in (0, None)
+    assert calls["models_refused"] == {}
+    assert calls["effort_pin"] == OVERRIDE_EFFORT
+    assert calls["effort_rewrites"] >= asked_low
+    assert calls["effort_mismatches"] == 0
+    # J9: the levels as asked beside the one sent.
+    assert calls["efforts_requested"].get("low", 0) >= asked_low, calls
+    assert set(calls["efforts_used"]) == {OVERRIDE_EFFORT}, calls
+    config = h.read_json(trial / "config.json")
+    assert config["agent_env"].get("CLAUDE_CODE_SUBAGENT_MODEL_FORCE") in (None, "1")
+
+
+@needs_sandbox
+def test_an_unpinned_override_is_refused_and_counted(override_jobs):
+    """J5: with the run's own FORCE=0 the sub-agent asks for Claude Code's
+    haiku; the gateway refuses it (400 model_not_served) and model-calls.json
+    and the CLI summary count it, with the model's name."""
+    job = override_jobs["unpinned"]
+    _trial, _result, calls = _override_trial(job)
+    refused = calls["models_refused"]
+    assert refused and all("haiku" in name for name in refused), calls
+    assert calls["refusals_by_reason"].get("model_not_served") == sum(refused.values())
+    assert calls["refused_calls"] >= sum(refused.values())
+    # The run card's line after the run, however the output wrapped it.
+    squashed = re.sub(r"[\s─│╭╮╯╰]", "", job.output)
+    assert "requestsbythemodelgateway,beforeanyprovider(modelnotserved:" in (
+        squashed
+    ), job.output[-4000:]
+    assert "claude-haiku" in squashed.split("requestsbythemodelgateway", 1)[1][:200]
+
+
+@needs_sandbox
+def test_an_unpinned_effort_is_counted_not_rewritten(override_jobs):
+    """J7, J9: without --effort-pin the sub-agent's low goes upstream as
+    asked; model-calls.json counts each such request and every level used,
+    and the summary shows the two levels."""
+    job = override_jobs["effort-off"]
+    _trial, _result, calls = _override_trial(job)
+    child = _child_requests(job)
+    if child is not None:
+        assert child, _requests(job)
+        assert {r["body"].get("output_config", {}).get("effort") for r in child} == {
+            "low"
+        }
+    asked_low = len(child) if child is not None else 1
+    assert calls["effort_pin"] is None
+    assert calls["effort_rewrites"] == 0
+    assert calls["effort_mismatches"] >= asked_low
+    # J9: both levels the requests used, and the summary's line for them.
+    used = calls["efforts_used"]
+    assert used.get("low", 0) >= asked_low and used.get(OVERRIDE_EFFORT, 0) >= 1, calls
+    squashed = re.sub(r"[\s─│╭╮╯╰]", "", job.output)
+    assert "Efforts:requestswentupstreamat" in squashed, job.output[-4000:]

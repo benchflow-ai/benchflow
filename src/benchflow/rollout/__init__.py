@@ -76,7 +76,7 @@ from benchflow._types import Role, Scene, Turn
 # / ``_capture_session_trajectory`` / ``default_rollout_planes`` keep affecting
 # the ``Rollout`` methods that call those names, because those methods stay
 # defined in this module.
-from benchflow._utils import path_lock_record, timing_spans
+from benchflow._utils import path_lock_record, staged_secrets, timing_spans
 from benchflow._utils.live_activity import ActivitySnapshot, SessionCounters
 from benchflow._utils.log_context import trial_log_context
 from benchflow._utils.reachable_write import ReachablePath, destination
@@ -89,6 +89,7 @@ from benchflow._utils.scoring import (
 )
 from benchflow._utils.text import describe_exception
 from benchflow._utils.trial_warnings import (
+    keep_trial_warnings,
     recording_trial_warnings,
     report_trial_warning,
 )
@@ -272,12 +273,17 @@ from benchflow.rollout._usage import (
     _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT as _NATIVE_ACP_USAGE_SNAPSHOT_TO_RESULT,
 )
 from benchflow.rollout._usage import (
+    PROVIDER_REFUSED_KEY,
+    _api_error_subcategory,
+    _provider_failure_from_attempts,
+    provider_refused_key_text,
+)
+from benchflow.rollout._usage import (
     ProviderFailure as ProviderFailure,
 )
 from benchflow.rollout._usage import (
     _add_agent_reported_usage as _add_agent_reported_usage,
 )
-from benchflow.rollout._usage import _api_error_subcategory
 from benchflow.rollout._usage import _as_nonnegative_int as _as_nonnegative_int
 from benchflow.rollout._usage import _native_acp_usage_delta as _native_acp_usage_delta
 from benchflow.rollout._usage import (
@@ -347,6 +353,7 @@ from benchflow.sandbox.cloud_metadata import (
     cloud_metadata_plan,
     cloud_metadata_record,
     cloud_metadata_refusal,
+    strict_grant,
     uncovered_services_note,
 )
 from benchflow.sandbox.egress_denylist import (
@@ -428,6 +435,27 @@ from benchflow.usage_tracking import (
 logger = logging.getLogger(__name__)
 
 
+def _after_sandbox_stop(rollout_dir: Any, holder: Any) -> None:
+    """Once the sandbox is stopped and removed, so nothing in it can act on
+    the trial's sandbox-reachable folders any more: the names test.sh did not
+    write go from verifier/ (#1247; until here they were only flagged), and
+    no link that leaves agent/ or artifacts/ stays (F37). Both remove by
+    name, so neither may run while a process in the sandbox could swap a
+    folder for a link. A kept sandbox, or the caller's, never gets here: its
+    names stay flagged and its links stay."""
+    from benchflow.task import verifier_outputs
+
+    verifier_outputs.put_back_and_record(rollout_dir, holder, sandbox_gone=True)
+    if rollout_dir is None:
+        return
+    from benchflow.rollout._artifacts import drop_escaping_links
+
+    try:
+        drop_escaping_links(Path(rollout_dir))
+    except Exception:
+        logger.warning("links left in the trial were not checked", exc_info=True)
+
+
 def _role_agents(cfg: RolloutConfig) -> list[str]:
     """The agent of every role in every scene, in order.
 
@@ -454,6 +482,13 @@ def _write_path_lock_record(rollout_dir: Path, record: dict[str, Any]) -> None:
         )
     except OSError:
         logger.debug("locked-system-path record not written", exc_info=True)
+
+
+def _sandbox_account(env: Any) -> dict[str, Any] | None:
+    """The account ``setup_sandbox_user`` recorded on a sandbox whose logs are
+    the host's mount (``lockdown.SANDBOX_ACCOUNT_ATTR``), or None."""
+    account = getattr(env, "_benchflow_sandbox_account", None)
+    return dict(account) if isinstance(account, dict) else None
 
 
 ERROR_TRACEBACK_FILE = "error-traceback.txt"
@@ -780,6 +815,10 @@ async def _capture_setup_command_dir(
     target_dotenv_path_env_var: str | None,
     service: str,
 ) -> None:
+    from benchflow.rollout._setup_capture import check_before_write
+
+    # The trial was refused before setup unless the operator listed both.
+    check_before_write(target_env_var, target_dotenv_path_env_var)
     with tempfile.TemporaryDirectory(prefix="benchflow-setup-capture-") as tmp:
         local_dir = Path(tmp) / "capture"
         await env.download_dir(source_dir, local_dir, service=service)
@@ -1076,7 +1115,10 @@ def _classify_model_catalog_fallback(rollout: Any) -> bool:
     ``first_agent_tools``, :func:`codex_fallback_tools`). The trial is an
     unscored ``agent_model_catalog`` integration failure, not retried, with
     the verifier's reward kept as ``reward_withheld``. A usage limit or an
-    integration failure already recorded keeps its cause.
+    integration failure already recorded keeps its cause, and so does a
+    trial none of whose agent calls the provider answered (every one an HTTP
+    error, as on a route that serves no Responses API): its error stays the
+    provider's.
     """
     from benchflow.agents.codex_config import codex_fallback_tools
     from benchflow.rollout._results import _model_calls_summary
@@ -1088,6 +1130,28 @@ def _classify_model_catalog_fallback(rollout: Any) -> bool:
     diagnostics = rollout._diagnostics
     if diagnostics.get(UsageLimitDiagnostic.field) or diagnostics.get(
         IntegrationFailureDiagnostic.field
+    ):
+        return False
+    from benchflow.trajectories.model_calls import CALLS_FILE
+
+    try:
+        records = (rollout_dir / "trajectory" / CALLS_FILE).read_text().splitlines()
+    except OSError:
+        records = []
+    statuses = []
+    for line in records:
+        try:
+            call = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(call, dict)
+            and call.get("purpose") in (None, "agent")
+            and call.get("subagent") is not True
+        ):
+            statuses.append(call.get("http_status"))
+    if statuses and all(
+        isinstance(status, int) and not 200 <= status < 300 for status in statuses
     ):
         return False
     failure = None
@@ -1162,6 +1226,29 @@ def _log_task(rollout: Any) -> str:
     return path.name if isinstance(path, Path) else ""
 
 
+def _with_held_after_restart(
+    warnings: list[str] | None,
+    held: list[dict[str, Any]] | None,
+    exited: list[dict[str, Any]] | None = None,
+) -> list[str] | None:
+    """The trial's warnings, with its read flags for a compose service held
+    after a restart (``held_after_restart``) or one that exited in the
+    agent's turn or test.sh (``held_exited``), each once."""
+    from benchflow.rollout._setup import (
+        held_after_restart_warning,
+        held_exited_warning,
+    )
+
+    lines = [
+        *([held_after_restart_warning(list(held))] if held else []),
+        *([line] if exited and (line := held_exited_warning(list(exited))) else []),
+    ]
+    if not lines:
+        return warnings
+    kept = list(warnings or [])
+    return [*kept, *(line for line in lines if line not in kept)]
+
+
 @contextlib.contextmanager
 def _keeping_trial_warnings(rollout: Any):
     """Keep the trial warnings a step reports (the sandbox-user setup, a
@@ -1171,9 +1258,7 @@ def _keeping_trial_warnings(rollout: Any):
         try:
             yield
         finally:
-            # vars(): a Rollout built without __init__ (tests) has none.
-            kept = vars(rollout).setdefault("_warnings", [])
-            kept.extend(w for w in warnings if w not in kept)
+            keep_trial_warnings(rollout, warnings)
 
 
 @contextlib.contextmanager
@@ -1216,6 +1301,58 @@ def _with_verifier_setup_budget(method):
             return await method(self, *args, **kwargs)
 
     return phase
+
+
+def _claim_staged_registry(rollout: Any, *, verifier_only: bool = False) -> Any:
+    """The rollout's registry of the credentials it stages
+    (``_utils.staged_secrets``), claimed once, by its first step: the one bound
+    for it (by ``run()`` or a verb), a verb's that names no rollout, its
+    trial's when it is part of one (a branch child shares its parent's tree;
+    a verifier's child grades the trial it runs in), else its own."""
+    staged = getattr(rollout, "_staged", None)
+    if staged is not None:
+        return staged
+    bound = staged_secrets.current()
+    if bound is not None and (
+        bound.owner is None
+        or bound.owner is rollout
+        or verifier_only
+        or getattr(bound.owner, "_tree", None) is getattr(rollout, "_tree", ())
+    ):
+        staged = bound
+    else:
+        staged = staged_secrets.new_trial_registry(owner=rollout)
+    rollout._staged = staged
+    return staged
+
+
+def _with_staged_registry(method):
+    """Run the public step *method* with the rollout's own registry of staged
+    credentials bound (:func:`_claim_staged_registry`), and leave the trial's
+    record current after it when the registry is the rollout's and holds
+    anything (a rollout that stages nothing gets no integrity/ folder from
+    its steps; run() writes its record whatever it holds). No binding
+    outlives a step, so a caller that drives several rollouts in one task,
+    set up together, interleaved or one left unfinished, masks and records
+    each with its own."""
+
+    @functools.wraps(method)
+    async def step(self, *args, **kwargs):
+        staged = _claim_staged_registry(
+            self, verifier_only=bool(kwargs.get("verifier_only"))
+        )
+        try:
+            with staged_secrets.bound(staged):
+                return await method(self, *args, **kwargs)
+        finally:
+            if staged.owner is self and staged.holds_anything():
+                staged_secrets.write_trial_record(
+                    getattr(self, "_rollout_dir", None),
+                    staged,
+                    agent=getattr(getattr(self, "_config", None), "agent", None),
+                )
+
+    return step
 
 
 # --- What a trial checks before any sandbox -------------------------
@@ -1520,6 +1657,40 @@ def _refuse_allowlist_outbound_services(task: Any) -> None:
         allowlist_outbound_refusal(project)
 
 
+def metadata_granted(opt_ins: Any) -> bool:
+    """Whether the run granted the task's own cloud metadata opt-out (one of
+    :func:`rollout_isolation_opt_ins`'s records)."""
+    return any(
+        isinstance(r, dict) and r.get("setting") == "allow_cloud_metadata"
+        for r in opt_ins or ()
+    )
+
+
+def rollout_isolation_opt_ins(task: Any, cfg: Any) -> list[dict[str, Any]]:
+    """Refuse, before any sandbox, a task that asks for a weakening the run
+    does not grant: lifting the cloud metadata block (its own
+    ``allow_cloud_metadata = true``) without ``allow_cloud_metadata``
+    (``--allow-cloud-metadata``), or a setup command's capture into a
+    variable the operator did not list with ``--allow-task-env``. Otherwise
+    the weakenings the run grants it, for result.json's
+    ``isolation_opt_ins`` and the provenance (Rollout.setup and the dry
+    run), each also said as a warning."""
+    from benchflow.rollout._setup_capture import refuse_unlisted
+    from benchflow.sandbox.cloud_metadata import opt_in_records, refuse_ungranted_opt_in
+
+    config = getattr(task, "config", None)
+    granted = strict_grant(getattr(cfg, "allow_cloud_metadata", False))
+    name = str(getattr(task, "name", None) or Path(cfg.task_path).name)
+    refuse_ungranted_opt_in(config, task_name=name, allow_cloud_metadata=granted)
+    records = opt_in_records(config, allow_cloud_metadata=granted)
+    records += refuse_unlisted(config, task_name=name)
+    for record in records:
+        logger.warning(
+            f"{name}: {record['task']}, granted by {record['run']}: {record['lifts']}"
+        )
+    return records
+
+
 def run_rollout_plan_gate(
     task: Any,
     cfg: Any,
@@ -1534,6 +1705,7 @@ def run_rollout_plan_gate(
     resolved auth route (native logins do not use proxy extras); returns the
     proxy install record config.json keeps. Then each scene role's key
     (:func:`check_rollout_role_credentials`), as ``planes`` resolves it."""
+    from benchflow.agents.operator_credentials import literal_grant, scoped_names
     from benchflow.task.plan_validation import validate_task_plan
 
     record = validate_task_plan(
@@ -1553,6 +1725,15 @@ def run_rollout_plan_gate(
         execute_solution=cfg.primary_agent == "oracle" and not verifier_only,
         usage_tracking=cfg.usage_tracking,
         integrity=getattr(cfg, "integrity", None),
+        allow_cloud_credential_file=literal_grant(
+            getattr(cfg, "allow_cloud_credential_file", False),
+            where="allow_cloud_credential_file",
+        ),
+        # A continuation's names are its live model's: continue_run checks them.
+        scoped_credentials=()
+        if (getattr(cfg, "source_provenance", None) or {}).get("kind")
+        == "benchflow-continue"
+        else scoped_names(getattr(cfg, "scoped_credentials", None)),
     )
     # An allowlist's task services must stay inside the sandbox: refused in
     # the plan, from the task's compose file, before any container starts
@@ -1607,6 +1788,7 @@ def dry_run_plan_gate(cfg: Any, planes: Any) -> None:
     preflight_rollout_kept_services(task, cfg)
     preflight_rollout_network_policy(task, cfg)
     refuse_listed_task(cfg.task_path)
+    rollout_isolation_opt_ins(task, cfg)
     run_rollout_plan_gate(
         task, cfg, rollout_gate_inputs(task, cfg, planes), planes=planes
     )
@@ -1615,6 +1797,26 @@ def dry_run_plan_gate(cfg: Any, planes: Any) -> None:
     from benchflow.sandbox.pid1_ptrace import dry_run_check
 
     dry_run_check(task, cfg)
+
+
+#: How long the normal stop of an agent waits for its unanswered model
+#: calls. Claude Code's session-title call, the one this is for, is asked for
+#: about 40 ms after the last reply and is one short completion: the
+#: deterministic fake answers it in milliseconds and a provider's small model
+#: in a second or two, so 5 s covers it with room, and a provider slower than
+#: that only delays the stop by this much. It is also proxy and agent CPU
+#: time: in step with the load per CPU past 1, up to 4 times
+#: (sandbox/_metadata_helper.py's _run_sec does the same).
+_STOP_WAIT_SEC = 5.0
+_STOP_WAIT_LOAD_CAP = 4.0
+
+
+def _stop_wait_sec() -> float:
+    try:
+        per_cpu = os.getloadavg()[0] / (os.cpu_count() or 1)
+    except (AttributeError, OSError):
+        return _STOP_WAIT_SEC
+    return _STOP_WAIT_SEC * min(max(per_cpu, 1.0), _STOP_WAIT_LOAD_CAP)
 
 
 class Rollout:
@@ -1674,6 +1876,9 @@ class Rollout:
         self._task: Any = None
         self._rollout_dir: Path | None = None
         self._rollout_paths: Any = None
+        # The registry of the credentials this rollout stages, claimed by its
+        # first step (_claim_staged_registry).
+        self._staged: Any = None
         self._prebuilt_rollout_paths: Any = None
         self._started_at: datetime | None = None
         self._job_name: str | None = None
@@ -1721,6 +1926,11 @@ class Rollout:
         # What the run does about the cloud metadata endpoints (setup() sets
         # it; None: no agent, or a network that is not open).
         self._cloud_metadata: CloudMetadataPlan | None = None
+        # The isolation weakenings the task asked for and the run granted
+        # (rollout_isolation_opt_ins): result.json's ``isolation_opt_ins``.
+        self._isolation_opt_ins: list[dict[str, Any]] = []
+        # The task's phase network keys an operator's network overlay replaced.
+        self._operator_network: list[str] = []
         # What result.json's ``cloud_metadata`` says: the block's state and
         # the run's opt-out, once the block step ran.
         self._cloud_metadata_result: dict[str, Any] | None = None
@@ -1799,6 +2009,8 @@ class Rollout:
         # expose a provider auth/rate-limit/outage failure (status code only)
         # instead of a generic ACP internal error (#546/#564).
         self._provider_failure_cached: ProviderFailure | None = None
+        # The head a refused model key puts on the trial's error (teardown).
+        self._refused_key_head: str | None = None
         # Auth-only (401/403) view kept for callers added by PR #564.
         self._provider_auth_status_cached: int | None = None
         # Provider API failure summary (all statuses >= 400), snapshotted in
@@ -2199,6 +2411,7 @@ class Rollout:
 
     # Phase 1: SETUP (host-side, no container yet)
 
+    @_with_staged_registry
     async def setup(self, *, verifier_only: bool = False) -> None:
         """Resolve config, create environment object (not yet started).
 
@@ -2261,7 +2474,18 @@ class Rollout:
         # C-axis overlay: deep-merge cfg.config_override into the task's resolved
         # config here at the rollout layer (not in the Task constructor), so only
         # this run's tasks are patched and every downstream read sees it. No-op
-        # when None.
+        # when None. An overlay that sets the sandbox's network holds in every
+        # phase: the task's looser phase keys it replaces are recorded first.
+        from benchflow._utils.config_override import operator_network_replacements
+
+        self._operator_network = operator_network_replacements(
+            self._task.config, cfg.config_override
+        )
+        for replaced in self._operator_network:
+            logger.warning(
+                f"{self._task.name}: the run's config override sets the sandbox's "
+                f"network, which replaces the task's {replaced} for this run"
+            )
         apply_rollout_config_override(self._task, cfg)
         # From the task's files until main's image is ready.
         self._agent_user = await self._agent_user_record()
@@ -2294,6 +2518,9 @@ class Rollout:
         preflight_rollout_network_policy(self._task, cfg, verifier_only=verifier_only)
         # A task on BenchFlow's refusal list, before any sandbox or agent.
         refuse_listed_task(cfg.task_path)
+        # A task that asks to lift the cloud metadata block, on a run that
+        # does not grant it, before any sandbox; a granted one is recorded.
+        self._isolation_opt_ins = rollout_isolation_opt_ins(self._task, cfg)
 
         prepare_terminal_review(self)
         if cfg.task_digest is None:
@@ -2310,6 +2537,16 @@ class Rollout:
         self._egress_denylist = gate_inputs.egress_denylist
         self._agent_env = gate_inputs.agent_env
         self._disallow_hosted_search = self._egress_denylist is not None
+        if has_agent_launch and self._disallow_web_tools:
+            # The launch's own admission of a web-restricted model, before any
+            # image build or sandbox: a model it would refuse is refused here.
+            # Through the planes, as the launch's (ensure_litellm_runtime) is.
+            self._planes.preflight_restricted_model(
+                cfg.primary_agent,
+                cfg.primary_model,
+                self._agent_env,
+                disallow_web_tools=True,
+            )
         # The compose file the sandbox factory stacks (setup.py picks the
         # same folder): main's network_mode and the other services.
         task_environment_dir = cfg.task_path / "environment"
@@ -2323,7 +2560,9 @@ class Rollout:
             # An operator script runs as the agent's user, as an agent does.
             launches_agent=has_agent_launch or is_operator_script(cfg.primary_agent),
             environment_dir=task_environment_dir,
-            allow_cloud_metadata=bool(getattr(cfg, "allow_cloud_metadata", False)),
+            allow_cloud_metadata=strict_grant(
+                getattr(cfg, "allow_cloud_metadata", False)
+            ),
         )
         # The same sandbox-free plan gate as `bench tasks check`, using the
         # resolved auth route (native logins do not use proxy extras). Its
@@ -2459,27 +2698,38 @@ class Rollout:
         # Without this guard, every Runtime.execute() would build a second
         # sandbox and silently discard the caller's prepared one — #388.
         if self._env is None:
-            self._env = self._planes.create_environment(
-                cfg.environment,
-                self._task,
-                effective_task_path,
-                self._rollout_name,
-                self._rollout_paths,
-                preserve_agent_network=self._disallow_web_tools
-                or self._script_agent_offline,
-                environment_manifest=cfg.environment_manifest,
-                block_cloud_metadata=self._cloud_metadata is not None
-                and self._cloud_metadata.armed,
-                # Named only when set, so planes that predate it still take
-                # every other call.
-                **(
-                    {"cloud_metadata_root_agent": True}
-                    if self._cloud_metadata is not None
-                    and self._cloud_metadata.armed
-                    and getattr(self._cloud_metadata, "root_agent", False)
-                    else {}
-                ),
-            )
+            # The factory's own trial warnings (a compose file it doesn't
+            # read) go to this rollout's result.json.
+            with _keeping_trial_warnings(self):
+                self._env = self._planes.create_environment(
+                    cfg.environment,
+                    self._task,
+                    effective_task_path,
+                    self._rollout_name,
+                    self._rollout_paths,
+                    preserve_agent_network=self._disallow_web_tools
+                    or self._script_agent_offline,
+                    environment_manifest=cfg.environment_manifest,
+                    block_cloud_metadata=self._cloud_metadata is not None
+                    and self._cloud_metadata.armed,
+                    # Named only when set, so planes that predate it still take
+                    # every other call.
+                    **(
+                        {"cloud_metadata_root_agent": True}
+                        if self._cloud_metadata is not None
+                        and self._cloud_metadata.armed
+                        and getattr(self._cloud_metadata, "root_agent", False)
+                        else {}
+                    ),
+                    # The run's grant of the task's own opt-out, named only when
+                    # the task asks and the run grants it (the factory refuses an
+                    # ungranted one).
+                    **(
+                        {"allow_cloud_metadata": True}
+                        if metadata_granted(self._isolation_opt_ins)
+                        else {}
+                    ),
+                )
             # A custom factory can use a built-in backend name without its
             # container barrier. Check the returned instance before start
             # (K1-R15-2 B1); the earlier named gate cannot establish this.
@@ -2503,6 +2753,16 @@ class Rollout:
             # recipe as cached layers (sandbox.daytona_layers). Looked up on
             # the type so a mocked sandbox never grows the hook.
             self._configure_daytona_layers()
+        # What the run granted the task, for the reward's provenance.
+        with contextlib.suppress(AttributeError):
+            self._env._benchflow_isolation_lifted = list(self._isolation_opt_ins)
+        # Audit and off diff the processes for the reward's provenance: a
+        # Daytona sandbox records each session's shell it opens from here on
+        # (_image_trees.RECORD_SESSION_SHELLS_ATTR).
+        with contextlib.suppress(AttributeError):
+            self._env._benchflow_record_session_shells = (
+                getattr(self._config, "integrity", None) or "audit"
+            ) != "strict"
         # Caller-supplied wall-clock budget (e.g. RuntimeConfig.timeout)
         # wins over the task's own default. Without this override there is
         # no way to tighten/loosen the agent budget per run — see #378.
@@ -2592,6 +2852,7 @@ class Rollout:
 
     # Phase 2: START (container comes up)
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def start(self) -> None:
         """Start the environment and upload task files."""
@@ -3256,6 +3517,7 @@ class Rollout:
         if error is not None:
             raise error from cause
 
+    @_with_staged_registry
     async def install_agent(self) -> None:
         """Install the primary agent and set the sandbox up for it
         (:meth:`_install_agent_steps`). A failure while main has stopped
@@ -3361,6 +3623,23 @@ class Rollout:
                         f"({verifier_user}), so its output folder cannot be kept "
                         "from the agent's processes"
                     )
+                if (
+                    why is None
+                    and cfg.sandbox_user
+                    and verifier_user is not None
+                    and str(verifier_user) not in ("root", "0")
+                ):
+                    # The same check by uid, read before the turn as each
+                    # user while the image is the image's; a uid that can't
+                    # be read refuses the trial.
+                    from benchflow.rollout._grading_outcome import rb2_refusal
+                    from benchflow.task.verifier_core import user_uid
+
+                    why = await rb2_refusal(
+                        str(verifier_user),
+                        str(cfg.sandbox_user),
+                        lambda user: user_uid(self._env, user),
+                    )
                 # The oracle is exempt from provenance (the task's own
                 # solution, never the adversary): it runs where bfx cannot,
                 # as on main (Q4 backend table, F2b-DEVCYCLE.md §6).
@@ -3383,6 +3662,17 @@ class Rollout:
                 _verifier_links.save_record(
                     self._env, getattr(self, "_rollout_dir", None)
                 )
+                if _reward_provenance.assessed(cfg.integrity):
+                    # An inherited record that is not complete is refused
+                    # before this child's turn, as a fresh one is.
+                    from benchflow.rollout._grading_outcome import pre_turn_refusal
+
+                    refusal = pre_turn_refusal(
+                        getattr(self._env, _verifier_links.INVENTORY, None),
+                        primary_agent=cfg.primary_agent,
+                    )
+                    if refusal is not None:
+                        raise IntegrityUnavailableError(refusal)
                 return
 
             async def seed_then_runtime() -> None:
@@ -3400,10 +3690,18 @@ class Rollout:
                     _verifier_links.inherit_record(
                         self._env, getattr(self, "_inherited_link_record", None)
                     )
-                    await _verifier_links.record_before_turn(self._env)
+                    record = await _verifier_links.record_before_turn(self._env)
                     _verifier_links.save_record(
                         self._env, getattr(self, "_rollout_dir", None)
                     )
+                    # A record that is not complete, or bfx that could not run
+                    # after all, is BenchFlow's gap known before the turn: the
+                    # trial is refused here (Q4).
+                    from benchflow.rollout._grading_outcome import pre_turn_refusal
+
+                    refusal = pre_turn_refusal(record, primary_agent=cfg.primary_agent)
+                    if refusal is not None:
+                        raise IntegrityUnavailableError(refusal)
                 # The verifier's plugins, from a root-only tree built while no
                 # agent process has run yet. Its probe reads the
                 # seeded copy, so it comes after the seed.
@@ -3867,6 +4165,43 @@ class Rollout:
             raise
         return await proxy
 
+    async def _note_exits_before_turn(self) -> None:
+        """The held services that exited before the agent's turn began (a
+        one-shot service done at start-up), kept once for ``held_exited``;
+        never fails the trial (such an exit is then flagged for a read)."""
+        from benchflow.sandbox import _inert_bootstrap
+
+        try:
+            await _inert_bootstrap.note_exits_before_turn(self._env)
+        except Exception:
+            logger.warning(
+                "could not check the held services before the agent's turn",
+                exc_info=True,
+            )
+
+    async def _close_verifier_dir_before_turn(self) -> None:
+        """``/logs/verifier`` closed again right before the turn, on a backend
+        whose task services run their own start-up code after the start's
+        close (Docker, Daytona's Docker-in-Docker:
+        ``close_verifier_dir_before_turn``). Only the first turn in a sandbox
+        no agent ran in before (not a restored checkpoint, nor a live sandbox
+        the caller owns, which another rollout's agent may have used) may be
+        refused for a folder that stays open; before a later one it is
+        warned."""
+        from benchflow.sandbox._hooks import sandbox_hook
+
+        close = sandbox_hook(self._env, "close_verifier_dir_before_turn")
+        if close is None:
+            return
+        first = (
+            not getattr(self, "_turn_closes", 0)
+            and not getattr(self, "_from_branch_snapshot", False)
+            and not getattr(self, "_env_externally_owned", False)
+        )
+        self._turn_closes = getattr(self, "_turn_closes", 0) + 1
+        with _keeping_trial_warnings(self):
+            await close(first_turn=first)
+
     async def _apply_cloud_metadata_block(
         self, rollout_dir: Path, *, session_factory: str | None = None
     ) -> None:
@@ -3882,6 +4217,8 @@ class Rollout:
         before the agent, with the record's reason.
         """
         await self._cover_task_services(rollout_dir)
+        await self._note_exits_before_turn()
+        await self._close_verifier_dir_before_turn()
         plan = self._cloud_metadata
         if plan is None:
             return
@@ -3919,10 +4256,12 @@ class Rollout:
                     "uncovered_services": list(plan.uncovered),
                 }
         else:
+            lifted_by = dict(getattr(plan, "lifted_by", None) or {})
             record = cloud_metadata_record(
                 plan.state,
                 f"{plan.why}, so the agent can reach the cloud metadata endpoints",
                 **({"opt_out": opt_out} if opt_out else {}),
+                **({"lifted_by": lifted_by} if lifted_by else {}),
             )
         self._record_cloud_metadata(rollout_dir, record, opt_out)
         if record["state"] == NOT_REACHABLE and not opt_out:
@@ -3968,7 +4307,9 @@ class Rollout:
             return
         opt_out = getattr(config, "cloud_metadata_opt_out", "")
         task_opts_out = isinstance(opt_out, str) and bool(opt_out)
-        run_opts_out = bool(getattr(self._config, "allow_cloud_metadata", False))
+        run_opts_out = strict_grant(
+            getattr(self._config, "allow_cloud_metadata", False)
+        )
         covered = vars(self).setdefault("_covered_services", {})
         # Covered before release, while it still waited.
         start_covered = getattr(self._env, "_start_covered_services", None)
@@ -4037,6 +4378,11 @@ class Rollout:
         self._cloud_metadata_result = {
             "state": record["state"],
             **({"opt_out": opt_out} if opt_out else {}),
+            **(
+                {"lifted_by": record["lifted_by"]}
+                if isinstance(record.get("lifted_by"), dict)
+                else {}
+            ),
             **(
                 {"delegates": delegates}
                 if delegates and record["state"] != "on"
@@ -4253,9 +4599,14 @@ class Rollout:
             ),
         )
 
+    @_with_staged_registry
     async def connect(self) -> None:
         """Open an ACP connection to the agent. Can be called multiple times."""
         require_safe_branch_world(self)
+        # After a verify: the workspace the grant gave the agent (#1249).
+        from benchflow.sandbox._workspace_grant import reopen_granted_workspaces
+
+        await reopen_granted_workspaces(getattr(self, "_env", None))
         cfg = self._config
         key = (cfg.primary_agent, cfg.primary_model, ())
         await self._end_previous_connection(key)
@@ -4271,6 +4622,13 @@ class Rollout:
 
         previous_runtime = self._usage_runtime
         force_sandbox_local = self._disallow_web_tools or egress_denylist is not None
+        await self._before_staging(
+            cfg.primary_agent,
+            cfg.primary_model,
+            self._agent_env,
+            held=force_sandbox_local,
+            force_sandbox_local=force_sandbox_local,
+        )
         # The agent's uid rules went in right after main's release
         # (_arm_agent_uid_at_release, M1); its launch finds them in.
         # A host proxy starts while the sandbox guards run (see
@@ -4624,6 +4982,123 @@ class Rollout:
         # sources. Apply launch-only empties after every staging consumer.
         agent_env.update(writer_plan.env_overrides)
 
+    async def _before_staging(
+        self,
+        agent: str,
+        model: str | None,
+        agent_env: dict[str, str],
+        *,
+        held: bool,
+        force_sandbox_local: bool,
+        scoped_reference: dict[str, str] | None = None,
+    ) -> None:
+        """Before this connection stages any credential (its proxy's start,
+        which puts the API key in a proxy in the sandbox, and its logins):
+        the operator credentials it would stage (operator_credentials), a
+        cloud credential file the run does not allow refused (a scene role is
+        past the plan gate, which checks the primary agent), the trial's
+        record and one warning for them, and main quiet, for either harness.
+        That is the check the ACP launch runs
+        (lockdown.refuse_task_processes_before_launch), once per sandbox;
+        *held* is the connection's policy (no-web, an egress policy), whose
+        markers its env gets only with the proxy's wiring.
+        ``--scoped-credential`` scopes a name by its value too: only where
+        this connection's value is the run's (*scoped_reference*, the
+        primary's resolved env by default), so a role holding another value
+        under the same name is the operator's credential."""
+        if is_scripted_agent(agent) or getattr(self, "_env", None) is None:
+            return
+        from benchflow.agents import operator_credentials as oc
+        from benchflow.sandbox import lockdown
+
+        cfg = self._config
+        name = str(getattr(self._task, "name", None) or Path(cfg.task_path).name)
+        entries = oc.in_sandbox(
+            agent,
+            model,
+            agent_env,
+            proxy_in_sandbox=oc.proxy_in_sandbox(
+                cfg.environment, force_sandbox_local=force_sandbox_local
+            ),
+            home=oc.agent_home(getattr(cfg, "sandbox_user", None)),
+            scoped=self._scoped_here(agent_env, scoped_reference),
+        )
+        # What the operator scoped (--scoped-credential) asks nothing of main.
+        unscoped = oc.unscoped(entries)
+        allowed = oc.literal_grant(
+            getattr(cfg, oc.CLOUD_FILE_SETTING, False), where=oc.CLOUD_FILE_SETTING
+        )
+        beside = oc.literal_grant(
+            getattr(cfg, oc.TASK_PROCESSES_SETTING, False),
+            where=oc.TASK_PROCESSES_SETTING,
+        )
+        granted = oc.granted(
+            entries,
+            allow_cloud_credential_file=allowed,
+            allow_task_processes_with_credentials=beside,
+        )
+        # Docker and remote Docker list main (lockdown.refuse_task_processes).
+        unlisted = (
+            None
+            if beside
+            or callable(getattr(type(self._env), "metadata_rules_install", None))
+            else f"not checked on {cfg.environment}"
+        )
+
+        def kept(refused: bool) -> dict[str, Any] | None:
+            return oc.record(
+                getattr(self, "_operator_credentials", None),
+                entries,
+                granted,
+                refused=refused,
+                quiet_main=unlisted,
+            )
+
+        try:
+            oc.refuse_cloud_credential_file(entries, task_name=name, allowed=allowed)
+        except oc.CloudCredentialFileRefused:
+            self._operator_credentials = kept(refused=True)
+            raise
+        line = oc.warning(name, entries, granted, quiet_main=unlisted)
+        said = self.__dict__.setdefault("_operator_credential_warnings", set())
+        if line is not None and line not in said:
+            said.add(line)
+            logger.warning(line)
+        lifted = [g for g in granted if g["setting"] == oc.TASK_PROCESSES_SETTING]
+        if lifted:
+            # What the run accepted, for the reward's provenance.
+            with contextlib.suppress(AttributeError):
+                self._env._benchflow_operator_credentials_lifted = lifted
+        try:
+            await lockdown.refuse_task_processes_before_launch(
+                self._env,
+                {},
+                held=held,
+                credentials=oc.quiet_main_refusal(unscoped)
+                if unscoped and not beside
+                else None,
+            )
+        except BaseException:
+            self._operator_credentials = kept(refused=True)
+            raise
+        self._operator_credentials = kept(refused=False)
+
+    def _scoped_here(
+        self, agent_env: dict[str, str], reference: dict[str, str] | None
+    ) -> tuple[str, ...]:
+        """The run's ``--scoped-credential`` names this connection holds with
+        the run's own values."""
+        from benchflow.agents import operator_credentials as oc
+
+        names = oc.scoped_names(getattr(self._config, oc.SCOPED_SETTING, None))
+        if reference is None:
+            reference = getattr(self, "_agent_env", None) or {}
+        return tuple(
+            n
+            for n in names
+            if agent_env.get(n) and agent_env.get(n) == reference.get(n)
+        )
+
     def _record_credential(self, path: str) -> None:
         if path not in self._credential_ledger:
             self._credential_ledger.append(path)
@@ -4761,6 +5236,7 @@ class Rollout:
         task = asyncio.current_task()
         return task is None or not task.cancelling()
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def disconnect(self) -> None:
         """Close the ACP client and clean up agent process, keeping the environment alive."""
@@ -4770,6 +5246,7 @@ class Rollout:
             self._capture_partial_acp_trajectory()
         self._collect_native_acp_usage()
         if self._acp_client:
+            await self._await_unanswered_model_calls()
             interval = self._agent_otel_export_sec
             if interval is not None and self._may_await_agent_export():
                 await settle_agent_otel(self._env, interval)
@@ -5016,6 +5493,7 @@ class Rollout:
 
     # Phase 3c: EXECUTE
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def execute(
         self, prompts: list[str] | None = None, *, node: RolloutNode | None = None
@@ -5083,6 +5561,7 @@ class Rollout:
                     effective_prompts,
                     timeout,
                     idle_timeout=idle_timeout,
+                    on_deadline=self._close_model_gates,
                 )
             else:
                 trajectory, n_tool_calls = await self._planes.execute_prompts(
@@ -5091,6 +5570,7 @@ class Rollout:
                     effective_prompts,
                     timeout,
                     idle_timeout=idle_timeout,
+                    on_deadline=self._close_model_gates,
                 )
         except AgentPromptTimeoutError as e:
             # The turn ended without its end-of-turn usage report: teardown
@@ -5385,6 +5865,7 @@ class Rollout:
 
     # Phase 3d: BRANCH
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def branch(
         self,
@@ -5470,6 +5951,7 @@ class Rollout:
 
     # Phase 4: VERIFY
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def verify(self) -> dict | None:
         """Run the verifier and return rewards."""
@@ -5496,6 +5978,11 @@ class Rollout:
             # Before anything of the verifier runs.
             await Rollout._stop_sandbox_proxies_before_verify(self)
             await Rollout._snapshot_session_logs_before_verify(self)
+            from benchflow.sandbox import lockdown
+
+            # A connection after this verify (a branch's next child) finds
+            # what test.sh leaves refused beside an operator credential.
+            await lockdown.note_main_before_task_code(getattr(self, "_env", None))
             try:
                 # The trial's integrity mode decides what a reward outside
                 # the range becomes (audit/off: as written; strict: 0).
@@ -5858,6 +6345,7 @@ class Rollout:
             ):
                 env._sandbox = handle
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def soft_verify(self) -> tuple[dict | None, str | None, str | None]:
         """Run the verifier without full hardening — for intermediate feedback.
@@ -5896,6 +6384,11 @@ class Rollout:
         require_safe_branch_world(self)
         if self._muse_credentials_staged:
             await self.disconnect()
+        from benchflow.sandbox import lockdown
+
+        # What main has before test.sh is the agent's; the next connection
+        # that stages an operator credential refuses what test.sh leaves.
+        await lockdown.note_main_before_task_code(self._env)
         # Off and audit run test.sh as its authors wrote it, between rounds as
         # at the end: nothing here may change what the scored verify
         # later sees, so no hook purge, no /app and no BASH_ENV policy.
@@ -6011,6 +6504,7 @@ class Rollout:
 
     # Phase 5: CLEANUP
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def cleanup(self) -> None:
         """Close ACP client and stop the environment.
@@ -6046,24 +6540,19 @@ class Rollout:
                 # A trial that never verified: its warmed-up verifier sandbox.
                 await self._discard_verifier_warmup()
             finally:
+                # A sandbox stopped before the teardown is gone already; one
+                # the teardown stops gets its post-stop pass there
+                # (_after_sandbox_stop), which in a job can run later, in the
+                # background.
+                stopped_before = getattr(self, "_agent_sandbox_stopped", False) is True
                 await self._teardown_sandbox()
                 from benchflow.task import verifier_outputs
 
                 verifier_outputs.put_back_and_record(
                     getattr(paths, "rollout_dir", None), holder
                 )
-                # Nothing in the sandbox can make a link any more: none that
-                # leaves agent/ or artifacts/ stays in the trial (F37).
-                rollout_dir = getattr(paths, "rollout_dir", None)
-                if rollout_dir is not None:
-                    from benchflow.rollout._artifacts import drop_escaping_links
-
-                    try:
-                        drop_escaping_links(Path(rollout_dir))
-                    except Exception:
-                        logger.warning(
-                            "links left in the trial were not checked", exc_info=True
-                        )
+                if stopped_before:
+                    _after_sandbox_stop(getattr(paths, "rollout_dir", None), holder)
 
     async def _record_main_metadata_at_end(self) -> None:
         """At every trial's end, errors and early ends included, before the
@@ -6327,6 +6816,24 @@ class Rollout:
             self._provider_failure_cached = _provider_failure_from_runtime(
                 usage_runtime
             )
+            # The proxy's own record of what it answered the agent: a
+            # refused key there is the trial's ending, whatever status the
+            # callback log wrote (the bad-key row: 401 read as 500).
+            refused = (
+                _provider_failure_from_attempts(
+                    self._rollout_dir / "trajectory" / "provider_requests.jsonl"
+                )
+                if self._rollout_dir is not None
+                else None
+            )
+            if refused is not None:
+                self._provider_failure_cached = refused
+                # The error the trial ends with is decided later
+                # (_build_result): the head that leads it is named now, while
+                # the route is still known.
+                self._refused_key_head = provider_refused_key_text(
+                    refused, self._usage_runtime or usage_runtime
+                )
             self._provider_auth_status_cached = (
                 self._provider_failure_cached.status
                 if self._provider_failure_cached is not None
@@ -6605,12 +7112,18 @@ class Rollout:
             # it may still mount stays until `bench sandbox release`.
             env, task_tmp = None, None
 
+        rollout_dir = getattr(
+            getattr(self, "_rollout_paths", None), "rollout_dir", None
+        )
+
         async def stop_and_remove() -> None:
             if env is not None:
                 try:
                     await env.stop(delete=True)
                 except Exception as e:
                     logger.warning(f"Cleanup failed: {e}")
+                else:
+                    _after_sandbox_stop(rollout_dir, env)
             if lease:
                 from benchflow.rollout._verifier_recovery import (
                     release_lease_at_teardown,
@@ -7094,7 +7607,13 @@ class Rollout:
         from benchflow.task.staging import remove_released
         from benchflow.trajectories.types import trial_redaction_memo
 
-        with trial_redaction_memo():
+        # The rollout's registry (_claim_staged_registry): a verb that drives
+        # this trial itself (bench eval continue) bound it first, or a
+        # prestart claimed it; this run adds to it.
+        with (
+            trial_redaction_memo(),
+            staged_secrets.bound(_claim_staged_registry(self)) as staged,
+        ):
             try:
                 with (
                     trial_log_context(_log_task(self)),
@@ -7121,6 +7640,11 @@ class Rollout:
                 # A task copy a collected sandbox's finalizer had to queue goes
                 # now, whoever runs the trial (Runtime.execute, branch, regrade).
                 remove_released()
+                staged_secrets.write_trial_record(
+                    getattr(self, "_rollout_dir", None),
+                    staged,
+                    agent=getattr(getattr(self, "_config", None), "agent", None),
+                )
 
     def _record_cancelled_attempt(self) -> None:
         """Write a stopped trial's result.json with what it spent.
@@ -7215,11 +7739,14 @@ class Rollout:
         recorded the trial's ending (other than that stop, whose grace the kill
         ended), which keeps its error and category with the kill beside it.
         """
+        from benchflow.checkpoints import seconds_spent
+
         started_at = datetime.now()
         result = await _deadline.enforce_hard_deadline(
             self._run_lifecycle(),
             config=self._config,
             stop_agent=self._stop_agent_at_deadline,
+            paused_sec=lambda: seconds_spent(self),
         )
         if self._solver_execution_complete and not result.rollout_name:
             from benchflow.rollout._verifier_recovery import interrupted_solver_result
@@ -7392,6 +7919,7 @@ class Rollout:
         if verdict is not None:
             result.integrity = verdict.as_dict()
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def finalize(self) -> RolloutResult:
         """Finish a manually driven rollout, including required rubric review."""
@@ -7456,6 +7984,11 @@ class Rollout:
                 # restart the agent phase clock so it is not listed as the
                 # solver's output.
                 await mark_agent_phase_start(self)
+                # A scripted agent takes no cloud metadata block step: the
+                # held services that exited before its turn are read here,
+                # and /logs/verifier is closed again.
+                await self._note_exits_before_turn()
+                await self._close_verifier_dir_before_turn()
                 oracle_started = datetime.now()
                 # A task network policy covers the oracle's turn; its arming
                 # records the oracle_network_policy span here.
@@ -7858,6 +8391,7 @@ class Rollout:
         """Whether run()'s lifecycle began (it then owns the sandbox's clean-up)."""
         return self._trial_clock_start is not None
 
+    @_with_staged_registry
     async def discard_prestart(self) -> None:
         """Remove a prestarted trial the job never ran: its sandbox and folder.
 
@@ -8132,6 +8666,7 @@ class Rollout:
             record = self._trial_budget_refusal()
             if record is not None and not agent.done():
                 self._trial_budget_stop = record
+                await self._close_model_gates()
                 agent.cancel()
                 return
 
@@ -8203,13 +8738,118 @@ class Rollout:
         logger.error(self._error)
 
     def _stop_agent_at_deadline(self, reason: str) -> bool:
-        """Stop a still-running agent phase; False once it has ended."""
+        """Stop a still-running agent phase; False once it has ended. The
+        model gate closes first, then the agent is cancelled."""
         agent = self._agent_phase
         if agent is None or agent.done():
             return False
         self._agent_deadline_reason = reason
-        agent.cancel()
+
+        async def stop() -> None:
+            try:
+                await self._close_model_gates()
+            finally:
+                agent.cancel()
+
+        self._agent_deadline_stop = asyncio.ensure_future(stop())
         return True
+
+    async def _await_unanswered_model_calls(self) -> None:
+        """The normal stop of an agent waits for its model calls that are
+        open and not yet answered, bounded (:func:`_stop_wait_sec`), so
+        stopping it cuts none of them: Claude Code asks for a session title
+        just after its last reply, and a stop that lands before the answer
+        left the call a cut stream whose usage was LiteLLM's estimate. A wait
+        only: no call is refused, and nothing is held. Never at a deadline's
+        or a budget's stop, where the gate cuts at once. Never raises."""
+        if (
+            getattr(self, "_agent_deadline_reason", None)
+            or getattr(self, "_trial_budget_stop", None)
+            or getattr(self, "_model_gates_closed", False)
+            or not hasattr(self, "_retired_usage_runtimes")
+        ):
+            return
+        asks = [
+            ask
+            for runtime in self._usage_runtimes()
+            if inspect.iscoroutinefunction(
+                ask := getattr(
+                    getattr(runtime, "server", None), "unanswered_calls", None
+                )
+            )
+        ]
+        if not asks:
+            return
+        loop = asyncio.get_running_loop()
+        bound = _stop_wait_sec()
+        deadline = loop.time() + bound
+        while True:
+            counts = await asyncio.gather(
+                *(ask() for ask in asks),
+                return_exceptions=True,
+            )
+            open_calls = sum(c for c in counts if isinstance(c, int) and c > 0)
+            if not open_calls:
+                return
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Stopping the agent with %d model call(s) its provider had "
+                    "not answered after %.1f s; they are cut",
+                    open_calls,
+                    bound,
+                )
+                return
+            await asyncio.sleep(0.1)
+
+    async def _close_model_gates(self) -> None:
+        """The first step of every stop of the agent: no model call
+        it makes from here on reaches a provider. Closes the model gate of
+        every proxy of the trial. A connection whose calls pass no gate (a
+        subscription login, a direct endpoint, a vendor-hosted agent) or
+        whose gate could not be closed has its agent's processes killed
+        instead, the sandbox user's (lockdown's UID kill). Bounded; a failure
+        is logged and the stop goes on."""
+        self._model_gates_closed = True
+        closes = []
+        for runtime in self._usage_runtimes():
+            close = getattr(getattr(runtime, "server", None), "close_gate", None)
+            if callable(close):
+                closes.append(close())
+        held = False
+        if closes:
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*closes, return_exceptions=True), 3
+                )
+            except Exception as exc:
+                results = [exc]
+            held = True
+            for result in results:
+                state = result.get("state") if isinstance(result, dict) else None
+                if state not in ("closed", "dead"):
+                    held = False
+                    logger.warning(
+                        "The model gate did not close at the agent's stop: %s", result
+                    )
+        if held:
+            return
+        user = getattr(getattr(self, "_config", None), "sandbox_user", None)
+        env = getattr(self, "_env", None)
+        if not user or env is None:
+            # A root agent's processes cannot be told from the sandbox's own
+            # by uid: its harness's cancel stops it (the native harness kills
+            # its run's tree).
+            logger.warning(
+                "No model gate holds this agent's calls and it runs as root: "
+                "its harness's cancel is the stop"
+            )
+            return
+        try:
+            await asyncio.wait_for(self._planes.quiesce_agent(env, user), 15)
+        except Exception as exc:
+            logger.warning(
+                "The agent's processes could not be stopped at its deadline: %s", exc
+            )
 
     # Scene-authored Step execution
     #
@@ -8247,6 +8887,7 @@ class Rollout:
         """
         await _run_user_loop_engine(self)
 
+    @_with_staged_registry
     @_with_verifier_setup_budget
     async def connect_as(self, role: Role) -> None:
         """Open an ACP connection for a specific role.
@@ -8256,6 +8897,11 @@ class Rollout:
         Updates _agent_launch so disconnect() kills the correct process.
         """
         require_safe_branch_world(self)
+        # After a verify (a multi-step task's next step): the workspace the
+        # grant gave the agent (#1249).
+        from benchflow.sandbox._workspace_grant import reopen_granted_workspaces
+
+        await reopen_granted_workspaces(getattr(self, "_env", None))
         cfg = self._config
         validate_muse_roles(
             [(cfg.primary_agent, cfg.primary_model), (role.agent, role.model)],
@@ -8312,6 +8958,13 @@ class Rollout:
             role_agent_differs or role.model != cfg.primary_model or bool(role.env)
         )
         force_sandbox_local = disallow_web_tools or disallow_hosted_search
+        await self._before_staging(
+            role.agent,
+            role.model,
+            agent_env,
+            held=disallow_web_tools or egress_denylist is not None,
+            force_sandbox_local=force_sandbox_local,
+        )
         # The role's uid firewall before its model proxy starts.
         arm_early = getattr(type(self._planes), "arm_agent_uid_before_its_proxy", None)
         if (
@@ -8822,6 +9475,17 @@ class Rollout:
         env_sandbox_id = getattr(self._env, "sandbox_id", None)
         return env_sandbox_id if isinstance(env_sandbox_id, str) else None
 
+    def _lead_with_refused_key(self) -> None:
+        """A trial whose model provider refused the key (the proxy's own
+        record says 401 or 403) ends with that, whatever the agent made of
+        it: an idle agent, an ACP -32603, a provider "500"."""
+        head = self._refused_key_head
+        error = self._error
+        if head is None or error is None or error.startswith(PROVIDER_REFUSED_KEY):
+            return
+        self._error = f"{head}{ORIGINAL_ERROR}{error}"
+        self._rewards = None
+
     def _maybe_classify_api_error(self) -> None:
         """Detect a silent provider API failure after the rollout finished.
 
@@ -8975,6 +9639,7 @@ class Rollout:
             self._note_late_budget_stop()
             _classify_model_catalog_fallback(self)
             self._maybe_classify_api_error()
+            self._lead_with_refused_key()
         # For Scene/multi-turn rollouts, each execute() call records the
         # prompt(s) it sent into self._executed_prompts. Use that as the
         # authoritative prompt list so n_prompts and prompts.json reflect
@@ -9058,10 +9723,27 @@ class Rollout:
             branches=self._branch_summary(),
             verifier_isolation=self._verifier_isolation,
             cloud_metadata=self._cloud_metadata_result,
+            isolation_opt_ins=list(getattr(self, "_isolation_opt_ins", None) or ()),
+            operator_network=list(getattr(self, "_operator_network", None) or ()),
+            held_after_restart=list(
+                getattr(getattr(self, "_env", None), "_held_after_restart", None) or ()
+            ),
+            held_exited=list(
+                getattr(getattr(self, "_env", None), "_held_exited", None) or ()
+            ),
+            verifier_network_refused=(vars(self).get("_trial_records") or {}).get(
+                "verifier_network_refused"
+            ),
             host_ptrace_scope=self._host_ptrace_scope,
             agent_user=self._agent_user,
+            sandbox_account=_sandbox_account(getattr(self, "_env", None)),
+            operator_credentials=getattr(self, "_operator_credentials", None),
             test_sh_preflight=self._test_sh_preflight_result(),
-            warnings=getattr(self, "_warnings", None),
+            warnings=_with_held_after_restart(
+                getattr(self, "_warnings", None),
+                getattr(getattr(self, "_env", None), "_held_after_restart", None),
+                getattr(getattr(self, "_env", None), "_held_exited", None),
+            ),
             trial_budget=self._trial_budget_block(),
             judge_usage=judge_usage.usage_block(getattr(self, "_judge_calls", ())),
             **self._usage_metrics,
@@ -9159,6 +9841,10 @@ class Rollout:
             default_pwd,
         )
         if self._agent_user is None:
+            return
+        if getattr(self._config, "purpose", "task") == "reviewer":
+            # A reviewer runs BenchFlow's own review task, whose harness user no
+            # flag of `bench review` changes: recorded, not said.
             return
         agent = getattr(self._config, "primary_agent", None)
         name = self._config.task_path.name

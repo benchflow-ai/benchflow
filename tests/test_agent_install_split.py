@@ -336,6 +336,9 @@ def _trial(tmp_path: Path, name: str, agent: str, env: Any, **config: Any) -> Ro
     trial._task.config.environment = None
     trial._task.config.sandbox = SandboxConfig()
     trial._task.config.verifier = MagicMock()
+    # A task with no verifier user (the default: test.sh runs as root). A MagicMock
+    # user has no uid to read, and the RB2 check before the turn (F7) refuses that.
+    trial._task.config.verifier.user = None
     trial._effective_task_path = tmp_path / "task"
     trial._effective_skills_dir = tmp_path / "skills"
     trial._effective_skills_sandbox_dir = "/skills"

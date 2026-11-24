@@ -583,8 +583,8 @@ async def test_a_source_gone_before_up_leaves_no_trial_volume(
             match=(
                 r"^Docker compose command failed for environment anonvol-[0-9a-f]{8}\. "
                 r"Command: docker --config \S+ compose --project-name "
-                r"anonvol-[0-9a-f]{8}-[0-9a-f]{8} .* up --detach --no-build "
-                r"--no-deps main\. Return code: 1\. Stdout: (?s:.*)Error response from "
+                r"anonvol-[0-9a-f]{8}-[0-9a-f]{8} .* up --(?:no-start|detach) "
+                r"--no-build --no-deps main\. Return code: 1\. Stdout: (?s:.*)Error response from "
                 r"daemon: No such container: anonvol-src-[0-9a-f]{8}\n\. Stderr: None\. $"
             ),
         ):

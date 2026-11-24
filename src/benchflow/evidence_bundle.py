@@ -43,6 +43,8 @@ TRIAL_FILES = (
     "trust-state.json",
     "locked-system-path.json",
     "kill-before-grading.json",
+    "kill-after-grading.json",
+    "integrity/masking.json",
 )
 TRIAL_FOLDERS = ("trajectory", "verifier", "reviews", "regrade", "rounds", "artifacts")
 WORKSPACE_FOLDER = "evidence"

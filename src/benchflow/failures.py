@@ -11,14 +11,16 @@ trial ends in one of three ways:
 
 :func:`cause_of` names the cause of an unscored or errored trial from its
 stored categories and diagnostics: a short label, whose fault it is (the
-``task``, the ``agent``, the ``infrastructure``, or the developer's
-``setup``), and the next step. It never changes a score: the buckets are the
-ones :func:`benchflow._utils.scoring.classify_score_outcome` decides.
+``task``, the ``agent``, the ``infrastructure``, the developer's ``setup``,
+or ``benchflow``'s own gap), and the next step. It never changes a score:
+the buckets are the ones :func:`benchflow._utils.scoring.classify_score_outcome`
+decides.
 
 Each cause has an id ``bench explain`` has a page for (:attr:`Cause.code`):
 Rust's run failure code where the meaning is the same
 (:data:`RUST_CODES`), else the cause's key. :func:`cause_keys` lists every
-key :func:`cause_of` returns.
+key :func:`cause_of` returns. A scored 0 an integrity rule gives is no cause,
+but has a page too (:func:`scored_zero_keys`).
 """
 
 from __future__ import annotations
@@ -30,16 +32,23 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from benchflow._utils.command_hints import command_arg
 from benchflow.errors import Fault
+
+#: Whose fault a cause is: an error's (:data:`benchflow.errors.Fault`),
+#: BenchFlow's own gap, which no error a user can fix names, or none BenchFlow
+#: could tell (an error no category matched).
+CauseFault = Fault | Literal["benchflow", "unclassified"]
 
 FAULT_WORDS: dict[str, str] = {
     "task": "task problem",
     "agent": "agent problem",
     "infrastructure": "infrastructure problem",
     "setup": "setup problem",
+    "benchflow": "BenchFlow",
+    "unclassified": "cause not classified",
 }
 
 
@@ -49,7 +58,7 @@ class Cause:
 
     key: str  # stable: the category, or a finer name (verifier_plugin_trust)
     label: str  # "usage limit on login X, 7-day window, resets ..."
-    fault: Fault
+    fault: CauseFault
     next_step: str  # a command or a fix; {job} and {task} are filled in
 
     def headline(self) -> str:
@@ -85,9 +94,22 @@ _GUARD_UNLISTED_RE = re.compile(
     r"a release of a plugin BenchFlow vouches for "
 )
 
+# BenchFlow could not check where the reward came from (scoring's
+# INTEGRITY_UNAVAILABLE): refused before the turn, an errored trial, or, after
+# grading, a verifier error. One cause, BenchFlow's, under one key in both.
+_INTEGRITY_UNAVAILABLE: tuple[str, CauseFault, str] = (
+    "integrity check unavailable",
+    "benchflow",
+    "the error says why. Where bfx can't run in the sandbox, run the trial where "
+    "it can, from a release install or a checkout with the pinned bfx (`make "
+    "bfx`; `bench doctor` shows whether this install has it), then `bench eval "
+    "resume {job}`; where grading had no record from before the turn, run the "
+    "task again",
+)
+
 # category -> (label, fault, next step). {job} is the job folder, {task} the
 # task folder; both are filled in when known.
-_ERRORED: dict[str, tuple[str, Fault, str]] = {
+_ERRORED: dict[str, tuple[str, CauseFault, str]] = {
     "kept_service_freezer": (
         "the sandbox cannot freeze the task's kept services",
         "setup",
@@ -233,8 +255,9 @@ _ERRORED: dict[str, tuple[str, Fault, str]] = {
         "the error names why; nothing to do in the run: the task is on "
         "BenchFlow's refusal list, and an edited copy of it runs",
     ),
+    "integrity_unavailable": _INTEGRITY_UNAVAILABLE,
 }
-_INTEGRATION: dict[str, tuple[str, Fault, str]] = {
+_INTEGRATION: dict[str, tuple[str, CauseFault, str]] = {
     "agent_auth": ("its login or billing failed", "setup", "`bench doctor`"),
     "agent_model": (
         "it does not offer the model",
@@ -265,14 +288,40 @@ _INTEGRATION: dict[str, tuple[str, Fault, str]] = {
         "infrastructure",
         "`bench doctor --agent-start <agent>`",
     ),
+    # The ACP handshake: what the agent sent between the prompt and
+    # the end of its turn. A custom agent that writes its answer but sends
+    # no session/update ends here, unscored.
+    "empty_trajectory": (
+        "its turn ended with no ACP event and no model output after the prompt",
+        "agent",
+        "send at least one session/update (a message, tool call or thought) "
+        "before answering session/prompt; docs/evaluate/your-own-agent.md",
+    ),
+    "immediate_exit": (
+        "it ended its turn within seconds and did nothing",
+        "agent",
+        "check the agent's launch command and its log under agent/; a custom "
+        "agent must answer session/prompt only after its work",
+    ),
+    "no_activity": (
+        "it ran and sent no message, tool call or thought",
+        "agent",
+        "read the agent's log under agent/; an ACP agent reports its work "
+        "through session/update",
+    ),
+    "truncated_trajectory": (
+        "its ACP trajectory has unreadable lines",
+        "infrastructure",
+        "read trajectory/acp_trajectory.jsonl; rerun the trial",
+    ),
 }
 # An agent_integration failure whose cause is none of the above.
-_INTEGRATION_UNKNOWN: tuple[str, Fault, str] = (
+_INTEGRATION_UNKNOWN: tuple[str, CauseFault, str] = (
     "it did nothing useful",
     "agent",
     "integration_failure_info in result.json",
 )
-_UNSCORED: dict[str, tuple[str, Fault, str]] = {
+_UNSCORED: dict[str, tuple[str, CauseFault, str]] = {
     "network_policy_breached": (
         "BenchFlow's network rules for the trial were gone or reset before it "
         "was scored",
@@ -282,11 +331,13 @@ _UNSCORED: dict[str, tuple[str, Fault, str]] = {
         "https://github.com/benchflow-ai/benchflow/issues with the trial folder",
     ),
     "verifier_network_refused": (
-        "the verifier's network refused test.sh packets and its tests did not pass",
+        "the verifier's network refused test.sh packets and its tests did not "
+        "pass (before 0.10.1)",
         "task",
         "if the tests need those hosts, set verifier.network_mode in the task "
         "(the trial's verifier/verifier-network.json names the network and the "
-        "count); `bench check {task}`",
+        "count); `bench check {task}`. Since 0.10.1 such a trial is scored as "
+        "test.sh says and flagged in its warnings",
     ),
     "verifier_launch_refused": (
         "test.sh did not start without NET_ADMIN and NET_RAW, so BenchFlow did not run it",
@@ -357,11 +408,25 @@ _UNSCORED: dict[str, tuple[str, Fault, str]] = {
         "task",
         "the trial's verifier/ folder has the output",
     ),
+    "integrity_unavailable": _INTEGRITY_UNAVAILABLE,
+}
+# A scored 0 an integrity rule gives: a failure, counted, never a cause
+# (cause_of returns None for it), with a page of its own.
+_SCORED_ZERO: dict[str, tuple[str, CauseFault, str]] = {
+    "provenance_incomplete": (
+        "scored 0: a check of where the reward came from did not complete for "
+        "an agent that runs as its own user",
+        "agent",
+        "the reason follows `Verifier scored 0: provenance incomplete:` in the "
+        "trial's result.json warnings, and integrity/verifier-inputs.json "
+        "(provenance) has each check; if an honest run gets it too, report it at "
+        "https://github.com/benchflow-ai/benchflow/issues with the trial folder",
+    ),
 }
 # The causes no stored category names. Their labels are the general form:
 # cause_of fills in the login, window and reset of a usage limit, the exit
 # code of an agent process, and the first words of an other error.
-_SPECIAL: dict[str, tuple[str, Fault, str]] = {
+_SPECIAL: dict[str, tuple[str, CauseFault, str]] = {
     "test_sh_preflight_unavailable": (
         "a branch child's checkpoint recorded no test.sh preflight verdict, and "
         "none could be decided on a fresh image, so the child was not run",
@@ -417,7 +482,7 @@ _SPECIAL: dict[str, tuple[str, Fault, str]] = {
     ),
     "other": (
         "other error",
-        "infrastructure",
+        "unclassified",
         "the trial's result.json and the run's log have the details",
     ),
     "verifier_plugin_trust": (
@@ -519,10 +584,16 @@ def unscored_keys() -> tuple[str, ...]:
     )
 
 
+def scored_zero_keys() -> tuple[str, ...]:
+    """The keys of the scored 0s an integrity rule gives (no cause, a page)."""
+    return tuple(_SCORED_ZERO)
+
+
 def cause_keys() -> tuple[str, ...]:
     """Every key :func:`cause_of` can return: unscored causes, then errored ones.
 
-    A key both kinds share (``disk_full``) is listed once, as unscored.
+    A key both kinds share (``disk_full``, ``integrity_unavailable``) is
+    listed once, as unscored.
     """
     return tuple(
         dict.fromkeys(
@@ -557,7 +628,7 @@ def describe(key: str) -> Cause | None:
             return None
         label, fault, step = _INTEGRATION.get(why, _INTEGRATION_UNKNOWN)
         return Cause(key, f"the agent integration broke: {label}", fault, _fill(step))
-    for table in (_UNSCORED, _ERRORED, _SPECIAL):
+    for table in (_UNSCORED, _ERRORED, _SPECIAL, _SCORED_ZERO):
         if key in table:
             label, fault, step = table[key]
             return Cause(key, label, fault, _fill(step))

@@ -932,3 +932,129 @@ async def test_pinned_gateway_refuses_translated_hosted_tools(family):
         if proc:
             await proc.stop()
         upstream.shutdown()
+
+
+# Codex 0.159.3's Responses request (the deterministic tier's wire log,
+# refusal-codex, 2026-11-18), its tracing ids replaced, with the tools it
+# keeps when web search is off. Codex sends client_metadata on every turn.
+CODEX_RESPONSES = {
+    "instructions": "You are Codex.",
+    "tools": [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "description": "Run a command.",
+            "strict": False,
+            "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+        },
+        {
+            "type": "custom",
+            "name": "apply_patch",
+            "description": "Patch files.",
+            "format": {
+                "type": "grammar",
+                "syntax": "lark",
+                "definition": "start: /.+/",
+            },
+        },
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": True,
+    "reasoning": {"effort": "medium", "summary": "auto"},
+    "store": False,
+    "include": ["reasoning.encrypted_content"],
+    "prompt_cache_key": "thread-1",
+    "text": {"verbosity": "low"},
+    "client_metadata": {
+        "x-codex-installation-id": "installation-1",
+        "session_id": "session-1",
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "root_turn_id": "turn-1",
+    },
+}
+# Responses fields a translation into chat completions or Messages carries
+# over as they are, though neither protocol has them (measured over every
+# field the boundary admits, B3R-STATUS.md round 4).
+_CARRIED_RAW = ("client_metadata", "max_tool_calls")
+_TRANSLATING = {
+    **PROVIDERS,
+    "moonshot": {
+        "model": "moonshot/kimi-k2-turbo-preview",
+        "api_base": "http://dummy.invalid/v1",
+    },
+}
+
+
+def _left_raw(wire):
+    """The carried-over fields in requests that left in another protocol."""
+    return [
+        (path, field)
+        for _, path, body in wire
+        if isinstance(body, dict) and not path.endswith("/responses")
+        for field in _CARRIED_RAW
+        if field in body
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", sorted(_TRANSLATING))
+@pytest.mark.parametrize("extra", [{}, {"max_tool_calls": 4}], ids=["codex", "cap"])
+async def test_codex_request_leaves_under_web_restriction(
+    monkeypatch, wire, provider, extra
+):
+    """Codex's own request, on any provider, under web restriction: it
+    leaves, without the Responses-only fields the translation carried over
+    (client_metadata is Codex's tracing ids; max_tool_calls caps calls to
+    provider-hosted tools, which a translated request cannot make). At C4
+    every Codex call on DeepSeek was refused here: "unsupported request
+    field(s) client_metadata"."""
+    monkeypatch.setitem(PROVIDERS, provider, _TRANSLATING[provider])
+    monkeypatch.setenv(DISALLOW, "1")
+    error = await _translate("responses", provider, {**CODEX_RESPONSES, **extra})
+    assert REFUSED not in error, (provider, error)
+    if not wire:
+        pytest.skip("pinned LiteLLM cannot send this pair even unrestricted")
+    assert _left_raw(wire) == [], (provider, wire)
+
+
+@pytest.mark.asyncio
+async def test_only_the_carried_over_fields_are_removed(monkeypatch, wire):
+    """The restricted request is the unrestricted one less those fields, and
+    only under restriction: an open run sends what LiteLLM built."""
+    monkeypatch.setenv(DISALLOW, "0")
+    await _translate("responses", "deepseek", {**CODEX_RESPONSES, "max_tool_calls": 4})
+    (_, path, unrestricted) = wire[-1]
+    assert path.endswith("/chat/completions")
+    assert {"client_metadata", "max_tool_calls"} <= unrestricted.keys()
+    wire.clear()
+    monkeypatch.setenv(DISALLOW, "1")
+    await _translate("responses", "deepseek", {**CODEX_RESPONSES, "max_tool_calls": 4})
+    (_, _, restricted) = wire[-1]
+    expected = {k: v for k, v in unrestricted.items() if k not in _CARRIED_RAW}
+    assert restricted == expected
+
+
+@pytest.mark.asyncio
+async def test_other_unknown_fields_are_still_refused(monkeypatch, wire):
+    """Removing the two carried-over fields admits nothing else: a body that
+    also carries a field nobody listed is refused, and nothing leaves."""
+    monkeypatch.setenv(DISALLOW, "1")
+    error = await _translate(
+        "chat",
+        "deepseek",
+        {
+            "extra_body": {"client_metadata": {"a": "b"}, "frontier_tool": {}},
+        },
+    )
+    assert REFUSED in error and "frontier_tool" in error, error
+    assert wire == []
+
+
+def test_native_codex_through_the_model_only_gate_is_unchanged(deployed):
+    """Native Codex on a ChatGPT login talks Responses to its provider through
+    the egress proxy's model-only gate: client_metadata is a Responses field
+    there, admitted as before."""
+    guard = _guard(deployed)
+    body = {"model": "gpt-5.5", "input": [], "stream": True, **CODEX_RESPONSES}
+    assert guard["restricted_responses_refusal"](body, json.dumps(body)) is None

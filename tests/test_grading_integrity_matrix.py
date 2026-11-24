@@ -37,6 +37,32 @@ pytestmark = [
     pytest.mark.bfx_refusal,
 ]
 
+# The matrix runs as a run ((d), DESIGN.md §2.6): ``tests/conftest.py``'s ``no_exec_channel`` keeps a run's
+#: exec channels and concurrent steps on for a module that sets this; direct Docker is turned back on below. The
+#: rc4 bfx-off hang hid behind the difference. Production falls back to one ``docker exec`` per step where no
+#: channel starts, so a few rows also run that way (``route``).
+DOCKER_RUN_DEFAULTS = True
+
+
+@pytest.fixture(autouse=True)
+def _direct_docker_as_a_run(monkeypatch):
+    """Direct Docker (the daemon's socket, not ``docker compose``), as a run has it: ``tests/conftest.py``'s
+    ``no_direct_docker`` turns it off for every module."""
+    from benchflow.sandbox.docker import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "direct_docker", True)
+
+
+#: The exec routes production has: a run's exec channels, and one ``docker exec`` per step (the fallback).
+ROUTES = ("channel", "per-exec")
+
+
+def _route(monkeypatch, route: str) -> None:
+    from benchflow.sandbox.docker import DockerSandbox
+
+    monkeypatch.setattr(DockerSandbox, "exec_channel", route == "channel")
+
+
 # -- rulings (lead 02:38Z) ------------------------------------------------------------------------------------------
 
 #: Q6: a non-root agent's attempt whose provenance check didn't complete, or whose action didn't take effect, while
@@ -50,6 +76,13 @@ PROVENANCE_INCOMPLETE = "provenance_incomplete"
 HELD_CATEGORY = "verifier_failure"
 #: Q4: where bfx can't run, the trial is refused before the agent's turn.
 BFX_OFF_OUTCOME = "refused_before_turn"
+#: Q4 when main waits for its rules (the default here: an open network's cloud metadata rule) in BenchFlow's
+#: waiter, which is bfx: without bfx the hold itself refuses the start, by name, before the turn, and never runs the
+#: image's shell instead. A run that grants the task's metadata opt-out has main wait for its bind proof alone, in
+#: the hold that predates the waiter, so such a trial reaches the integrity checks and their own refusal. Either
+#: refusal is Q4's outcome: category ``integrity_unavailable``, one attempt, never retried.
+HOLD_REFUSAL_HEAD = "ServiceCoverError: sandbox startup refused: BenchFlow holds 'main' until its rules are in"
+HOLD_REFUSAL_WHY = "bfx is not delivered on this host"
 #: Q1's reason text.
 APPEARED_DURING_GRADING = (
     "a link into the verifier's output folder appeared during grading"
@@ -162,10 +195,13 @@ def _task(
     keep_services: list[int] | None = None,
     verifier_timeout: int = 60,
     verifier_user: str | None = None,
+    memory_mb: int | None = None,
+    allow_cloud_metadata: bool = False,
 ) -> Path:
     """One task under *root*. *payload* is the agent's turn (POSIX sh), baked into the image as
     ``/opt/bfprobe/payload.sh``; every agent kind runs that same file. *keep_services*: the ports in
-    ``x-keep-services``. *verifier_user*: ``[verifier] user``."""
+    ``x-keep-services``. *verifier_user*: ``[verifier] user``. *allow_cloud_metadata*: the task's cloud metadata
+    opt-out (the run grants it with :func:`_run`'s own)."""
     task = Path(root) / name
     for sub in ("environment", "solution", "tests"):
         (task / sub).mkdir(parents=True, exist_ok=True)
@@ -176,9 +212,13 @@ def _task(
         )
         meta = f"[metadata]\nx-keep-services = [{ports}]\n\n"
     vuser = f'user = "{verifier_user}"\n' if verifier_user else ""
+    memory = f"memory_mb = {int(memory_mb)}\n" if memory_mb else ""
+    metadata = "allow_cloud_metadata = true\n" if allow_cloud_metadata else ""
     (task / "task.toml").write_text(
         f'version = "1.0"\n\n{meta}[verifier]\ntimeout_sec = {float(verifier_timeout)}\n{vuser}\n'
         "[agent]\ntimeout_sec = 3600.0\n\n[environment]\nbuild_timeout_sec = 900.0\n"
+        + memory
+        + metadata
     )
     (task / "instruction.md").write_text("Write /app/fixed.txt.\n")
     env = task / "environment"
@@ -220,9 +260,11 @@ async def _run(
     mode: str = "audit",
     retries: int = 0,
     concurrency: int = 6,
+    allow_cloud_metadata: bool = False,
 ) -> str:
     """Run *tasks* (one parent folder) as one evaluation, in this process (so a test's monkeypatches apply).
     *agent*: ``AGENT_PROBE``, ``AGENT_SCRIPT`` or ``"oracle"``; *user*: ``"agent"`` or ``None`` (root).
+    *allow_cloud_metadata*: the run grants the tasks' cloud metadata opt-out (``--allow-cloud-metadata``).
     Returns the jobs folder."""
     from benchflow.evaluation import Evaluation, EvaluationConfig, RetryConfig
 
@@ -263,6 +305,7 @@ async def _run(
             integrity=mode,
             retry=RetryConfig(max_retries=retries),
             include_tasks={t.name for t in tasks},
+            allow_cloud_metadata=allow_cloud_metadata,
         )
         await Evaluation(tasks_dir=parent, jobs_dir=jobs, config=config).run()
     return str(jobs)
@@ -287,13 +330,88 @@ def _trial_results(jobs) -> list[tuple[Path, dict]]:
     return sorted(found, key=lambda item: (item[0] / "result.json").stat().st_mtime)
 
 
+def _decisions(jobs) -> list[tuple[Path, dict]]:
+    """Every attempt the run decided on (``attempt-decision.json``: ``final`` or ``retried``), with its folder."""
+    found = []
+    for path in Path(jobs).rglob("attempt-decision.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("task"):
+            found.append((path.parent, data))
+    return sorted(
+        found, key=lambda item: (item[1].get("task"), item[1].get("sequence", 0))
+    )
+
+
 def _trials(jobs) -> dict[str, Path]:
-    """Each task's last attempt's trial folder, by task name."""
-    return {data["task_name"]: trial for trial, data in _trial_results(jobs)}
+    """Each task's kept attempt's trial folder (the run's ``final``), by task name; else its last result."""
+    found = {data["task_name"]: trial for trial, data in _trial_results(jobs)}
+    for trial, data in _decisions(jobs):
+        if data.get("decision") == "final":
+            found[data["task"]] = trial
+    return found
 
 
 def _attempts(jobs, name: str) -> int:
+    """The attempts the run made of *name*: its decisions (a recovery's or a branch's own result.json is no
+    attempt); a job with no decision records counts its results, as before."""
+    decided = [d for _, d in _decisions(jobs) if d.get("task") == name]
+    if decided:
+        return len(decided)
     return sum(1 for _, data in _trial_results(jobs) if data["task_name"] == name)
+
+
+def _attempt_folder(jobs, name: str, attempt: int) -> Path | None:
+    for trial, data in _decisions(jobs):
+        if data.get("task") == name and data.get("attempt") == attempt:
+            return trial
+    return None
+
+
+def _every_attempt(jobs, name: str) -> str:
+    """Each attempt's decision and ending, for an assertion's message."""
+    rows = []
+    for trial, data in _decisions(jobs):
+        if data.get("task") != name:
+            continue
+        try:
+            result = json.loads((trial / "result.json").read_text())
+        except (OSError, ValueError):
+            result = {}
+        rows.append(
+            {
+                "attempt": data.get("attempt"),
+                "decision": data.get("decision"),
+                "folder": str(trial),
+                "error": result.get("error"),
+                "error_category": result.get("error_category"),
+                "verifier_error": result.get("verifier_error"),
+                "verifier_error_category": result.get("verifier_error_category"),
+                "rewards": result.get("rewards"),
+            }
+        )
+    return json.dumps(rows, default=str)[:4000]
+
+
+def _keep(jobs, label: str) -> None:
+    """Copy the jobs folder to ``$BENCHFLOW_MATRIX_KEEP/<label>`` when that is set (the gate's evidence), leaving
+    out the floods' millions of names."""
+    import shutil
+
+    keep = os.environ.get("BENCHFLOW_MATRIX_KEEP")
+    if not keep:
+        return
+    target = Path(keep) / label
+    with contextlib.suppress(OSError):
+        shutil.copytree(
+            jobs,
+            target,
+            dirs_exist_ok=True,
+            symlinks=True,
+            ignore=shutil.ignore_patterns("flood", "many", "hl", "fat"),
+        )
 
 
 def _result(trial: Path) -> dict:
@@ -412,6 +530,18 @@ def _expect_refused_before_turn(trial: Path) -> None:
     assert "PAYLOAD-DONE" not in _payload_log(trial), _why(trial)
 
 
+def _expect_hold_refused(trial: Path) -> None:
+    """Q4 for a held trial: the start refused by the hold, by name (``ServiceCoverError: sandbox startup refused:
+    BenchFlow holds 'main' …``, bfx not delivered), category ``integrity_unavailable``; unscored, the payload never
+    ran."""
+    result = _result(trial)
+    assert result.get("rewards") is None, _why(trial)
+    said = str(result.get("error") or "")
+    assert said.startswith(HOLD_REFUSAL_HEAD) and HOLD_REFUSAL_WHY in said, _why(trial)
+    assert _category(trial) == INTEGRITY_UNAVAILABLE, _why(trial)
+    assert "PAYLOAD-DONE" not in _payload_log(trial), _why(trial)
+
+
 #: Image M (alpine without ``find``): BenchFlow's runtime setup needs the image's ``find`` (after the cut), so
 #: the trial is refused before the agent's turn, unscored, with BenchFlow's reason (F2b 04:21Z, §7).
 M_REFUSAL = "BenchFlow could not prepare its protected runtime"
@@ -426,8 +556,24 @@ def _expect_m_refused_before_turn(trial: Path) -> None:
     assert "PAYLOAD-DONE" not in _payload_log(trial), _why(trial)
 
 
+def _verified_or_s(found: dict) -> bool:
+    """`verified`, or `unverifiable` for rule S alone: a process of the agent's was still alive when test.sh started
+    (C3). That is the ruled cost of a process the agent leaves running in audit and off: the label, never the
+    score."""
+    if found.get("verdict") == "verified":
+        return True
+    reasons = found.get("reasons") or []
+    return (
+        found.get("verdict") == "unverifiable"
+        and (found.get("alive_at_test") or {}).get("alive") is True
+        and bool(reasons)
+        and all(S_ALIVE in r for r in reasons)
+    )
+
+
 def _expect_own_zero_link_gone(trial: Path, paths: list[str]) -> None:
-    """test.sh's own 0.0 scored; each link removed before test.sh (and gone when test.sh started); `verified`."""
+    """test.sh's own 0.0 scored; each link removed before test.sh (and gone when test.sh started); `verified`, or
+    `unverifiable` for rule S alone where the agent left a process running."""
     removed = _removed(trial)
     for path in paths:
         assert path in removed and removed[path].get("removed") is True, _why(trial)
@@ -435,7 +581,7 @@ def _expect_own_zero_link_gone(trial: Path, paths: list[str]) -> None:
     assert _reward(trial) == 0.0 and not _result(trial).get("verifier_error"), _why(
         trial
     )
-    assert _provenance(trial).get("verdict") == "verified", _why(trial)
+    assert _verified_or_s(_provenance(trial)), _why(trial)
 
 
 def _expect_own_zero_or_q6(trial: Path, paths: list[str]) -> None:
@@ -582,6 +728,7 @@ def bfx_off(monkeypatch):
     monkeypatch.setenv("BENCHFLOW_BFX_DELIVERY", "off")
 
 
+@pytest.mark.flood
 @pytest.mark.parametrize("image", ["P", "U"])
 async def test_l2_a_flood_hides_no_link_on_any_mount(tmp_path, image):
     """L2 (F14, F15). The agent fills /app with 4.1M names, then leaves a link to the reward on each of the 6
@@ -606,6 +753,7 @@ async def test_l2_a_flood_hides_no_link_on_any_mount(tmp_path, image):
     _expect_own_zero_or_q6(trial, links)
 
 
+@pytest.mark.flood
 async def test_l2_fat_link_targets_hide_no_link(tmp_path):
     """L2 (F26 with A8). 600k links with 4000-byte targets (about 2.4 GB of target text), then a link to the reward
     in /app; test.sh writes 1 through it. Never 1.0: the link removed and 0.0 `verified`, or the Q6 outcome.
@@ -629,7 +777,9 @@ async def test_l2_fat_link_targets_hide_no_link(tmp_path):
 
 async def test_l2_with_bfx_off_the_trial_is_refused_before_the_turn(tmp_path, bfx_off):
     """L2, bfx off (Q4). Where bfx can't run, the trial is refused before the agent's turn: no reward, the payload
-    never ran. It's never a decision taken from the image's binaries.
+    never ran. It's never a decision taken from the image's binaries. The run grants the task's metadata opt-out, so
+    main waits for its bind proof alone and the trial reaches the integrity checks (a held trial is refused by the
+    hold first: the q4r rows).
 
     Mutants: the walk falls back to the image's `find` (today's fallback); the refusal moved after the turn."""
     assert BFX_OFF_OUTCOME == "refused_before_turn"
@@ -640,8 +790,15 @@ async def test_l2_with_bfx_off_the_trial_is_refused_before_the_turn(tmp_path, bf
         image=IMAGE_P,
         test_sh=_every_write_test_sh(links),
         payload=links_payload,
+        allow_cloud_metadata=True,
     )
-    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    jobs = await _run(
+        [task],
+        tmp_path / "jobs",
+        agent=AGENT_PROBE,
+        user="agent",
+        allow_cloud_metadata=True,
+    )
     _expect_refused_before_turn(_trials(jobs)[task.name])
 
 
@@ -684,8 +841,10 @@ async def test_l3_a_link_re_made_during_grading_gives_the_q1_outcome(tmp_path):
     # The re-made link is caught by the confirming look after the removal (F35: "could not be removed") or by the
     # walk after grading (Q1: "appeared during grading"), as the writer's timing falls; either way the 0, counted.
     _expect_q6(trial, Q1_AFTER_GRADING_NONROOT, jobs=jobs)
-    why = _why(trial)
-    assert APPEARED_DURING_GRADING in why or "could not be removed" in why, why
+    said = json.dumps(_result(trial)) + json.dumps(_provenance(trial))
+    assert APPEARED_DURING_GRADING in said or "could not be removed" in said, _why(
+        trial
+    )
 
 
 async def test_r_a_link_re_made_before_test_sh_starts_is_caught(tmp_path):
@@ -718,12 +877,30 @@ async def test_r_a_link_re_made_before_test_sh_starts_is_caught(tmp_path):
 
 @pytest.fixture
 def small_scan_cap(monkeypatch):
-    """Today's walk falls back to the image's ``find`` past 4M names; a cap of 1000 sends a 2000-name flood down
-    the same path in seconds. ``raising=False``: the cap goes with the uncapped bfx walk, and the row must hold
-    then too."""
+    """A cap of 1000 names stands in for a flood past the walk's caps, in seconds: every walk after the record
+    from before the turn is capped, so it fails whole, as a 4M-name flood's does. The record before the turn keeps
+    the real cap: the image itself is over 1000 names, and a record that hit a cap is refused before the turn
+    , which is not what these rows test."""
     from benchflow.sandbox import _verifier_links
 
-    monkeypatch.setattr(_verifier_links, "SCAN_MAX_ENTRIES", 1000, raising=False)
+    real = _verifier_links._bfx_scan
+
+    async def capped(env, roots, timeout_sec):
+        if getattr(env, _verifier_links.INVENTORY, None) is None:
+            return await real(env, roots, timeout_sec)
+        return await env.bfx_call(
+            "scan",
+            {
+                "walks": [{"root": r, "depth": 4096} for r in roots],
+                "mounts": False,
+                "acl": False,
+                "max_bytes": 512 << 20,
+                "max_entries": 1000,
+            },
+            timeout_sec=timeout_sec,
+        )
+
+    monkeypatch.setattr(_verifier_links, "_bfx_scan", capped)
 
 
 _SMALL_FLOOD = (
@@ -736,10 +913,11 @@ _NOOP = "#!/bin/sh\nexit 0\n"
 
 async def test_k_names_made_and_removed_during_the_walk(tmp_path):
     """K (F26, test shape 4). A process the agent leaves running makes and removes names in /app throughout
-    grading, so names vanish mid-walk; the agent's link to the reward is in /app. A vanished name isn't an error:
-    the link is removed and test.sh's 0.0 `verified`, or the Q6 outcome; never 1.0.
+    grading, so names vanish mid-walk; the agent's link to the reward is in /app. After the turn a vanished name
+    makes the walk incomplete (REVIEW-FINAL F2): the Q6 outcome, or, where no name vanished during a walk, the link
+    removed and test.sh's 0.0 `verified`; never 1.0.
 
-    Mutant: a vanished name counted as an incomplete walk."""
+    Mutant: a vanished name tolerated with the link it hid (1.0)."""
     churn = (
         "mkdir -p /app/churn\ncat > /tmp/churn.sh <<'CHURN'\ni=0\nwhile :; do i=$((i+1)); : > /app/churn/$i; "
         "rm -f /app/churn/$((i-200)); done\nCHURN\n"
@@ -791,9 +969,7 @@ async def test_k_a_link_with_an_odd_name_is_removed(tmp_path, image, odd):
     if _category(trial) == PROVENANCE_INCOMPLETE:
         _expect_q6(trial, jobs=jobs)
     else:
-        assert (
-            _reward(trial) == 0.0 and _provenance(trial).get("verdict") == "verified"
-        ), _why(trial)
+        assert _reward(trial) == 0.0 and _verified_or_s(_provenance(trial)), _why(trial)
 
 
 _DEEP = "d" * 20
@@ -832,11 +1008,10 @@ async def test_k_a_link_past_path_max_is_removed(tmp_path, image):
     if _category(trial) == PROVENANCE_INCOMPLETE:
         _expect_q6(trial, jobs=jobs)
     else:
-        assert (
-            _reward(trial) == 0.0 and _provenance(trial).get("verdict") == "verified"
-        ), _why(trial)
+        assert _reward(trial) == 0.0 and _verified_or_s(_provenance(trial)), _why(trial)
 
 
+@pytest.mark.flood
 async def test_k_four_million_hardlinked_names_hide_no_link(tmp_path):
     """K (F26, test shape 4). Over 4M names made as hardlinks (100 files × 41,000 links each: no new inodes,
     under ext4's 65,000-link limit), then the agent's link to the reward in /app. Removed and 0.0 `verified`, or
@@ -862,6 +1037,7 @@ async def test_k_four_million_hardlinked_names_hide_no_link(tmp_path):
     _expect_own_zero_or_q6(trial, ["/app/bfm/x_k"])
 
 
+@pytest.mark.flood
 async def test_k_walk_tools_planted_on_roots_path_by_the_agent_user(
     tmp_path, small_scan_cap
 ):
@@ -890,6 +1066,7 @@ async def test_k_walk_tools_planted_on_roots_path_by_the_agent_user(
     _expect_own_zero_or_q6(trial, ["/app/bfm/x_k"])
 
 
+@pytest.mark.flood
 async def test_k_a_root_agent_that_replaces_find_is_never_verified(
     tmp_path, small_scan_cap
 ):
@@ -940,11 +1117,12 @@ async def test_q4d_a_bfx_the_agent_planted_is_never_used(tmp_path, same_uid):
     binary (delivered into a root-only 0700 folder after the turn and hash-checked before each call) or doesn't
     complete: removed and 0.0 `verified`, or the Q6 outcome; never 1.0.
 
-    ``host-uid``: the image's ``agent`` has the uid BenchFlow runs as on the host. Today the delivered /.bfx is
-    owned by that uid (seen as ``dr-xr-xr-x 1001 1002`` in a trial on a host whose uid is 1001), so this agent owns
-    BenchFlow's walker.
+    ``host-uid``: the image's ``agent`` has the uid BenchFlow runs as on the host. The delivered /.bfx was owned by
+    that uid (seen as ``dr-xr-xr-x 1001 1002`` in a trial on a host whose uid is 1001), so this agent owned
+    BenchFlow's walker. Since #1247 such a trial is refused at setup (an image's own account with the host's uid on
+    a bind-mounted sandbox), before the agent's turn.
 
-    Mutants: no hash check before a call; the delivery folder not root's 0700."""
+    Mutants: no hash check before a call; the delivery folder not root's 0700; (host-uid) no refusal."""
     plant = (
         f"printf '{_NOOP}' > /tmp/fakebfx && chmod 755 /tmp/fakebfx\nls -la /.bfx 2>&1\n"
         + "".join(
@@ -965,6 +1143,11 @@ async def test_q4d_a_bfx_the_agent_planted_is_never_used(tmp_path, same_uid):
     )
     jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
     trial = _trials(jobs)[task.name]
+    if same_uid and os.getuid() != 0:
+        assert _reward(trial) is None, _why(trial)
+        assert _category(trial) == INTEGRITY_UNAVAILABLE, _why(trial)
+        assert "PAYLOAD-DONE" not in _payload_log(trial), "the agent's turn ran"
+        return
     _precondition(trial, "x_k -> ")
     _expect_own_zero_or_q6(trial, ["/app/bfm/x_k"])
 
@@ -1008,8 +1191,9 @@ async def test_rb2_a_verifier_user_of_its_own_gets_a_folder_the_agent_cannot_wri
 ):
     """RB2 (read-back #2). The task's verifier runs as its own non-root user (``grader``, uid 2000). The agent
     leaves a writer that keeps putting 1 in the reward. For grading the output folder is the verifier user's,
-    0755, and the agent can't write it: test.sh's own 0.0, `verified`. Today the folder stays open ("the verifier
-    runs as uid 2000, not root") and the writer's 1 is scored.
+    0755, and the agent can't write it: test.sh's own 0.0, `verified` (`unverifiable` under rule S, C3: the writer
+    is still running when test.sh starts). Today the folder stays open ("the verifier runs as uid 2000, not root")
+    and the writer's 1 is scored.
 
     Mutant: no close for a non-root verifier user."""
     test_sh = (
@@ -1029,7 +1213,7 @@ async def test_rb2_a_verifier_user_of_its_own_gets_a_folder_the_agent_cannot_wri
     _precondition(trial, "WRITER-STARTED")
     assert _seen(trial).startswith("755 grader"), _why(trial)
     assert _reward(trial) == 0.0, _why(trial)
-    assert _provenance(trial).get("verdict") == "verified", _why(trial)
+    assert _verified_or_s(_provenance(trial)), _why(trial)
 
 
 # == T: branch children (F39) =======================================================================================
@@ -1116,7 +1300,7 @@ async def test_t_a_link_the_parent_made_before_the_fork_is_caught_in_every_child
             assert seen.get("reward") == 0.0, why
         else:
             assert rows.get("/app/bfm/x_k", {}).get("removed") is True, why
-            assert seen.get("reward") == 0.0 and found.get("verdict") == "verified", why
+            assert seen.get("reward") == 0.0 and _verified_or_s(found), why
 
 
 # == C, V, S, W, F (FXSTRICT) =========================================================================================
@@ -1136,10 +1320,19 @@ _HELD_WRITER = (
     "setsid nohup sh /tmp/held.sh </dev/null >/dev/null 2>&1 &\nsleep 1\n"
     "echo HELD $(ls /logs/verifier/held | wc -l)\n"
 )
+#: The sandbox's memory events (cgroup v2), so a payload killed by the OOM killer says so.
+_MEMORY_EVENTS = (
+    "echo MEMORY-EVENTS $(tr '\\n' ' ' < /sys/fs/cgroup/memory.events 2>/dev/null)\n"
+)
+#: The flood rows' memory: 2.5M new inodes are kernel memory charged to the sandbox's cgroup (about 3 GB), over the
+# default 2 GB with the payload's own (: the listing was OOM-killed, CLOSEFLOOD 0).
+FLOOD_MEMORY_MB = 8192
 _CLOSE_FLOOD = (
-    "mkdir -p /logs/verifier/flood && cd /logs/verifier/flood && "
-    f"seq 1 {CLOSE_FLOOD_N} | xargs touch && cd / && echo CLOSEFLOOD $(ls /logs/verifier/flood | wc -l)\n"
-    "cat > /tmp/flood.sh <<'EOF'\ni=0\nwhile :; do i=$((i+1)); : > /logs/verifier/flood/w$i 2>/dev/null; done\nEOF\n"
+    _MEMORY_EVENTS + "mkdir -p /logs/verifier/flood && cd /logs/verifier/flood && "
+    f"seq 1 {CLOSE_FLOOD_N} | xargs touch && cd / && "
+    "echo CLOSEFLOOD $(find /logs/verifier/flood -mindepth 1 -maxdepth 1 | wc -l)\n"
+    + _MEMORY_EVENTS
+    + "cat > /tmp/flood.sh <<'EOF'\ni=0\nwhile :; do i=$((i+1)); : > /logs/verifier/flood/w$i 2>/dev/null; done\nEOF\n"
     "setsid nohup sh /tmp/flood.sh </dev/null >/dev/null 2>&1 &\n"
 )
 _ZERO = f"#!/bin/sh\necho 0 > {R}\n"
@@ -1171,16 +1364,20 @@ def _expect_own_zero_or_held(trial: Path, jobs: str | Path) -> None:
     assert _category(trial) == HELD_CATEGORY, _why(trial)
 
 
+@pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("image", ["A", "U"])
-async def test_c_a_writer_holding_the_folder_never_buys_a_rerun(tmp_path, image):
+async def test_c_a_writer_holding_the_folder_never_buys_a_rerun(
+    tmp_path, monkeypatch, image, route
+):
     """C1 (F4, F10). A leftover agent-user writer owns a subfolder of /logs/verifier and keeps writing in it while
     the close runs. The close wins (test.sh's 0.0) or the attempt ends held (`verifier_failure`, counted); never
     infra, never retried (retries on).
 
     Mutants: the held ending classified as infra; the sweep without chown/chmod."""
+    _route(monkeypatch, route)
     task = _task(
         tmp_path / "tasks",
-        f"c1-held-{image}".lower(),
+        f"c1-held-{image}-{route}".lower(),
         image=_IMAGES[image],
         test_sh=_ZERO,
         payload=_HELD_WRITER,
@@ -1194,10 +1391,11 @@ async def test_c_a_writer_holding_the_folder_never_buys_a_rerun(tmp_path, image)
 
 
 async def test_c_busybox_purges_every_name_the_agent_left(tmp_path):
-    """C2 (F4). On Alpine the close's purge runs with BusyBox: test.sh finds none of the names the agent left
-    (a planted reward, a subfolder, a link). Its own 0.0 is scored.
+    """C2 (F4). On Alpine (BusyBox), test.sh finds none of the names the agent tried to leave (a planted reward,
+    a subfolder, a link): since #1247 the folder is closed to the agent from sandbox setup, so each is refused at
+    the source. Its own 0.0 is scored.
 
-    Mutant: a purge that needs GNU find (never ran on Alpine)."""
+    Mutant: put back the setup's ``chmod 777``."""
     payload = (
         f"echo 1 > {R}\nmkdir -p /logs/verifier/sub && echo x > /logs/verifier/sub/x\n"
         "ln -s /etc/passwd /logs/verifier/l\n" + _listing("/logs/verifier")
@@ -1211,7 +1409,7 @@ async def test_c_busybox_purges_every_name_the_agent_left(tmp_path):
     )
     jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
     trial = _trials(jobs)[task.name]
-    _precondition(trial, "reward.txt", " sub", "l -> /etc/passwd")
+    _precondition(trial, "Permission denied")
     assert _reward(trial) == 0.0, _why(trial)
     assert not {"reward.txt", "sub", "l"} & _entries(trial), (
         _entries(trial),
@@ -1219,26 +1417,44 @@ async def test_c_busybox_purges_every_name_the_agent_left(tmp_path):
     )
 
 
+@pytest.mark.flood
 @pytest.mark.parametrize("image", ["A", "U"])
 async def test_c_a_flood_past_the_close_budget_never_buys_a_rerun(tmp_path, image):
-    """C3 (F29). The agent floods a subfolder of /logs/verifier it owns past the close's 60 s exec budget and leaves
-    a writer in it. The attempt ends held (`verifier_failure`, counted) or the close wins; never infra, never
+    """C3 (F29). The agent tries to flood a subfolder of /logs/verifier past the close's 60 s exec budget and leave a
+    writer in it. Since #1247 the folder is closed to it from sandbox setup, so the flood is refused at the source;
+    the attempt ends with test.sh's own 0 (or held, as the row allowed when the flood got in): never infra, never
     retried.
 
-    Mutant: the close's budget overrun classified as infra (retried)."""
+    Mutant: the close's budget overrun classified as infra (retried).
+
+    it ended held after 2 attempts once in 5 valid runs, and its jobs folder was gone, so attempt 1's
+    ending was unknown. The row now reads the run's own decisions, asserts attempt 1's ending itself, names every
+    attempt in its message, and keeps the jobs folder (``$BENCHFLOW_MATRIX_KEEP``). The payload counts the flood
+    with ``find`` (no sort) and has room: ``ls`` sorting 2.5M names under 2 GB was OOM-killed (CLOSEFLOOD 0)."""
     task = _task(
         tmp_path / "tasks",
         f"c3-flood-{image}".lower(),
         image=_IMAGES[image],
         test_sh=_ZERO,
         payload=_CLOSE_FLOOD,
+        memory_mb=FLOOD_MEMORY_MB,
     )
     jobs = await _run(
         [task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent", retries=2
     )
-    trial = _trials(jobs)[task.name]
-    _precondition(trial, f"CLOSEFLOOD {CLOSE_FLOOD_N}")
-    _expect_own_zero_or_held(trial, jobs)
+    _keep(jobs, f"c3-flood-{image}")
+    first = _attempt_folder(jobs, task.name, 1)
+    assert first is not None, (
+        f"no decision recorded for attempt 1: {_every_attempt(jobs, task.name)}"
+    )
+    # Since #1247 the folder is closed to the agent from sandbox setup: the flood is refused at its first name, and
+    # the close has nothing of the agent's to empty.
+    _precondition(first, "Permission denied")
+    assert _attempts(jobs, task.name) == 1, _every_attempt(jobs, task.name)
+    assert (
+        json.loads((first / "attempt-decision.json").read_text())["decision"] == "final"
+    ), _every_attempt(jobs, task.name)
+    _expect_own_zero_or_held(first, jobs)
 
 
 #: V: what the agent leaves in /logs/verifier itself, with test.sh's write that would show it kept.
@@ -1279,10 +1495,12 @@ _V_CELLS = {
 async def test_v_the_close_empties_what_the_agent_left_in_the_folder(
     tmp_path, cell, image
 ):
-    """V (F30). Whatever the agent left in /logs/verifier (a link, a hardlink, a FIFO, a subfolder, a planted
-    reward) is gone before test.sh: test.sh's own 0 is scored, once, and its write went nowhere the agent pointed.
+    """V (F30). Whatever the agent tries to leave in /logs/verifier (a link, a hardlink, a FIFO, a subfolder, a
+    planted reward) never gets there: since #1247 the folder is closed to it from sandbox setup, so every plant is
+    refused at the source, and test.sh's own 0 is scored, once. The close's sweep of other users' names stays as a
+    second line.
 
-    Mutant: the close without the foreign-entry sweep."""
+    Mutant: put back the setup's ``chmod 777`` (the plant then succeeds)."""
     payload, test_sh, needles = _V_CELLS[cell]
     task = _task(
         tmp_path / "tasks",
@@ -1295,7 +1513,9 @@ async def test_v_the_close_empties_what_the_agent_left_in_the_folder(
         [task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent", retries=2
     )
     trial = _trials(jobs)[task.name]
-    _precondition(trial, *needles)
+    # The plant is refused (#1247), and the folder's listing holds none of it.
+    _precondition(trial, "Permission denied")
+    del needles  # what the plant left when the folder was open (0.10.0)
     assert _attempts(jobs, task.name) == 1, _why(trial)
     assert _reward(trial) == 0.0, (_stdout(trial)[-500:], _why(trial))
     if cell == "link":
@@ -1334,12 +1554,25 @@ _KEPT_WRITERS = {
 }
 
 
+def _expect_unverifiable_for_s_alone(trial: Path) -> None:
+    """`unverifiable` for rule S's reason alone (C3): a process of the agent's, here the service the task keeps,
+    was alive when test.sh started; every other check ran and passed, and the reward test.sh wrote is kept."""
+    found = _provenance(trial)
+    assert found.get("verdict") == "unverifiable", _why(trial)
+    assert (found.get("alive_at_test") or {}).get("alive") is True, _why(trial)
+    reasons = found.get("reasons") or []
+    assert reasons and all(S_ALIVE in r for r in reasons), _why(trial)
+    assert _category(trial) != PROVENANCE_INCOMPLETE, _why(trial)
+
+
 @pytest.mark.parametrize("writer", sorted(_KEPT_WRITERS))
 async def test_s_kept_services_grade_with_the_folder_closed(tmp_path, writer):
     """S (F34). A kept service, alone or beside a leftover writer: the folder is closed for grading, so test.sh's 0
-    is scored, `verified`, with the outputs-closed check run and passed.
+    is scored, with the outputs-closed check run and passed. A kept service runs as the agent's account and is
+    alive when test.sh starts, so rule S (C3) marks the reward `unverifiable`, for that reason alone: the ruled
+    cost of `x-keep-services` in audit and off (strict refuses such a task, DF-4).
 
-    Mutant: no close when services are kept (the `before_test` path)."""
+    Mutants: no close when services are kept (the `before_test` path); rule S's question skipped (`verified`)."""
     task = _task(
         tmp_path / "tasks",
         f"s-{writer}",
@@ -1354,12 +1587,15 @@ async def test_s_kept_services_grade_with_the_folder_closed(tmp_path, writer):
     assert _reward(trial) == 0.0, _why(trial)
     closed = _check(trial, "outputs-closed") or {}
     assert closed.get("ran") is True and closed.get("passed") is True, _why(trial)
-    assert _provenance(trial).get("verdict") == "verified", _why(trial)
+    _expect_unverifiable_for_s_alone(trial)
 
 
 async def test_s_a_kept_service_still_serves_test_sh(tmp_path):
-    """S, honest control. The service the agent left keeps serving test.sh in audit: test.sh's own 1 is scored,
-    `verified`."""
+    """S, honest control. The service the agent left keeps serving test.sh in audit: test.sh's own 1 is scored.
+    The service is the agent's process, alive when test.sh starts, so rule S (C3) keeps the 1.0 and marks it
+    `unverifiable`, for that reason alone (strict refuses a task that keeps services, DF-4).
+
+    Mutant: rule S's question skipped (`verified`)."""
     test_sh = (
         "#!/bin/sh\n"
         "if python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:5000/\", timeout=5)'; "
@@ -1377,7 +1613,7 @@ async def test_s_a_kept_service_still_serves_test_sh(tmp_path):
     trial = _trials(jobs)[task.name]
     _precondition(trial, "SERVING")
     assert _reward(trial) == 1.0, _why(trial)
-    assert _provenance(trial).get("verdict") == "verified", _why(trial)
+    _expect_unverifiable_for_s_alone(trial)
 
 
 @pytest.mark.parametrize("user", ["agent", None], ids=["N", "R"])
@@ -1433,15 +1669,18 @@ async def test_w_a_root_writer_during_grading_is_unverifiable_with_its_process(
     assert _provenance(trial).get("processes"), _why(trial)
 
 
-@pytest.mark.parametrize("run", [1, 2, 3])
+@pytest.mark.parametrize(
+    ("run", "route"), [(1, "channel"), (2, "channel"), (3, "channel"), (1, "per-exec")]
+)
 async def test_w_a_root_writer_after_test_sh_exit_is_frozen_until_the_copy(
-    tmp_path, run
+    tmp_path, monkeypatch, run, route
 ):
     """W (§2.3 row 3, Q3 ruled faithful). A root process that writes the reward only once test.sh has exited (its
     last act is a marker) is frozen from test.sh's exit until the copy at exit: test.sh's 0 is scored, and the
     record holds the freeze (frozen and thawed times, the pids, ok). Three runs: the window is short.
 
     Mutant: no freeze (the writer wins the window before the copy)."""
+    _route(monkeypatch, route)
     payload = (
         "cat > /tmp/w.sh <<'EOF'\nwhile [ ! -e /tmp/bf-test-done ]; do sleep 0.001; done\n"
         "while :; do echo 1 > " + R + "; done\nEOF\n"
@@ -1449,7 +1688,7 @@ async def test_w_a_root_writer_after_test_sh_exit_is_frozen_until_the_copy(
     )
     task = _task(
         tmp_path / "tasks",
-        f"w-root-after-exit-{run}",
+        f"w-root-after-exit-{run}-{route}",
         image=IMAGE_P,
         test_sh=f"#!/bin/sh\necho 0 > {R}\ntouch /tmp/bf-test-done\n",
         payload=payload,
@@ -1699,26 +1938,42 @@ async def test_d_the_class_rule_by_agent_user(tmp_path, monkeypatch, how, who):
 # == Q4r: where bfx can't run, refused before the turn =============================================================
 
 
+@pytest.mark.parametrize("held", [True, False], ids=["held", "bind-proof-only"])
 @pytest.mark.parametrize("who", list(_D_WHO))
-async def test_q4r_bfx_delivery_off_refuses_before_the_turn(tmp_path, monkeypatch, who):
+async def test_q4r_bfx_delivery_off_refuses_before_the_turn(
+    tmp_path, monkeypatch, who, held
+):
     """Q4r. ``BENCHFLOW_BFX_DELIVERY=off``: bfx can't run in the sandbox, so the trial is refused before the agent's
-    turn for every model agent, non-root or root: unscored, ``integrity checks unavailable before the turn: …``,
-    category ``integrity_unavailable``, the payload never ran, one attempt. The oracle is exempt (§6 backend table):
-    it runs and is scored, its walker record saying bfx could not run.
+    turn, one attempt. Held (main waits for its rules in BenchFlow's waiter), the hold refuses the start by name for
+    every agent, the oracle included. With the run's metadata opt-out granted (main waits for its bind proof alone),
+    the integrity checks refuse every model agent, non-root or root: unscored, ``integrity checks unavailable before
+    the turn: …``, category ``integrity_unavailable``, the payload never ran. The oracle is exempt there (§6 backend
+    table): it runs and is scored, its walker record saying bfx could not run.
 
     Mutants: the walk falls back to the image's `find`; the refusal moved after the turn (a 0 instead)."""
     agent, user = _D_WHO[who]
     monkeypatch.setenv("BENCHFLOW_BFX_DELIVERY", "off")
     task = _task(
         tmp_path / "tasks",
-        f"q4r-off-{who}".lower(),
+        f"q4r-off-{who}-{'held' if held else 'bind'}".lower(),
         image=IMAGE_P,
         test_sh=_forge_test_sh(["/app/bfm/x_d"], "/app/bfm/x_d"),
         payload=_D_PAYLOAD,
+        allow_cloud_metadata=not held,
     )
-    jobs = await _run([task], tmp_path / "jobs", agent=agent, user=user, retries=1)
+    jobs = await _run(
+        [task],
+        tmp_path / "jobs",
+        agent=agent,
+        user=user,
+        retries=1,
+        allow_cloud_metadata=not held,
+    )
     trial = _trials(jobs)[task.name]
     assert _attempts(jobs, task.name) == 1, _why(trial)
+    if held:
+        _expect_hold_refused(trial)
+        return
     if who == "O":
         # The oracle is exempt (§6 backend table): it runs and is scored; its walker record says bfx could not run.
         assert _category(trial) != INTEGRITY_UNAVAILABLE, _why(trial)
@@ -1729,9 +1984,13 @@ async def test_q4r_bfx_delivery_off_refuses_before_the_turn(tmp_path, monkeypatc
     _expect_refused_before_turn(trial)
 
 
-async def test_q4r_an_unsupported_arch_refuses_before_the_turn(tmp_path, monkeypatch):
+@pytest.mark.parametrize("held", [True, False], ids=["held", "bind-proof-only"])
+async def test_q4r_an_unsupported_arch_refuses_before_the_turn(
+    tmp_path, monkeypatch, held
+):
     """Q4r. A sandbox whose arch bfx isn't built for (here: reported as riscv64) is refused before the turn,
-    unscored, as BenchFlow's doing.
+    unscored, as BenchFlow's doing: by the hold when main waits for its rules, by the integrity checks when the run
+    grants the metadata opt-out (main waits for its bind proof alone).
 
     Mutant: the arch check skipped (the walk then runs the image's tools, or fails after the turn)."""
     from benchflow._bfx import delivery, locate
@@ -1745,13 +2004,24 @@ async def test_q4r_an_unsupported_arch_refuses_before_the_turn(tmp_path, monkeyp
     monkeypatch.setattr(delivery, "host_dir", riscv)
     task = _task(
         tmp_path / "tasks",
-        "q4r-arch",
+        f"q4r-arch-{'held' if held else 'bind'}",
         image=IMAGE_P,
         test_sh=_forge_test_sh(["/app/bfm/x_d"], "/app/bfm/x_d"),
         payload=_D_PAYLOAD,
+        allow_cloud_metadata=not held,
     )
-    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
-    _expect_refused_before_turn(_trials(jobs)[task.name])
+    jobs = await _run(
+        [task],
+        tmp_path / "jobs",
+        agent=AGENT_PROBE,
+        user="agent",
+        allow_cloud_metadata=not held,
+    )
+    trial = _trials(jobs)[task.name]
+    if held:
+        _expect_hold_refused(trial)
+    else:
+        _expect_refused_before_turn(trial)
 
 
 # == Q4d: the bfx that walks is the pinned one; the agent can't plant one =========================================
@@ -1827,15 +2097,6 @@ async def test_b_a_forged_exit_receipt_never_scores(tmp_path):
 # == H0600 / Q4r channels: what the rc4 dogfood found (11-17), with a run's exec channels ============================
 
 
-def _as_a_run(monkeypatch) -> None:
-    """The exec channels and concurrent steps a ``bench`` run has (tests/conftest.py's ``no_exec_channel`` turns
-    them off for this module): BenchFlow's root steps after test.sh's exit travel through those channels."""
-    from benchflow.sandbox.docker import DockerSandbox
-
-    monkeypatch.setattr(DockerSandbox, "exec_channel", True)
-    monkeypatch.setattr(DockerSandbox, "concurrent_steps", True)
-
-
 _REWARD_0600 = {
     "umask": 'umask 077; printf "1\\n" > /logs/verifier/reward.txt',
     "tempfile": (
@@ -1846,18 +2107,21 @@ _REWARD_0600 = {
 }
 
 
+@pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("how", list(_REWARD_0600))
-async def test_h0600_a_reward_test_sh_writes_0600_is_scored(tmp_path, monkeypatch, how):
+async def test_h0600_a_reward_test_sh_writes_0600_is_scored(
+    tmp_path, monkeypatch, how, route
+):
     """An honest control (the rc4 dogfood, 11-17): a test.sh that writes its reward through ``mkstemp`` and a rename
     (a shared ``reward.py``), or under ``umask 077``, leaves root's 0600 file on the mounted
     outputs. The oracle's trial is scored 1.0 from the at-exit copy, as on main; it was unscored ("PermissionError"),
     because the copy read the file as the host user before anything let it.
 
     Mutant: the read for the host before the copy removed."""
-    _as_a_run(monkeypatch)
+    _route(monkeypatch, route)
     task = _task(
         tmp_path / "tasks",
-        f"h0600-{how}",
+        f"h0600-{how}-{route}",
         image=IMAGE_P,
         test_sh=f"#!/bin/sh\nmkdir -p /logs/verifier\n{_REWARD_0600[how]}\n",
     )
@@ -1867,17 +2131,19 @@ async def test_h0600_a_reward_test_sh_writes_0600_is_scored(tmp_path, monkeypatc
     assert (trial / "verifier-at-exit" / "reward.txt").is_file(), _why(trial)
 
 
+@pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("reward", ["plain", "umask"])
 async def test_q4r_with_bfx_off_the_kit_channels_carry_the_thaw(
-    tmp_path, monkeypatch, reward
+    tmp_path, monkeypatch, reward, route
 ):
     """Q4r[O] as a run has it (the rc4 dogfood, 11-17): ``BENCHFLOW_BFX_DELIVERY=off``, so BenchFlow's root steps
     go through the kit's exec channels (its Python helper, or pre-started execs), and the stop after test.sh's exit
     must leave them running. It stopped them: the thaw and every later root step hung, and the oracle's trial ended
-    unscored after about five minutes. The oracle runs, is scored 1.0, and is thawed.
+    unscored after about five minutes. The oracle runs, is scored 1.0, and is thawed. The run grants the task's
+    metadata opt-out, so main waits for its bind proof alone (without bfx a held trial is refused at its start).
 
     Mutant: the freeze's exemption for the kit channels removed."""
-    _as_a_run(monkeypatch)
+    _route(monkeypatch, route)
     monkeypatch.setenv("BENCHFLOW_BFX_DELIVERY", "off")
     write = (
         'printf "1\\n" > /logs/verifier/reward.txt'
@@ -1886,11 +2152,18 @@ async def test_q4r_with_bfx_off_the_kit_channels_carry_the_thaw(
     )
     task = _task(
         tmp_path / "tasks",
-        f"q4r-kit-{reward}",
+        f"q4r-kit-{reward}-{route}",
         image=IMAGE_P,
         test_sh=f"#!/bin/sh\nmkdir -p /logs/verifier\n{write}\n",
+        allow_cloud_metadata=True,
     )
-    jobs = await _run([task], tmp_path / "jobs", agent="oracle", user="agent")
+    jobs = await _run(
+        [task],
+        tmp_path / "jobs",
+        agent="oracle",
+        user="agent",
+        allow_cloud_metadata=True,
+    )
     trial = _trials(jobs)[task.name]
     assert _reward(trial) == 1.0, _why(trial)
     assert not _result(trial).get("verifier_error"), _why(trial)
@@ -1937,3 +2210,1240 @@ async def test_j_an_honest_llm_judge_trial_is_scored(tmp_path, monkeypatch, who)
     trial = _trials(jobs)[task.name]
     assert _result(trial).get("rewards") == {"reward": 1.0}, _why(trial)
     assert _category(trial) != "provenance_incomplete", _why(trial)
+
+
+# == 0.10.0-final, B1 rows (map-H1; map-H2 §1.2; DESIGN.md §2.1-2.8; rulings R-810/811/812/816 and R1: yes) =======
+
+#: test.sh records whether the image's own /dev/stdin is still a link, then writes 1.
+_STDIN_SH = (
+    "#!/bin/sh\n[ -L /dev/stdin ] && echo STDIN-LINK > /logs/verifier/stdin.txt || echo STDIN-GONE > "
+    f"/logs/verifier/stdin.txt\necho 1 > {R}\n"
+)
+
+
+def _stdin(trial: Path) -> str:
+    for name in ("verifier-at-exit", "verifier"):
+        path = Path(trial) / name / "stdin.txt"
+        if path.is_file():
+            return path.read_text(errors="replace").strip()
+    return ""
+
+
+def _failing_walk_before_the_turn(
+    monkeypatch, *, times: int | None, why: str
+) -> list[str]:
+    """The walk before the turn (no record on the sandbox yet) returns incomplete with *why*, *times* times
+    (None: always); later walks are real."""
+    from benchflow.sandbox import _verifier_links
+
+    real = _verifier_links.walk
+    made: list[str] = []
+
+    async def failing(env, *, roots, timeout_sec):
+        if getattr(env, _verifier_links.INVENTORY, None) is None and (
+            times is None or len(made) < times
+        ):
+            made.append("failed")
+            return _verifier_links.Walked("bfx", complete=False, why=why)
+        made.append("real")
+        return await real(env, roots=roots, timeout_sec=timeout_sec)
+
+    monkeypatch.setattr(_verifier_links, "walk", failing)
+    return made
+
+
+_T809 = {
+    # cell: (agent, user, times the walk fails, why)
+    "N": (
+        AGENT_PROBE,
+        "agent",
+        None,
+        "bfx scan failed: simulated: the walk before the turn timed out",
+    ),
+    "R": (
+        AGENT_PROBE,
+        None,
+        None,
+        "bfx scan failed: simulated: the walk before the turn timed out",
+    ),
+    "O": (
+        "oracle",
+        "agent",
+        None,
+        "bfx scan failed: simulated: the walk before the turn timed out",
+    ),
+    "once": (
+        AGENT_PROBE,
+        "agent",
+        1,
+        "bfx scan failed: simulated: the walk before the turn timed out",
+    ),
+    "bfx-unavailable-N": (
+        AGENT_PROBE,
+        "agent",
+        None,
+        "bfx cannot run in this sandbox: simulated: the first call failed",
+    ),
+}
+
+
+@pytest.mark.parametrize("cell", list(_T809))
+async def test_t_a_failed_walk_before_the_turn_refuses_the_trial(
+    tmp_path, monkeypatch, cell
+):
+    """809-M1 (/ probe P4, Z11). The walk before the turn fails (a timeout on a loaded host,
+    or bfx that can't run after all): its record holds no link, and every image link (/dev/stdin, /dev/fd,
+    /etc/mtab) would read as the agent's. A model agent's trial is refused before its turn, unscored, as
+    BenchFlow's doing (Q4); the oracle runs, scored, with nothing removed; a walk that fails once is tried again
+    and the trial runs as usual. Today: the image's /dev/stdin removed before test.sh, blamed on the agent, and
+    `verified` 1.0.
+
+    Mutants: the record's ``complete`` not read (O: STDIN-GONE); the refusal removed (N, R: a turn)."""
+    agent, user, times, why = _T809[cell]
+    _failing_walk_before_the_turn(monkeypatch, times=times, why=why)
+    task = _task(
+        tmp_path / "tasks",
+        f"t809-{cell}".lower(),
+        image=IMAGE_P,
+        test_sh=_STDIN_SH,
+        payload="echo hello > /app/answer.txt\n",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=agent, user=user)
+    trial = _trials(jobs)[task.name]
+    if cell in ("N", "R", "bfx-unavailable-N"):
+        _expect_refused_before_turn(trial)
+        said = str(_result(trial).get("error") or "")
+        assert why in said, _why(trial)
+        return
+    assert _reward(trial) == 1.0, _why(trial)
+    assert _stdin(trial) == "STDIN-LINK", (_stdin(trial), _why(trial))
+    assert not _removed(trial), _why(trial)
+    if cell == "once":
+        assert _provenance(trial).get("verdict") == "verified", _why(trial)
+
+
+# -- the read grant never reaches a file outside the output folder ----------------------------------------
+
+_GRADER_IMAGE = (
+    IMAGE_P
+    + "RUN useradd -m -u 2000 -s /bin/sh grader && echo TOPSECRET > /opt/secret && chmod 600 /opt/secret\n"
+)
+#: The agent user's process: once the host has looked at the outputs (the row's hook says "go" through the
+#: agent's own log folder), it swaps the verifier's 0600 file in the subfolder test.sh left open for a link to a
+#: root-only file, then waits for that file to become readable.
+_SWAP = (
+    "cat > /tmp/swap.sh <<'EOF'\n"
+    "while [ ! -e /logs/agent/go ]; do sleep 0.01; done\n"
+    "ln -s /opt/secret /logs/verifier/sub/x.new && mv -f /logs/verifier/sub/x.new /logs/verifier/sub/x "
+    "&& echo swapped > /logs/agent/swapped\n"
+    "i=0; while [ $i -lt 3000 ]; do i=$((i+1)); "
+    "if cat /opt/secret > /logs/agent/leak.txt 2>/dev/null; then echo LEAKED >> /logs/agent/leak.txt; exit 0; fi; "
+    "sleep 0.01; done\nEOF\n"
+    "setsid nohup sh /tmp/swap.sh </dev/null >/dev/null 2>&1 &\nsleep 1\necho SWAP-WAITING\n"
+)
+#: test.sh as the verifier's own user: a subfolder anyone can write, with a 0600 file in it, then its reward.
+_SUB_0600_SH = (
+    "#!/bin/sh\nmkdir -p /logs/verifier/sub && chmod 777 /logs/verifier/sub\n"
+    "(umask 077; echo private > /logs/verifier/sub/x)\n"
+    f"echo 0 > {R}\n"
+)
+
+
+def _go_after_the_host_looks(monkeypatch) -> list[str]:
+    """Wrap the host's look at the outputs (``verifier_outputs.unreadable`` / ``unreadable_top``): after it, say
+    "go" to the agent's process through /logs/agent and wait (bounded) until it swapped."""
+    import time
+
+    from benchflow.task import verifier_outputs
+
+    said: list[str] = []
+    for name in ("unreadable", "unreadable_top"):
+        real = getattr(verifier_outputs, name, None)
+        if real is None:
+            continue
+
+        def hooked(rollout_dir, *args, _real=real, **kwargs):
+            found = _real(rollout_dir, *args, **kwargs)
+            agent = Path(rollout_dir) / "agent"
+            with contextlib.suppress(OSError):
+                (agent / "go").write_text("go\n")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not (agent / "swapped").exists():
+                time.sleep(0.02)
+            said.append("swapped" if (agent / "swapped").exists() else "no-swap")
+            return found
+
+        monkeypatch.setattr(verifier_outputs, name, hooked)
+    return said
+
+
+async def test_h0600_a_swap_never_opens_a_root_file(tmp_path, monkeypatch):
+    """810-M1 (built deterministically). The verifier runs as its own non-root user, so no
+    freeze holds the sandbox still; its test.sh leaves a subfolder anyone can write with a 0600 file in it. Between
+    the host's look and root's grant, the agent's live process swaps that file for a link to the image's root-only
+    /opt/secret. Root's grant must never reach /opt/secret: today its ``chmod`` follows the link, and the agent's
+    user reads the secret.
+
+    Mutants: the recursive listing put back; bfx's chmod replaced by the shell's."""
+    hook = _go_after_the_host_looks(monkeypatch)
+    task = _task(
+        tmp_path / "tasks",
+        "h0600-swap",
+        image=_GRADER_IMAGE,
+        test_sh=_SUB_0600_SH,
+        payload=_SWAP,
+        verifier_user="grader",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "SWAP-WAITING")
+    assert "swapped" in hook, (hook, _why(trial))
+    leak = Path(trial) / "agent" / "leak.txt"
+    assert not (leak.is_file() and "LEAKED" in leak.read_text(errors="replace")), _why(
+        trial
+    )
+    assert _reward(trial) == 0.0, _why(trial)
+
+
+async def test_h0600_a_reward_written_0600_with_no_freeze_is_scored(tmp_path):
+    """810-M2 (: honest control). The verifier runs as its own non-root user (no freeze holds the
+    sandbox still) and writes its reward 0600 under ``umask 077``; a non-root model agent's processes live. The
+    reward names are granted on the structural check alone, so the reward is scored 1.0.
+
+    Mutant: the stillness gate put on the reward names (the reward lost, as in dogfood finding 6)."""
+    task = _task(
+        tmp_path / "tasks",
+        "h0600-no-freeze",
+        image=_GRADER_IMAGE,
+        test_sh="#!/bin/sh\n(umask 077; echo 1 > /logs/verifier/reward.txt)\n",
+        payload="echo hello > /app/answer.txt\n",
+        verifier_user="grader",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    assert _reward(trial) == 1.0, _why(trial)
+
+
+# -- Q1's honest cost --------------------------------------------------------------------------------------
+
+
+async def test_q1_a_link_test_sh_makes_in_root_s_own_folders_is_not_the_agent_s(
+    tmp_path,
+):
+    """811-M1 (TAL jq-windows, the named honest cost). test.sh's own wine run makes
+    /root/.wine/dosdevices/z: -> / during grading. Root made it in folders a non-root agent can't write, but
+    ownership after grading can't tell it from the agent's link test.sh locked down (REVIEW-FINAL F1), so it
+    counts: the Q6 0, ``provenance_incomplete`` ("appeared during grading"), the link in the record.
+
+    Mutant: a root-made exemption (1.0)."""
+    task = _task(
+        tmp_path / "tasks",
+        "q1-wine",
+        image=IMAGE_P,
+        test_sh=f"#!/bin/sh\nmkdir -p /root/.wine/dosdevices && ln -s / /root/.wine/dosdevices/z:\necho 1 > {R}\n",
+        payload="echo hello > /app/answer.txt\n",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _expect_q6(trial, reason=APPEARED_DURING_GRADING, jobs=jobs)
+    rows = _provenance(trial).get("links_after_grading") or []
+    assert any(r.get("path") == "/root/.wine/dosdevices/z:" for r in rows), _why(trial)
+
+
+#: The agent's live process waits for test.sh to start (it removes a marker), then makes its link.
+_AFTER_START = (
+    "cat > /tmp/late.sh <<'EOF'\nwhile [ -e /tmp/not-started ]; do sleep 0.005; done\n__ACT__\nEOF\n"
+    ": > /tmp/not-started && chmod 666 /tmp/not-started\n"
+    "setsid nohup sh /tmp/late.sh </dev/null >/dev/null 2>&1 &\nsleep 1\necho LATE-WAITING\n"
+)
+
+
+async def test_q1_a_link_the_agent_made_in_a_folder_test_sh_locks_down_is_counted(
+    tmp_path,
+):
+    """811-M2 (safety). The agent's live process makes /srv/a/x -> the reward once test.sh has started (after
+    the removal); test.sh writes its 0, then 1 through it, then locks /srv/a down (root's 0755). Every folder is
+    closed by then, but the link is the agent's: counted, the Q6 0.
+
+    Mutant: a link in closed folders not counted (1.0)."""
+    act = f"ln -s {R} /srv/a/x"
+    test_sh = (
+        "#!/bin/sh\nrm -f /tmp/not-started\nsleep 1\n"
+        f"echo 0 > {R}\necho 1 > /srv/a/x\nchmod 755 /srv/a\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        "q1-agent-locked",
+        image=IMAGE_P + "RUN mkdir -p /srv/a && chmod 777 /srv/a\n",
+        test_sh=test_sh,
+        payload=_AFTER_START.replace("__ACT__", act),
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LATE-WAITING")
+    assert _reward(trial) != 1.0, _why(trial)
+    _expect_q6(trial, reason=APPEARED_DURING_GRADING, jobs=jobs)
+
+
+async def test_q1_a_root_link_the_agent_moved_is_counted(tmp_path):
+    """811-M3 (safety). The image has root's link /opt/w/res -> /logs/verifier, in an /opt/w anyone may
+    write. Once test.sh has started, the agent's process renames the link itself to /opt/w/out (a rename keeps
+    the link root's; renaming a folder from the image's layer would copy it as the agent's instead); test.sh
+    writes its 0, then 1 to /opt/w/out/reward.txt, and locks /opt/w down. The link is root's and every folder
+    closed, but it is an image link moved into place: counted, the Q6 0.
+
+    Mutant: a root-owned link not counted (1.0)."""
+    test_sh = (
+        "#!/bin/sh\nrm -f /tmp/not-started\nsleep 1\n"
+        f"echo 0 > {R}\necho 1 > /opt/w/out/reward.txt\nchmod 755 /opt/w\n"
+        "ls -ln /opt/w >> /logs/verifier/seen.txt 2>&1\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        "q1-moved",
+        image=IMAGE_P
+        + "RUN mkdir -p /opt/w && chmod 777 /opt/w && ln -s /logs/verifier /opt/w/res\n",
+        test_sh=test_sh,
+        payload=_AFTER_START.replace(
+            "__ACT__", "mv /opt/w/res /opt/w/out && echo MOVED > /logs/agent/moved.txt"
+        ),
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LATE-WAITING")
+    moved = Path(trial) / "agent" / "moved.txt"
+    assert moved.is_file(), (
+        f"precondition: the agent's process renamed the link: {_why(trial)}"
+    )
+    rows = _provenance(trial).get("links_after_grading") or []
+    assert any(
+        " 0 " in line and "out -> /logs/verifier" in line
+        for line in _seen(trial).splitlines()
+    ), f"precondition: the moved link is root's: {_seen(trial)}"
+    assert _reward(trial) != 1.0, _why(trial)
+    _expect_q6(trial, reason=APPEARED_DURING_GRADING, jobs=jobs)
+    assert any(r.get("path") == "/opt/w/out" for r in rows), _why(trial)
+
+
+async def test_q1_a_root_link_under_sticky_tmp_stays_counted(tmp_path):
+    """811-M4 (boundary, named honest cost). test.sh makes root's /tmp/w/z: -> / in root's /tmp/w, under the
+    sticky, world-writable /tmp: the agent could have put things there, so the link counts (the Q6 0).
+
+    Mutant: a sticky folder taken as closed."""
+    task = _task(
+        tmp_path / "tasks",
+        "q1-sticky",
+        image=IMAGE_P,
+        test_sh=f"#!/bin/sh\nmkdir -p /tmp/w && ln -s / /tmp/w/z:\necho 1 > {R}\n",
+        payload="echo hello > /app/answer.txt\n",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _expect_q6(trial, reason=APPEARED_DURING_GRADING, jobs=jobs)
+
+
+# -- (a): R's own case, probe P5 -----------------------------------------------------------------------------
+
+_HIDE_PY = (
+    "cat > /tmp/hide.py <<'EOF'\nimport os\np = '/app/bfm/x_hide'\nr = '"
+    + R
+    + "'\nos.makedirs('/app/bfm', exist_ok=True)\nwhile True:\n"
+    "    if not os.path.islink(p):\n        try:\n            os.symlink(r, p)\n        except OSError:\n"
+    "            pass\n    try:\n        with open(r) as f:\n            if f.read().strip() == '1':\n"
+    "                os.unlink(p)\n                break\n    except OSError:\n        pass\nEOF\n"
+    "setsid nohup python3 /tmp/hide.py </dev/null >/dev/null 2>&1 &\nsleep 1\n"
+    + _listing("/app/bfm")
+)
+
+
+def _wait_for_the_put_back(monkeypatch) -> list[str]:
+    """Make P5's race deterministic. The walk and the removals run with the agent's processes stopped (the walk
+    pause, C2-1), so the link can only come back once they are continued; the confirming look runs after that
+    resume. Before the look, wait (bounded) until the agent's process has put each removed link back, so the
+    product's look runs on it."""
+    from benchflow.sandbox import _verifier_links
+
+    real = _verifier_links._confirm_removals
+    seen: list[str] = []
+
+    async def confirming(env, rows, timeout_sec):
+        for path in [r["path"] for r in rows if r.get("removed")]:
+            for _ in range(500):
+                answer = await env.bfx_call(
+                    "scan",
+                    {"paths": [path], "acl": False, "mounts": False},
+                    timeout_sec=30,
+                )
+                if any(
+                    e.get("path") == path and e.get("type") == "link"
+                    for e in answer.get("entries") or ()
+                ):
+                    seen.append("back")
+                    break
+                await __import__("asyncio").sleep(0.01)
+            else:
+                seen.append("never-back")
+        return await real(env, rows, timeout_sec)
+
+    monkeypatch.setattr(_verifier_links, "_confirm_removals", confirming)
+    return seen
+
+
+async def test_r_a_link_put_back_then_hidden_is_caught_by_the_confirming_look(
+    tmp_path, monkeypatch
+):
+    """813-M1 ((a), F35; F2b-R3REV probe P5). The agent's process puts its link back the moment it is
+    removed, and deletes it once test.sh has written 1 through it, so the walk after grading finds nothing. Only
+    the confirming look after the removal can catch it: the Q6 0, "could not be removed", and no row after grading.
+    The removal runs inside the walk pause and the look after the resume; the row's hook waits, after the resume,
+    until the link is back before that look, so the race is decided the same way every run.
+
+    Mutant: M4, the confirming look skipped (1.0 `verified`)."""
+    seen = _wait_for_the_put_back(monkeypatch)
+    task = _task(
+        tmp_path / "tasks",
+        "r-p5-hide",
+        image=IMAGE_P,
+        test_sh=f"#!/bin/sh\necho 0 > {R}\necho 1 > /app/bfm/x_hide\n",
+        payload=_HIDE_PY,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "x_hide -> ")
+    assert seen and seen[0] == "back", seen
+    assert not _provenance(trial).get("links_after_grading"), _why(trial)
+    _expect_q6(trial, reason="could not be removed", jobs=jobs)
+
+
+# -- (b): L2 under both scan caps -------------------------------------------------------------------------
+
+#: Names the walk completes on. The caps are SCAN_MAX_ENTRIES (4M) and the answer's 512 MiB (about 170 bytes a name),
+#: but the one that binds first is bfx's own memory: it builds the whole answer, about 3 KB a name, inside the
+#: sandbox's memory cgroup (B1 11-18: 2.8M names under 8 GB, bfx OOM-killed at 8.4 GB RSS, "expected one answer
+#: line, got 0"). 1.5M names with 16 GB leaves room for bfx (about 4.5 GB) and the inodes' kernel memory.
+_UNDER_CAP_N = 1_500_000
+_UNDER_CAP_MEMORY_MB = 16384
+_UNDER_CAP_FLOOD = (
+    f"mkdir -p /app/many && cd /app/many && seq 1 {_UNDER_CAP_N} | xargs touch && cd / && "
+    "echo FLOODED $(find /app/many -mindepth 1 -maxdepth 1 | wc -l)\n"
+)
+
+
+@pytest.mark.flood
+@pytest.mark.parametrize("image", ["P", "U"])
+async def test_l2_under_the_scan_caps_every_link_is_removed_through_its_own_mount(
+    tmp_path, image
+):
+    """813-M2 ((b), F15). L2's 4.1M-name flood is over the walk's caps, so no link was ever found and the row
+    saw only the Q6 0. Here the flood is under both caps: the walk completes, and the links on /dev/shm,
+    /logs/agent and /logs/artifacts are removed through their own mounts; test.sh's own 0.0, `verified`.
+
+    Mutant: M3, removal through / (EXDEV on the other mounts)."""
+    from benchflow.sandbox import _verifier_links
+
+    assert _UNDER_CAP_N < _verifier_links.SCAN_MAX_ENTRIES
+    assert _UNDER_CAP_N * 190 < 512 << 20
+    assert _UNDER_CAP_N * 3 * 1024 < (_UNDER_CAP_MEMORY_MB << 20) // 2
+    links_payload, links = _every_mount_direct()
+    task = _task(
+        tmp_path / "tasks",
+        f"l2-under-cap-{image}".lower(),
+        image=_IMAGES[image],
+        test_sh=_every_write_test_sh(links),
+        payload=_UNDER_CAP_FLOOD + links_payload,
+        verifier_timeout=900,
+        memory_mb=_UNDER_CAP_MEMORY_MB,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, f"FLOODED {_UNDER_CAP_N}", "x_flood -> ")
+    check = _check(trial, "links-before-test") or {}
+    assert check.get("ran") is True, (
+        f"the flood went over a scan cap (resize _UNDER_CAP_N): {_why(trial)}"
+    )
+    removed = _removed(trial)
+    for mount in ("/dev/shm", "/logs/agent", "/logs/artifacts"):
+        path = f"{mount}/bfm/x_flood"
+        assert removed.get(path, {}).get("removed") is True, (path, _why(trial))
+    _expect_own_zero_link_gone(trial, links)
+
+
+# -- RB2 by uid; a removal of a swapped name; a non-root process named like bfx -----------------------------
+
+
+async def test_rb2_a_verifier_user_with_the_agent_s_uid_under_another_name_is_refused(
+    tmp_path,
+):
+    """(RB2 compares names). The image's ``grader2`` has the agent user's uid under another name. The task's
+    verifier would run as the agent's own uid, so its output folder can't be kept from the agent's processes: the
+    trial is refused before the turn, unscored.
+
+    Mutant: users compared by name (the turn runs, and the agent's writer owns the folder)."""
+    image = (
+        IMAGE_P
+        + "RUN useradd -m -u 1500 -s /bin/sh agent && useradd -o -u 1500 -M -s /bin/sh grader2\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        "rb2-same-uid",
+        image=image,
+        test_sh=f"#!/bin/sh\necho 0 > {R}\nsleep 2\n",
+        payload=_WRITER,
+        verifier_user="grader2",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    assert _result(trial).get("rewards") is None, _why(trial)
+    assert "WRITER-STARTED" not in _payload_log(trial), _why(trial)
+    said = str(_result(trial).get("error") or "")
+    assert said.startswith(Q4_ERROR_HEAD), _why(trial)
+
+
+def _swap_before_the_removal(monkeypatch) -> list[str]:
+    """Between the walk and the removal, put a new link (a new inode) at the walked path, as a live process can."""
+    from benchflow.sandbox import _verifier_links
+    from benchflow.sandbox._exec_output import exec_raw
+
+    real = _verifier_links._remove
+    done: list[str] = []
+
+    async def swapping(env, path, *args, **kwargs):
+        await exec_raw(
+            env.exec,
+            f"ln -s {R} {shlex.quote(path)}.new && mv -f {shlex.quote(path)}.new {shlex.quote(path)}",
+            user="root",
+            timeout_sec=30,
+        )
+        done.append(path)
+        return await real(env, path, *args, **kwargs)
+
+    monkeypatch.setattr(_verifier_links, "_remove", swapping)
+    return done
+
+
+async def test_d_a_removal_refused_for_a_swapped_name_is_the_q6_outcome(
+    tmp_path, monkeypatch
+):
+    """(bfx ``remove`` with ``expect``). The name the walk saw is swapped for a new link before the removal:
+    bfx refuses (``changed``), the link is not removed, and a non-root agent's attempt is the Q6 0, "could not be
+    removed". Today the removal takes whatever entry is there.
+
+    Mutant: ``expect`` dropped (the swapped entry removed, `verified`)."""
+    done = _swap_before_the_removal(monkeypatch)
+    task = _task(
+        tmp_path / "tasks",
+        "d-removal-changed-n",
+        image=IMAGE_P,
+        test_sh=_forge_test_sh(["/app/bfm/x_d"], "/app/bfm/x_d"),
+        payload=_D_PAYLOAD,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "x_d -> ")
+    assert done, "precondition: the name was swapped before the removal"
+    _expect_q6(trial, reason="could not be removed", jobs=jobs)
+
+
+#: The agent user's process, named ``/.bfx/bfx serve`` (any user can set its own argv), its pid in /logs/agent.
+_FAKE_BFX = (
+    "mkdir -p /tmp/fk && printf 'echo $$ > /logs/agent/fake.pid\\nwhile :; do sleep 1; done\\n' > /tmp/fk/serve\n"
+    "cd /tmp/fk && setsid nohup python3 -c \"import os; os.execv('/bin/sh', ['/.bfx/bfx', 'serve'])\" "
+    "</dev/null >/dev/null 2>&1 &\nsleep 1\n"
+    "echo FAKE-BFX $(tr '\\000' ' ' < /proc/$(cat /logs/agent/fake.pid)/cmdline)\n"
+)
+
+
+async def test_freeze_stops_a_non_root_process_named_bfx(tmp_path):
+    """Z12 (the freeze's argv[0] skip). The agent user's process names itself
+    ``/.bfx/bfx serve``. The freeze after test.sh's exit stops it all the same (a channel is exempt only as root):
+    its pid is among the frozen.
+
+    Mutant: the uid check removed (the process runs through the freeze)."""
+    task = _task(
+        tmp_path / "tasks",
+        "z12-fake-bfx",
+        image=IMAGE_P,
+        test_sh=_ZERO,
+        payload=_FAKE_BFX,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "FAKE-BFX /.bfx/bfx serve")
+    pid = int((Path(trial) / "agent" / "fake.pid").read_text().strip())
+    freeze = _provenance(trial).get("freeze") or {}
+    assert pid in (freeze.get("pids") or []), (pid, freeze, _why(trial))
+
+
+# == REVIEW-FINAL (14:4xZ): the reviewer's probes as rows ==========================================================
+
+#: The agent's leftover process waits for test.sh, then makes its link in /app/out (the reviewer's probe).
+_LOCKDOWN_W = r"""
+import os, time
+while True:
+    found = False
+    for p in os.listdir("/proc"):
+        if p.isdigit():
+            try:
+                c = open("/proc/%s/cmdline" % p, "rb").read(4096)
+            except OSError:
+                continue
+            if b"test.sh" in c and b"w.py" not in c:
+                found = True
+                break
+    if found:
+        try:
+            os.symlink("/logs/verifier/reward.txt", "/app/out/grade.log")
+        except OSError:
+            pass
+        break
+    time.sleep(0.001)
+"""
+
+
+@pytest.mark.parametrize("rep", [1, 2])
+async def test_q1_a_link_test_sh_locks_down_to_root_still_counts(tmp_path, rep):
+    """REVIEW-FINAL F1 (blocker), the reviewer's probe. The agent's leftover process makes /app/out/grade.log -> the
+    reward once test.sh runs; test.sh writes its 0, then ``chown -R root:root /app && chmod -R go-w /app`` (which
+    lchowns the agent's link to root), then writes 1 to grade.log. The link is root's, in closed folders: the
+    candidate's exemption scored 1.0 `verified` (2/2). It counts: the Q6 0, "appeared during grading".
+
+    Mutant: the root-made exemption."""
+    payload = (
+        "mkdir -p /app/out\ncat > /tmp/w.py <<'PYEOF'\n" + _LOCKDOWN_W + "PYEOF\n"
+        "setsid nohup python3 /tmp/w.py </dev/null >/dev/null 2>&1 &\nsleep 1\necho LOCK-WAITING\n"
+    )
+    test_sh = (
+        "#!/bin/sh\n: > /logs/verifier/seen.txt\n"
+        f"echo 0 > {R}\nsleep 1\n"
+        "chown -R root:root /app && chmod -R go-w /app\n"
+        '[ -L /app/out/grade.log ] && echo "LINK at lockdown" >> /logs/verifier/seen.txt\n'
+        "echo 1 > /app/out/grade.log\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        f"q1-lockdown-{rep}",
+        image=IMAGE_P,
+        test_sh=test_sh,
+        payload=payload,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LOCK-WAITING")
+    assert "LINK at lockdown" in _seen(trial), (
+        f"precondition: the link was there for test.sh: {_why(trial)}"
+    )
+    assert _reward(trial) != 1.0, _why(trial)
+    _expect_q6(trial, reason=APPEARED_DURING_GRADING, jobs=jobs)
+
+
+_FLIP_LEVELS = 8
+_FLIP_PATH = "/app/bfm/" + "/".join(f"n{i}" for i in range(_FLIP_LEVELS))
+_FLIP_PY = r"""
+import os, sys
+base = "/app/bfm"
+names = ["n%d" % i for i in range(8)]
+k = int(sys.argv[1])
+parent = os.open(os.path.join(base, *names[:k]) if k else base, os.O_RDONLY | os.O_DIRECTORY)
+n = names[k]
+while True:
+    try:
+        os.rename(n, n + "_", src_dir_fd=parent, dst_dir_fd=parent)
+        os.rename(n + "_", n, src_dir_fd=parent, dst_dir_fd=parent)
+    except OSError:
+        pass
+"""
+
+
+async def test_k_a_link_on_a_path_a_live_process_keeps_renaming_is_never_missed(
+    tmp_path,
+):
+    """REVIEW-FINAL F2 (high), the reviewer's first probe. The agent leaves its link to the reward 8 folders deep
+    and a process per folder that renames it back and forth all through grading. A scan skips a name it can no
+    longer open without a word, so both walks missed a link that was there throughout (6/6) and read complete.
+    After the turn the walk names what vanished, and the check reads incomplete (the Q6 0 for this non-root agent),
+    or it finds the link; never a complete walk that missed it, never 1.0.
+
+    Mutant: the after-turn walk by ``scan``."""
+    payload = (
+        f"mkdir -p {_FLIP_PATH} && ln -s {R} {_FLIP_PATH}/x\n"
+        "cat > /tmp/flip.py <<'PYEOF'\n"
+        + _FLIP_PY
+        + "PYEOF\n"
+        + "".join(
+            f"setsid nohup python3 /tmp/flip.py {k} </dev/null >/dev/null 2>&1 &\n"
+            for k in range(_FLIP_LEVELS)
+        )
+        + "sleep 1\necho FLIPPING\nls -la /app/bfm\n"
+    )
+    test_sh = f"#!/bin/sh\n: > /logs/verifier/seen.txt\necho 0 > {R}\nsleep 0.3\necho 1 > {_FLIP_PATH}/x\n"
+    task = _task(
+        tmp_path / "tasks", "k-flip", image=IMAGE_P, test_sh=test_sh, payload=payload
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "FLIPPING")
+    found = _provenance(trial)
+    seen_link = any(
+        Path(r.get("path", "")).name == "x"
+        for r in found.get("links_removed_before_test") or ()
+    ) or any(
+        Path(r.get("path", "")).name == "x"
+        for r in found.get("links_after_grading") or ()
+    )
+    incomplete = any(
+        not c.get("ran")
+        for c in found.get("checks") or ()
+        if c.get("check", "").startswith("links-")
+    )
+    assert seen_link or incomplete, f"a complete walk missed the link: {_why(trial)}"
+    assert _reward(trial) != 1.0, _why(trial)
+
+
+#: An honest agent's leftover process that keeps making and removing names: a tight loop (the K churn row's), an
+#: atomic writer (a temporary file renamed over its target every 50 ms, as editors, pip and pytest's cache do), and a
+#: build that keeps making folders of 300 files and removing older ones whole (``rm -rf``, as a watch-mode build does).
+_HONEST_CHURN = {
+    "tight": "mkdir -p /app/churn\ncat > /tmp/churn.sh <<'CHURN'\ni=0\nwhile :; do i=$((i+1)); : > /app/churn/$i; "
+    "rm -f /app/churn/$((i-200)); done\nCHURN\n",
+    "atomic": "mkdir -p /tmp/w\ncat > /tmp/churn.sh <<'CHURN'\nwhile :; do echo x > /tmp/w/f.tmp && mv /tmp/w/f.tmp /tmp/w/f; "
+    "sleep 0.05; done\nCHURN\n",
+    "build": "mkdir -p /tmp/b\ncat > /tmp/churn.sh <<'CHURN'\ni=0\nwhile :; do i=$((i+1)); mkdir -p /tmp/b/d$i && "
+    "(cd /tmp/b/d$i && seq 1 300 | xargs touch); rm -rf /tmp/b/d$((i-3)); done\nCHURN\n",
+}
+
+
+@pytest.mark.parametrize("rep", [1, 2, 3])
+@pytest.mark.parametrize("churn", list(_HONEST_CHURN))
+async def test_k_an_honest_trial_whose_leftover_process_churns_is_the_named_cost(
+    tmp_path, churn, rep
+):
+    """REVIEW-FINAL F2, its honest cost. An honest non-root agent answers and leaves a process running that makes and
+    removes names; test.sh writes 1. Each walk after the turn runs with the agent's processes stopped (C2-1), so
+    no name vanishes while it reads, and the pause is in each check's record. Before the pause (C2, the vanished
+    rule with 3 walks) 1 of 9 such trials scored the Q6 0 (B1-STATUS.md). The process is still running when test.sh
+    starts, so rule S (C3) keeps the 1.0 and marks it `unverifiable`: the ruled honest cost, a label and not a
+    score. On e820f4ee these trials read `verified`.
+
+    Mutants: the walks not paused (a churn that lands in a walk's window gives the Q6 0); rule S's question
+    skipped (`verified`)."""
+    payload = (
+        _HONEST_CHURN[churn]
+        + "setsid nohup sh /tmp/churn.sh </dev/null >/dev/null 2>&1 &\nsleep 1\necho CHURNING\n"
+        + "echo hello > /app/answer.txt\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        f"k-honest-{churn}-{rep}",
+        image=IMAGE_P,
+        test_sh=f"#!/bin/sh\necho 1 > {R}\n",
+        payload=payload,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "CHURNING")
+    _expect_s_kept_unverifiable(trial)
+    found = _provenance(trial)
+    for name, pause in (found.get("pauses") or {}).items():
+        assert (
+            pause and pause.get("still") and pause.get("held") and pause.get("pids")
+        ), (name, _why(trial))
+    assert set(found.get("pauses") or {}) == {
+        "links-before-test",
+        "links-after-grading",
+    }, _why(trial)
+
+
+#: C2-1 (the review of C2): the agent's leftover process renames the folder that holds its link at random among 200
+#: names inside a folder of 20,000, so a walk's directory read can miss it with nothing vanished. It holds still
+#: while test.sh runs, and deletes the link once the reward reads 1.
+_ROTATE_PY = r"""
+import os, random, sys, time
+R = "/logs/verifier/reward.txt"
+fd = os.open("/app/big", os.O_RDONLY | os.O_DIRECTORY)
+names = ["n%03d" % i for i in range(200)]
+def test_sh_running():
+    me = os.getpid()
+    for p in os.listdir("/proc"):
+        if p.isdigit() and int(p) != me:
+            try:
+                with open("/proc/%s/cmdline" % p, "rb") as f:
+                    c = f.read(4096)
+                if b"test.sh" in c and b"rotate.py" not in c:
+                    return True
+            except OSError:
+                pass
+    return False
+cur = "n000"
+done = False
+last_check = 0.0
+hold = False
+while True:
+    now = time.monotonic()
+    if now - last_check > 0.002:
+        last_check = now
+        hold = test_sh_running()
+        if not done:
+            try:
+                with open(R) as f:
+                    if f.read().strip() == "1":
+                        done = True
+            except OSError:
+                pass
+    if hold or done:
+        if cur != "n000":
+            try:
+                os.rename(cur, "n000", src_dir_fd=fd, dst_dir_fd=fd)
+                cur = "n000"
+            except OSError:
+                pass
+        if done:
+            try:
+                os.unlink("/app/big/n000/x")
+            except OSError:
+                pass
+            time.sleep(0.05)
+        else:
+            time.sleep(0.0005)
+        continue
+    nxt = random.choice(names)
+    if nxt != cur:
+        try:
+            os.rename(cur, nxt, src_dir_fd=fd, dst_dir_fd=fd)
+            cur = nxt
+        except OSError:
+            pass
+"""
+
+
+@pytest.mark.parametrize("rep", [1, 2, 3])
+async def test_k_a_link_whose_folder_a_live_process_renames_in_a_big_folder_is_never_missed(
+    tmp_path, rep
+):
+    """C2-1 (BLOCKER on C2), the reviewer's probe. The agent's link to the reward is in /app/big/n000, one of 200
+    names its leftover process keeps renaming inside a folder of 20,000 files. A rename between two ``getdents``
+    calls moves the entry to a part of the folder already read: never listed, nothing vanished, a complete walk
+    that missed the link (C2: 5 of 6 trials 1.0 `verified`). With the agent's processes stopped for each walk after
+    the turn, the walk sees the link, in whichever folder it was then, and removes it before test.sh: never 1.0.
+
+    Mutant: the walks not paused."""
+    payload = (
+        f"mkdir -p /app/big/n000 && ln -s {R} /app/big/n000/x\n"
+        "cd /app/big && seq 1 20000 | sed s/^/f/ | xargs touch && cd /\n"
+        "cat > /tmp/rotate.py <<'PYEOF'\n" + _ROTATE_PY + "PYEOF\n"
+        "setsid nohup python3 /tmp/rotate.py </dev/null >/dev/null 2>&1 &\nsleep 1\n"
+        "echo ROTATING $(ls /app/big | wc -l)\n"
+    )
+    test_sh = (
+        "#!/bin/sh\n: > /logs/verifier/seen.txt\nsleep 0.3\n"
+        '[ -L /app/big/n000/x ] && echo "LINK at start" >> /logs/verifier/seen.txt\n'
+        f"echo 0 > {R}\necho 1 > /app/big/n000/x\n"
+    )
+    task = _task(
+        tmp_path / "tasks",
+        f"k-rotate-{rep}",
+        image=IMAGE_P,
+        test_sh=test_sh,
+        payload=payload,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "ROTATING")
+    assert _reward(trial) != 1.0, _why(trial)
+    found = _provenance(trial)
+    # The link is wherever its folder was when the walk ran: /app/big/n<k>/x.
+    removed = [
+        r
+        for r in found.get("links_removed_before_test") or ()
+        if str(r.get("path", "")).startswith("/app/big/n")
+        and str(r.get("path", "")).endswith("/x")
+    ]
+    assert (removed and removed[0].get("removed")) or _category(
+        trial
+    ) == PROVENANCE_INCOMPLETE, _why(trial)
+
+
+# -- rule S (C3): a process of the agent's alive when test.sh starts ---------------------------------------------------
+# The C3 review's probes (REVIEW-FINAL.md, "Delta review (C3: the walk pause)"), each a process the agent leaves
+# running that acts while test.sh runs, where neither walk can see a link that isn't there while it runs. On e820f4ee
+# each forged 1.0 `verified`. Rule S: right after the check before test.sh, root asks the kernel whether a process of
+# the agent's uid is alive; one that is keeps the reward and makes it `unverifiable` with the reason, and its record
+# is ``alive_at_test`` in the provenance. A link check that did not run, or found a link, keeps its own outcome.
+
+#: Rule S's check, and the reason a kept reward gives.
+S_CHECK = "agent-processes-at-test"
+S_ALIVE = "the agent's processes were still running when test.sh ran"
+
+
+def _expect_s_alive(trial: Path) -> None:
+    """Rule S found the agent's process alive before test.sh: its record says so, and the check failed."""
+    found = _provenance(trial)
+    asked = found.get("alive_at_test") or {}
+    assert asked.get("alive") is True, _why(trial)
+    check = _check(trial, S_CHECK) or {}
+    assert check.get("ran") is True and check.get("passed") is False, _why(trial)
+
+
+def _expect_s_kept_unverifiable(trial: Path) -> None:
+    """The forged 1.0 kept, `unverifiable` with rule S's reason; never `verified`."""
+    _expect_s_alive(trial)
+    assert _reward(trial) == 1.0, _why(trial)
+    found = _provenance(trial)
+    assert found.get("verdict") == "unverifiable", _why(trial)
+    assert any(S_ALIVE in r for r in found.get("reasons") or ()), _why(trial)
+    assert _category(trial) != PROVENANCE_INCOMPLETE, _why(trial)
+
+
+def _expect_never_verified_1(trial: Path) -> None:
+    """A churn attacker's three endings: the walk saw the link and removed it (0), a name vanished during the walk
+    (the Q6 0, which rule S does not override), or the walk missed the link silently and test.sh wrote 1 through
+    it, which rule S keeps as `unverifiable`. Never 1.0 `verified`."""
+    _expect_s_alive(trial)
+    found = _provenance(trial)
+    if _reward(trial) == 1.0:
+        assert found.get("verdict") == "unverifiable", _why(trial)
+        assert any(S_ALIVE in r for r in found.get("reasons") or ()), _why(trial)
+    incomplete = [
+        c
+        for c in found.get("checks") or ()
+        if c.get("check", "").startswith("links-") and not c.get("ran")
+    ]
+    if incomplete:
+        # Precedence: a link check that did not run keeps the Q6 0.
+        assert _category(trial) == PROVENANCE_INCOMPLETE and _reward(trial) == 0.0, (
+            _why(trial)
+        )
+
+
+#: C3-1: the leftover process continues itself with a POSIX timer (SIGCONT every 3 ms, a no-op handler so the kernel
+#: keeps re-arming it) and stops itself whenever no bfx walk runs, so the pause reads it stopped. While a walk runs it
+#: renames its link's folder among 200 names in a folder of 20,000; while test.sh runs it holds the folder at n000 and
+#: removes the link once the reward reads 1.
+_S_TIMER_PY = r"""
+import ctypes, os, random, signal, time
+R = "/logs/verifier/reward.txt"
+libc = ctypes.CDLL(None, use_errno=True)
+class TS(ctypes.Structure): _fields_ = [("s", ctypes.c_long), ("ns", ctypes.c_long)]
+class ITS(ctypes.Structure): _fields_ = [("i", TS), ("v", TS)]
+class EV(ctypes.Structure): _fields_ = [("val", ctypes.c_void_p), ("signo", ctypes.c_int), ("notify", ctypes.c_int), ("pad", ctypes.c_int * 12)]
+signal.signal(signal.SIGCONT, lambda s, f: None)
+ev = EV(); ev.signo = int(signal.SIGCONT); ev.notify = 0
+tid = ctypes.c_void_p()
+assert libc.timer_create(1, ctypes.byref(ev), ctypes.byref(tid)) == 0, ctypes.get_errno()
+its = ITS(TS(0, 3000000), TS(0, 3000000))
+assert libc.timer_settime(tid, 0, ctypes.byref(its), None) == 0
+me = os.getpid()
+fd = os.open("/app/big", os.O_RDONLY | os.O_DIRECTORY)
+names = ["n%03d" % i for i in range(200)]
+cur = "n000"
+def scan():
+    walk = None; tsh = False
+    for p in os.listdir("/proc"):
+        if not p.isdigit() or int(p) == me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % p, "rb") as f:
+                c = f.read(4096)
+        except OSError:
+            continue
+        if b"/.bfx" in c and b"walk" in c:
+            walk = int(p)
+        if b"test.sh" in c and b"timer.py" not in c:
+            tsh = True
+    return walk, tsh
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+while True:
+    walk, tsh = scan()
+    if tsh:
+        break
+    if walk:
+        while alive(walk):
+            for _ in range(8):
+                nxt = random.choice(names)
+                if nxt != cur:
+                    try:
+                        os.rename(cur, nxt, src_dir_fd=fd, dst_dir_fd=fd); cur = nxt
+                    except OSError:
+                        pass
+    os.kill(me, signal.SIGSTOP)
+libc.timer_delete(tid)
+if cur != "n000":
+    os.rename(cur, "n000", src_dir_fd=fd, dst_dir_fd=fd)
+t = time.time()
+while time.time() - t < 60:
+    try:
+        with open(R) as f:
+            if f.read().strip() == "1":
+                os.unlink("/app/big/n000/x"); break
+    except OSError:
+        pass
+    time.sleep(0.002)
+"""
+
+#: C3-2: the leftover process renames for 1 ms, forks and the parent exits, so a pass's /proc glob lists a pid that
+#: has exited by the time it is read and never the live one (the pause recorded ``pids: []``). While test.sh runs it
+#: holds the folder at n000 and removes the link once the reward reads 1.
+_S_HOP_PY = r"""
+import os, random, time
+R = "/logs/verifier/reward.txt"
+fd = os.open("/app/big", os.O_RDONLY | os.O_DIRECTORY)
+names = ["n%03d" % i for i in range(200)]
+cur = "n000"; last = 0.0
+def tsh():
+    me = os.getpid()
+    for p in os.listdir("/proc"):
+        if p.isdigit() and int(p) != me:
+            try:
+                with open("/proc/%s/cmdline" % p, "rb") as f:
+                    c = f.read(4096)
+            except OSError:
+                continue
+            if b"test.sh" in c and b"hop.py" not in c:
+                return True
+    return False
+while True:
+    end = time.monotonic() + 0.001
+    while time.monotonic() < end:
+        nxt = random.choice(names)
+        if nxt != cur:
+            try:
+                os.rename(cur, nxt, src_dir_fd=fd, dst_dir_fd=fd); cur = nxt
+            except OSError:
+                pass
+    if time.monotonic() - last > 0.003:
+        last = time.monotonic()
+        if tsh():
+            break
+    if os.fork() > 0:
+        os._exit(0)
+if cur != "n000":
+    os.rename(cur, "n000", src_dir_fd=fd, dst_dir_fd=fd)
+t = time.time()
+while time.time() - t < 60:
+    try:
+        with open(R) as f:
+            if f.read().strip() == "1":
+                os.unlink("/app/big/n000/x"); break
+    except OSError:
+        pass
+    time.sleep(0.002)
+"""
+
+
+def _s_churn_payload(script: str, name: str) -> str:
+    return (
+        f"mkdir -p /app/big/n000 && ln -s {R} /app/big/n000/x\n"
+        "cd /app/big && seq 1 20000 | sed s/^/f/ | xargs touch && cd /\n"
+        f"cat > /tmp/{name} <<'PYEOF'\n" + script + "PYEOF\n"
+        f"setsid nohup python3 /tmp/{name} </dev/null >/dev/null 2>&1 &\nsleep 1\n"
+        "echo LEFT-RUNNING $(ls /app/big | wc -l)\n"
+    )
+
+
+_S_CHURN_TEST_SH = (
+    "#!/bin/sh\n: > /logs/verifier/seen.txt\nsleep 0.3\n"
+    '[ -L /app/big/n000/x ] && echo "LINK at start" >> /logs/verifier/seen.txt\n'
+    f"echo 0 > {R}\necho 1 > /app/big/n000/x\n"
+)
+
+
+@pytest.mark.parametrize("rep", range(6))
+async def test_s_c3_1_a_process_its_own_timer_continues_is_never_verified(
+    tmp_path, rep
+):
+    """C3-1 (BLOCKER on e820f4ee: 2 of 8 trials 1.0 `verified`, both pauses `still` and `held`). SIGSTOP is not a
+    hold: a POSIX timer continues the process during the walk, and a walk it renames under misses the link silently.
+    Rule S finds it alive before test.sh in every trial, so a 1.0 is kept as `unverifiable`; a vanished name keeps
+    the Q6 0.
+
+    Mutants: rule S's question skipped; the account's uid replaced by root's (every trial alive, the honest
+    controls red)."""
+    task = _task(
+        tmp_path / "tasks",
+        f"s-timer-{rep}",
+        image=IMAGE_P,
+        test_sh=_S_CHURN_TEST_SH,
+        payload=_s_churn_payload(_S_TIMER_PY, "timer.py"),
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LEFT-RUNNING")
+    _expect_never_verified_1(trial)
+
+
+@pytest.mark.parametrize("rep", range(6))
+async def test_s_c3_2_a_pid_hopper_is_never_verified(tmp_path, rep):
+    """C3-2 (BLOCKER on e820f4ee: 2 of 8 trials 1.0 `verified`, the pause recording ``pids: []``). A process that
+    forks and exits every millisecond is never listed by a /proc glob. The kernel's own walk of its task list finds
+    it: a child joins the tail before its parent leaves. Rule S finds it alive in every trial.
+
+    Mutant: rule S's question skipped."""
+    task = _task(
+        tmp_path / "tasks",
+        f"s-hop-{rep}",
+        image=IMAGE_P,
+        test_sh=_S_CHURN_TEST_SH,
+        payload=_s_churn_payload(_S_HOP_PY, "hop.py"),
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LEFT-RUNNING")
+    _expect_never_verified_1(trial)
+
+
+#: C3-3, B1's older forge: the leftover process waits for test.sh, then makes /app/out/grade.log -> the reward;
+#: test.sh writes 0 to the reward and 1 to grade.log; the process removes the link once the reward reads 1. Neither
+#: walk can see it. As a hopper (``hop``), the same with a new pid every millisecond until test.sh runs.
+_S_REMAKE_PY = r"""
+import os, sys, time
+R = "/logs/verifier/reward.txt"
+hop = sys.argv[1] == "hop"
+last = 0.0
+def tsh():
+    me = os.getpid()
+    for p in os.listdir("/proc"):
+        if p.isdigit() and int(p) != me:
+            try:
+                with open("/proc/%s/cmdline" % p, "rb") as f:
+                    c = f.read(4096)
+            except OSError:
+                continue
+            if b"test.sh" in c and b"remake.py" not in c:
+                return True
+    return False
+while True:
+    time.sleep(0.001)
+    if time.monotonic() - last > 0.003:
+        last = time.monotonic()
+        if tsh():
+            break
+    if hop and os.fork() > 0:
+        os._exit(0)
+os.symlink(R, "/app/out/grade.log")
+t = time.time()
+while time.time() - t < 60:
+    try:
+        with open(R) as f:
+            if f.read().strip() == "1":
+                break
+    except OSError:
+        pass
+    time.sleep(0.002)
+os.unlink("/app/out/grade.log")
+"""
+_S_REMAKE_TEST_SH = (
+    "#!/bin/sh\n: > /logs/verifier/seen.txt\nsleep 0.5\n"
+    '[ -L /app/out/grade.log ] && echo "LINK at write" >> /logs/verifier/seen.txt\n'
+    f"echo 0 > {R}\necho 1 > /app/out/grade.log\n"
+)
+
+
+def _s_remake_payload(how: str) -> str:
+    return (
+        "mkdir -p /app/out\n"
+        "cat > /tmp/remake.py <<'PYEOF'\n" + _S_REMAKE_PY + "PYEOF\n"
+        f"setsid nohup python3 /tmp/remake.py {how} </dev/null >/dev/null 2>&1 &\nsleep 1\necho LEFT-RUNNING\n"
+    )
+
+
+@pytest.mark.parametrize("rep", [1, 2, 3])
+@pytest.mark.parametrize(
+    ("mode", "how"),
+    [("audit", "still"), ("off", "still"), ("audit", "hop")],
+    ids=["audit", "off", "audit-hop"],
+)
+async def test_s_c3_3_a_link_made_once_test_sh_runs_is_never_verified(
+    tmp_path, mode, how, rep
+):
+    """C3-3 (HIGH on e820f4ee: 3 of 3 `audit` and 2 of 2 `off` trials 1.0 `verified`; the hopper too). The link
+    exists only while test.sh runs, so neither walk sees it and every check passes. Rule S finds the process alive
+    before test.sh: the forged 1.0 is kept, `unverifiable`, with the reason. `strict` ends the process instead.
+    The hopper can also be caught running by the pause's resume look during the walk before test.sh: that is the
+    Q6 0, which rule S keeps (3 of 3 forged on e820f4ee; 2 of 3 caught that way on the first run with rule S).
+
+    Mutants: rule S's question skipped; its controls ignored (unit row)."""
+    task = _task(
+        tmp_path / "tasks",
+        f"s-remake-{mode}-{how}-{rep}",
+        image=IMAGE_P,
+        test_sh=_S_REMAKE_TEST_SH,
+        payload=_s_remake_payload(how),
+    )
+    jobs = await _run(
+        [task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent", mode=mode
+    )
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LEFT-RUNNING")
+    assert "LINK at write" in _seen(trial), (
+        f"precondition: the link was there for test.sh's write: {_why(trial)}"
+    )
+    if how == "hop":
+        _expect_never_verified_1(trial)
+    else:
+        _expect_s_kept_unverifiable(trial)
+
+
+#: An honest agent's leftover service that test.sh talks to (the C3 review's honest probe; 2 of 2 `verified` on
+#: e820f4ee).
+_S_SERVICE_PAYLOAD = (
+    "mkdir -p /app/www && echo answer-42 > /app/www/index.txt\n"
+    "cd /app/www && setsid nohup python3 -m http.server 8123 --bind 127.0.0.1 </dev/null >/tmp/svc.log 2>&1 &\n"
+    "cd /\nsleep 2\necho LEFT-RUNNING\n"
+)
+_S_SERVICE_TEST_SH = (
+    "#!/bin/sh\n"
+    "got=$(python3 -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8123/index.txt',"
+    ' timeout=10).read().decode().strip())" 2>&1)\n'
+    f'if [ "$got" = answer-42 ]; then echo 1 > {R}; else echo 0 > {R}; fi\n'
+)
+
+
+@pytest.mark.parametrize("rep", [1, 2])
+async def test_s_an_honest_service_left_running_is_the_named_cost(tmp_path, rep):
+    """Rule S's honest cost: an honest agent leaves a server running, which test.sh queries. The reward is scored
+    as written (1.0) and reads `unverifiable` with rule S's reason: a label, not a score. The pauses still hold it
+    for each walk. `strict` ends it before grading."""
+    task = _task(
+        tmp_path / "tasks",
+        f"s-service-{rep}",
+        image=IMAGE_P,
+        test_sh=_S_SERVICE_TEST_SH,
+        payload=_S_SERVICE_PAYLOAD,
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "LEFT-RUNNING")
+    _expect_s_kept_unverifiable(trial)
+    for name, pause in (_provenance(trial).get("pauses") or {}).items():
+        assert (
+            pause and pause.get("still") and pause.get("held") and pause.get("pids")
+        ), (name, _why(trial))
+
+
+async def test_s_an_honest_trial_with_nothing_left_running_is_verified(tmp_path):
+    """Rule S's control: an honest non-root agent that leaves no process. The kernel finds none of the agent's
+    uid (no zombie either: BenchFlow's PID 1 is root's), so the reward reads 1.0 `verified`, the answer in the
+    record.
+
+    Mutant: the account's uid replaced by root's (always found)."""
+    task = _task(
+        tmp_path / "tasks",
+        "s-honest-none",
+        image=IMAGE_P,
+        test_sh=f"#!/bin/sh\n[ -f /app/answer.txt ] && echo 1 > {R} || echo 0 > {R}\n",
+        payload="echo hello > /app/answer.txt\necho ANSWERED\n",
+    )
+    jobs = await _run([task], tmp_path / "jobs", agent=AGENT_PROBE, user="agent")
+    trial = _trials(jobs)[task.name]
+    _precondition(trial, "ANSWERED")
+    assert _reward(trial) == 1.0, _why(trial)
+    found = _provenance(trial)
+    assert found.get("verdict") == "verified", _why(trial)
+    asked = found.get("alive_at_test") or {}
+    assert asked.get("alive") is False and asked.get("by"), _why(trial)

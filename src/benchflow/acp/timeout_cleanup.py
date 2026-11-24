@@ -11,12 +11,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 PROMPT_TIMEOUT_CLEANUP_TOTAL_SEC = 5.0
 PROMPT_CANCEL_DRAIN_TIMEOUT_SEC = 0.25
+#: How long the stop waits for its first step, the model gate (at most about
+#: a second a proxy) or, on a route without one, the kill of the agent's
+#: processes, before it goes on.
+GATE_CLOSE_TIMEOUT_SEC = 20.0
 
 
 def _consume_task_result(task: asyncio.Task) -> None:
@@ -53,10 +58,30 @@ async def cancel_and_drain_prompt_task(prompt_task: asyncio.Task) -> bool:
     return False
 
 
+async def close_gate_first(before_cancel: Callable[[], Awaitable[Any]] | None) -> None:
+    """The stop's first step: close the trial's model gate, so no
+    call the agent makes from here on, in answer to the stop or not, reaches
+    a provider. Bounded, and never raises: the agent is stopped whatever the
+    gate does."""
+    if before_cancel is None:
+        return
+    try:
+        await asyncio.wait_for(before_cancel(), GATE_CLOSE_TIMEOUT_SEC)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("The model gate did not close before the stop", exc_info=True)
+
+
 async def cancel_prompt_after_timeout(
-    acp_client: Any, prompt_task: asyncio.Task
+    acp_client: Any,
+    prompt_task: asyncio.Task,
+    *,
+    before_cancel: Callable[[], Awaitable[Any]] | None = None,
 ) -> bool:
-    """Request peer cancellation, then bound cleanup without adding a reader."""
+    """Close the model gate (*before_cancel*), request peer cancellation, then
+    bound cleanup without adding a reader."""
+    await close_gate_first(before_cancel)
     cancel = getattr(acp_client, "cancel", None)
     if not callable(cancel):
         return await cancel_and_drain_prompt_task(prompt_task)

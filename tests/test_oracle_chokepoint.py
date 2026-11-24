@@ -490,7 +490,7 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Score: 0/1" in result.stdout
+        assert "0/1 passed" in result.stdout  # the final screen
 
     def test_eval_create_exits_nonzero_when_single_task_verifier_errors(
         self, tmp_path: Path
@@ -533,7 +533,7 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Score: 0/1" in result.stdout
+        assert "0/1 passed" in result.stdout  # the final screen
 
     def test_eval_create_exits_nonzero_when_batch_has_harness_errors(
         self, tmp_path: Path
@@ -574,7 +574,7 @@ class TestEvalCreateRouting:
             )
 
         assert result.exit_code == 1
-        assert "Score: 0/1" in result.stdout
+        assert "0/1 passed" in result.stdout  # the final screen
 
     def test_eval_list_reads_root_summary(self, tmp_path: Path):
         """Root summary.json is treated as the eval summary."""

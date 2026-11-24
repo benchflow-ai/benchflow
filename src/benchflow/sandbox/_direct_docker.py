@@ -514,9 +514,10 @@ def _check_volumes(volumes: Any) -> None:
 
 def merge_bootstrap(service: dict, overlay: dict) -> dict:
     """Compose's merge of the inert-bootstrap overlay into *service*
-    (``_inert_bootstrap.prepare``'s keys only): entrypoint and command
-    replace, environment and labels merge key by key (a null removes the
-    value), healthcheck replaces, an empty depends_on adds nothing."""
+    (``_inert_bootstrap.prepare``'s keys only): entrypoint, command and
+    stop_signal replace, environment and labels merge key by key (a null
+    removes the value), healthcheck replaces, an empty depends_on adds
+    nothing."""
     allowed = {
         "entrypoint",
         "command",
@@ -524,6 +525,7 @@ def merge_bootstrap(service: dict, overlay: dict) -> dict:
         "healthcheck",
         "labels",
         "depends_on",
+        "stop_signal",
     }
     if set(overlay) - allowed:
         raise Fallback("the bootstrap overlay has a key this path does not merge")
@@ -531,6 +533,8 @@ def merge_bootstrap(service: dict, overlay: dict) -> dict:
     for key in ("entrypoint", "command"):
         if key in overlay:
             merged[key] = list(overlay[key])
+    if "stop_signal" in overlay:
+        merged["stop_signal"] = overlay["stop_signal"]
     for key in ("environment", "labels"):
         if key in overlay:
             values = dict(merged.get(key) or {})
@@ -773,6 +777,10 @@ def container_body(
         "Entrypoint": service.get("entrypoint"),
         "OnBuild": None,
         "Labels": labels,
+        # Config's StopSignal (omitempty) comes after Labels.
+        **(
+            {"StopSignal": service["stop_signal"]} if service.get("stop_signal") else {}
+        ),
         "HostConfig": host,
     }
     # CreateRequest's NetworkingConfig is omitempty: network_mode none sends none.

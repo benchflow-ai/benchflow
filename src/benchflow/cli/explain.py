@@ -31,6 +31,7 @@ OWNER_LABELS: dict[str, str] = {
     "sandbox": "the sandbox",
     "you": "your setup",
     "benchflow": "BenchFlow (a bug)",
+    "unclassified": "not classified",
 }
 
 # A cause whose fault is "infrastructure" but whose infrastructure is the
@@ -381,6 +382,30 @@ _BODIES: dict[str, str] = {
         "The agent started, but its install or runtime in the sandbox is "
         "broken: a missing program, or a dependency that does not load."
     ),
+    "agent_integration:empty_trajectory": (
+        "The agent was sent the prompt and ended its turn with no ACP event "
+        "at all: no message, tool call or thought (a session/update) between "
+        "session/prompt and its answer, and no model output through BenchFlow's "
+        "proxy. An agent from a manifest that does the work but never reports "
+        "it ends here, unscored even when the verifier would pass, because "
+        "nothing shows the agent did it. Send at least one "
+        "session/update before answering session/prompt "
+        "(docs/evaluate/your-own-agent.md)."
+    ),
+    "agent_integration:immediate_exit": (
+        "The agent ended its turn within seconds of the prompt and did "
+        "nothing: usually its launch command exits at once, or it answers "
+        "session/prompt before doing the work. Its log under agent/ says why."
+    ),
+    "agent_integration:no_activity": (
+        "The agent ran after the prompt but sent no message, tool call or "
+        "thought, and reported no output tokens. Its log under agent/ and "
+        "integration_failure_info in result.json have what BenchFlow saw."
+    ),
+    "agent_integration:truncated_trajectory": (
+        "The agent's ACP trajectory has lines BenchFlow could not read, so "
+        "what it did can't be told; trajectory/acp_trajectory.jsonl has them."
+    ),
     "agent_integration:unknown": (
         "The agent did nothing useful, and BenchFlow has no finer cause for "
         "it; integration_failure_info in result.json has what it saw."
@@ -408,10 +433,14 @@ _BODIES: dict[str, str] = {
         "test.sh's network (verifier.network_mode, else the sandbox's policy) "
         "refused it: a packet at BenchFlow's rules, or a request at its egress "
         "proxy. Its tests did not pass (a non-zero exit, or a reward below 1), "
-        "so the trial is unscored rather than a silent 0 that would read as "
-        "the agent's failure. It counts 0 in the every-trial mean. "
-        "verifier/verifier-network.json names the network, the counts and the "
-        "first requests refused. A pass despite refusals keeps its reward."
+        "and before 0.10.1 the trial ended unscored, counting 0 in the "
+        "every-trial mean; a result.json written then still reads so. Since "
+        "0.10.1 the trial is scored as test.sh says, pass or not, and flagged "
+        "for a read: the packets can be test.sh's own or come from code the "
+        "agent left that test.sh runs, and BenchFlow can't tell them apart. "
+        "result.json's verifier_network_refused and "
+        "verifier/verifier-network.json name the network, the counts and the "
+        "first requests refused."
     ),
     "network_policy_breached": (
         "BenchFlow proves the trial's network rules again at the end of the "
@@ -483,6 +512,41 @@ _BODIES: dict[str, str] = {
         "https://github.com/benchflow-ai/benchflow/issues with the trial "
         "folder."
     ),
+    "integrity_unavailable": (
+        "BenchFlow could not check where the reward came from, so the trial "
+        "has no score: never a 0, never retried, and not the agent's fault. "
+        "In audit and off, BenchFlow's own bfx binary finds the links an agent "
+        "could leave into the verifier's output folder. Where bfx can't run in "
+        "the sandbox (a backend with no route for it, BENCHFLOW_BFX_DELIVERY=off, "
+        "or a checkout built without `make bfx`), the trial is refused before "
+        "the agent's turn, with no agent tokens spent; the oracle's trial still "
+        "runs. On Docker and remote Docker, a start whose services wait for "
+        "their rules in BenchFlow's waiter, which is bfx (an open network's "
+        "cloud metadata rule, or a network policy), is refused by the hold "
+        "itself, the oracle's included; under an open network, a run that "
+        "grants the task's allow_cloud_metadata (--allow-cloud-metadata) keeps "
+        "main's hold without bfx. A task whose verifier runs as the agent's "
+        "own user is refused "
+        "the same way, since its output folder can't be kept from the agent's "
+        "processes: change [verifier] user in the task. After grading, the "
+        "same cause means the sandbox had no record of its links from before "
+        "the turn (a branch child or a resume from a checkpoint made without "
+        "one): an agent user's attempt is unscored instead of scored 0. strict "
+        "is not checked this way: it stops the agent's processes before grading."
+    ),
+    "provenance_incomplete": (
+        "In audit and off, test.sh runs as written while the agent's processes "
+        "are still alive, so BenchFlow checks that the reward is test.sh's "
+        "own: it removes the links the agent made into /logs/verifier before "
+        "test.sh, looks for new ones after grading, and keeps the folder "
+        "closed to the agent while test.sh runs. For an agent that runs as "
+        "its own user, a check that did not complete, or whose action did not "
+        "take effect, scores the attempt 0: a failure, counted, never retried, "
+        "with the reason in a `Verifier scored 0: provenance incomplete:` "
+        "warning. An agent that runs as root keeps the reward instead, marked "
+        "unverifiable, and the oracle is not checked. Where BenchFlow can't "
+        "check at all, the trial is unscored instead (integrity_unavailable)."
+    ),
 }
 
 
@@ -515,9 +579,10 @@ def owner_of(fault: str, key: str = "") -> str:
 
 
 def pages() -> tuple[Page, ...]:
-    """Every page, in the summary's order: unscored causes, then errored ones."""
+    """Every page, in the summary's order: unscored causes, then errored ones,
+    then the scored 0s an integrity rule gives."""
     found: list[Page] = []
-    for key in failures.cause_keys():
+    for key in (*failures.cause_keys(), *failures.scored_zero_keys()):
         cause = failures.describe(key)
         assert cause is not None, key
         found.append(
@@ -561,16 +626,24 @@ def _listing() -> str:
     all_pages = pages()
     width = max(len(page.code) for page in all_pages)
     unscored = set(failures.unscored_keys())
+    scored_zero = set(failures.scored_zero_keys())
+
+    def kind(key: str) -> str:
+        if key in scored_zero:
+            return "scored_zero"
+        return "unscored" if key in unscored else "errored"
+
     lines: list[str] = []
     for heading, keep in (
-        ("Unscored: the agent finished, the verifier could not score it", True),
-        ("Errored: the run stopped before a score", False),
+        ("Unscored: the agent finished, the verifier could not score it", "unscored"),
+        ("Errored: the run stopped before a score", "errored"),
+        ("Scored 0 by an integrity rule", "scored_zero"),
     ):
         lines.append(heading)
         lines += [
             f"  {page.code:<{width}}  {page.title}"
             for page in all_pages
-            if (page.key in unscored) == keep
+            if kind(page.key) == keep
         ]
         lines.append("")
     lines.append("`bench explain <code>` prints one page.")

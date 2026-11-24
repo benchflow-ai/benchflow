@@ -51,7 +51,11 @@ BAKED_FILE = "_build.json"
 RELEASE_RECORDS = ".github/release-acceptance"
 # A SHA-1 commit, or a SHA-256 one.
 _COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# One git call's bound on a host whose load fits its CPUs (_git_bound()).
 _GIT_TIMEOUT_SEC = 10
+# A git that has not answered within its bound is asked again, up to this
+# many calls in all: a stalled git never makes one tree read as two builds.
+_GIT_TRIES = 3
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _UNKNOWN: dict[str, Any] = {"commit": None, "dirty": None}
 
@@ -153,21 +157,42 @@ def _direct_url_text() -> str | None:
         return None
 
 
+def _git_bound() -> float:
+    """One git call's bound: :data:`_GIT_TIMEOUT_SEC` while the 1-minute load
+    fits the CPUs, in step with the load per CPU beyond that, up to 4 times
+    (as the metadata helper's docker calls). A cold CLI reads its identity in
+    the start burst, the runtime it would attach to read its own earlier:
+    under load a fixed 10 s gave the two different records."""
+    try:
+        per_cpu = os.getloadavg()[0] / (os.cpu_count() or 1)
+    except (AttributeError, OSError):
+        return float(_GIT_TIMEOUT_SEC)
+    return _GIT_TIMEOUT_SEC * min(max(per_cpu, 1.0), 4.0)
+
+
 def _git(cwd: Path, *args: str) -> str | None:
     # No GIT_DIR or GIT_WORK_TREE from the caller's environment (a git hook,
     # say) may point the question at another repository; and no index lock,
     # so concurrent trials never collide in `git status`.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(cwd), *args],
-            capture_output=True,
-            timeout=_GIT_TIMEOUT_SEC,
-            env=env,
-            check=False,
-        )
-        out = proc.stdout.decode("utf-8")
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        return None
-    return out.strip() if proc.returncode == 0 else None
+    for _ in range(_GIT_TRIES):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(cwd), *args],
+                capture_output=True,
+                timeout=_git_bound(),
+                env=env,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            # Stalled, not refused: the same question again.
+            continue
+        except (OSError, subprocess.SubprocessError):
+            return None
+        try:
+            out = proc.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        return out.strip() if proc.returncode == 0 else None
+    return None

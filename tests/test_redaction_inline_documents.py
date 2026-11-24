@@ -286,9 +286,17 @@ def test_truncated_documents_in_a_json_string_finish_and_mask(lines):
 @pytest.mark.ceiling
 def test_ten_thousand_unclosed_documents_in_one_json_string_finish(layer):
     """The lead's guard: 10,000 unclosed documents in one JSON string finish
-    with no exception and under the 10 s ceiling, in the object, ACP and
-    record-text layers (no ratio here; the next test times them)."""
-    out = within_ceiling(_layers, "\n".join([TRUNCATED] * 10_000))[layer]
+    with no exception and under the 10 s ceiling, in each of the object, ACP
+    and record-text layers (no ratio here; the next test times them).
+
+    The ceiling holds one call, this layer's own. Each case used to time all
+    three layers under it, and the first case the process's first use too
+    (patterns compiled on demand): about 8 s of CPU time on a quiet build VM
+    and 12-16 s on a loaded one, where one warm layer takes about 4 s. As
+    linear_rounds does, one untimed call on a single document comes first."""
+    call = _LAYER[layer]
+    call(TRUNCATED)
+    out = within_ceiling(call, "\n".join([TRUNCATED] * 10_000))
     assert "fakekeyid0123456789" not in out
 
 

@@ -216,21 +216,43 @@ async def test_daytona_session_and_dind_return_raw_streams(transient, dind, code
 
     _load_daytona_sdk()
     out, err = '{"setup.py": true}\n', "warning 'setup.py'\n"
+    sent: dict[str, str] = {}
 
     class Process:
         async def create_session(self, session_id):
             pass
 
         async def execute_session_command(self, session_id, request, timeout=None):
-            return SimpleNamespace(cmd_id="fixture-command")
+            cmd_id = f"fixture-command-{len(sent)}"
+            sent[cmd_id] = request.command
+            return SimpleNamespace(cmd_id=cmd_id)
+
+        # On DinD the VM's compose env is a file: one root command prepares
+        # its folder first and answers 0 with no output. The fixture's own
+        # command answers *code* and its two streams.
+        def fixture(self, command_id):
+            return "cat /fixture/manifest" in sent[command_id]
 
         async def get_session_command(self, session_id, command_id):
-            return SimpleNamespace(id="fixture-command", exit_code=code)
+            exit_code = code if self.fixture(command_id) else 0
+            return SimpleNamespace(id=command_id, exit_code=exit_code)
 
         async def get_session_command_logs(self, session_id, command_id):
-            return SimpleNamespace(stdout=out, stderr=err)
+            if self.fixture(command_id):
+                return SimpleNamespace(stdout=out, stderr=err)
+            return SimpleNamespace(stdout="", stderr="")
 
         async def delete_session(self, session_id):
+            pass
+
+    class Fs:
+        def __init__(self):
+            self.uploads = []
+
+        async def upload_file(self, data, path, timeout=None):
+            self.uploads.append(path)
+
+        async def delete_file(self, path, recursive=False):
             pass
 
     env = DaytonaSandbox.__new__(DaytonaSandbox)
@@ -240,7 +262,7 @@ async def test_daytona_session_and_dind_return_raw_streams(transient, dind, code
     env.environment_name = "fixture"
     env.task_env_config = SandboxConfig()
     env._persistent_env = {}
-    env._sandbox = SimpleNamespace(process=Process())
+    env._sandbox = SimpleNamespace(process=Process(), fs=Fs())
     env._strategy = _DaytonaDinD(env) if dind else _DaytonaDirect(env)
     if dind:
         env._strategy._compose_cmd = lambda command: (
@@ -249,6 +271,10 @@ async def test_daytona_session_and_dind_return_raw_streams(transient, dind, code
     run = env.exec_transient if transient else env.exec
     result = await exec_raw(run, "cat /fixture/manifest", timeout_sec=5)
     assert (result.stdout, result.stderr, result.return_code) == (out, err, code)
+    assert sum(map(env._sandbox.process.fixture, sent)) == 1
+    # DinD: the preparation, then the fixture's command with the env file.
+    assert len(sent) == (2 if dind else 1)
+    assert len(env._sandbox.fs.uploads) == (1 if dind else 0)
 
 
 @pytest.mark.parametrize("backend", ["docker", "remote-docker"])

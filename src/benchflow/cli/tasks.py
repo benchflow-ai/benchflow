@@ -15,7 +15,7 @@ from typing import Annotated, Literal, cast
 import typer
 from rich.markup import escape
 
-from benchflow.cli._options import AllowTaskEnvOption
+from benchflow.cli._options import AllowCloudCredentialFileOption, AllowTaskEnvOption
 from benchflow.cli._shared import (
     _apply_allow_task_env,
     command_arg,
@@ -296,6 +296,7 @@ def register_tasks(app: typer.Typer) -> None:
                 "--sandbox-user", help="Agent user to validate, as for eval run"
             ),
         ] = "agent",
+        allow_cloud_credential_file: AllowCloudCredentialFileOption = False,
     ) -> None:
         """Validate task structure and the run's plan without starting a sandbox.
 
@@ -375,6 +376,7 @@ def register_tasks(app: typer.Typer) -> None:
                     model=model,
                     sandbox_user=sandbox_user_value,
                     separate=separate,
+                    allow_cloud_credential_file=allow_cloud_credential_file,
                 )
             except typer.Exit:
                 failed = True
@@ -395,6 +397,7 @@ def register_tasks(app: typer.Typer) -> None:
         model: str | None,
         sandbox_user: str | None,
         separate: bool,
+        allow_cloud_credential_file: bool = False,
     ) -> None:
         from benchflow._utils.task_authoring import (
             check_task,
@@ -492,6 +495,7 @@ def register_tasks(app: typer.Typer) -> None:
                     agent=agent,
                     model=model,
                     sandbox_user=sandbox_user,
+                    allow_cloud_credential_file=allow_cloud_credential_file,
                 )
             except UnsupportedTaskFeatureError as exc:
                 # Keep the run's complete error verbatim on stderr and the

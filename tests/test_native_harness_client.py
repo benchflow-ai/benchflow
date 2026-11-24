@@ -497,6 +497,64 @@ async def test_execute_prompts_times_out_a_native_turn_like_an_acp_turn(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["cancel", "gate-answer"])
+async def test_a_codex_turn_the_model_gate_cuts_times_out_like_an_acp_turn(
+    tmp_path, first
+):
+    """The trial's time ends while Codex waits on the model. The stop closes
+    the model gate first, and the gate answers the open call 400
+    trial_deadline_passed; Codex then fails the turn and exits
+    (deadline.jsonl, recorded from 0.159.3). The gate answers 0.25 s after its
+    close and the stop cancels once the close is acknowledged, so under load
+    either can reach the client first. Both are the wall-clock timeout, as on
+    codex-acp, with nothing added to the trajectory; when the answer came
+    first the turn's record keeps the gate's words."""
+    answered = tmp_path / "answered"
+    turns = tmp_path / "trial" / "agent" / "native-turns.json"
+    client = _client(
+        tmp_path,
+        _LocalSandbox(),
+        _harness(CODEX, tmp_path),
+        CODEX_SAMPLES / "deadline.jsonl",
+        cut=2,
+        rest_when=answered,
+        exit=1,
+    )
+
+    async def close_gate() -> None:
+        if first == "gate-answer":
+            answered.touch()
+            # The stop goes on only once Codex's turn has ended.
+            while not turns.exists():
+                await asyncio.sleep(0.05)
+
+    try:
+        with pytest.raises(AgentPromptTimeoutError) as caught:
+            await execute_prompts(
+                client,
+                client.session,
+                ["go"],
+                timeout=2,
+                idle_timeout=None,
+                on_deadline=close_gate,
+            )
+    finally:
+        await client.close()
+    assert [e["type"] for e in caught.value.trajectory] == [
+        "user_message",
+        "agent_timeout",
+    ]
+    assert caught.value.diagnostic.pending_tool_call_ids == []
+    (turn,) = _turns(tmp_path)
+    if first == "cancel":
+        assert turn["cancelled"] and turn["stop_reason"] == "cancelled"
+    else:
+        assert not turn["cancelled"] and turn["exit_code"] == 1
+        assert "trial_deadline_passed" in turn["error"]
+        assert turn["failure"].startswith("Native harness error (codex)")
+
+
+@pytest.mark.asyncio
 async def test_a_cli_lingering_after_its_result_is_stopped(tmp_path, monkeypatch):
     monkeypatch.setattr(client_module, "EXIT_GRACE_SEC", 1)
     sandbox = _LocalSandbox()

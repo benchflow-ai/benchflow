@@ -360,11 +360,35 @@ async def _in_namespace(
     except Exception as exc:
         return "", f"the helper failed ({type(exc).__name__})"
     if outcome is None or outcome[1]:
+        state = await _not_running(env, container)
+        if state:
+            # A stopped container has no network namespace to join: say so,
+            # not the helper's own start error.
+            return "", f"its container {state}, so the helper could not join it"
         why = getattr(env, "metadata_service_unavailable", None)
         detail = why(container) if callable(why) else ""
         return "", f"the helper did not run the check{f' ({detail})' if detail else ''}"
     out = getattr(outcome[0], "stdout", "") or ""
     return (out if isinstance(out, str) else ""), ""
+
+
+async def _not_running(env: Any, container: str) -> str:
+    """How *container* is down ("is not running (exited, exit 1)"), or ""
+    when it runs or Docker does not say."""
+    inspect = getattr(env, "_inspect_container", None)
+    if not callable(inspect):
+        return ""
+    try:
+        state = (await inspect(container)).get("State") or {}
+    except Exception:
+        return ""
+    if state.get("Running") is not False:
+        return ""
+    status = state.get("Status") or "stopped"
+    code = state.get("ExitCode")
+    return (
+        f"is not running ({status}{f', exit {code}' if isinstance(code, int) else ''})"
+    )
 
 
 def _namespaces(
@@ -619,8 +643,80 @@ async def require_held_at_end_of_agent(env: Any) -> Reproof | None:
     a rule of the ``start`` or ``agent*`` phases no longer holds."""
     proof = await reprove(env, END_OF_AGENT, phases=end_of_agent_phases)
     if proof is not None and not proof.proven:
-        raise breach_error(proof)
+        error = await with_held_restarts(env, proof)
+        if error is not None:
+            raise error
     return proof
+
+
+async def with_held_restarts(env: Any, proof: Reproof) -> Any:
+    """The ending's error for *proof* (:func:`breach_error`), or None where
+    what it flags is only held compose services that run nothing: one Docker
+    restarted after the start (it waits in the hold, in a new namespace whose
+    rules can't be put back and proven), or one whose container exited and
+    that Docker is not starting again (no namespace at all). Their rules
+    being unproven is no breach and no outside cause: the trial goes on and
+    is scored as test.sh says (nothing the agent can do in the sandbox turns a
+    failing trial into an unscored one). The services go on the sandbox for
+    result.json's ``held_after_restart`` and ``held_exited`` (and the trial's
+    warnings, but for a service that exited before the agent's turn, the
+    task's own one-shot shape), each with what the re-proof found. A breach
+    elsewhere stays the ending, naming them too."""
+    from benchflow.sandbox import _inert_bootstrap
+
+    error = breach_error(proof)
+    if not isinstance(getattr(env, "_held_restart_base", None), dict):
+        return error
+    try:
+        held = await _inert_bootstrap.held_restarts(env)
+        exited = await _inert_bootstrap.held_exited(env)
+    except Exception:  # the ending stands without the names
+        return error
+    if not held and not exited:
+        return error
+    flagged = [*proof.breaches, *proof.unproven]
+
+    def found(service: str) -> list[str]:
+        return [f for f in flagged if f.startswith(f"service {service} (")]
+
+    for record in held:
+        if found(record["service"]):
+            record["reproof"] = (
+                f"at {proof.at}: not proven ({'; '.join(found(record['service']))})"
+            )
+    env._held_after_restart = held
+    phase = (
+        _inert_bootstrap.EXITED_IN_TURN
+        if proof.at == END_OF_AGENT
+        else _inert_bootstrap.EXITED_IN_TEST
+    )
+    names = {e["service"] for e in exited}
+    for record in _inert_bootstrap.keep_exited(env, exited, phase):
+        name = record["service"]
+        if name in names and found(name):
+            record["reproof"] = f"at {proof.at}: not proven ({'; '.join(found(name))})"
+    services = {h["service"] for h in held} | {e["service"] for e in exited}
+    if all(any(f.startswith(f"service {s} (") for s in services) for f in flagged):
+        return None
+    named = "; ".join(
+        [
+            f"Compose service {h['service']!r} (restarted at {h.get('restarted_at')}) "
+            f"was {_inert_bootstrap.HELD_AFTER_RESTART}"
+            for h in held
+        ]
+        + [
+            f"Compose service {e['service']!r} {_inert_bootstrap.HELD_EXITED}"
+            for e in exited
+        ]
+    )
+    return type(error)(
+        f"{error} {named}.",
+        record={
+            **proof.record(),
+            "held_after_restart": held,
+            **({"held_exited": exited} if exited else {}),
+        },
+    )
 
 
 async def connect_from_launch(env: Any, proof: Reproof, service: str) -> None:

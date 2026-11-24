@@ -575,7 +575,12 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
 
     @eval_app.command("resume")
     def resume(
-        job_dir: Annotated[Path, typer.Argument(help="The job folder to finish")],
+        job_dir: Annotated[
+            Path,
+            typer.Argument(
+                help="The job folder to finish, or latest (the newest under ./jobs)"
+            ),
+        ],
         agent_env: Annotated[
             list[str] | None,
             typer.Option(
@@ -615,15 +620,16 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
         from benchflow.agents.errors import UsageLimitError
         from benchflow.agents.scripts import ScriptBackendError
         from benchflow.cli._errors import expected_error_parts
+        from benchflow.cli._output.latest import resolve
         from benchflow.cli._shared import (
             RUN_FAILED_NEXT,
             _exit_if_evaluation_had_errors,
             _parse_agent_env,
-            _report_eval_result,
             stopped_run_result,
         )
         from benchflow.evaluation import Evaluation, ResumeMismatchError
 
+        job_dir = resolve(job_dir)
         overrides: dict[str, Any] = (
             {"concurrency": concurrency} if concurrency is not None else {}
         )
@@ -665,5 +671,7 @@ def register_eval_resume(eval_app: typer.Typer) -> None:
                 else 1
             )
             raise typer.Exit(code) from None
-        _report_eval_result(result, Path(job_dir))
+        from benchflow.cli._output.report import print_run_result
+
+        print_run_result(result, Path(job_dir))
         _exit_if_evaluation_had_errors(result)

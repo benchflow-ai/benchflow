@@ -1,0 +1,6 @@
+Task       Outcome  Reward  Cost      Tokens  Time
+sea-haiku  passed        1  ~$0.0007     995   21s
+
+Score       Model cost  Tokens  Wall time
+1/1 passed  ~$0.0007    995     22s
+Results: jobs/2026-11-18__03-30-13/

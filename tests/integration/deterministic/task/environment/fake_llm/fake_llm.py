@@ -19,7 +19,10 @@ The server is stateless. Every reply is a function of the request alone:
   the marker message, so a restarted server, a branch child resumed from a
   snapshot, or a retried request gets the same reply.
 - Requests without tools (Claude Code's side calls such as title generation)
-  get a fixed ``ok`` with ``SIDE_USAGE`` (0 in, 1 out).
+  get a fixed ``ok`` with ``SIDE_USAGE`` (0 in, 1 out). A script whose first
+  step sets ``side_delay_sec`` answers them that much later; one that sets
+  ``side_hold_sec`` streams the whole answer at once, then keeps the
+  connection open that long before it ends the stream.
 - A step with ``delay_sec`` answers after that many seconds (a slow model,
   for timeouts that hit a model call rather than a tool).
 - A step with ``refusal`` is the model refusing: Anthropic's ``stop_reason:
@@ -99,6 +102,20 @@ def script_delay(
     if step < len(script):
         return float(script[step].get("delay_sec") or 0)
     return 0.0
+
+
+def side_timing(
+    messages: list[dict[str, Any]], scripts: dict[str, list[dict[str, Any]]]
+) -> tuple[float, float]:
+    """(``side_delay_sec``, ``side_hold_sec``) of the script a side call
+    (no tools) belongs to: its first step's. Claude Code's session-title
+    request quotes the session, marker included."""
+    name, _step = locate(messages)
+    script = scripts.get(name or "") or []
+    first = script[0] if script else {}
+    return float(first.get("side_delay_sec") or 0), float(
+        first.get("side_hold_sec") or 0
+    )
 
 
 def _resolve_tool(requested: str, tools: list[dict[str, Any]]) -> str | None:
@@ -817,8 +834,12 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        hold = 0.0
         if body.get("tools"):
             time.sleep(script_delay(body.get("messages") or [], self.scripts))
+        else:
+            delay, hold = side_timing(body.get("messages") or [], self.scripts)
+            time.sleep(delay)
         reply = plan_reply(body, self.scripts)
         self._log(
             {
@@ -842,6 +863,8 @@ class _Handler(BaseHTTPRequestHandler):
         for event, data in sse_events(reply):
             self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
             self.wfile.flush()
+        # The whole answer is out; the stream ends after the hold.
+        time.sleep(hold)
         self.close_connection = True
 
     def _responses(self, path: str, body: dict[str, Any]) -> None:

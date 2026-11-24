@@ -300,3 +300,73 @@ def test_push_succeeds_when_linked_and_kept(tmp_path, make_hub) -> None:
     assert result.exit_code == 0, out
     assert "✓ Pushed" in out and "linked to acme/tasks@1" in out
     assert hub.uploads[-1]["dataset"] == "acme/tasks@1"
+
+
+def _named_job(root: Path, layout: str) -> Path:
+    """A finished job named demo2 as bench run writes it: the job folder
+    holding its own summary.json (``flat``), or one run below it (``run``)."""
+    job = root / "jobs" / "demo2"
+    run = job if layout == "flat" else job / "2026-11-18__01-00-00"
+    trial = run / "hello__abc"
+    (trial / "verifier").mkdir(parents=True)
+    (run / "summary.json").write_text(json.dumps({"job_name": "demo2"}))
+    (job / "summary.json").write_text(json.dumps({"job_name": "demo2"}))
+    (trial / "config.json").write_text("{}")
+    (trial / "verifier" / "reward.txt").write_text("1")
+    return job
+
+
+@pytest.mark.parametrize("layout", ["flat", "run"])
+def test_push_names_the_run_after_its_job(tmp_path, make_hub, layout) -> None:
+    """`bench hub push jobs/demo2` showed the run as "jobs" (the
+    jobs folder) and sent no name, so the Hub named it after the archive's
+    folder. Its name is the job's, printed and sent."""
+    hub = make_hub()
+    result = CliRunner().invoke(
+        app, ["hub", "push", str(_named_job(tmp_path, layout)), "--hub", hub.url]
+    )
+    out = _out(result)
+    assert result.exit_code == 0, out
+    assert "Pushing demo2:" in out, out
+    assert "Pushed demo2 to the Hub" in out
+    assert "Pushed jobs" not in out
+    assert hub.uploads[-1]["name"] == "demo2"
+    # Kept and stored, with no dataset recorded: the tick, then the line
+    # saying what it doesn't count for.
+    assert "not linked: the job recorded no dataset" in out
+
+
+def test_push_label_names_the_run(tmp_path, make_hub) -> None:
+    hub = make_hub()
+    CliRunner().invoke(
+        app,
+        [
+            "hub",
+            "push",
+            str(_named_job(tmp_path, "flat")),
+            *("--hub", hub.url, "--label", "baseline-a"),
+        ],
+    )
+    assert hub.uploads[-1]["name"] == "baseline-a"
+
+
+def test_push_says_what_arrived_and_what_did_not_a_line_each(
+    tmp_path, make_hub
+) -> None:
+    """The stored run, then each thing the Hub
+    does not have, on lines of their own, the missing dataset among them;
+    still no tick and exit 1."""
+    hub = make_hub(registry=False)
+    result = CliRunner().invoke(
+        app, ["hub", "push", str(_named_job(tmp_path, "flat")), "--hub", hub.url]
+    )
+    lines = [line.strip() for line in result.output.splitlines() if line.strip()]
+    assert result.exit_code == 1, result.output
+    first = next(
+        i for i, line in enumerate(lines) if "stored demo2 as run run_1" in line
+    )
+    assert lines[first].endswith("but not all of it:"), lines[first]
+    assert lines[first + 1].startswith("not kept: the Hub kept no trial folders")
+    assert lines[first + 2].startswith("not linked: the job recorded no dataset")
+    assert "--dataset org/name@version" in result.output
+    assert "✓" not in result.output

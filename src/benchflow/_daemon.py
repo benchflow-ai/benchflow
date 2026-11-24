@@ -272,7 +272,12 @@ def socket_path() -> Path:
     return root / "runtime.sock"
 
 
-def request(value: dict[str, Any], timeout: float = 5) -> Any:
+#: How long a request waits for the runtime's answer. A runtime that is there
+#: but slower than this (a loaded host) is not answering, not gone.
+ANSWER_TIMEOUT_S = 5.0
+
+
+def request(value: dict[str, Any], timeout: float = ANSWER_TIMEOUT_S) -> Any:
     with connect(socket_path()) as conn:
         conn.settimeout(timeout)
         send(conn, value)
@@ -763,6 +768,8 @@ class _Runtime:
         # Callers whose prepared call ended while it checked itself.
         self.orphaned: list[tuple[socket.socket, dict[str, Any]]] = []
         self.state = root / "prepared.json"
+        # The loop's selector, where prepared calls' channels are registered.
+        self.selector: selectors.BaseSelector | None = None
 
     def parked(self) -> list[_Child]:
         return [child for child in self.children.values() if child.kind == "parked"]
@@ -807,6 +814,13 @@ class _Runtime:
                 child.note.settimeout(0.5)
                 child.result = receive(child.note)
             for sock in child.sockets():
+                # Out of the selector before it is closed: a prepared call
+                # reaped before the loop read its channel's EOF left the fd
+                # registered, the next channel given that fd number could
+                # not be registered (KeyError), and the runtime ended.
+                if self.selector is not None:
+                    with contextlib.suppress(KeyError, ValueError):
+                        self.selector.unregister(sock)
                 sock.close()
             if child.spool is not None:
                 for spooled in child.spool:
@@ -1044,6 +1058,7 @@ def serve(prepare: int = 0, ttl: float = 300.0) -> None:
     runtime = _Runtime(path.parent, prepare, ttl)
     runtime.reclaim_dead()
     selector = selectors.DefaultSelector()
+    runtime.selector = selector
     selector.register(listener, selectors.EVENT_READ)
     # No new calls once set; the runtime ends when its running calls (whose
     # host proxies its proxy parents serve) and prepared calls are gone.
@@ -1318,6 +1333,11 @@ class RuntimeMismatch(RuntimeError):
     """A runtime is running here that this start would not have started."""
 
 
+class RuntimeNotAnswering(RuntimeMismatch):
+    """A runtime holds the socket but did not answer in time: no second
+    runtime is started beside it (it would wait on runtime.lock)."""
+
+
 def _running_differs(state: dict[str, Any], prepare: int, ttl: float) -> str | None:
     if state.get("identity") != identity():
         return "it belongs to another installation or source tree"
@@ -1338,6 +1358,11 @@ def start(prepare: int = 0, ttl: float = 300.0) -> None:
     private_dir(path.parent)
     try:
         state = request({"action": "status"})
+    except TimeoutError as exc:
+        raise RuntimeNotAnswering(
+            f"A local runtime in {path.parent} did not answer within "
+            f"{ANSWER_TIMEOUT_S:g} s (it may be busy); no second runtime was started."
+        ) from exc
     except (OSError, EOFError):
         state = None
     if state is None and stopping_runtime() is not None:

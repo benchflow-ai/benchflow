@@ -7,19 +7,23 @@ Daytona runs each trial in a cloud sandbox, so the number of trials at once isn'
 Install BenchFlow with the extra, export your API key, and check that BenchFlow can reach Daytona:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.9.3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.9.3/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.1' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.1/constraints.txt
 export DAYTONA_API_KEY=...
 bench doctor --sandbox daytona
 ```
 
-This output is from 0.9.1; 0.9.3 prints the same lines with its own version:
+This output is from 0.10.1, shortened:
 
 ```text
-BenchFlow doctor - benchflow 0.9.1, Linux x86_64, sandbox daytona
-  PASS  daytona             SDK 0.207.0, DAYTONA_API_KEY accepted by app.daytona.io
-  PASS  app.daytona.io      reachable — Daytona API
+BenchFlow doctor - benchflow 0.10.1, Linux x86_64, sandbox daytona
 ...
+  PASS  daytona             SDK 0.207.0, DAYTONA_API_KEY accepted by app.daytona.io
+...
+  PASS  app.daytona.io      reachable — Daytona API
+  PASS  pypi.org            reachable — model proxy install inside the sandbox
+...
+14 passed, 1 warning, 0 failed, 5 skipped
 ```
 
 Keep `DAYTONA_API_KEY` in your shell. Passing it to the agent with `--agent-env` would put it inside the sandbox.
@@ -51,6 +55,7 @@ Everything else works as on Docker: the same tasks, agents and job folders. Benc
 - **Disk:** Daytona caps each sandbox at 10 GB. A task with a large image or large downloads can fail with `No space left on device`, or stall at "Sandbox user agent ready" with no trajectory; run such tasks on Docker.
 - **Concurrency:** your Daytona plan sets how many sandboxes can run at once; start with `-j` well under it.
 - **Services:** tasks with compose services run, inside the sandbox.
+- **Checkpoints:** a Daytona snapshot takes minutes: 110 to 500 seconds measured, for sandboxes with and without an agent's install (claude-agent-acp's is about 3 GiB). BenchFlow gives it `BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC` seconds, 600 by default. When a create fails anyway, BenchFlow looks for the snapshot until Daytona shows it finished, for up to 300 s (and up to 240 s more at the end of the trial): an active one is the checkpoint after all, a failed one is deleted, and one still being made after that look is deleted at the end of the trial, before the sandbox (Daytona can't delete the sandbox while the snapshot is being made). The trial's `checkpoints.json` says which, under `leftover` (for `bench branch`, the fork's record in `tree.json`), and `daytona-snapshot-leftovers.json` names each one the end of the trial settled. A snapshot that still can't be deleted stays named there. With `BENCHFLOW_DAYTONA_OWNER` set, its name starts with that owner's prefix, `bf-snap2-<first 32 hex digits of the owner's SHA-256>-`, and `bench sandbox cleanup` deletes it once it's stale; without an owner nothing proves a snapshot is yours, so set one on a shared account. The time checkpoints take doesn't count against the trial's hard deadline. A snapshot also sets the ctime of the files the sandbox wrote to the time it starts. The trial's integrity record lists such a file as a `snapshot-ctime` change, not a flag, when only root can write it and its mode, owner, group, size, mtime and link are as before; any other file is compared as it would be without a snapshot.
 - **Services the agent leaves running:** ten Terminal-Bench 2.0 tasks keep their services after the agent's turn, which a `--sandbox daytona` sandbox can't hold for an agent that isn't root, so those trials are refused: `configure-git-webserver`, `git-multibranch`, `hf-model-inference`, `install-windows-3.11`, `kv-store-grpc`, `mailman`, `nginx-request-logging`, `pypi-server`, `qemu-alpine-ssh` and `qemu-startup`. The oracle and nop aren't refused. Run those tasks on Docker or remote Docker ([Bring what you have](../evaluate/bring-what-you-have.md)).
 
 ## Clean up

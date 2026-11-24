@@ -56,6 +56,26 @@ def test_no_job_runs_pytest_without_bfx():
     assert without == [], without
 
 
+def test_the_live_smoke_rollout_builds_the_pinned_bfx_from_the_pr_head():
+    """Guards PR #1251: integration-light's rollout-smoke had no bfx,
+    so its one model-agent trial was refused before the turn on every internal
+    PR from 11-17 (PR #1244's run 44199910131, PR #1250's 44657087309)."""
+    job = yaml.safe_load((WORKFLOW.parent / "integration-light.yml").read_text())[
+        "jobs"
+    ]["rollout-smoke"]
+    runs = [step.get("run") or "" for step in job["steps"]]
+    overlay = _first(runs, 'git checkout "$HEAD_SHA" -- src/benchflow')
+    assert 'git checkout "$HEAD_SHA" -- bfx' in runs[overlay]
+    build = _first(runs, "scripts/build_bfx.sh")
+    assert "BFX_REQUIRE_PIN=1" in runs[build]
+    assert (
+        overlay
+        < _first(runs, "rustup toolchain install")
+        < build
+        < _first(runs, "bench eval run")
+    )
+
+
 def test_the_jobs_the_release_waits_on_run_on_the_gates_docker():
     gate = (ROOT / "tools" / "release_gate" / "bootstrap_vm.sh").read_text()
     packages = (

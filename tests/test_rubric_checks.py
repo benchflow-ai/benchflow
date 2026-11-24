@@ -20,6 +20,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / "tests" / "integration"))
 sys.path.insert(0, str(_REPO_ROOT / ".github" / "scripts"))
@@ -215,6 +217,87 @@ def test_classify_capability_model_capability_on_scored_fail() -> None:
         ev = rubric_checks.load_evidence(dest)
         attribution = rubric_checks.classify_capability(ev)
         assert attribution.label == "model-capability"
+
+
+def _scored(tmp: str, reward: float, **flags) -> rubric_checks.Evidence:
+    dest = Path(tmp) / "rollout"
+    dest.mkdir()
+    (dest / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "fail" if reward < 1 else "pass",
+                "reward": reward,
+                "timing": {
+                    "started_at": "2026-06-01T00:00:00Z",
+                    "ended_at": "2026-06-01T00:03:00Z",
+                    "duration_seconds": 180,
+                },
+                "token_usage": {"input_tokens": 800, "output_tokens": 100},
+                "tool_usage": {"bash": 3},
+                **flags,
+            }
+        )
+    )
+    (dest / "run_config.json").write_text(json.dumps({"skill_mode": "no-skill"}))
+    return rubric_checks.load_evidence(dest)
+
+
+_REFUSED = {
+    "phase": "test.sh",
+    "where": "in-container",
+    "mode": "no-network",
+    "refused": 3,
+    "refused_words": "3 packets",
+    "exit_code": 1,
+    "passed": False,
+}
+
+
+def test_a_scored_0_the_verifier_network_refused_is_not_the_model_s() -> None:
+    """test.sh's refused packets leave a scored 0 with no verifier_error and a
+    read flag: the 0 is put down to the refusal, never to the model."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ev = _scored(tmp, 0.0, verifier_network_refused=_REFUSED)
+        attribution = rubric_checks.classify_capability(ev)
+        assert attribution.label == "experiment-fidelity", attribution
+        assert any("verifier network refused" in r for r in attribution.reasons)
+        gate = rubric_checks.capability_attribution(ev)
+        assert gate[1] == "quarantine", gate
+
+
+@pytest.mark.parametrize(
+    ("flags", "label"),
+    [
+        ({"held_after_restart": [{"service": "side"}]}, "experiment-fidelity"),
+        (
+            {"held_exited": [{"service": "side", "phase": "the agent's turn"}]},
+            "experiment-fidelity",
+        ),
+        (
+            {"held_exited": [{"service": "side", "phase": "test.sh"}]},
+            "experiment-fidelity",
+        ),
+        (
+            {"held_exited": [{"service": "side", "phase": "start-up"}]},
+            "model-capability",
+        ),
+    ],
+    ids=["restarted", "exited-in-turn", "exited-in-test-sh", "one-shot-at-start-up"],
+)
+def test_a_held_service_s_read_flag_is_not_the_model_s(flags, label) -> None:
+    """A held compose service that restarted, or exited after start-up, is
+    flagged for a read: its 0 is not the model's alone. A one-shot service
+    done at start-up is the task's own shape: the 0 stays the model's."""
+    with tempfile.TemporaryDirectory() as tmp:
+        assert (
+            rubric_checks.classify_capability(_scored(tmp, 0.0, **flags)).label == label
+        )
+
+
+def test_a_pass_despite_a_refusal_stays_a_pass() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ev = _scored(tmp, 1.0, verifier_network_refused={**_REFUSED, "passed": True})
+        assert rubric_checks.classify_capability(ev).label == "not-applicable"
 
 
 def test_classify_capability_not_applicable_on_pass() -> None:

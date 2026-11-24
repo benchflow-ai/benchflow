@@ -1,0 +1,36 @@
+# Rules a gate-1 task must keep whenever it is run. A broken one blocks, whatever Harbor scores.
+
+[[must]]
+key = "algotune/algotune-robust-kalman-filter"
+rule = "never_zero"
+reason = "a timing reward floored on slow hardware is never 0"
+
+[[must]]
+key = "sldbench/easy_question_scaling_law"
+rule = "equals_harbor"
+reason = "the reward range rule keeps test.sh's -1.0"
+
+[[must]]
+key = "sldbench/domain_mixture_scaling_law"
+rule = "equals_harbor"
+reason = "a fractional reward kept exactly"
+
+[[must]]
+key = "sldbench/vocab_scaling_law"
+rule = "equals_harbor"
+reason = "a fractional reward kept exactly"
+
+[[must]]
+key = "researchcodebench/dyt_forward"
+rule = "equals_harbor"
+reason = "the plugin-trust path scores the oracle's 1.0"
+
+[[must]]
+key = "researchcodebench/fractalgen_sample_orders"
+rule = "equals_harbor"
+reason = "the plugin-trust path scores the oracle's 1.0"
+
+[[must]]
+key = "svc-seta-env/1243"
+rule = "refused_before_turn"
+reason = "its reference solution fails under BenchFlow's root-exec limit; refused before the turn, never scored"

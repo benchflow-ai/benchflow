@@ -22,6 +22,7 @@ import os
 import shlex
 import tempfile
 import urllib.parse
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -36,10 +37,13 @@ from benchflow.sandbox._base import (
     _filter_compose_service_names,
     _root_exec_command,
     capture_pid1_image_env,
+    env_lines,
+    env_stdin_body,
     restore_image_env,
     system_shell_env_flags,
     system_shell_route,
     with_system_path,
+    wrap_command_with_env_stdin,
 )
 from benchflow.sandbox._compose import (
     COMPOSE_BASE_PATH,
@@ -72,9 +76,13 @@ from benchflow.sandbox._compose_teardown import (
 from benchflow.sandbox._download import RemoteFileAbsentError
 from benchflow.sandbox._exec_output import exec_raw
 from benchflow.sandbox._transport import STAGE_ROOT, fit, reader_cat
+from benchflow.sandbox.daytona_exec_env import attach_env_command, refuse_nul
+
+# The inline wrapper's name stays importable here for the tests that patch
+# it; no exec of this module uses it.
 from benchflow.sandbox.daytona_pty import (
     _exec_failure_output,
-    _wrap_daytona_command_with_env_file,
+    _wrap_daytona_command_with_env_file,  # noqa: F401
 )
 from benchflow.sandbox.daytona_reaper import _benchflow_owned_labels
 from benchflow.sandbox.daytona_strategies import _DaytonaStrategy
@@ -89,6 +97,24 @@ if TYPE_CHECKING:
 # (issue #358), so concrete sandbox params are typed as ``Any`` here — callers
 # build them inside methods that have already called ``_load_daytona_sdk()``.
 _SandboxParams = Any
+
+
+def dind_log_dirs_command(logs_dir: str, mount_points: list[str]) -> str:
+    """sh, as root on the DinD VM: the log folders Compose bind-mounts into
+    the task's containers, and the empty stand-ins for the task folders left
+    out. The agent's and the artifacts' are open to every user; the
+    verifier's, mounted at /logs/verifier, is root's 0755 and shown
+    (``_verifier_dir``, #1247)."""
+    from benchflow.sandbox._verifier_dir import close_verifier_dir_cmd
+
+    dirs = [f"{logs_dir}/{name}" for name in ("verifier", "agent", "artifacts")]
+    return (
+        shlex.join(["mkdir", "-p", *dirs, *mount_points])
+        + " && "
+        + shlex.join(["chmod", "777", dirs[1], dirs[2]])
+        + "; "
+        + close_verifier_dir_cmd(folder=dirs[0])
+    )
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -180,13 +206,19 @@ def _raise_if_startup_provider_error(env: DaytonaSandbox, exc: BaseException) ->
 
 
 def _with_long_exec_heartbeat(
-    command: str, timeout_sec: int | None, tools: str = SYSTEM_PATH
+    command: str,
+    timeout_sec: int | None,
+    tools: str = SYSTEM_PATH,
+    *,
+    stdin: bool = False,
 ) -> str:
     """*command* in the background with a heartbeat on stderr, for long execs.
 
-    The env is inline in *command*, so it applies inside the worker, after
-    the heartbeat's own variables are set: a task variable that shares a
-    name with one of them keeps its value in the command (b162 PY8-MAIN-37).
+    *command* sets its own env, so it applies inside the worker, after the
+    heartbeat's own variables are set: a task variable that shares a name
+    with one of them keeps its value in the command.
+    *stdin*: the worker reads the exec's stdin (the env on it), which a
+    background job would otherwise get as /dev/null.
     """
     if (
         timeout_sec is None
@@ -208,8 +240,11 @@ def _with_long_exec_heartbeat(
             'rm -f "$bf_stop"',
             'bf_cleanup() { rm -f "$bf_out" "$bf_err" "$bf_stop"; }',
             "trap bf_cleanup EXIT",
-            f'(PATH="$bf_task_path"; {command}\n) >"$bf_out" 2>"$bf_err" &',
+            *(["exec 7<&0"] if stdin else []),
+            f'(PATH="$bf_task_path"; {command}\n) '
+            f'{"<&7 7<&- " if stdin else ""}>"$bf_out" 2>"$bf_err" &',
             "bf_pid=$!",
+            *(["exec 7<&-"] if stdin else []),
             "(",
             "  bf_heartbeat_elapsed=0",
             '  while [ ! -e "$bf_stop" ] && kill -0 "$bf_pid" 2>/dev/null; do',
@@ -312,6 +347,21 @@ class _DaytonaDinD(_DaytonaStrategy):
                     ", ".join(sorted(collisions)),
                 )
 
+    async def close_verifier_dir_before_turn(self, *, first_turn: bool = True) -> None:
+        """``/logs/verifier``, the VM folder bind-mounted there, closed again
+        right before a turn, as at setup (#1247). The task's services, main
+        last, are released after that close, so main's own start-up code (an
+        entrypoint that, as root, gives the folder to the image's user) can
+        land after it (:func:`~benchflow.sandbox._verifier_dir.close_again`)."""
+        from benchflow.sandbox._verifier_dir import close_again, close_verifier_dir_cmd
+
+        await close_again(
+            partial(self._vm_exec, timeout_sec=30),
+            close_verifier_dir_cmd(folder=f"{self._LOGS_DIR}/verifier"),
+            first_turn=first_turn,
+            logger=self._env.logger,
+        )
+
     async def _engine_info_json(self) -> str:
         """The inner daemon's ``docker info`` as JSON (empty when it cannot
         say)."""
@@ -328,10 +378,16 @@ class _DaytonaDinD(_DaytonaStrategy):
         timeout_sec: int | None = None,
         cleanup_session: bool = False,
         stdin_payload: bytes | None = None,
+        stdin_file: str | None = None,
     ) -> ExecResult:
         """Run a command on the DinD sandbox VM using sh (Alpine-compatible).
-        *stdin_payload*: the command's stdin (see ``_sandbox_exec``)."""
-        extra = {} if stdin_payload is None else {"stdin_payload": stdin_payload}
+        *stdin_payload*, *stdin_file*: the command's stdin (see
+        ``_sandbox_exec``)."""
+        extra: dict[str, Any] = {}
+        if stdin_payload is not None:
+            extra["stdin_payload"] = stdin_payload
+        if stdin_file is not None:
+            extra["stdin_file"] = stdin_file
         return await self._env._sandbox_exec(
             command,
             cwd=cwd,
@@ -623,14 +679,20 @@ class _DaytonaDinD(_DaytonaStrategy):
         *,
         merge_stderr: bool = True,
         stdin_data: bytes | None = None,
+        stdin_file: str | None = None,
     ) -> ExecResult:
         command = self._compose_cmd(subcommand)
         if getattr(self, "_bootstrap_override", None) is not None:
             command = "unset " + " ".join(_inert_bootstrap.EMPTY_ENV) + "; " + command
         # The VM SDK already returns separate stdout/stderr fields. Accept the
         # shared discovery flag without ever folding diagnostics into records.
-        # *stdin_data*: the command's stdin (a container's staged command).
-        extra = {} if stdin_data is None else {"stdin_payload": stdin_data}
+        # *stdin_data*: the command's stdin (a container's staged command);
+        # *stdin_file*: an env file on the VM as its stdin (a container's env).
+        extra: dict[str, Any] = {}
+        if stdin_data is not None:
+            extra["stdin_payload"] = stdin_data
+        if stdin_file is not None:
+            extra["stdin_file"] = stdin_file
         return await self._vm_exec(
             command,
             env=self._compose_env_vars(),
@@ -662,6 +724,8 @@ class _DaytonaDinD(_DaytonaStrategy):
                 f"{self._LOGS_DIR}/agent",
                 f"{self._LOGS_DIR}/artifacts",
             ),
+            # The freezer's writable-cgroups on main is BenchFlow's own.
+            kept_freezer_main=compose_needs_kept_freezer(self._env),
         )
         if refused:
             raise TaskEnvNotAllowedError({self._env.environment_name: refused})
@@ -748,9 +812,10 @@ class _DaytonaDinD(_DaytonaStrategy):
             raise RuntimeError("Cannot inspect DinD container; retry startup")
         return records[0]
 
-    def _check_bfx_mounts(self, inspected: dict) -> None:
-        """main as created: only BenchFlow's read-only bfx volume at or
-        beneath /.bfx (pin_project calls this on main's inspect)."""
+    def _check_bfx_mounts(self, inspected: dict, *, service: str = "main") -> None:
+        """main, or a service BenchFlow's waiter holds, as created: only
+        BenchFlow's read-only bfx volume at or beneath /.bfx (pin_project
+        calls this on each one's inspect)."""
         from benchflow._bfx import delivery as bfx_delivery
 
         mode = getattr(self._env, "bfx_delivery", None)
@@ -761,7 +826,7 @@ class _DaytonaDinD(_DaytonaStrategy):
         )
         if problems:
             raise RuntimeError(
-                "main has mounts at or beneath /.bfx, where only BenchFlow's "
+                f"{service} has mounts at or beneath /.bfx, where only BenchFlow's "
                 f"read-only bfx may be: {'; '.join(problems)}"
             )
 
@@ -988,15 +1053,14 @@ class _DaytonaDinD(_DaytonaStrategy):
 
             # Create log directories, and the empty stand-ins for the task
             # folders that were left out.
-            log_dirs = [
-                f"{self._LOGS_DIR}/{name}"
-                for name in ("verifier", "agent", "artifacts")
-            ]
-            await self._vm_exec(
-                shlex.join(["mkdir", "-p", *log_dirs, *mount_points])
-                + " && "
-                + shlex.join(["chmod", "777", *log_dirs])
+            # /logs/verifier, the VM folder bind-mounted there, is root's and
+            # 0755 from here on, checked (#1247); the others stay open.
+            from benchflow.sandbox._verifier_dir import check_verifier_dir
+
+            log_setup = await self._vm_exec(
+                dind_log_dirs_command(self._LOGS_DIR, mount_points)
             )
+            check_verifier_dir(getattr(log_setup, "stdout", "") or "")
 
             # Build and start compose services
             self._use_prebuilt = not force_build and bool(
@@ -1062,11 +1126,15 @@ class _DaytonaDinD(_DaytonaStrategy):
             )
 
         sandbox = env._sandbox
+        cancelled = None
         if sandbox:
             try:
                 await self._compose_teardown(timeout_sec=30)
             except Exception as e:
                 env.logger.warning(f"docker compose down failed: {e}")
+            # After compose down, which reads the compose env's file; a cancel
+            # there is raised once the delete below is done.
+            cancelled = await env._remove_exec_traces(VM_ROUTE)
 
         try:
             if not sandbox:
@@ -1088,6 +1156,8 @@ class _DaytonaDinD(_DaytonaStrategy):
         finally:
             if env._sandbox is None:
                 env._client_manager = None
+        if cancelled is not None:
+            raise cancelled
 
     async def exec(
         self,
@@ -1164,14 +1234,15 @@ class _DaytonaDinD(_DaytonaStrategy):
             # The image's loader variables, set empty before /bin/sh loads
             # (empty values only, nothing secret).
             parts.extend(system_shell_env_flags())
-        # Env vars are materialized inside the target container via a
-        # mode-0600 file and sourced, rather than passed as ``-e KEY=VALUE``
-        # flags. The flags would land in the DinD VM's process list (visible
-        # to ``ps`` and any Daytona session audit log) and leak verifier
-        # API keys / agent secrets on every multi-service task (#412
-        # follow-up). Matches the wrapping that ``DaytonaSandbox._sandbox_exec``
-        # already applies to the outer VM-side command. An env too large for
-        # one command is refused before anything runs (b173 PY8-MAIN-39).
+        # The env is never in the container's command or a ``-e KEY=VALUE``
+        # flag: either would be in the DinD VM's process list and the Daytona
+        # session command (#412 follow-up). It goes on ``docker compose
+        # exec``'s stdin from an env file on the VM, uploaded once per
+        # distinct env and opened by root's VM shell (the VM's own compose
+        # env is a file the same way, ``DaytonaSandbox._sandbox_exec``), and
+        # the container's shell sets it from there, as on Docker. A command
+        # over the transport bound is staged: its env lines go first in the
+        # staged payload, data in root's staging folder on the VM.
         if not pin and not getattr(
             getattr(self, "_env", None), "_services_are_kept", False
         ):
@@ -1191,12 +1262,22 @@ class _DaytonaDinD(_DaytonaStrategy):
                 + command
             )
         if env:
-            command = _wrap_daytona_command_with_env_file(
-                env, command, path=route.tools, private=route.kit and route.root
+            refuse_nul(env)
+        # The heartbeat starts the command as a background job: given the
+        # exec's stdin when the env is on it, and inside what a staged
+        # command's reader runs (stdin /dev/null by then) when it is staged.
+        staged_text = _with_long_exec_heartbeat(
+            (env_lines(env) if env else "") + command, timeout_sec, route.tools
+        )
+        if env:
+            command = _with_long_exec_heartbeat(
+                wrap_command_with_env_stdin(command),
+                timeout_sec,
+                route.tools,
+                stdin=True,
             )
-        # The heartbeat starts the command as a background job, whose stdin
-        # is /dev/null: it stays inside what a staged command's reader runs.
-        command = _with_long_exec_heartbeat(command, timeout_sec, route.tools)
+        else:
+            command = staged_text
 
         def routed(inner: str) -> list[str]:
             if pin:
@@ -1223,13 +1304,16 @@ class _DaytonaDinD(_DaytonaStrategy):
         # ``docker compose exec`` passes on from root's staged file on the
         # VM. The VM's own session command is Daytona's to fit in turn.
         fitted = fit(routed, command, cat=reader_cat(route))
-        if fitted.payload is not None:
-            command = fitted.line
         extra: dict[str, Any] = {}
         if cleanup_session:
             extra["cleanup_session"] = True
         if fitted.payload is not None:
-            extra["stdin_data"] = fitted.payload
+            command = fitted.line
+            extra["stdin_data"] = fitted.frame(staged_text.encode())
+        elif env:
+            extra["stdin_file"] = await self._env._exec_env().path(
+                self._env, env_stdin_body(env), VM_ROUTE
+            )
         return await self._compose_exec(
             routed(command), timeout_sec=timeout_sec, **extra
         )
@@ -1569,10 +1653,15 @@ class _DaytonaDinD(_DaytonaStrategy):
                 shell_argv=interactive_root_shell(route),
             )
         )
-        compose_env = " ".join(
-            f"{k}={shlex.quote(v)}" for k, v in self._compose_env_vars().items()
+        # The compose env reaches the remote shell in a file it removes once
+        # opened; the ssh argv names only the file.
+        compose_env = self._compose_env_vars()
+        refuse_nul(compose_env)
+        remote_cmd = (
+            await attach_env_command(env, env_stdin_body(compose_env), compose_cmd)
+            if compose_env
+            else compose_cmd
         )
-        remote_cmd = f"{compose_env} {compose_cmd}"
 
         os.execvp(
             "ssh",

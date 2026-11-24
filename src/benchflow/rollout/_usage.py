@@ -79,6 +79,74 @@ def _provider_failure_from_runtime(runtime: Any) -> ProviderFailure | None:
     return None
 
 
+#: The head of a trial error whose model provider refused the key: the
+#: classifier reads it as ``provider_auth`` before any other marker
+#: (``_utils.scoring``), so the agent's own wrapping of the refusal (an idle
+#: Claude Code, an ACP -32603) never hides it.
+PROVIDER_REFUSED_KEY = "The model provider refused the key"
+
+
+def _provider_failure_from_attempts(path: Any) -> ProviderFailure | None:
+    """The status BenchFlow's model proxy answered the agent's last request
+    with, from its own request record (``trajectory/provider_requests.jsonl``:
+    ``response_start`` / ``request_end``), when that is a refused credential
+    (401, 403); else None.
+
+    The callback log can record such a call as a 500 (LiteLLM's wrapping of
+    an upstream ``AuthenticationError``), which read as "provider unavailable
+    (HTTP 500)" (the bad-key row). Only status codes are read."""
+    import json
+    from pathlib import Path
+
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except (OSError, TypeError):
+        return None
+    status = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") in ("response_start", "request_end")
+            and isinstance(event.get("status"), int)
+        ):
+            status = event["status"]
+    failure = _provider_failure_from_status(status)
+    if failure is not None and failure.marker == "provider auth failed":
+        return failure
+    return None
+
+
+def provider_refused_key_text(failure: ProviderFailure, runtime: Any) -> str:
+    """The trial error's head for a refused key: who refused which variable."""
+    from benchflow.agents.providers import PROVIDERS
+
+    route = getattr(getattr(runtime, "server", None), "route", None)
+    provider = getattr(route, "provider_name", None) or "the model provider"
+    # The variable the user sets (DEEPSEEK_API_KEY), not the proxy's own
+    # copy of it (BENCHFLOW_PROVIDER_API_KEY).
+    config = PROVIDERS.get(provider)
+    auth_env = getattr(config, "auth_env", None)
+    keys = (
+        [auth_env]
+        if isinstance(auth_env, str) and auth_env
+        else [
+            key
+            for key in getattr(route, "required_env", ()) or ()
+            if key.endswith(("_API_KEY", "_KEY", "_TOKEN"))
+            and not key.startswith("BENCHFLOW_")
+        ]
+    )
+    named = f" for {', '.join(keys)}" if keys else ""
+    return (
+        f"{PROVIDER_REFUSED_KEY} (HTTP {failure.status}): {provider} answered "
+        f"{failure.status}{named}; check the key, then resume the job"
+    )
+
+
 def _provider_auth_status_from_runtime(runtime: Any) -> int | None:
     """Backward-compatible auth-only view of provider failure extraction.
 

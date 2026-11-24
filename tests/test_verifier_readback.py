@@ -222,22 +222,35 @@ async def test_taskmd_reads_the_ctrf_test_sh_left(tmp_path):
 # -- #7 -------------------------------------------------------------------------
 
 
-async def test_a_network_refusal_beside_the_agents_processes_says_so(
-    tmp_path, monkeypatch
-):
-    from benchflow.rollout import _reward_provenance, _setup
-    from benchflow.task.verifier_errors import VerifierNetworkRefusedError
-    from tests.test_verifier_lost_exec import _score
-    from tests.test_verifier_lost_exec import _setup as setup
+def test_a_network_refusal_beside_the_agents_processes_says_so():
+    """The refusal's read flag and record say whose packets are unknown when
+    the agent's processes were alive during test.sh; the score is not
+    touched."""
+    from types import SimpleNamespace
 
-    async def refused(*args, **kwargs):
-        raise VerifierNetworkRefusedError("the verifier's network refused it 3 packets")
+    from benchflow._utils.trial_warnings import recording_trial_warnings
+    from benchflow.rollout import _setup
 
-    monkeypatch.setattr(_setup, "_await_verifier", refused)
-    for alive, says in ((True, True), (False, False)):
-        task, paths, env = setup(tmp_path / str(alive), "exit 0\n")
+    refusal = {
+        "phase": "test.sh",
+        "where": "in-container",
+        "mode": "no-network",
+        "refused": 3,
+        "refused_words": "3 packets",
+        "exit_code": 1,
+        "passed": False,
+    }
+    for alive in (True, False):
         rows = [{"where": "processes", "after": {"pid": 7, "argv": "sleep 99"}}]
-        env._benchflow_verifier_inputs = {"flags": [], "changes": rows if alive else []}
-        rewards, error, _ = await _score(task, paths, env)
-        assert rewards is None, rewards
-        assert error.endswith(_reward_provenance.NETWORK_ALIVE) is says, error
+        env = SimpleNamespace(
+            _benchflow_verifier_inputs={"flags": [], "changes": rows if alive else []}
+        )
+        verifier = SimpleNamespace(network_refusal=dict(refusal))
+        with recording_trial_warnings() as warnings:
+            _setup._verifier_network_refused(env, verifier)
+        record = warnings.records["verifier_network_refused"]
+        assert record.get("agent_processes_alive") is (True if alive else None)
+        (line,) = warnings
+        assert ("whose traffic it was is unknown" in line) is alive, line
+        assert "refused test.sh 3 packets" in line, line
+        assert "scored as test.sh says" in line, line

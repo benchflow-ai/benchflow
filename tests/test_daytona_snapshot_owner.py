@@ -76,7 +76,13 @@ async def test_daytona_direct_snapshot_uses_the_owner_name(monkeypatch):
     )
     sandbox._sandbox = SimpleNamespace(
         id="sb-1",
-        _experimental_create_snapshot=AsyncMock(side_effect=created.append),
+        _experimental_create_snapshot=AsyncMock(
+            side_effect=lambda name, **kwargs: created.append(name)
+        ),
+        # The toolbox exec that clears Daytona's session files first.
+        process=SimpleNamespace(
+            exec=AsyncMock(return_value=SimpleNamespace(exit_code=0))
+        ),
     )
     sandbox._strategy = _DaytonaDirect(sandbox)
     # No credential files in this sandbox: the scrub lists nothing.

@@ -18,7 +18,8 @@ freeze's git hook and config purge and the verifier env's GIT_CONFIG keys; and f
 freeze walk that skips an entry gone mid-walk: one command changed; and for the
 symlink purge's walk, which skips a folder gone before it is entered: one
 command changed; and for the verifier env's five GIT_CONFIG pins, diff.external no longer one;
-and for the conftest sweep's image-manifest argument ((A))) for success
+and for the conftest sweep's image-manifest argument ((A)); and for the conftest
+sweep, which now walks /dev: one command changed) for success
 and for each step failing or timing out: which steps ran, the kill defense row, as which user and
 with which budget, each step's exact command, the error hardening raised, the
 verifier env's keys, and the ``harden_before_verify`` sub-keys the trial's

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import os
 import sys
 import tomllib
@@ -48,17 +49,46 @@ def compute_internal_preview_version(
     current = _parse_version(version_text)
     normalized_run_number = _normalize_run_number(run_number)
 
-    if current.is_devrelease and current.pre is None and current.local is None:
+    if current.is_devrelease and current.local is None:
+        # A release line carries its next candidate with .dev0
+        # (0.10.1rc1.dev0): the preview keeps the candidate's pre-release part.
         return InternalPreviewDecision(
             publish=True,
-            version=f"{current.base_version}.dev{normalized_run_number}",
+            version=f"{_without_dev(current)}.dev{normalized_run_number}",
         )
     if _is_public_release(current):
         return InternalPreviewDecision(publish=False)
     raise ReleaseVersionError(
-        "Internal preview releases must be based on a plain .dev version "
+        "Internal preview releases must be based on a .dev version "
         f"or a public-release staging version (final or a/b/rc), got {current}."
     )
+
+
+def compute_nightly_version(version_text: str, day: dt.date) -> InternalPreviewDecision:
+    """The nightly's version: the tree's ``.dev`` version stamped with the date.
+
+    ``0.10.1.dev0`` on 2026-11-18 is ``0.10.1.dev20261118``: after 0.10.0 and
+    before 0.10.1 (and before 0.10.1's candidates), so ``pip install benchflow``
+    never takes it. A commit that carries a final or a/b/rc version is a
+    release's, and publishes no nightly.
+    """
+    current = _parse_version(version_text)
+    if current.is_devrelease and current.local is None:
+        return InternalPreviewDecision(
+            publish=True, version=f"{_without_dev(current)}.dev{day:%Y%m%d}"
+        )
+    if _is_public_release(current):
+        return InternalPreviewDecision(publish=False)
+    raise ReleaseVersionError(
+        f"Nightlies are built from a .dev version, got {current}."
+    )
+
+
+def _without_dev(version: Version) -> str:
+    """The release (and pre-release part) a .dev version leads to: 0.10.1rc1 for 0.10.1rc1.dev0."""
+    pre = "".join(str(part) for part in version.pre) if version.pre else ""
+    epoch = f"{version.epoch}!" if version.epoch else ""
+    return f"{epoch}{version.base_version.split('!')[-1]}{pre}"
 
 
 def _is_public_release(version: Version) -> bool:
@@ -152,6 +182,22 @@ def _cmd_public_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_nightly(args: argparse.Namespace) -> int:
+    day = (
+        dt.date.fromisoformat(args.date)
+        if args.date
+        else dt.datetime.now(dt.UTC).date()
+    )
+    decision = compute_nightly_version(read_project_version(args.pyproject), day)
+    write_github_output(
+        {
+            "publish": "true" if decision.publish else "false",
+            "version": decision.version,
+        }
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -187,6 +233,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Release tag name. Defaults to TAG_NAME.",
     )
     public_release.set_defaults(func=_cmd_public_release)
+
+    nightly = subparsers.add_parser(
+        "nightly",
+        help="Compute the date-stamped nightly version of a .dev tree.",
+    )
+    nightly.add_argument(
+        "--pyproject",
+        type=Path,
+        default=Path("pyproject.toml"),
+        help="Path to pyproject.toml.",
+    )
+    nightly.add_argument(
+        "--date", help="The nightly's UTC date, YYYY-MM-DD (default: today)."
+    )
+    nightly.set_defaults(func=_cmd_nightly)
 
     return parser
 

@@ -1,0 +1,7 @@
+Task   Outcome  Reward  Cost       Tokens    Time
+state  passed        1  ≥~$0.0039  22,845  2m 27s
+
+Score       Model cost  Tokens  Wall time
+1/1 passed  ≥~$0.0039   22,845  2m 28s
+Every attempt: ≥~$0.0080, ≥34,488 tokens (2 attempts, 1 stopped, 1 counted from its logs)
+Results: jobs/2026-11-18__03-30-13/

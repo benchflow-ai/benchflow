@@ -1,6 +1,6 @@
 """``bench hosted`` and :mod:`benchflow.hosted` against a local stub of the hosted service.
 
-The stub speaks BenchHub's hosted-run API (benchhub PR #7, src/benchhub/api/app.py): ``POST /api/v1/runs`` (and
+The stub speaks the hosted service's run API: ``POST /api/v1/runs`` (and
 ``/estimate``) with ``env_id`` a hub version id, answering ``{"run_id", "warnings", "runtime"}`` or a 400 with a
 ``detail``; ``GET /api/v1/runs/{id}`` with ``status`` queued, starting, running, then succeeded, failed or cancelled,
 ``n_traces``, ``n_expected`` and ``mean_reward``; ``/events``, ``/log``, ``/metrics``, ``GET
@@ -128,7 +128,7 @@ class Stub:
             return 200, {}, _json({"kinds": {}, "items": self.secrets})
         if route == ("POST", "/api/v1/secrets"):
             got = json.loads(body)
-            if got["kind"] == "daytona":  # the service quotes what it refused
+            if got["name"] == "REFUSED":  # the service quotes what it refused
                 return (
                     400,
                     {},
@@ -259,8 +259,8 @@ def test_the_checksum_can_be_left_to_the_service(monkeypatch):
         ("  ", "is not set"),
         (KEY[:-1], "wrong length"),
         (KEY + "x", "wrong length"),
-        ("sk-ant-" + "x" * 30, "not a BenchFlow Hub or BenchHub key"),
-        ("bhw_abc_" + "x" * 30, "not a BenchFlow Hub or BenchHub key"),
+        ("sk-ant-" + "x" * 30, "not a BenchFlow Hub or hosted-service key"),
+        ("bhw_abc_" + "x" * 30, "not a BenchFlow Hub or hosted-service key"),
     ],
 )
 def test_keys_that_cannot_be_keys_are_refused(key, words):
@@ -268,7 +268,7 @@ def test_keys_that_cannot_be_keys_are_refused(key, words):
         check_api_key(key)
 
 
-def test_benchhub_keys_are_sent_unchanged(stub):
+def test_the_services_own_keys_are_sent_unchanged(stub):
     stub.key = BH_KEY
     client = HostedClient.from_env(key=f" {BH_KEY}\n")
     assert client.key == BH_KEY
@@ -425,7 +425,7 @@ def test_an_error_that_echoes_the_key_is_masked(stub):
     assert "revoked" in result.output
 
 
-def test_an_echoed_benchhub_secret_is_masked(stub):
+def test_an_echoed_service_secret_is_masked(stub):
     """review: a bh_<prefix>_<secret> key's secret is masked even when
     the service echoes it alone. The server splits a key with split("_", 2),
     and a token_urlsafe secret often holds "_" itself (this one does)."""
@@ -763,6 +763,7 @@ def test_a_run_brings_its_own_keys_from_files_and_variables(
 ):
     keyfile = tmp_path / "ds.key"
     keyfile.write_text(DS + "\n")
+    keyfile.chmod(0o600)
     monkeypatch.setenv("MY_CPA_KEY", CPA)
     result = _bench(
         "run", "PKG-GPQA-DIAMOND", "-a", "claude-agent-acp", "-m", "deepseek/deepseek-flash",
@@ -822,6 +823,7 @@ def test_secrets_are_stored_listed_and_deleted_without_their_values_showing(
     assert DS not in result.output and "--secret DS" in _text(result)
     keyfile = tmp_path / "cpa.key"
     keyfile.write_text(CPA)
+    keyfile.chmod(0o600)
     result = _bench(
         "secret",
         "endpoint",
@@ -852,7 +854,7 @@ def test_secrets_are_stored_listed_and_deleted_without_their_values_showing(
     # a refusal that quotes the value is masked
     refused = CliRunner().invoke(
         app,
-        ["hosted", "secret", "set", "D", "--kind", "daytona"],
+        ["hosted", "secret", "set", "REFUSED", "--kind", "deepseek"],
         input=DS,
         prog_name="bench",
         env={"COLUMNS": "200"},
@@ -860,3 +862,176 @@ def test_secrets_are_stored_listed_and_deleted_without_their_values_showing(
     assert (
         refused.exit_code == 2 and DS not in refused.output and "***" in refused.output
     )
+
+
+# --- what 0.10.0rc4's dogfood found ---------------------------------------------------------------------------
+# `bench hosted`: what a user hit in 0.10.0rc4's dogfood.
+#
+# - A model key file others can read was sent (the hub key file is refused at
+#   mode 644, a `--model-key file:` was not).
+# - An `--endpoint http://...` was accepted. The hosted workers call the
+#   endpoint from the service, so it must be https and reachable from the
+#   internet; a CLIProxy on the user's own machine is neither.
+# - `secret set --kind openai` went to the network while `--model-key openai=`
+#   was refused locally.
+# - The key-file refusal printed its own path as `***`, so its fix line could
+#   not be followed.
+# - `estimate` and `secret set|endpoint|rm` had no `--json`.
+
+CPA_E = "cpa-" + "e" * 40
+
+
+def _keyfile(tmp_path, mode: int, value: str = DS):
+    path = tmp_path / "plainfile"
+    path.write_text(value + "\n")
+    os.chmod(path, mode)
+    return path
+
+
+def test_a_model_key_file_others_can_read_is_refused(stub, tmp_path):
+    keyfile = _keyfile(tmp_path, 0o644)
+    result = _bench(
+        "run", "PKG-GPQA-DIAMOND", "-a", "claude-agent-acp",
+        "--model-key", f"deepseek=file:{keyfile}",
+    )  # fmt: skip
+    text = _text(result)
+    assert result.exit_code == 2, result.output
+    assert "can be read by others" in text and f"chmod 600 {keyfile}" in text
+    assert stub.requests == [] and DS not in result.output
+
+
+def test_an_owner_only_model_key_file_is_read(stub, tmp_path):
+    keyfile = _keyfile(tmp_path, 0o600)
+    result = _bench(
+        "run", "PKG-GPQA-DIAMOND", "-a", "claude-agent-acp",
+        "--model-key", f"deepseek=file:{keyfile}",
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    body = json.loads(stub.requests[-1]["body"])
+    assert body["secrets_once"][0]["value"] == DS
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://cpa.example.com",
+        "https://localhost:8317",
+        "https://127.0.0.1:8317",
+        "https://10.0.0.5",
+        "https://" + "user:pass" + "@cpa.example.com",
+    ],
+)
+def test_the_endpoint_must_be_https_and_reachable_from_the_internet(
+    stub, tmp_path, url
+):
+    keyfile = _keyfile(tmp_path, 0o600, CPA_E)
+    result = _bench(
+        "run", "PKG-GPQA-DIAMOND", "-a", "claude-agent-acp",
+        "--endpoint", url, "--endpoint-key", f"file:{keyfile}",
+    )  # fmt: skip
+    text = _text(result)
+    assert result.exit_code == 2, result.output
+    assert "https only, reachable from the internet" in text, text
+    assert stub.requests == [] and CPA_E not in result.output
+
+
+def test_a_stored_endpoint_must_be_https_too(stub, tmp_path):
+    keyfile = _keyfile(tmp_path, 0o600, CPA_E)
+    result = _bench(
+        "secret", "endpoint", "CPA_E", "--url", "http://cpa.example.com",
+        "--from", f"file:{keyfile}",
+    )  # fmt: skip
+    assert result.exit_code == 2 and "https only" in _text(result), result.output
+    assert stub.requests == []
+
+
+def test_an_account_key_kind_is_checked_before_the_network(stub):
+    result = CliRunner().invoke(
+        app,
+        ["hosted", "secret", "set", "OA", "--kind", "openai"],
+        input=DS + "\n",
+        prog_name="bench",
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 2, result.output
+    assert "anthropic, deepseek, kimi, zai, mimo" in _text(result)
+    assert stub.requests == []
+
+
+def test_the_key_file_refusal_names_its_path(stub, tmp_path, monkeypatch):
+    keyfile = tmp_path / "plainfile"
+    keyfile.write_text(KEY + "\n")
+    os.chmod(keyfile, 0o644)
+    result = _bench("status", "r1", "--key-file", str(keyfile))
+    text = _text(result)
+    assert result.exit_code == 2, result.output
+    assert f"the key file {keyfile} can be read by others" in text, text
+    assert f"chmod 600 {keyfile}" in text, text
+    assert "***" not in text
+
+
+def test_a_literal_key_on_the_command_line_is_still_masked():
+    from benchflow.cli._errors import _secrets
+
+    found = _secrets(["hosted", "run", "x", "--model-key", "deepseek=" + DS])
+    assert any(DS in s for s in found)
+    for argv in (
+        ["hosted", "run", "x", "--key-file", "/tmp/plainfile"],
+        ["hosted", "run", "x", "--model-key", "deepseek=file:/tmp/k.key"],
+        ["hosted", "run", "x", "--endpoint-key", "env:MY_KEY"],
+        ["hosted", "secret", "set", "D", "--kind", "deepseek", "--from", "-"],
+    ):
+        assert not any(
+            word in s
+            for s in _secrets(argv)
+            for word in ("/tmp/plainfile", "file:/tmp/k.key", "env:MY_KEY")
+        ), argv
+
+
+def _hosted_commands():
+    from typer.main import get_command
+
+    group = get_command(app).commands["hosted"]
+    out = []
+
+    def walk(cmd, path):
+        if hasattr(cmd, "commands"):
+            for name, sub in cmd.commands.items():
+                walk(sub, (*path, name))
+        else:
+            out.append((" ".join(path), cmd))
+
+    walk(group, ())
+    return out
+
+
+def test_every_hosted_command_takes_json():
+    missing = [
+        name
+        for name, cmd in _hosted_commands()
+        if not any("--json" in p.opts for p in cmd.params)
+        and name not in ("trajectories", "download", "logs")
+    ]
+    assert missing == [], missing
+
+
+def test_estimate_and_secret_commands_print_json(stub, tmp_path):
+    est = _bench("estimate", "PKG-GPQA-DIAMOND", "--json", "--max-cost-usd", "2")
+    assert est.exit_code == 0, est.output
+    json.loads(est.output)
+    assert json.loads(stub.requests[-1]["body"]).get("extra") == {"max_cost_usd": 2.0}
+    keyfile = _keyfile(tmp_path, 0o600)
+    stored = _bench(
+        "secret",
+        "set",
+        "DS",
+        "--kind",
+        "deepseek",
+        "--from",
+        f"file:{keyfile}",
+        "--json",
+    )
+    assert stored.exit_code == 0, stored.output
+    assert json.loads(stored.output)["name"] == "DS" and DS not in stored.output
+    removed = _bench("secret", "rm", "DS", "--json")
+    assert removed.exit_code == 0 and json.loads(removed.output) == {"deleted": "DS"}

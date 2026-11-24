@@ -1098,5 +1098,1398 @@
         "digest": "sha256:04c02cd09f7c1a7f3accda129d2975c9f9e3fa470a9d65be1f9b8af8eb972bca"
       }
     ]
+  },
+  {
+    "name": "gpqa-diamond",
+    "version": "1.0",
+    "description": "GPQA Diamond: 198 graduate-level multiple-choice science questions (Rein et al., 2023; CC BY 4.0), from laude-institute/harbor-datasets pinned to commit 1983ac5c with a content digest per task.",
+    "tasks": [
+      {
+        "name": "0",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/0",
+        "digest": "sha256:48c3693d3053c0e01c9ad1207380c0e5d0af6201a06fe47815b0617ee88d5573"
+      },
+      {
+        "name": "1",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/1",
+        "digest": "sha256:27fd49a25cf275239f660df3d9c4d0558a83beb4209d7ef2c629ee5f0cf0ab4f"
+      },
+      {
+        "name": "2",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/2",
+        "digest": "sha256:3b6fa74625f8d29a67fa05579d543302144fc3b11c48f8ae4a8e00329a31e1c5"
+      },
+      {
+        "name": "3",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/3",
+        "digest": "sha256:d664c4d2a08ebb058d6143d4eb5f00e790d06e5023870d0af63898b0cb7dfa07"
+      },
+      {
+        "name": "4",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/4",
+        "digest": "sha256:02d295adb3cd45a96d6ceac614de0d87c0e5eac7279663f155c94743effb8217"
+      },
+      {
+        "name": "5",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/5",
+        "digest": "sha256:e20ec9feeb2d320514c947fb5df823a6e286f07b71ac33350ff7b16bf75893f2"
+      },
+      {
+        "name": "6",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/6",
+        "digest": "sha256:9ecb6276487c0dbdad3ef65a6d03249d7385633f1c3be33c2d188873529f4b5c"
+      },
+      {
+        "name": "7",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/7",
+        "digest": "sha256:4cfcc16ac78d8735eb31a38ded4abe7c631b817d112199ae9a073053df9bbed7"
+      },
+      {
+        "name": "8",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/8",
+        "digest": "sha256:9081d13fd7d0921007f9aea8375cf01dde4c4b0b267bae9b42773026231f2c94"
+      },
+      {
+        "name": "9",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/9",
+        "digest": "sha256:c710b47d65c324e43a55ee027534d300f354a9533ea50acebbe730d09abaddc3"
+      },
+      {
+        "name": "10",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/10",
+        "digest": "sha256:1a8fdc9076f720ed0387204214461d7ad61c0d541d1ee0ebbb1d5a0710112640"
+      },
+      {
+        "name": "11",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/11",
+        "digest": "sha256:da54974a59c95041ea55fbeeea199c50adacefbc6879b7385384c7cd0f444e5f"
+      },
+      {
+        "name": "12",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/12",
+        "digest": "sha256:06b4662b4d12cda08075134ca93d1ccd07ffab8483740e15f5df8dd3f35b0ebb"
+      },
+      {
+        "name": "13",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/13",
+        "digest": "sha256:41b01785efdfe9e5810876d9698b0cbba9e56ea05bb587b0bcb6cf2ce3d219d6"
+      },
+      {
+        "name": "14",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/14",
+        "digest": "sha256:92d50593eb3ef5f01428d243089b246b1f649a448bc086dac60fe4963d07f801"
+      },
+      {
+        "name": "15",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/15",
+        "digest": "sha256:c3e7d5d315b00cf45be46623d3beb3ea9cc36bf3b6534f8d3b34e3bb726298b2"
+      },
+      {
+        "name": "16",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/16",
+        "digest": "sha256:fe751cb9d31579179d9a2d4e584693f8793135328aece85f2bcdff293eca82ed"
+      },
+      {
+        "name": "17",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/17",
+        "digest": "sha256:82135e359b6c1102c6793aa9691e63dd4fb58ed13a3fa7c9b637baa5da53c2e9"
+      },
+      {
+        "name": "18",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/18",
+        "digest": "sha256:3c5a4606aebbd71502fc3d35ed5755029a1b63b9f7f45def882a7ad10072e368"
+      },
+      {
+        "name": "19",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/19",
+        "digest": "sha256:34c1be45132c4f87d65da37268476323d73e8c19896f0e305b7eb4ebf4ad1d5d"
+      },
+      {
+        "name": "20",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/20",
+        "digest": "sha256:275055cf6cbf54076c5c2e8ca39e92c8da7514cd3aed248f0c8d6f7c2c7b6b1c"
+      },
+      {
+        "name": "21",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/21",
+        "digest": "sha256:e5235151893226888363483324b229daa3f485f4fff5c2084ea32dc8365aa363"
+      },
+      {
+        "name": "22",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/22",
+        "digest": "sha256:bd9e091292d67ccc2a6884ef78ad65a650895e324a9a7245188821148dd2803c"
+      },
+      {
+        "name": "23",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/23",
+        "digest": "sha256:34f2ef500c2723690e710d60203a01a2395f553c04012f5ad606b3e1f06b95c3"
+      },
+      {
+        "name": "24",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/24",
+        "digest": "sha256:82e3b05ff973627589ba576d542bef387e4f6a64bdb036617c1bc8aa6b17368b"
+      },
+      {
+        "name": "25",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/25",
+        "digest": "sha256:36f4a0d2b91c3656111667f2f646bc564c22a41a04c4704b8beee9e0b19fea6b"
+      },
+      {
+        "name": "26",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/26",
+        "digest": "sha256:33eb4dc5e11e90fdbcf356d5af6cb1ee4a6113331a65f3d9f37bdd0ec1f80c6c"
+      },
+      {
+        "name": "27",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/27",
+        "digest": "sha256:b8d91b2628dabb79b85779acf840ff5acd8f353f82313e6b30dd6761f84f8615"
+      },
+      {
+        "name": "28",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/28",
+        "digest": "sha256:20432c8bae516a9f7815fbafbec00c6ce18f7b0136128fd95ac953e26bd8c780"
+      },
+      {
+        "name": "29",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/29",
+        "digest": "sha256:765b61e58d8061236d68e49e7c4635004b012476c422cbe7712fd5dec97c142b"
+      },
+      {
+        "name": "30",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/30",
+        "digest": "sha256:be84dac96c57a4160dea997fa611bd4f3e5358c90916c5a88847417e681e0ace"
+      },
+      {
+        "name": "31",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/31",
+        "digest": "sha256:337eeab1b5676d8c6f135689328259d02ff45da516bd2784a55eb2686f1199d2"
+      },
+      {
+        "name": "32",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/32",
+        "digest": "sha256:9af76686e05c98bc156784387a6df9aaf7a1e2cf188c231b0398e8611be2461a"
+      },
+      {
+        "name": "33",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/33",
+        "digest": "sha256:f94f3d7a92e793994b372e15dfd84cc31b2eab8ae611960518deb67d2759bb8a"
+      },
+      {
+        "name": "34",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/34",
+        "digest": "sha256:c86a92f8bb0bbfe60dbc699d7968b5a5102a8c53f2193fe7cbc9a70b7702016a"
+      },
+      {
+        "name": "35",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/35",
+        "digest": "sha256:c796d7ce418ad2479a965b15e35d840beac3729b09ea008b56b9ddbc68097d1a"
+      },
+      {
+        "name": "36",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/36",
+        "digest": "sha256:4aa6cbfe04188161e8feb253ac073b094428b5e6a26b762cbc86e0591859aef5"
+      },
+      {
+        "name": "37",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/37",
+        "digest": "sha256:9880aee514f81772be5c940175bf6c1842490c8b8a940b0a9398aa8c9a63ae14"
+      },
+      {
+        "name": "38",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/38",
+        "digest": "sha256:6c17db766a898524b3fa74b12f116f61e8db37bc12f3ab5b48f93987569e106a"
+      },
+      {
+        "name": "39",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/39",
+        "digest": "sha256:8435c84f609e6c1903114da7c3449a60f8b16589e0b61d2509062704c367a9d4"
+      },
+      {
+        "name": "40",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/40",
+        "digest": "sha256:983048f1d4dfc89b499543711d2f9ac87f6a2a76d007b62eefd281b3cbb9f348"
+      },
+      {
+        "name": "41",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/41",
+        "digest": "sha256:302181b5315c34153adae22c03076154f318d7c684f2776ccb49e383c15feaee"
+      },
+      {
+        "name": "42",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/42",
+        "digest": "sha256:5ce813c13fe5d201467c26fdc4d0fb64946903a060cfa89dbb4aa787a97e98bc"
+      },
+      {
+        "name": "43",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/43",
+        "digest": "sha256:e7e8c9b693eb7c1b9e6e39d3992ec4135626bbab0ecc116e8d144c74495aab46"
+      },
+      {
+        "name": "44",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/44",
+        "digest": "sha256:e2ff8416a60945257d4810ee72e831c6e725d331ec0e5d5a2735e80e8b465895"
+      },
+      {
+        "name": "45",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/45",
+        "digest": "sha256:f5787c1d60376b0e9469f52274ebfdf93551dc3832d98cf892186e9410bac663"
+      },
+      {
+        "name": "46",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/46",
+        "digest": "sha256:2bdebd3605480fac19574e4e3efdaa3588f6c3dd5c762d4561f2317cc575b024"
+      },
+      {
+        "name": "47",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/47",
+        "digest": "sha256:6c18871a484e73bbce448b28760ff1afa1d86969a9eccffee873fd5533cfd0f3"
+      },
+      {
+        "name": "48",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/48",
+        "digest": "sha256:d11685c7fe8a1ef7c1fe2b5ff76b4e35fd3ad50ffe590d793fcfe23a7197313d"
+      },
+      {
+        "name": "49",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/49",
+        "digest": "sha256:f367c67a849bf089cb184b488bf270e467a0dc9a008d9b04b736908a42636aa4"
+      },
+      {
+        "name": "50",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/50",
+        "digest": "sha256:067899b4d95e6a7d6986ed06d0b923cd08d1c91dd1e8c22e1707ee1e97053ef8"
+      },
+      {
+        "name": "51",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/51",
+        "digest": "sha256:8a2700389368853193e538a0f7902dd5bbdb2497b1760a13a22db7585b7aef90"
+      },
+      {
+        "name": "52",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/52",
+        "digest": "sha256:ffe1f651473b3b6dea86230bfc69c004c5d5a2a7eecc67d8f0d179f0b72926cf"
+      },
+      {
+        "name": "53",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/53",
+        "digest": "sha256:9642e5014b1d28629663a0a411ca8b53170c63d7d02100aeae9bbbe082d97d6d"
+      },
+      {
+        "name": "54",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/54",
+        "digest": "sha256:c3595e1546719960fd073256da340b5f842b4a05fe3550221177dec4ed6174be"
+      },
+      {
+        "name": "55",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/55",
+        "digest": "sha256:8200b5c056d3cc04a2c986a2f82100a3a9f90c251309a98ebb6480444d405cf5"
+      },
+      {
+        "name": "56",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/56",
+        "digest": "sha256:fdffaaf34fb4bef6820d9c2792d1adae5842c4e5194cedd0355e441dcc8ffcf5"
+      },
+      {
+        "name": "57",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/57",
+        "digest": "sha256:bbf03b279d312c3d0bd2da4fd6130aafadc9a73b6f23fbf98e5aef46e9dfbe0e"
+      },
+      {
+        "name": "58",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/58",
+        "digest": "sha256:7ca846167071041db872b54d419597f557a3b927fa65b3ab6213c3901380ffff"
+      },
+      {
+        "name": "59",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/59",
+        "digest": "sha256:4adb3d574f169de7c93f73b88aaec3b65c801e64e472fb4482244a215303a715"
+      },
+      {
+        "name": "60",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/60",
+        "digest": "sha256:2ca0c6af01d57d6d01b499a44c98deb866df486910aafccc0f5ac2ab5664083a"
+      },
+      {
+        "name": "61",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/61",
+        "digest": "sha256:23edd698611bf86a7b6965bfd1694dc5ba02af5c7aec4d3bc59f2762189356bb"
+      },
+      {
+        "name": "62",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/62",
+        "digest": "sha256:c638a8825bb62077fb4b6c5c5619230b88108ff0c94d380561fa3a8119ededec"
+      },
+      {
+        "name": "63",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/63",
+        "digest": "sha256:a771b51873d86fa0cb25d79a564295b548a09bfede5d3aabae5e9b943f82fabc"
+      },
+      {
+        "name": "64",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/64",
+        "digest": "sha256:87abe2898fa6c8b45ae27d18acc6744fed35df51a13b6e4a64984832fa04ac8a"
+      },
+      {
+        "name": "65",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/65",
+        "digest": "sha256:0bbde409230cbb2a967fe63073a0564e559a2e28d20328a1f3c0c402993c2752"
+      },
+      {
+        "name": "66",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/66",
+        "digest": "sha256:80121f4367d9b18d99d46b33e588393a9ce41044074a98f4454a51c7858463bd"
+      },
+      {
+        "name": "67",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/67",
+        "digest": "sha256:a0045c11a59a2b6a74a6d6f05993d7a6c7fa761addeef2c586f63f53b64a15b7"
+      },
+      {
+        "name": "68",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/68",
+        "digest": "sha256:4375cd27ac0a802a3bfc612fac6c9ac41631b123cc27bdf0f401134f67c3cc5d"
+      },
+      {
+        "name": "69",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/69",
+        "digest": "sha256:9e86a88c958c9e643f6196c96f4c5a16e89b9e637c7faa4d7a540f8f61ee40e5"
+      },
+      {
+        "name": "70",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/70",
+        "digest": "sha256:b8fb1ae8a42f701879a69cff5a76a8d05d13b7fff3c52d9ad68b2aa993a94fd9"
+      },
+      {
+        "name": "71",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/71",
+        "digest": "sha256:dd2a50bdeb77d42b949082e2c5df3df2cd7ba0bc2216a6b882d609e9bba9a8e1"
+      },
+      {
+        "name": "72",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/72",
+        "digest": "sha256:3b2a3a80d477012853d32ae13c4efdad2af16cdcf212a67ed744e45337cc69f1"
+      },
+      {
+        "name": "73",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/73",
+        "digest": "sha256:b981695d197ba66fd264c851adc16f675da1ad2c17924f64179c1929702b1a2a"
+      },
+      {
+        "name": "74",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/74",
+        "digest": "sha256:270b3e68dc2fe6cb236c7df6f4ae3b368bc060fe60dfc4945be9cd93571d704e"
+      },
+      {
+        "name": "75",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/75",
+        "digest": "sha256:a63b8976c3d349c3ea24565ee5da513b1d927f11fbcf30f2a18849c25a7489a0"
+      },
+      {
+        "name": "76",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/76",
+        "digest": "sha256:eb41d20e213ccc6ffa934a73c4d26688a6f80b1412802894167d35cdd1663b66"
+      },
+      {
+        "name": "77",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/77",
+        "digest": "sha256:12bb14cbbabb1eb26ec0a755ccd2cd1d86d822a1e07f54922379925f96c33733"
+      },
+      {
+        "name": "78",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/78",
+        "digest": "sha256:678dc084eb3c93e2031ff857c9c1e91ad508a09222d028ca0536becc58d45463"
+      },
+      {
+        "name": "79",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/79",
+        "digest": "sha256:bc15ef119851ed27726036b7b692391d60ddb6c26b556dd86c08b86f7d4f611c"
+      },
+      {
+        "name": "80",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/80",
+        "digest": "sha256:5b9748b556887daac752231e5cdcf07494d5770a7e9c0b2b7f4a7d428820ccc7"
+      },
+      {
+        "name": "81",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/81",
+        "digest": "sha256:a6dcaf2d38857d7915e0539ac473e6bb9e3a2436bed48788858935a889611c89"
+      },
+      {
+        "name": "82",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/82",
+        "digest": "sha256:ffc466a0487c9e23c97a81ad3862f39b84b29fe6de733c3d25dc9b96d5e83b9e"
+      },
+      {
+        "name": "83",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/83",
+        "digest": "sha256:ac2f1eafa24d5e9a71aefc2b70b7906b70091ee24355365e1c47c8fd4ba6cea7"
+      },
+      {
+        "name": "84",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/84",
+        "digest": "sha256:a6bcef6d036d8167480502025d43229bd9b3d0af70ab5383ee857ae3e639f192"
+      },
+      {
+        "name": "85",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/85",
+        "digest": "sha256:50f7aa31c417bd1c90d6a12b1153e548e6c7b68c624fe7e87437ed73d57ed73a"
+      },
+      {
+        "name": "86",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/86",
+        "digest": "sha256:41b92423bea775ea8bcd687580ca6be75d783e8c8341523f3eb60deec1ed4488"
+      },
+      {
+        "name": "87",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/87",
+        "digest": "sha256:4b2929be26e148e442012044869ad3a7268d82542d6f126dcd34ff9639d1d397"
+      },
+      {
+        "name": "88",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/88",
+        "digest": "sha256:ef42602bc2b7a875e97b8b020853c4007abe54040a9a8557cd07ed30b6a77e85"
+      },
+      {
+        "name": "89",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/89",
+        "digest": "sha256:a6273002e0abb9b3e83a9475d920d034f87261c9bc405ef4f842a5db6bc998da"
+      },
+      {
+        "name": "90",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/90",
+        "digest": "sha256:3aed197ab502a20ba1ef875b03357a8dad228f789a5c5e04de5f7463b56efccc"
+      },
+      {
+        "name": "91",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/91",
+        "digest": "sha256:f02d68a50830926d3970345e1fa2712c4db0dd1a8cf1fc08fe5fab2458366cf8"
+      },
+      {
+        "name": "92",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/92",
+        "digest": "sha256:318bf81d0645c5c4f2c72b7a420669384553a1c846a7460d33b0e2b7980db40c"
+      },
+      {
+        "name": "93",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/93",
+        "digest": "sha256:52c73f45559996cd4e4fd14709594c57b416a3944aa8d805453c6a86d8745f9d"
+      },
+      {
+        "name": "94",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/94",
+        "digest": "sha256:78c3a5eaac9492b200988782fc64e4b39afc21250e42af7a589f4836cd63699a"
+      },
+      {
+        "name": "95",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/95",
+        "digest": "sha256:35d7f67e9f57cb20816ffb5de0c75fb85edec97da7b7a0f2f2cf83da39ccce93"
+      },
+      {
+        "name": "96",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/96",
+        "digest": "sha256:26b07843363ef2dde8b2099ac67bdbf029359d5f387bc4210628a874ad63065a"
+      },
+      {
+        "name": "97",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/97",
+        "digest": "sha256:b9fffdbaf0d43e31cf8b754730bd5d8b51816ec0170d69fc095705c510f188ef"
+      },
+      {
+        "name": "98",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/98",
+        "digest": "sha256:6210cbc8edb4682fee3b4d8301a2f9541a901ba1bf5bd0e3a1117292f6ac3486"
+      },
+      {
+        "name": "99",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/99",
+        "digest": "sha256:eb20a688274f41e0eadb36915ad9b01eb68415de461b173f3b15b4ea10a566c6"
+      },
+      {
+        "name": "100",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/100",
+        "digest": "sha256:bff375087d3fe7367d3c7c2881bf011be148653f0e9129476feb40c490d13843"
+      },
+      {
+        "name": "101",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/101",
+        "digest": "sha256:fdd028ed7e863e2cdc5a2c0012c40d27e39d68d9dafac6447097c44bc57d5e43"
+      },
+      {
+        "name": "102",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/102",
+        "digest": "sha256:635e98f1ba985a06b9c7f03eebb9ca1eab6188781045dfbce4c2239b0305692c"
+      },
+      {
+        "name": "103",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/103",
+        "digest": "sha256:b8dcf9c57326b34d18aad970df221889cfbcca74dd64ec020ecfd21a6e1c0ab1"
+      },
+      {
+        "name": "104",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/104",
+        "digest": "sha256:6809a3035a5f033eabd4106ca681496d00c72995ee956941243f4f06be7a48ef"
+      },
+      {
+        "name": "105",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/105",
+        "digest": "sha256:7aefe01736fd7b4133b2dffbd60896379e5fcc9e061c206d9f05cdc61056be03"
+      },
+      {
+        "name": "106",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/106",
+        "digest": "sha256:5cf2be63006ddeb6e190a085fbb44f0a6fbe3e2428e4a2da65babd32790fbf97"
+      },
+      {
+        "name": "107",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/107",
+        "digest": "sha256:adbf685e5262ccacf49eb8b7afbde94aad0844a3b192051eb0ebe99aaa8af433"
+      },
+      {
+        "name": "108",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/108",
+        "digest": "sha256:adb15fdad3d323fc73ddd62ae770c18213ceb53d2f92eeeaae1215e0ad28c231"
+      },
+      {
+        "name": "109",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/109",
+        "digest": "sha256:3e551a513d82fd1fb48b0838550cb16f7b1c646bac2d0890fc5d7e86ba270fdb"
+      },
+      {
+        "name": "110",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/110",
+        "digest": "sha256:fcd17a3c3a222d39a344c250bfc6903e2f6dcade43a8f9a8cabe816e29ae6869"
+      },
+      {
+        "name": "111",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/111",
+        "digest": "sha256:b70e1c42fec21087f52b6deb4a9159825968a98acafbd6a5459cc2cdf05b295b"
+      },
+      {
+        "name": "112",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/112",
+        "digest": "sha256:bb4129299993e94be11f5b8b20d0ee0cce15337bc394f5da7b68c9d44242f64e"
+      },
+      {
+        "name": "113",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/113",
+        "digest": "sha256:9b43c51e708f56633fed2b46dacbade175c6251a9671eefbad586dca391c589b"
+      },
+      {
+        "name": "114",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/114",
+        "digest": "sha256:54ab5cc0b59f3c60771bbfdbfbb8fd41ccaabea2a4d6243e99c916cc4e91eda6"
+      },
+      {
+        "name": "115",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/115",
+        "digest": "sha256:fdabca4705856168a4a8ed98372a24859cfd83bb6625644faccf4978b8269ad8"
+      },
+      {
+        "name": "116",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/116",
+        "digest": "sha256:47340fec632e439d699ed6e47c8ad19cfcabc7f94cb6a2ff181431080fdfa3b9"
+      },
+      {
+        "name": "117",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/117",
+        "digest": "sha256:9bc9a9ba69b68e9133e18dbca934d135c0f6fcf6ac3b9f5b5af7def1f8a0ce4b"
+      },
+      {
+        "name": "118",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/118",
+        "digest": "sha256:1304f2c27b164488a5936c5f4e3e433735c8af99f1513c6d03068c870615ac55"
+      },
+      {
+        "name": "119",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/119",
+        "digest": "sha256:65d96d149ff8bb9eed2591c0b3c10d330fc37d6d340b3601c0602ce00f6bf5fe"
+      },
+      {
+        "name": "120",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/120",
+        "digest": "sha256:0df37669102f2955cdf56f7d90031edcffbcc8a108735aca639ab4fbcd6561e2"
+      },
+      {
+        "name": "121",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/121",
+        "digest": "sha256:932127f71afc4d3d0bfae0c3cc86e5204ded7a45b6b9ba60613b33f12bd4073d"
+      },
+      {
+        "name": "122",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/122",
+        "digest": "sha256:07b48fbf48b2738a2d115cb9fce04700851221fe8c147cfc120a782584b52a2a"
+      },
+      {
+        "name": "123",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/123",
+        "digest": "sha256:1ff5a406fdb7320032887a02a694a7148e734bdcb4e2581bfa1d52e5f0a94b60"
+      },
+      {
+        "name": "124",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/124",
+        "digest": "sha256:c7427306c187a3eb4dd873b0db3464e1ea0f19a97cf0da37b1d309aebaa9c09a"
+      },
+      {
+        "name": "125",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/125",
+        "digest": "sha256:8bdfe45094042c1c22736dbce15e1e3f524141d18fcf9090f1427ee6c5c29ae0"
+      },
+      {
+        "name": "126",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/126",
+        "digest": "sha256:b96caf06974d5868d31ab72a4499de10bde994bbf7ccac1e18e74d3187ac817c"
+      },
+      {
+        "name": "127",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/127",
+        "digest": "sha256:8a351510509a483d611724b7a1b7b8b26b8244dae0415d9544948eb8af07c505"
+      },
+      {
+        "name": "128",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/128",
+        "digest": "sha256:b66f357b8168a5e5c661427ddfa3cc4002d5c5784180d222815cecd5a3a85f2a"
+      },
+      {
+        "name": "129",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/129",
+        "digest": "sha256:9ddc5f3acfd5c9eeb3c024d8b21f60fdcb6f70848939a9ea109cb45c75d20b2f"
+      },
+      {
+        "name": "130",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/130",
+        "digest": "sha256:c60c3577253b7f4fadace34732b7b3c7113679af1de70c6238379c0a83cada4e"
+      },
+      {
+        "name": "131",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/131",
+        "digest": "sha256:87b4d8f4e7bbf87af5448c2387bbae31d4c67a45b3a3a296a57b025adef0170e"
+      },
+      {
+        "name": "132",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/132",
+        "digest": "sha256:b4db3a72276d1e930c976deb5ea3bede77815788b4704a69986985c1e78f9546"
+      },
+      {
+        "name": "133",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/133",
+        "digest": "sha256:4e065657f43dce0d647c80e059be12b9613f9f0bdf193f23d2b8bc5876f6cb81"
+      },
+      {
+        "name": "134",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/134",
+        "digest": "sha256:c5b192d9c7670411443574939541f432982e7316e5d0648c20e427d466b48dd2"
+      },
+      {
+        "name": "135",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/135",
+        "digest": "sha256:0fc6425001c71780cc168dfb1f8c0e75438aa958295befdfa4a1736052fa8d6c"
+      },
+      {
+        "name": "136",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/136",
+        "digest": "sha256:695b5821bc8372baa53d10cea3c64e537e0d8ed9db9e9125ba0e436c25504573"
+      },
+      {
+        "name": "137",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/137",
+        "digest": "sha256:d3d06acc34203e8374cb065242c224d0be89969ed34c1aae0497d3d31f30b96e"
+      },
+      {
+        "name": "138",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/138",
+        "digest": "sha256:d28b8da0a1ea121669553b0335899e4adf4e8b3cae6ed27c1e6043b9588daf45"
+      },
+      {
+        "name": "139",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/139",
+        "digest": "sha256:ce0c383109c1aa95e260aeb0442a7e86fc170ee72276dd22bac5b1029ec65c39"
+      },
+      {
+        "name": "140",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/140",
+        "digest": "sha256:2a3b701d02c8e30418387aaab3060da8851d51ce08381e53c92728803d12b241"
+      },
+      {
+        "name": "141",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/141",
+        "digest": "sha256:4a1057f32c3175009d26acd7b1b2a9a9e1e1d53e0d607be15393d91514d7214e"
+      },
+      {
+        "name": "142",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/142",
+        "digest": "sha256:8e0dd30d0378504cdf7351bee424ac3179e86daff637e1a82ba2677396ef1f95"
+      },
+      {
+        "name": "143",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/143",
+        "digest": "sha256:36dd5df3cc89666f33fd056c08e9683756e62def3ed6570e8ad31064c0d1a1c9"
+      },
+      {
+        "name": "144",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/144",
+        "digest": "sha256:3fb69217e1f15c3077976f2d0ceeb5901af34b18b5f9b9f06a37e958b7ef4282"
+      },
+      {
+        "name": "145",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/145",
+        "digest": "sha256:fb7e2012e92b980869db5cb0b52e4e62f20f1638eea2cb27a2230ec932aff489"
+      },
+      {
+        "name": "146",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/146",
+        "digest": "sha256:6d54ee4787d956c9af1e9fa3161b5a2250e284f1dfd682cebb60fcb5e9453022"
+      },
+      {
+        "name": "147",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/147",
+        "digest": "sha256:d2047a6aef0a79bee180994d58da400f4659d4e2158968b8d6515bb040e9c435"
+      },
+      {
+        "name": "148",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/148",
+        "digest": "sha256:2522bc712ee27dd3e741f39e783d89ce79310454a089dc8af55749fc2d1ced1c"
+      },
+      {
+        "name": "149",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/149",
+        "digest": "sha256:6943070314fd51a82dd51f22f55563fab34ee50ebbafaeb0c6db989ee27cfe38"
+      },
+      {
+        "name": "150",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/150",
+        "digest": "sha256:d38353a8801d145f4bdc5ab641d86997d75e5a9e89c5e2e7a2b308ff1146849b"
+      },
+      {
+        "name": "151",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/151",
+        "digest": "sha256:119dc19327bace1a48b7c0a78178b6ccf1dcbf75c14d8d64ad6d58350dea1f4a"
+      },
+      {
+        "name": "152",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/152",
+        "digest": "sha256:84e3397787b4959c6b5a3203f8b55571baa72cbf9d2f4a57d1be3d2522afe106"
+      },
+      {
+        "name": "153",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/153",
+        "digest": "sha256:a4f60380164b9b93b508222cda5e98a7aa931b73650949bb7d9eaf36d9bdcf61"
+      },
+      {
+        "name": "154",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/154",
+        "digest": "sha256:6480102e3fd5012bed18548cc98a8ac7278a64cb9668af4909a9afb1926c2d3f"
+      },
+      {
+        "name": "155",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/155",
+        "digest": "sha256:b0ade2498e9d22c02a5e3aa19646dc37b1e6bcd5fde14dd3f1069c72a69175b0"
+      },
+      {
+        "name": "156",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/156",
+        "digest": "sha256:c562fc7dab75f2bdada769e5b089c83e259e105a9bf47fd126f5543ca7054e5b"
+      },
+      {
+        "name": "157",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/157",
+        "digest": "sha256:ff0bc90afe321d0caa450ee5f6616211fba092010f92a893afac28574397f878"
+      },
+      {
+        "name": "158",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/158",
+        "digest": "sha256:36b70eb7ee9dde289a17b58c487ba362de93d304209c391c80bd18a1a1de98f1"
+      },
+      {
+        "name": "159",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/159",
+        "digest": "sha256:89a6fabbafd1050497ef28573300d812566d1499c9ec25d286bd34408f858f46"
+      },
+      {
+        "name": "160",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/160",
+        "digest": "sha256:19d8c365f81aedc4bbb700d48f18c3870153b0843f87d8001aa27f6d66651992"
+      },
+      {
+        "name": "161",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/161",
+        "digest": "sha256:3bca3340d767070b2b0a08adff1f8ffe6be396a75c76fbdfceaf0ba1a1d992e3"
+      },
+      {
+        "name": "162",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/162",
+        "digest": "sha256:116dd9b70d92ca16615cbe62b96b515b84bf171cc2411eacd94a8b37f7e8ffd3"
+      },
+      {
+        "name": "163",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/163",
+        "digest": "sha256:f8b7e33246b412ec56cdaa220d69b71e3a3b64f422b84e577db462a6cb7dc9b4"
+      },
+      {
+        "name": "164",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/164",
+        "digest": "sha256:43d6e38918eb856256512add240403cd178bcfda591d2fd0079c097724cd2cd3"
+      },
+      {
+        "name": "165",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/165",
+        "digest": "sha256:a5cf1e5624489fb8eb3f697432ee195db5e337500d66caad9a4ed7ce6d4efe4c"
+      },
+      {
+        "name": "166",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/166",
+        "digest": "sha256:960bc5e0ecfc24fa4d4900d5b746949770ccd449cb2cc0b23369f451eb376354"
+      },
+      {
+        "name": "167",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/167",
+        "digest": "sha256:717362d5efac249bfc34a83352caf44a5dd20732f101ae30c6d8e23cf8720c86"
+      },
+      {
+        "name": "168",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/168",
+        "digest": "sha256:760393adac485a241f4d3557ba1154284aa76d749be4aae6de7e7398f311e3ff"
+      },
+      {
+        "name": "169",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/169",
+        "digest": "sha256:3401a06f4897f5696c2c9a6485743e148d797de2363e90f6682e72f29f3b845a"
+      },
+      {
+        "name": "170",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/170",
+        "digest": "sha256:6477839d6bef11dc8f7f47d50bf7ab06c283b91f577fc0f152d1f27d7da2ef01"
+      },
+      {
+        "name": "171",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/171",
+        "digest": "sha256:34d8058c9c795ae6ee19a5ff6aafece219b408529aa9a5da8166a857cc9b0949"
+      },
+      {
+        "name": "172",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/172",
+        "digest": "sha256:60a1dfd09934c45868ec8da7a273d36b797747227d2bea9248c15426ed0d4da6"
+      },
+      {
+        "name": "173",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/173",
+        "digest": "sha256:419853fa01afb896eea5492272a25d4218f84e2ca0a381a0f58da305c953efd9"
+      },
+      {
+        "name": "174",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/174",
+        "digest": "sha256:b1a78bc0204dbc5643ba3701bf364e74bed0d29ce89fcb7cb339d7e7a3488c0c"
+      },
+      {
+        "name": "175",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/175",
+        "digest": "sha256:fec3ff2b566b12c8838ff8b2e814f27a72a1d5aa2e295bc53c9275b96427b960"
+      },
+      {
+        "name": "176",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/176",
+        "digest": "sha256:90bc77b443d15797b51ea4bff9819ed2412b5e3114336e83e2059ccce4f60c2d"
+      },
+      {
+        "name": "177",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/177",
+        "digest": "sha256:69cce8c0a76b766a641e6c1bd8d2ab30df53af206ba93c7bf89b7f32fb803ab7"
+      },
+      {
+        "name": "178",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/178",
+        "digest": "sha256:06b5322f2bccad37cbc081008c86970cc23f1a3e8debaea9c6def914124814d3"
+      },
+      {
+        "name": "179",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/179",
+        "digest": "sha256:49b2c3d57c7c0b630f5025076b9dca8b01c64a051df3fcd7c3669bdb8aa67b88"
+      },
+      {
+        "name": "180",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/180",
+        "digest": "sha256:48dde05a90fb3ed976313f9fea769d8ea0c00107286ba8052e8732466ee86acc"
+      },
+      {
+        "name": "181",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/181",
+        "digest": "sha256:4e213b7555ab95f1c63641d1e0efca2e1182b02c7903673b1812d7a7d8b6a453"
+      },
+      {
+        "name": "182",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/182",
+        "digest": "sha256:a2c9db5c5a73648df324ca1fe4ffb98d25b1fbaddd09ef5aa98635b012a60e7f"
+      },
+      {
+        "name": "183",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/183",
+        "digest": "sha256:2cbbba2056aa428689b7085c3d394d1ddc5f05f52ad54b4ba22ed1592bdb3738"
+      },
+      {
+        "name": "184",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/184",
+        "digest": "sha256:4b5a0b5ca1e5e8f3d25c10ff95c5edfc82fbe1ebeec5697e82aadbca05eb3b9d"
+      },
+      {
+        "name": "185",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/185",
+        "digest": "sha256:83b0a48c595bd0f1ac49d58004c8a3b377fcee4a9a93b5e17d03fb9cfc3400ee"
+      },
+      {
+        "name": "186",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/186",
+        "digest": "sha256:93af4f0df0cdf674e2af0549d6c62e13fc93d2bce985c6f8c66da3d5f14c89c3"
+      },
+      {
+        "name": "187",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/187",
+        "digest": "sha256:4ce6d48874334678d44cacb9cad06026a8dbb777a4203cac58b072b4194b7ca3"
+      },
+      {
+        "name": "188",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/188",
+        "digest": "sha256:a4ac1cd1f981cdbfd18d3178d28a14f80e28d693607c368006e91fe45bdc66db"
+      },
+      {
+        "name": "189",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/189",
+        "digest": "sha256:0cca62432afde1437e32fd5b9564e38cc1df064a861d0c928141ef740b54f7c7"
+      },
+      {
+        "name": "190",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/190",
+        "digest": "sha256:3f58aa6730f05aeed596eaca8df53d1fec44e5317d16d4a83a071cb528b9e944"
+      },
+      {
+        "name": "191",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/191",
+        "digest": "sha256:35848b63a4708dbd74b19960c14febedf6f772641c66f082b02994b96f6bfd0b"
+      },
+      {
+        "name": "192",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/192",
+        "digest": "sha256:8c12a5be38118b6b27895669a77eb5e9f878b0884c87ec7ab41067021a2dda8c"
+      },
+      {
+        "name": "193",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/193",
+        "digest": "sha256:97b45d896851103bfebc73959e529af5b076b6e6b6c3f14caa647c57bc9dd904"
+      },
+      {
+        "name": "194",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/194",
+        "digest": "sha256:cc577297183e0c38e17149d91fa1cea426504ec32f16879e2225ae965b67846c"
+      },
+      {
+        "name": "195",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/195",
+        "digest": "sha256:05a7bbd7ef4fc51750316036ba7ee6c3bdf34a9ce1201106b11c3e2bebe39021"
+      },
+      {
+        "name": "196",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/196",
+        "digest": "sha256:2da43b088cc5122ee3081065f47b43b67f082107f7d6cdcaf09f07587a9df6eb"
+      },
+      {
+        "name": "197",
+        "git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "git_commit_id": "1983ac5c4d43f43cb7a9af9f89c54d09025589ec",
+        "path": "datasets/gpqa-diamond/197",
+        "digest": "sha256:90ab02588e285c9a3f979a939b46c623efb5ae8b4d98dc300a8cb4c68314b36f"
+      }
+    ]
   }
 ]

@@ -48,7 +48,7 @@ def _image_with_planted_tools(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["daytona", "daytona-dind"])
-async def test_a_daytona_env_too_large_for_one_command_runs_as_staged_data(
+async def test_a_daytona_env_too_large_for_one_command_reaches_it_off_the_command_line(
     tmp_path, kind, monkeypatch
 ):
     """Fails on 57d28d656: the env was refused before anything ran."""
@@ -69,8 +69,11 @@ async def test_a_daytona_env_too_large_for_one_command_runs_as_staged_data(
     image.sent.clear()
     sent.clear()
     env = {"PAD": "p" * 16_000, "JUDGE_API_KEY": "bf-dummy-r12"}
+    # The command names the value without spelling it: the env is a file, so
+    # the command fits one session command and is sent as it is.
     result = await exec_(
-        '[ "${#PAD}" -eq 16000 ] && [ "$JUDGE_API_KEY" = bf-dummy-r12 ] && echo ran',
+        '[ "${#PAD}" -eq 16000 ] && [ "$JUDGE_API_KEY" = "bf-dummy-r$((6 * 2))" ] '
+        "&& echo ran",
         600,
         env=env,
     )
@@ -82,8 +85,10 @@ async def test_a_daytona_env_too_large_for_one_command_runs_as_staged_data(
         assert not any("bf-dummy-r12" in part for part in argv)
         assert not any("\\142\\146\\055" in part for part in argv)
     assert not marker.exists(), marker.read_text()
-    # The staged folder is gone once the command ended.
-    assert not image.stage.exists() or not any(image.stage.iterdir())
+    # The staged folder is gone once the command ended (the sandbox's env
+    # folder stays until it stops).
+    left = list(image.stage.iterdir()) if image.stage.exists() else []
+    assert not [p for p in left if p.name.startswith("stage-")], left
 
 
 @pytest.mark.asyncio

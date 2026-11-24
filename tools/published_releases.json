@@ -1,0 +1,36 @@
+{
+  "about": "The benchflow releases PyPI serves, from 0.9.2 on (nightly .dev builds aside): each wheel's name, SHA-256 and upload time as PyPI lists them, and the SHA-256 of each baseline in tools/ made from that wheel installed in a clean venv. tools/docs_reference.py and tools/docs_errors.py label what is new against the newest final release here and the newest pre-release no newer than pyproject.toml's version. A version tagged but never published is not here. Check with: python tools/docs_reference.py --check-published",
+  "releases": {
+    "0.9.2": {
+      "wheel": "benchflow-0.9.2-py3-none-any.whl",
+      "wheel_sha256": "0ede69cab59e8c397c58e80d3c68d60240ede0722c03e495dbd2400329d9cf9e",
+      "uploaded": "2026-11-07T00:31:55.210403Z"
+    },
+    "0.9.3": {
+      "wheel": "benchflow-0.9.3-py3-none-any.whl",
+      "wheel_sha256": "8eb79e444346e3b94615cd2fca1cdf5150cd63d692c5a875b6bd55d3668f628c",
+      "uploaded": "2026-11-17T23:53:06.621359Z",
+      "cli_baseline_sha256": "93eb22d8c647eb0c5aceb8e7b35591ccfa8b0a360f223b0acb34987bf3037887",
+      "names_baseline_sha256": "8e1da0b729c672350b06cd2872197c1c9e962b266e8156a4f71ef06abe8343a0",
+      "errors_baseline_sha256": "deaad1382a509121b5371038ab0936f885aa56cffe18ccff5baf3319c4b40f28"
+    },
+    "0.10.0rc2": {
+      "wheel": "benchflow-0.10.0rc2-py3-none-any.whl",
+      "wheel_sha256": "506d917bc148ba55b788001e2a71e9ba7141985ea489d114b9c9ae8138fa8751",
+      "uploaded": "2026-11-06T17:01:33.949316Z"
+    },
+    "0.10.0rc3": {
+      "wheel": "benchflow-0.10.0rc3-py3-none-any.whl",
+      "wheel_sha256": "867a9cbadacd2b366a21b25715965efee109e6a891c738644a51f1d786af31d4",
+      "uploaded": "2026-11-10T20:04:58.431814Z"
+    },
+    "0.10.0rc5": {
+      "wheel": "benchflow-0.10.0rc5-py3-none-any.whl",
+      "wheel_sha256": "eb3085f713b612bf6dc31c59d0a680729093ccfca57f6310931eda0ec4300968",
+      "uploaded": "2026-11-18T06:12:28.985225Z",
+      "cli_baseline_sha256": "d03858ec6b772ad393ef3c9208c053c6079ffb7c76e9f5f4ef9766564d9980d2",
+      "names_baseline_sha256": "cd1facb5a613ec905a92096cd766583b121042608fe7e5741d9403cb73d1c2cf",
+      "errors_baseline_sha256": "2316fc3b2c8d38f659dd21925e321d8e1c86235c41d76fc652a2294a4109fe6c"
+    }
+  }
+}

@@ -2499,6 +2499,20 @@ def resolve_agent(spec: str) -> AgentConfig:
 
         from difflib import get_close_matches
 
+        # A manifest the local agents folder holds under this name that fails
+        # its strict check: say which field, never "Unknown agent".
+        broken = remote_manifests.invalid_manifest(name)
+        if broken is not None:
+            raise KeyError(
+                f"agent {name!r} has an invalid manifest: "
+                + "; ".join(broken.problems[:3])
+                + f" (bench agents validate {broken.path} lists every problem)"
+            )
+        missing = (
+            remote_manifests.catalog_problem()
+            or remote_manifests.missing_manifest(name)
+        )
+
         # Breadcrumb: if agent plugin packages failed to load at import time
         # (see FAILED_AGENT_PLUGINS / _load_agent_plugin_packages), the missing
         # name is very likely one of theirs — connect the two events here, at
@@ -2510,7 +2524,9 @@ def resolve_agent(spec: str) -> AgentConfig:
                 f" Note: agent plugin(s) failed to load at startup: {failed} "
                 "(see the startup warning for details)."
             )
-        if remote_manifests.last_source_description:
+        if missing is not None:
+            plugin_hint += f" ({missing})"
+        elif remote_manifests.last_source_description:
             plugin_hint += f" ({remote_manifests.last_source_description} consulted)"
         available_agents = list(AGENTS)
         close = get_close_matches(name, available_agents, n=1, cutoff=0.6)

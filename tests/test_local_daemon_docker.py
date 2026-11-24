@@ -13,6 +13,9 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -195,24 +198,55 @@ def _daemon(root: Path, env: dict[str, str], *args: str) -> None:
     assert started.returncode == 0, started.stderr
 
 
-def _status(root: Path, env: dict[str, str]) -> dict:
-    found = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import json; from benchflow._daemon import request; print(json.dumps(request({'action': 'status'})))",
-        ],
-        env=env,
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return json.loads(found.stdout)
+def _status(root: Path, env: dict[str, str], *, deadline: float = 60.0) -> dict:
+    """The runtime's status, as its own status query returns it.
+
+    The runtime answers from one loop: on a loaded host a query can outlast
+    the client's 5 s wait or meet a connection that closes early, and then
+    prints nothing (its traceback goes to stderr). Ask again until *deadline*
+    seconds have passed, then fail with what the last query printed.
+    """
+    ends = time.monotonic() + deadline
+    while True:
+        found = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json; from benchflow._daemon import request; print(json.dumps(request({'action': 'status'})))",
+            ],
+            env=env,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        try:
+            state = json.loads(found.stdout)
+        except ValueError:
+            state = None
+        if isinstance(state, dict):
+            return state
+        if time.monotonic() >= ends:
+            raise AssertionError(
+                f"no runtime status within {deadline} s; the last query exited "
+                f"{found.returncode}\nstdout: {found.stdout!r}\n"
+                f"stderr: {found.stderr[-4000:]}"
+            )
+        # Seen in a log run with -s: how often a loaded host needs this.
+        print(f"runtime status asked again: {found.stderr.strip()[-200:]!r}")
+        time.sleep(0.5)
 
 
-def _stop(root: Path, env: dict[str, str]) -> None:
-    for _ in range(600):
+def _stop(root: Path, env: dict[str, str], *, deadline: float = 660.0) -> None:
+    """Stop the runtime and wait until it has ended.
+
+    It ends (its lock free) only once its prepared calls removed what they
+    made, and it gives them 600 s itself. On a loaded host that took longer
+    than the 120 s this used to wait, and a later check found their sandboxes
+    still there. Wait for the end, then fail if it has not come.
+    """
+    ends = time.monotonic() + deadline
+    while time.monotonic() < ends:
         stopped = subprocess.run(
             [str(BENCH), "daemon", "stop"],
             env=env,
@@ -224,11 +258,47 @@ def _stop(root: Path, env: dict[str, str]) -> None:
         if "not running" in stopped.stdout + stopped.stderr or stopped.returncode == 0:
             break
         time.sleep(0.2)
-    # The runtime ends once its prepared calls removed what they made.
-    for _ in range(1200):
+    while time.monotonic() < ends:
         if not (root / "runtime" / "runtime.lock").exists() or _unlocked(root):
             return
         time.sleep(0.1)
+    raise AssertionError(f"the local runtime in {root} did not end within {deadline} s")
+
+
+def _record_diff(cold, warm) -> str:
+    """Where *warm*'s records differ from *cold*'s, line by line, in full:
+    pytest's own diff of these lists is cut short without -vv (the CI symptom
+    "warm and cold runs saw different files" left nothing to read)."""
+    import difflib
+
+    lines = difflib.unified_diff(
+        json.dumps(cold, indent=1, sort_keys=True, default=str).splitlines(),
+        json.dumps(warm, indent=1, sort_keys=True, default=str).splitlines(),
+        "cold",
+        "warm",
+        lineterm="",
+    )
+    return "records differ:\n" + "\n".join(list(lines)[:400])
+
+
+def _runtime_story(lane: Path, env: dict[str, str]) -> str:
+    """What the runtime in *lane* recorded, for a failure: its status, its
+    prepared calls (``prepared.json``) and the end of its private
+    ``daemon.log``, where it says whether a call was refused, took a
+    prepared call, or found it removed (and why)."""
+    runtime = lane / "runtime"
+    parts = [f"--- runtime {runtime}"]
+    try:
+        parts.append(f"status: {json.dumps(_status(lane, env, deadline=10.0))}")
+    except AssertionError as exc:
+        parts.append(f"status: none ({str(exc)[:300]})")
+    for name in ("prepared.json", "daemon.log"):
+        try:
+            text = (runtime / name).read_text()
+        except OSError as exc:
+            text = f"unreadable: {exc}"
+        parts.append(f"{name}:\n" + "\n".join(text.splitlines()[-150:]))
+    return "\n".join(parts)
 
 
 def _unlocked(root: Path) -> bool:
@@ -420,6 +490,8 @@ def test_concurrent_cli_calls_keep_their_prepared_sandboxes(root, sharing):
         )
         return records
 
+    # When each step ended (monotonic s), for the failure story below.
+    steps: list[tuple[str, float]] = [("start", time.monotonic())]
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             cold = pair(pool, False)
@@ -432,7 +504,8 @@ def test_concurrent_cli_calls_keep_their_prepared_sandboxes(root, sharing):
                     "--prepare-ttl",
                     "600",
                 )
-            assert pair(pool, True) == cold
+            warm = pair(pool, True)
+            assert warm == cold, _record_diff(cold, warm)
             parked()
             entries = []
             for lane, _, _ in runtimes:
@@ -456,8 +529,10 @@ def test_concurrent_cli_calls_keep_their_prepared_sandboxes(root, sharing):
                 box["Config"]["Labels"]["com.docker.compose.project"] for box in boxes
             } == set(projects)
             assert len({box["Config"]["Image"] for box in boxes}) == len(projects)
-            assert pair(pool, True) == cold
+            warm = pair(pool, True)
+            assert warm == cold, _record_diff(cold, warm)
             states = parked()
+            steps.append(("parked again", time.monotonic()))
             assert [state["prepared_calls"] for state in states] == (
                 [1] * len(runtimes)
             )
@@ -466,17 +541,29 @@ def test_concurrent_cli_calls_keep_their_prepared_sandboxes(root, sharing):
             right, task, right_env = lanes[1]
             remaining = _containers(right)
             _stop(left, left_env)
+            steps.append(("left stopped", time.monotonic()))
             assert not _containers(left)
             assert _containers(right) == remaining
-            _, trial = _call(
+            called, trial = _call(
                 right,
                 task,
                 right / "jobs-warm",
                 "oracle",
                 dict(right_env, BENCHFLOW_DAEMON="auto"),
             )
-            assert _status(right, right_env)["prepared_calls"] == 2
-            assert _record(trial, right) == cold[1]
+            steps.append(("right called", time.monotonic()))
+            assert _status(right, right_env)["prepared_calls"] == 2, (
+                f"the call's output: {called.stdout[-1500:]}{called.stderr[-1500:]}"
+            )
+            served = _record(trial, right)
+            assert served == cold[1], _record_diff(cold[1], served)
+    except (AssertionError, pytest.fail.Exception) as exc:
+        # Before the runtimes stop: what each recorded about its calls.
+        timeline = ", ".join(
+            f"{name} +{at - steps[0][1]:.1f} s" for name, at in steps[1:]
+        )
+        story = "\n".join(_runtime_story(lane, env) for lane, _, env in runtimes)
+        raise AssertionError(f"{exc}\n\nsteps: {timeline}\n{story}") from exc
     finally:
         for lane, _, env in runtimes:
             _stop(lane, env)
@@ -865,3 +952,109 @@ def test_a_killed_prepared_call_leaves_nothing(root):
         assert not list((root / "runtime").glob("park-*"))
     finally:
         _stop(root, env)
+
+
+# ── The status helper against a runtime that is slow or cut short ──────────
+# The runtime answers from one loop. On a loaded host a status query can
+# outlast the client's 5 s wait, or meet a connection that closes before the
+# whole reply; the query then raises (TimeoutError, EOFError) and prints
+# nothing, which read as a JSONDecodeError on '' (rc5's release run, [add_url]).
+
+
+class _CutRuntime(threading.Thread):
+    """A socket where the runtime's is, answering each status query with the
+    next reply in turn: raw bytes, then the connection closed."""
+
+    def __init__(self, root: Path, replies: list[bytes]) -> None:
+        super().__init__(daemon=True)
+        folder = root / "runtime"
+        folder.mkdir(mode=0o700)
+        self.listener = socket.socket(socket.AF_UNIX)
+        self.listener.bind(str(folder / "runtime.sock"))
+        (folder / "runtime.sock").chmod(0o600)
+        self.listener.listen(8)
+        self.replies = list(replies)
+        self.served = 0
+
+    def run(self) -> None:
+        while self.replies:
+            conn, _ = self.listener.accept()
+            with conn:
+                size = struct.unpack("!I", conn.recv(4, socket.MSG_WAITALL))[0]
+                conn.recv(size, socket.MSG_WAITALL)
+                conn.sendall(self.replies.pop(0))
+                self.served += 1
+
+
+def _framed(value: dict) -> bytes:
+    data = json.dumps(value).encode()
+    return struct.pack("!I", len(data)) + data
+
+
+def test_status_survives_a_reply_cut_short(root):
+    """A reply that ends early is asked again, not read as a status."""
+    whole = _framed({"pid": 4321, "parked": 0})
+    cut = _CutRuntime(root, [whole[:10], whole])
+    cut.start()
+    assert _status(root, _env(root)) == {"pid": 4321, "parked": 0}
+    assert cut.served == 2
+
+
+def test_status_survives_a_stalled_runtime(root):
+    """A runtime that answers after the client's 5 s wait is asked again."""
+    env = _env(root)
+    _daemon(root, env)
+    pid = _status(root, env)["pid"]
+    resume = threading.Timer(8, os.kill, (pid, signal.SIGCONT))
+    try:
+        os.kill(pid, signal.SIGSTOP)
+        resume.start()
+        started = time.monotonic()
+        assert _status(root, env)["pid"] == pid
+        assert time.monotonic() - started >= 7
+    finally:
+        resume.cancel()
+        os.kill(pid, signal.SIGCONT)
+        _stop(root, env)
+
+
+def test_status_failure_names_what_the_query_printed(root):
+    """No runtime at all: the failure carries the query's own output."""
+    with pytest.raises(AssertionError) as failed:
+        _status(root, _env(root), deadline=1.0)
+    message = str(failed.value)
+    assert "stdout: ''" in message
+    assert "FileNotFoundError" in message
+
+
+def test_stop_waits_for_a_runtime_still_removing_its_prepared_calls(root):
+    """The runtime ends (its lock free) only once its prepared calls removed
+    their sandboxes. On a loaded host that took over the 120 s _stop waited,
+    and the next check found the sandboxes still there (the whole file under
+    stress-ng, [different-home]). Here the lock is held 130 s, as by a runtime
+    still removing them."""
+    folder = root / "runtime"
+    folder.mkdir(mode=0o700)
+    lock = folder / "runtime.lock"
+    lock.touch(mode=0o600)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(130)\n",
+            str(lock),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        _stop(root, _env(root))
+        assert _unlocked(root), "_stop returned while the runtime still held its lock"
+    finally:
+        holder.kill()
+        holder.wait()

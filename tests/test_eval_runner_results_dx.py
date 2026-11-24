@@ -190,7 +190,7 @@ def test_a_capped_job_says_what_did_not_run_and_the_gate_counts_it(
     )  # fmt: skip
     assert run.exit_code == 1, run.output
     assert "✓ Score" not in run.output
-    assert "Score: 2/2 run (100.0%)" in run.output
+    assert "2/2 passed, 2 not run" in run.output  # the final screen
     assert "2 of 4 planned tasks not run (budget)" in run.output
     assert "2/4 (50.0%) of the plan" in run.output
     assert "Gate failed: pass rate 0.50 < --fail-under 0.9" in run.output

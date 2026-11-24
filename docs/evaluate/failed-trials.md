@@ -28,6 +28,8 @@ A trial ends **scored** (the test reached a verdict: its reward, or 0 when the t
 | `R401` | errored | the task asks for something this sandbox can't do, refused before it starts | the error names what; [Sandboxes](../scale/sandboxes.md#choose-a-sandbox) says which sandbox has it |
 | `verifier_infra` | unscored | the verifier's sandbox failed | `bench eval resume <job>` runs the whole trial again, agent included |
 | `disk_full` | errored or unscored | the disk holding the job folder filled; the reward was lost | free space, or pass another `--jobs-dir`; then `bench eval resume <job>` |
+| `integrity_unavailable` | errored or unscored | BenchFlow couldn't check where the reward came from. Before the agent's turn, it refuses the trial when its bfx binary can't run in this sandbox, or when the task's verifier runs as the agent's own user; after grading, the sandbox had no record of its links from before the turn. The cause is BenchFlow's, not the agent's: never a 0, never retried | where bfx can't run, run the trial where it can, from a release install or a checkout with the pinned bfx (`make bfx`; `bench doctor` shows whether this install has it), then `bench eval resume <job>`; for a verifier that runs as the agent's user, change `[verifier] user` in the task; where grading had no record from before the turn, run the task again |
+| `provenance_incomplete` | scored | for an agent that runs as its own user, BenchFlow's check that the reward is test.sh's own did not complete, so the attempt counts 0: a failure, counted, never retried | the reason follows `Verifier scored 0: provenance incomplete:` in the trial's `result.json` warnings, and `integrity/verifier-inputs.json` has each check; if an honest run gets it too, report it at https://github.com/benchflow-ai/benchflow/issues with the trial folder |
 
 `<job>` is the job folder the run printed. Some codes also have a number, such as `R203`; `bench explain <code>` takes the name or the number and says more. An errored or unscored trial counts as 0 in the pass rate over all trials and drops out of the scored-only rate ([Compare runs](../audit/compare-runs.md#what-counts-in-the-denominator)).
 
@@ -82,7 +84,7 @@ One mismatch to know on 0.9.2: `bench explain verifier_failure` and `bench expla
 
 ## Keep the sandbox and look inside (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 `tasks/half-life` is the task [Write a task](../tasks/write-a-task.md) builds and shows how to copy.
 

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -775,6 +776,26 @@ def test_failed_review_is_retained_for_review_only_resume(saved_trial):
     )
 
     assert job._get_completed_tasks()["physics"]["scoring"]["status"] == "error"
+
+
+def test_committed_scoring_result_writes_every_time_with_its_timezone(saved_trial):
+    """A rubric review's commit rewrites result.json; every time in it carries a timezone, as the rollout's do."""
+    rollout, _ = saved_trial
+    source = json.loads((rollout / "solver.json").read_text())
+    source.update(
+        started_at="2026-11-19T08:20:31.160828+00:00",
+        finished_at="2026-11-19T08:30:00.000000+00:00",
+    )
+    _write(rollout / "solver.json", source)
+
+    committed = persistence.commit_scoring_result(rollout, _complete())
+
+    written = json.loads((rollout / "result.json").read_text())
+    times = {k: v for k, v in written.items() if k.endswith("_at") and v is not None}
+    assert {"finished_at", "scoring_finished_at"} <= set(times)
+    naive = {k: v for k, v in times.items() if datetime.fromisoformat(v).tzinfo is None}
+    assert not naive, naive
+    assert committed["finished_at"] == written["finished_at"]
 
 
 def test_deferred_score_uses_execution_time_and_preserves_solver_timestamps(

@@ -46,10 +46,19 @@ def register_daemon(app: typer.Typer) -> None:
     @daemon.command()
     def status() -> None:
         """Show whether this user's local runtime is running."""
-        from benchflow._daemon import request, stopping_runtime
+        from benchflow._daemon import ANSWER_TIMEOUT_S, request, stopping_runtime
 
         try:
             state = request({"action": "status"})
+        except TimeoutError:
+            # There, but slower than a request waits: not "not running".
+            from benchflow.cli._shared import print_error
+
+            print_error(
+                f"The local runtime did not answer within {ANSWER_TIMEOUT_S:g} s.",
+                next_step="it may be busy: `bench daemon status` again",
+            )
+            raise typer.Exit(1) from None
         except (OSError, EOFError):
             draining = stopping_runtime()
             if draining is not None:
@@ -74,10 +83,20 @@ def register_daemon(app: typer.Typer) -> None:
     @daemon.command()
     def stop() -> None:
         """Stop an idle local runtime; never interrupt an active call."""
-        from benchflow._daemon import request
+        from benchflow._daemon import ANSWER_TIMEOUT_S, request
 
         try:
             state = request({"action": "stop"})
+        except TimeoutError:
+            # The request reached it: it may still stop once it answers.
+            from benchflow.cli._shared import print_error
+
+            print_error(
+                f"The local runtime did not answer within {ANSWER_TIMEOUT_S:g} s; "
+                "the stop may take effect when it does.",
+                next_step="`bench daemon status` shows whether it is stopping",
+            )
+            raise typer.Exit(1) from None
         except (OSError, EOFError):
             from benchflow.cli._shared import print_error
 

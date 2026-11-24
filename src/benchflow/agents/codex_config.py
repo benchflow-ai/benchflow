@@ -92,6 +92,28 @@ def apply_codex_provider_config(
     )
 
 
+def apply_codex_model_catalog(agent_env: dict[str, str], model: str | None) -> None:
+    """Name the catalog BenchFlow ships for *model* in CODEX_CONFIG.
+
+    Codex runs a model its bundled catalog lacks on fallback metadata, which
+    BenchFlow refuses (``agent_model_catalog``). For a model a provider's
+    published Codex catalog lists (``agents/codex_provider_catalogs``),
+    ``model_catalog_json`` names the file the install puts in the sandbox
+    before Codex starts; codex-acp's app-server launcher and native
+    ``codex exec`` both pass it as ``-c``. A catalog the run names itself is
+    kept, and a model no shipped catalog lists is left as it was.
+    """
+    from benchflow.agents.codex_provider_catalogs import codex_provider_catalog
+
+    catalog = codex_provider_catalog(model)
+    if catalog is None:
+        return
+    config = _parse_codex_config(agent_env.get(CODEX_CONFIG_ENV), strict=True)
+    assert config is not None
+    config.setdefault("model_catalog_json", catalog.install_path)
+    agent_env[CODEX_CONFIG_ENV] = json.dumps(config, separators=(",", ":"))
+
+
 def _toml_scalar(value: Any) -> str | None:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -160,6 +182,9 @@ def codex_home_config(config: dict[str, Any] | None) -> str | None:
     model = config.get("model")
     if isinstance(model, str) and model:
         lines.append(f"model = {_toml_scalar(model)}")
+    catalog = config.get("model_catalog_json")
+    if isinstance(catalog, str) and catalog:
+        lines.append(f"model_catalog_json = {_toml_scalar(catalog)}")
     lines += [
         f"openai_base_url = {_toml_scalar(base_url)}",
         "",
@@ -243,8 +268,9 @@ def apply_codex_launch_config(
     reasoning_effort: str | None,
     sandboxed: bool = False,
 ) -> tuple[dict[str, str], bool]:
-    """Configure the adapter's sandbox, web policy, launch-owned model effort
-    and the provider every Codex thread defaults to."""
+    """Configure the adapter's sandbox, web policy, launch-owned model effort,
+    Codex's analytics (off unless the run sets them) and the provider every
+    Codex thread defaults to."""
     if agent != "codex-acp":
         return agent_env, False
     updated_env = dict(agent_env)
@@ -270,7 +296,16 @@ def apply_codex_launch_config(
         and config is not None
         and config.get("model") in {provider_model, strip_provider_prefix(model)}
     )
-    if config is not None and (disable_search or (owns_model and reasoning_effort)):
+    # Codex's own analytics are off in every launch, as native exec's are
+    # (native_harness/codex.py _EXEC_OVERRIDES), unless the run's CODEX_CONFIG
+    # says otherwise: competitor telemetry stays off by default.
+    analytics = config.setdefault("analytics", {}) if config is not None else None
+    analytics_default = isinstance(analytics, dict) and "enabled" not in analytics
+    if analytics_default and isinstance(analytics, dict):
+        analytics["enabled"] = False
+    if config is not None and (
+        analytics_default or disable_search or (owns_model and reasoning_effort)
+    ):
         if disable_search:
             # codex-acp (1.6.0 through 2.0.1) ignores CLI -c flags; its CODEX_CONFIG
             # is forwarded to the Codex app-server's thread configuration.
@@ -340,7 +375,8 @@ def _apply_codex_default_auth_request(
 def codex_fallback_tools(names: list[str]) -> bool:
     """Whether the tools a Codex request offered are its fallback surface.
 
-    Codex takes a model's tools from its model catalog. Every model the
+    Codex takes a model's tools from its model catalog (the bundled one, or
+    a provider's that ``model_catalog_json`` names). Every model the
     pinned Codex (0.159.3) catalogues has a freeform ``apply_patch``: a
     ``code_mode_only`` model reaches it through code mode, whose requests
     offer ``functions.exec`` (and the tools a script calls) instead of

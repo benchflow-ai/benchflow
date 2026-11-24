@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000000"}
+{"type":"turn.started"}
+{"type":"error","message":"{\"error\": {\"message\": \"trial_deadline_passed: this trial's time for the agent is over; the run allows it no more model calls\", \"type\": \"invalid_request_error\"}}"}
+{"type":"turn.failed","error":{"message":"{\"error\": {\"message\": \"trial_deadline_passed: this trial's time for the agent is over; the run allows it no more model calls\", \"type\": \"invalid_request_error\"}}"}}

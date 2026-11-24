@@ -99,10 +99,12 @@ async def test_execute_routes_session_factory_agent_through_sf_drive(
     # fake Session's steps actually flow back through execute().
     seen: dict = {}
 
-    async def _sf_spy(sess, prompts, timeout, idle_timeout=None):
+    async def _sf_spy(sess, prompts, timeout, idle_timeout=None, on_deadline=None):
         seen["session"] = sess
         seen["prompts"] = list(prompts)
-        return await _real_sf_drive(sess, prompts, timeout, idle_timeout=idle_timeout)
+        return await _real_sf_drive(
+            sess, prompts, timeout, idle_timeout=idle_timeout, on_deadline=on_deadline
+        )
 
     monkeypatch.setattr(rollout._planes, "execute_prompts_session_factory", _sf_spy)
 

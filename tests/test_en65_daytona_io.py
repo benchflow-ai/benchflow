@@ -22,7 +22,11 @@ import pytest
 from benchflow._utils.reachable_write import UnsafeDownloadEntryError
 from benchflow.sandbox import _transport
 from benchflow.sandbox._base import SYSTEM_PATH, ExecResult, ExecRoute
-from benchflow.sandbox.daytona import DaytonaSandbox, _load_daytona_sdk
+from benchflow.sandbox.daytona import (
+    _SECOND_PAYLOAD_FD,
+    DaytonaSandbox,
+    _load_daytona_sdk,
+)
 from benchflow.sandbox.daytona_dind import DIAL_STDIO_HELD, _DaytonaDinD
 from benchflow.task.paths import RolloutPaths, SandboxPaths
 from benchflow.task.verifier import Verifier
@@ -272,16 +276,37 @@ async def test_dind_absence_proof_against_a_native_daemon(transport_box):
         await strategy._check_compose_download_file("/tmp")
 
 
-@pytest.mark.parametrize(
-    "size", [12_000, 14_000, 14_500, 15_000, 15_500, 16_000, 16_500, 20_000]
-)
-async def test_nested_staging_includes_the_final_proof_in_its_bound(size):
-    """Guard ac3bedaa1: staging overhead must not create a rejected size gap."""
+def _padded_compose(size):
+    """A compose invocation with a project folder of *size* bytes (the
+    transport's compose shim reads only what follows ``exec``). The VM's
+    compose env is a file, so its size no longer moves the VM's command: this
+    does."""
+    padding = ["--project-directory", "/" + "p" * size]
+    return lambda args: shlex.join(["docker", "compose", *padding, *args])
+
+
+#: Compose invocations that put the VM's command of a staged container
+#: command on each side of the bound: within it with its proof, within it
+#: only before the proof (the outer command is staged as well), and over it
+#: before the proof (``fit`` stages it on its own descriptor).
+NESTED_SIZES = [40_000, 52_000, 54_000, 54_500, 56_000, 58_000, 59_000, 64_000]
+#: Within the bound only before the proof: the middle of that gap.
+GAP_SIZE = 56_000
+
+
+async def _nested_exec(size):
+    """One DinD exec whose container command is staged, the compose
+    invocation :func:`_padded_compose` of *size*: the result, the session
+    commands sent, the uploads (path, bytes) and the sandbox."""
     commands = []
+    uploads = []
 
     async def execute(session, request, **kwargs):
         commands.append(request.command)
         return SimpleNamespace(cmd_id="command")
+
+    async def upload(data, path):
+        uploads.append((path, bytes(data)))
 
     sandbox = object.__new__(DaytonaSandbox)
     sandbox.logger = logging.getLogger(__name__)
@@ -294,12 +319,12 @@ async def test_nested_staging_includes_the_final_proof_in_its_bound(size):
     sandbox._poll_response = AsyncMock(
         return_value=ExecResult(stdout="OK", return_code=0)
     )
-    sandbox._sdk_upload_bytes = AsyncMock()
+    sandbox._sdk_upload_bytes = upload
     sandbox._sdk_delete_tree = AsyncMock()
     strategy = object.__new__(_DaytonaDinD)
     strategy._env = sandbox
-    strategy._compose_cmd = lambda args: shlex.join(["docker", "compose", *args])
-    strategy._compose_env_vars = lambda: {"TASK_DATA": "x" * size}
+    strategy._compose_cmd = _padded_compose(size)
+    strategy._compose_env_vars = lambda: {"TASK_DATA": "e" * 15_000}
     result = await strategy._exec(
         "true #" + "x" * 66_000,
         cwd=None,
@@ -310,10 +335,41 @@ async def test_nested_staging_includes_the_final_proof_in_its_bound(size):
         cleanup_session=False,
         route=ExecRoute(pin=SYSTEM_PATH, task_root=False, explicit_root=True),
     )
+    return result, commands, uploads, sandbox
+
+
+@pytest.mark.parametrize("size", NESTED_SIZES)
+async def test_nested_staging_includes_the_final_proof_in_its_bound(size):
+    """Guard ac3bedaa1: staging overhead must not create a rejected size gap."""
+    result, commands, uploads, sandbox = await _nested_exec(size)
     assert result.return_code == 0
-    assert len(commands) == 1
-    assert _transport.size(commands[0]) <= _transport.COMMAND_BOUND
+    # One root session command prepares the env file's folder before its
+    # first upload, then the exec: each, as sent, its proof included, is
+    # within the bound.
+    assert len(commands) == 2
+    assert all(_transport.size(c) <= _transport.COMMAND_BOUND for c in commands)
+    # The compose env is in its file, never in a command.
+    env_files = [d for p, d in uploads if "/env-" in p]
+    assert len(env_files) == 1 and b"e" * 15_000 in env_files[0]
+    assert not any("e" * 15_000 in c for c in commands)
     assert sandbox._sdk_delete_tree.await_count == 1
+
+
+async def test_nested_staging_sizes_reach_each_staging_path():
+    """The sizes above reach each path of the VM's command: within the bound
+    with its proof, staged again after the proof (``command``), and staged
+    by ``fit`` before it (on its own descriptor)."""
+    reached = set()
+    for size in NESTED_SIZES:
+        _, _, uploads, _ = await _nested_exec(size)
+        reached.add(
+            tuple(sorted(p.rsplit("/", 1)[1] for p, _ in uploads if "/stage-" in p))
+        )
+    assert reached == {
+        ("payload",),
+        ("command", "payload"),
+        (f"fd{_SECOND_PAYLOAD_FD}", "payload"),
+    }
 
 
 @pytest.mark.parametrize("cut_outer_payload", [False, True])
@@ -323,6 +379,7 @@ async def test_nested_staging_really_executes_and_preserves_stdin(
     """Guard ac3bedaa1: the overflow repair preserves both nested payloads."""
     sandbox = transport._daytona(transport_box, dind=True)
     sandbox._strategy._compose_env_vars = lambda: {"TASK_DATA": "x" * 15_000}
+    sandbox._strategy._compose_cmd = _padded_compose(GAP_SIZE)
     upload = sandbox._sdk_upload_bytes
 
     async def upload_with_optional_cut(data, target):
@@ -341,6 +398,8 @@ async def test_nested_staging_really_executes_and_preserves_stdin(
         cleanup_session=False,
         route=ExecRoute(pin=SYSTEM_PATH, task_root=False, explicit_root=True),
     )
+    # The repair ran: the VM's command was staged after its proof.
+    assert any(p.endswith("/command") for p in sandbox._sandbox.staged)
     if cut_outer_payload:
         assert result.return_code == _transport.READ_FAILED
         assert "complete" not in result.stdout

@@ -18,14 +18,22 @@ loaded machine is slower, not worse at scaling. A test that times one call holds
 on the same inputs, with a term quadratic in the text's length added to the
 call, must fail.
 
+A claim that one way of doing a thing is faster than another (a latency,
+which CPU time cannot see: a step over a pipe against a ``docker exec`` of its
+own) is timed side by side as well: side_by_side times the ways in turn, the
+order turned round every round, so each round's timings see the same load,
+and assert_faster holds the median of the rounds' ratios to a factor. Never a
+bound in seconds, which a loaded machine exceeds while the claim still holds.
+
 Every timing test calls these; no test file asserts on a timer of its own
 (tests/test_timing_helper.py).
 """
 
 from __future__ import annotations
 
+import statistics
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 ROUNDS = 7
@@ -148,3 +156,38 @@ def catches_quadratic(
     except AssertionError:
         return True
     return False
+
+
+async def side_by_side(
+    calls: Sequence[Callable[[], Awaitable[Any]]],
+    rounds: int = 25,
+    clock: Callable[[], float] = time.monotonic,
+) -> list[list[float]]:
+    """*rounds* wall-clock timings of each of *calls*, all of them every
+    round, in turn, the order turned round from one round to the next: one
+    plain list per round, in the order of *calls*. A round's timings are
+    taken moments apart and see the same load. *clock* is for this module's
+    own tests."""
+    samples: list[list[float]] = []
+    for index in range(rounds):
+        order = list(range(len(calls)))
+        if index % 2:
+            order.reverse()
+        row = [0.0] * len(calls)
+        for at in order:
+            start = clock()
+            await calls[at]()
+            row[at] = float(clock() - start)
+        samples.append(row)
+    return samples
+
+
+def assert_faster(samples: Sequence[Sequence[float]], factor: float) -> None:
+    """The first way took less than *factor* times the second in the median
+    round (side_by_side's samples, two ways): each ratio pairs two timings
+    taken side by side, so load inflates both, and a few stalled rounds do
+    not decide."""
+    ratios = [first / second for first, second in samples if second > 0]
+    assert ratios, samples
+    median = statistics.median(ratios)
+    assert median < factor, (round(median, 3), factor, samples)

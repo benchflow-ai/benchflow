@@ -60,7 +60,7 @@ Some runners read only the `task.toml` layout. `bench export` writes each task i
 
 ## Declare the setup runs should match (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 If your benchmark's published numbers used a particular setup, write it in `run-reference.toml` next to the tasks. Every run's [run card](../evaluate/before-you-run.md#the-run-card-010) compares itself with it:
 

@@ -491,7 +491,7 @@ def _archive_reviewer(uploaded: set[str], fake: FakeRun):
 async def test_bench_review_refuses_a_link_below_the_evidence_folder(
     tmp_path, monkeypatch, linked
 ):
-    """Guards PR #1239 (xdotli's review, 11-19) after 5df9018b: a rollout's
+    """Guards PR #1239 (its review, 11-19) after 5df9018b: a rollout's
     own ``evidence/`` whose ``artifacts/0000``, or ``artifacts`` itself, links
     to another valid capture would hand the reviewer that capture as
     ``/evidence/artifacts/0000.tar``. That trial's review fails instead,
@@ -540,7 +540,7 @@ async def test_bench_review_refuses_a_link_below_the_evidence_folder(
 def test_refuse_linked_bundle_checks_every_name_a_bundle_is_read_through(
     tmp_path, name
 ):
-    """Guards PR #1239 (xdotli's review, 11-19): each name below a bundle
+    """Guards PR #1239 (its review, 11-19): each name below a bundle
     that its upload reads through is refused when it is a link."""
     bundle = _capture(tmp_path / "own", "paper.txt", b"own work", artifact=True)
     _capture(bundle / "artifacts" / "0000", "out.txt", b"output", artifact=False)

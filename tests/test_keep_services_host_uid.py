@@ -62,7 +62,8 @@ async def test_the_clear_keeps_the_host_owner_only_on_a_mounted_folder(
             env, _task(tmp_path), "agent", "/app", False, None, {}
         )
     clear = issued[-1]
-    assert clear.endswith("chmod 777 /logs/verifier"), clear
+    # Closed at 0755, never 0777 (#1247): root's, or the host's own mount's owner.
+    assert clear.endswith("chmod 755 /logs/verifier"), clear
     assert ("chown root:root /logs/verifier" in clear) is (mounted is not True), clear
 
 

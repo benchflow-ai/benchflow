@@ -240,7 +240,11 @@ def no_exec_channel(request, monkeypatch) -> None:
     """
     from benchflow.sandbox.docker import DockerSandbox
 
+    # BENCHFLOW_TEST_RUN_DEFAULTS=1 keeps both everywhere, for a run of whole
+    # trials as a run has them (test.yml's grading-matrix-run-defaults).
     if getattr(request.module, "DOCKER_RUN_DEFAULTS", False) is True:
+        return
+    if os.environ.get("BENCHFLOW_TEST_RUN_DEFAULTS") == "1":
         return
     monkeypatch.setattr(DockerSandbox, "exec_channel", False)
     # Their answers come in call order, so the independent steps before the

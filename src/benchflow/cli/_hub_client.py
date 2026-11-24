@@ -531,6 +531,21 @@ def publish(
     print_hint(f"    bench hub push <job> --hub {client.url}")
 
 
+def _run_name(given: Path, run: Path) -> str:
+    """A pushed run's name without ``--label``: the job's name its
+    summary.json records, else the folder named on the command line, never
+    the jobs folder above it (``bench hub push jobs/demo2`` showed
+    the run as "jobs")."""
+    try:
+        summary = json.loads((run / "summary.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        summary = None
+    recorded = summary.get("job_name") if isinstance(summary, dict) else None
+    if isinstance(recorded, str) and recorded.strip():
+        return recorded.strip()
+    return given.name
+
+
 def _job_dataset(job_dir: Path) -> str | None:
     """The dataset a job ran (``org/name@version``), from a trial's config.json, if it recorded one."""
     for config in sorted(job_dir.glob("*/config.json"))[:50]:
@@ -762,8 +777,10 @@ def push(
             next_step=f"push one run: bench hub push {job_dir / runs[-1].name}",
         )
         raise typer.Exit(2)
+    given = job_dir
     if runs:
         job_dir = runs[0]
+    name = label or _run_name(given, job_dir)
     client = _client(hub)
     dataset = dataset or _job_dataset(job_dir)
     if dataset and client.has_registry() is False:
@@ -777,11 +794,12 @@ def push(
         archive = Path(scratch) / f"{job_dir.name}.tar.gz"
         files = _pack_job(job_dir, archive)
         console.print(
-            f"Pushing {escape(job_dir.name)}: {files} files, {archive.stat().st_size / 1e6:.1f} MB"
+            f"Pushing {escape(name)}: {files} files, {archive.stat().st_size / 1e6:.1f} MB"
             + (f", dataset {escape(dataset)}" if dataset else ", no dataset recorded")
         )
         try:
-            answer = client.upload_run(archive, name=label, dataset=dataset)
+            # Named here, so the Hub stores the name bench prints.
+            answer = client.upload_run(archive, name=name, dataset=dataset)
         except HubError as e:
             print_error(
                 str(e),
@@ -796,9 +814,8 @@ def push(
             next_step="nothing on the Hub names this job; check the Hub's log, then push again",
         )
         raise typer.Exit(1)
-    shown = label or job_dir.parent.name
     failures = [
-        f for f in [_report_push(client, r, dataset, shown) for r in stored] if f
+        f for f in [_report_push(client, r, dataset, name) for r in stored] if f
     ]
     if failures:
         for message, step in failures:
@@ -846,17 +863,27 @@ def _report_push(
     kept, why = _kept_folders(client, run_id)
     if kept is False:
         problems.append(
-            "the Hub kept no trial folders for it, so its run card, scoring, verifier output "
-            "and artifacts aren't on the Hub"
+            "not kept: the Hub kept no trial folders for it, so its run card, scoring, "
+            "verifier output and artifacts aren't on the Hub"
         )
     elif kept is None:
         problems.append(
-            f"bench couldn't check that the Hub kept its trial folders: {why}"
+            f"not checked: bench couldn't check that the Hub kept its trial folders: {why}"
         )
     if problems:
-        message = (
-            f"the Hub at {client.url} stored {label} as {', '.join(bits)}, but "
-            + "; and ".join(problems)
+        if not dataset:
+            problems.append(
+                "not linked: the job recorded no dataset, so the run counts for no "
+                "dataset version (--dataset org/name@version names one)"
+            )
+        # What arrived, then each thing that did not, a line each: the first
+        # line alone is not the whole push.
+        message = "\n  ".join(
+            [
+                f"the Hub at {client.url} stored {label} as {', '.join(bits)}, "
+                "but not all of it:",
+                *problems,
+            ]
         )
         if why == _NO_READ_SCOPE:
             return (
@@ -865,7 +892,13 @@ def _report_push(
             )
         return (
             message,
-            f"the run is at {where}; push to a Hub that links the dataset and keeps the job folder",
+            f"its traces are at {where}"
+            + (
+                ""
+                if dataset
+                else "; to link it to a dataset version, push again with "
+                "--dataset org/name@version"
+            ),
         )
     console.print(
         f"[green]✓[/green] Pushed {escape(label)} to the Hub at {escape(client.url)}: "
@@ -880,6 +913,12 @@ def _report_push(
         console.print(
             f"  linked to {escape(str(linked))}, [yellow]content not checked[/yellow]: its records don't name "
             "this version's digest, so it won't count as a control",
+            soft_wrap=True,
+        )
+    if not dataset and not linked:
+        console.print(
+            "  not linked: the job recorded no dataset, so the run counts for no dataset "
+            "version (--dataset org/name@version names one)",
             soft_wrap=True,
         )
     console.print(f"  [dim]{escape(where)}[/dim]")

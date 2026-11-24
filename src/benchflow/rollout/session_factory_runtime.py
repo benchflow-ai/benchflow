@@ -22,6 +22,7 @@ per-call stream — so captured tokens are load-bearing).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import importlib
 import logging
@@ -198,11 +199,36 @@ async def connect_session_factory(
     return None, session, None, agent
 
 
+async def _prompt_within(
+    session: Any, prompt: str, timeout: int, on_deadline: Any
+) -> Any:
+    """``session.prompt`` within *timeout*; at its end the model gate closes
+    (*on_deadline*, bounded) before the prompt is cancelled, then
+    ``TimeoutError`` as ``asyncio.wait_for`` raised it."""
+    if on_deadline is None:
+        return await asyncio.wait_for(session.prompt(prompt), timeout=timeout)
+    from benchflow.acp.timeout_cleanup import close_gate_first
+
+    task = asyncio.ensure_future(session.prompt(prompt))
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            return task.result()
+        await close_gate_first(on_deadline)
+        raise TimeoutError(f"session-factory prompt exceeded {timeout}s")
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await asyncio.wait({task}, timeout=5)
+
+
 async def execute_prompts_session_factory(
     session: Any,
     prompts: list[str],
     timeout: int,
     idle_timeout: int | None = None,
+    on_deadline: Any = None,
 ) -> tuple[list[dict], int]:
     """Drive a session-factory Session: one ``prompt`` per turn, capture steps.
 
@@ -218,14 +244,13 @@ async def execute_prompts_session_factory(
     ``AgentPromptTimeoutError`` (the kernel drive site already handles it),
     carrying the steps captured so far. A turn that fails for any other reason
     raises ``AgentTurnFailedError`` with those steps: an agent error, not a
-    timeout.
+    timeout. ``on_deadline`` (the trial's model gate) runs at the
+    budget's end before the prompt is cancelled.
     """
     for i, prompt in enumerate(prompts):
         logger.info("Prompt %d/%d: %s...", i + 1, len(prompts), (prompt or "")[:80])
         try:
-            stop_reason = await asyncio.wait_for(
-                session.prompt(prompt), timeout=timeout
-            )
+            stop_reason = await _prompt_within(session, prompt, timeout, on_deadline)
         except UsageLimitError:
             # A spent login is not the agent's failure: raised as is, it is an
             # unscored usage_limit; wrapped below it would be a scored timeout.

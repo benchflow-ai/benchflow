@@ -12,10 +12,8 @@ PYTEST_BIN="${BENCHFLOW_PYTEST_BIN:-pytest}"
 
 mkdir -p "$(dirname "$REWARD_TEXT")" "$(dirname "$REWARD_JSON")" "$(dirname "$CTRF_JSON")"
 
-if [ "${BENCHFLOW_SKIP_VERIFIER_DEPS:-0}" != "1" ]; then
-  pip3 install --break-system-packages pytest==8.4.1 pytest-json-ctrf==0.3.5
-fi
-
+# pytest and pytest-json-ctrf come with the image (environment/Dockerfile), so
+# nothing is installed here and the verifier needs no network.
 "$PYTEST_BIN" --ctrf "$CTRF_JSON" "$VERIFIER_DIR/test_outputs.py" -rA -v
 PYTEST_EXIT_CODE=$?
 

@@ -18,7 +18,6 @@ import logging
 import os
 import platform
 import shutil
-import statistics
 import subprocess
 import sys
 import time
@@ -28,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchflow.sandbox._base import ExecResult
+from tests._timing import assert_faster, side_by_side
 
 # Helper regressions must fail instead of hanging the suite.
 pytestmark = pytest.mark.timeout(120)
@@ -788,6 +788,12 @@ BOXES = (
     ("ubuntu:24.04", False),
 )
 BOX_IDS = ("python-bfx", "python-kit", "ubuntu-pool")
+#: A channel step against one with a docker exec of its own, timed side by
+#: side: the median round's ratio is under this (tests/_timing.py). Measured
+#: under stress-ng --cpu 32 on a 32-vCPU VM, 30 runs each: bfx 0.13-0.22,
+#: the kit's Python 0.13-0.17, the pre-started pool 0.19-0.25. A step
+#: that started its own docker exec would be near 1.
+FASTER_THAN_ITS_OWN_EXEC = 0.5
 # How each helper shows in its process's command line.
 HELPER_MARKS = {"bfx": "--frames", "python": "GRACE = 2.0"}
 WORKSPACE = "/srv"
@@ -982,24 +988,39 @@ PROBE = (
 
 
 @pytest.mark.asyncio
-async def test_root_steps_stop_starting_a_docker_client_each(kit_sandbox, kit_box):
+async def test_root_steps_stop_starting_a_docker_client_each(
+    kit_sandbox, kit_box, monkeypatch
+):
     """The speed claim, by behaviour: once the channel runs, root's steps on
-    the kit start no ``docker exec`` of their own (each costs 0.05-0.1 s)."""
+    the kit start no ``docker exec`` of their own, and a step costs less
+    than one that does. The two are timed side by side (tests/_timing.py),
+    so a loaded runner slows both: a bound in seconds failed on GitHub's
+    4-CPU runner with the channel working (median 51-61 ms against 50)."""
     sandbox = kit_sandbox
     calls = sandbox.calls
     await _channel_ready(sandbox)
-    before = len(calls)
-    steps = []
-    for i in range(40):
-        started = time.monotonic()
+    on_channel: list[list[str]] = []
+    count = iter(range(1000))
+
+    async def through_the_channel():
+        i = next(count)
+        monkeypatch.setenv("BENCHFLOW_EXEC_CHANNEL", "1")
+        before = len(calls)
         result = await sandbox.exec(f"echo {i}", user="root")
-        steps.append(time.monotonic() - started)
+        on_channel.extend(calls[before:])
         assert result.stdout == f"{i}\n"
-    assert calls[before:] == []
-    # The typical step, not the mean: on GitHub's loaded 4-CPU runner a few
-    # stalled steps put the mean at 52-54 ms. A docker exec per step would put
-    # every step, so the median too, over 0.05 s.
-    assert statistics.median(steps) < 0.05
+
+    async def with_a_docker_exec_of_its_own():
+        monkeypatch.setenv("BENCHFLOW_EXEC_CHANNEL", "0")
+        before = len(calls)
+        result = await sandbox.exec("echo own", user="root")
+        assert len(calls) == before + 1 and result.stdout == "own\n"
+
+    samples = await side_by_side(
+        [through_the_channel, with_a_docker_exec_of_its_own], rounds=40
+    )
+    assert on_channel == []
+    assert_faster(samples, factor=FASTER_THAN_ITS_OWN_EXEC)
 
 
 @pytest.mark.asyncio

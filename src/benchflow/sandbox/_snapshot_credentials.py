@@ -36,7 +36,8 @@ snapshot, as does a path outside the credential locations, before anything is
 removed.
 
 The inventory is :data:`benchflow.agents.credentials.CREDENTIAL_EVIDENCE_PATHS`
-under ``/root`` and every ``/home/<user>``. Credentials a task places
+under ``/root``, every ``/home/<user>``, and every home ``/etc/passwd``
+names (the agent user's may be ``/app``). Credentials a task places
 elsewhere are not covered.
 """
 
@@ -46,6 +47,7 @@ import base64
 import binascii
 import logging
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -111,7 +113,14 @@ def _discovery_command() -> str:
     return (
         # A newline inside a file name could forge a listing line; flag it.
         "nl=$(printf '\\nx'); nl=${nl%x}; "
-        f'for h in {homes}; do [ -d "$h" ] || continue; found=; '
+        # The homes: /root, every /home/<user>, and each home /etc/passwd
+        # names (root reads it), plain absolute paths only.
+        f'bf_hs=; for h in {homes}; do bf_hs="$bf_hs $h"; done; '
+        "if [ -r /etc/passwd ]; then while IFS=: read -r _ _ _ _ _ h _; do "
+        'case "$h" in /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|*[!A-Za-z0-9._/-]*) ;; '
+        '/*) bf_hs="$bf_hs $h" ;; esac; done < /etc/passwd; fi; '
+        'for h in $(for h in $bf_hs; do echo "$h"; done | sort -u); do '
+        '[ -d "$h" ] || continue; found=; '
         f'for r in {rels}; do p="$h/$r"; '
         'if [ -L "$p" ] || [ -e "$p" ]; then found=1; '
         'if [ -n "$(find "$p" -name "*$nl*" -print 2>/dev/null | head -n 1)" ]; '
@@ -124,7 +133,16 @@ def _discovery_command() -> str:
     )
 
 
-def _home_of(path: str) -> str | None:
+def _home_of(path: str, homes: Iterable[str] = ()) -> str | None:
+    """The credential home *path* is in: the deepest of the listing's
+    *homes* that holds it, else ``/root`` or ``/home/<user>``."""
+    best: str | None = None
+    for home in homes:
+        inside = home != "/" and path.startswith(home.rstrip("/") + "/")
+        if inside and (best is None or len(home) > len(best)):
+            best = home
+    if best is not None:
+        return best
     if path.startswith("/root/"):
         return "/root"
     parts = path.split("/")
@@ -187,7 +205,7 @@ async def _list_credentials(ops: CredentialOps) -> tuple[_Homes, _Entries]:
         else:
             entries.append((uid, gid, mode, kind, path))
     for *_, path in entries:
-        home = _home_of(path)
+        home = _home_of(path, homes)
         if home is None or home not in homes or not _is_credential_path(path, home):
             raise CredentialScrubError(
                 f"refusing to snapshot: unexpected credential path {path!r}"
@@ -196,7 +214,7 @@ async def _list_credentials(ops: CredentialOps) -> tuple[_Homes, _Entries]:
 
 
 def _home_owner(homes: _Homes, path: str) -> tuple[int, int]:
-    home = _home_of(path)
+    home = _home_of(path, homes)
     assert home is not None  # checked by _list_credentials
     uid, gid, kind = homes[home]
     if "directory" not in kind:

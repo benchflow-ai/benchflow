@@ -18,9 +18,11 @@ gives ``main`` NET_ADMIN only while the block is armed.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from benchflow.errors import UserError
 
 #: The link-local address most clouds serve instance credentials on (AWS, GCE,
 #: Azure, Oracle, DigitalOcean, OpenStack), AWS's container credentials (ECS)
@@ -78,9 +80,133 @@ class CloudMetadataUnprotectedError(CloudMetadataPowerError):
 CLOUD_METADATA_RUN_OPT_OUT = "--allow-cloud-metadata"
 #: Where the refusal points a run that means to let its agent reach them.
 CLOUD_METADATA_OPT_OUT_HINT = (
-    "set allow_cloud_metadata = true in the task's [environment] table, or run "
-    "with --allow-cloud-metadata, to let the agent reach them"
+    "run with --allow-cloud-metadata to let the agent reach them (a task's "
+    "allow_cloud_metadata = true takes effect only with that flag)"
 )
+#: What a task's own opt-out lifts once the run grants it.
+TASK_OPT_OUT_LIFTS = (
+    "the cloud metadata block for every process of the trial: the agent's "
+    "rule, main's rule for every user, the verifier's and the task's other "
+    "compose services'"
+)
+
+
+class CloudMetadataOptInRefused(ValueError, UserError):
+    """A task asks to lift the cloud metadata block (its own
+    ``allow_cloud_metadata = true``, or ``metadata.x-allow-cloud-metadata =
+    true``) and the run did not grant it with ``--allow-cloud-metadata``. A
+    task can't weaken its own isolation: the trial, or the whole job, is
+    refused before anything starts. The message names the tasks, their key
+    and the flag."""
+
+    fault = "task"
+
+
+def task_opt_in(task_config: Any) -> str:
+    """How the task asks to lift the block, as its record names it ("" when
+    it does not ask): the declaration alone, whatever the run grants."""
+    opt_out = getattr(task_config, "cloud_metadata_opt_out", "")
+    return opt_out if isinstance(opt_out, str) else ""
+
+
+def task_opt_ins(task_config: Any) -> list[tuple[str, str]]:
+    """Every way the task asks to lift the block: (setting, how). Today its
+    own opt-out only (an allowlist entry that names a metadata address is no
+    way around it: main's rule for every user refuses it)."""
+    how = task_opt_in(task_config)
+    return [("allow_cloud_metadata", how)] if how else []
+
+
+def opt_in_refusal(
+    asked: list[tuple[str, str]], *, command: str | None = None
+) -> CloudMetadataOptInRefused:
+    """The refusal for ``asked``, (task name, how it asks) pairs. *command*
+    (``bench eval continue``, ``bench eval branch``): a command that takes no
+    grant, so the refusal says it can't lift the block and names the one
+    that can."""
+    shown = "; ".join(f"{name} ({how})" for name, how in asked[:8])
+    if len(asked) > 8:
+        shown += f"; and {len(asked) - 8} more"
+    many = len(asked) > 1
+    them = "them" if many else "it"
+    head = (
+        f"{len(asked)} task{'s' if many else ''} ask{'' if many else 's'} for "
+        "the cloud metadata endpoints (a cloud VM's instance credentials), which "
+        f"a task can't open by itself: {shown}. A task's allow_cloud_metadata "
+        f"takes effect only when the run also passes {CLOUD_METADATA_RUN_OPT_OUT}"
+    )
+    if command:
+        error = CloudMetadataOptInRefused(
+            f"{head}, and {command} takes no such flag, so it can't lift the "
+            f"block: run the task with bench eval run {CLOUD_METADATA_RUN_OPT_OUT} "
+            "instead. Nothing was started."
+        )
+        error.hint = (
+            f"{command} can't lift the cloud metadata block; run the task with "
+            f"bench eval run {CLOUD_METADATA_RUN_OPT_OUT} (or bench run "
+            f"{CLOUD_METADATA_RUN_OPT_OUT}) to let {them} reach the endpoints, or "
+            f"leave {'these tasks' if many else 'the task'} out"
+        )
+        return error
+    error = CloudMetadataOptInRefused(f"{head}. Nothing was started.")
+    error.hint = (
+        f"run with {CLOUD_METADATA_RUN_OPT_OUT} (the run config's "
+        "allow_cloud_metadata: true; allow_cloud_metadata=True in "
+        "EvaluationConfig, RolloutConfig or RuntimeConfig) to let "
+        f"{them} reach the endpoints, or leave "
+        f"{'these tasks' if many else 'the task'} out; `bench tasks check` at a "
+        "level that starts a sandbox (--level acceptance-live, for one) takes no "
+        "such flag, so it can't run such a task"
+    )
+    return error
+
+
+def refuse_opt_in_for_command(
+    task_dirs: list[Path],
+    *,
+    command: str,
+    config_override: dict[str, Any] | None = None,
+) -> None:
+    """Refuse, before anything starts, the tasks in *task_dirs* that ask to
+    lift the block when *command* runs them: a command with no grant to give
+    (``bench eval continue``, ``bench eval branch``). A task that does not
+    load is left to the run (:func:`task_dirs_opt_ins`)."""
+    asked = task_dirs_opt_ins(task_dirs, config_override)
+    if asked:
+        raise opt_in_refusal(asked, command=command)
+
+
+def refuse_ungranted_opt_in(
+    task_config: Any, *, task_name: str, allow_cloud_metadata: bool
+) -> None:
+    """Refuse, before anything starts, a task that asks to lift the block
+    on a run that does not grant it (:class:`CloudMetadataOptInRefused`)."""
+    if strict_grant(allow_cloud_metadata):
+        return
+    asked = task_opt_ins(task_config)
+    if asked:
+        raise opt_in_refusal([(task_name, "; ".join(how for _, how in asked))])
+
+
+def opt_in_records(
+    task_config: Any, *, allow_cloud_metadata: bool
+) -> list[dict[str, Any]]:
+    """The trial's record of each way the task asked for the endpoints and
+    the run granted (result.json's ``isolation_opt_ins``, the provenance's
+    ``isolation_lifted``): the setting, how the task asked, the flag and what
+    it lifts. Empty when the task does not ask, or the run did not grant it
+    (that trial is refused)."""
+    if not strict_grant(allow_cloud_metadata):
+        return []
+    return [
+        {
+            "setting": setting,
+            "task": how,
+            "run": CLOUD_METADATA_RUN_OPT_OUT,
+            "lifts": TASK_OPT_OUT_LIFTS,
+        }
+        for setting, how in task_opt_ins(task_config)
+    ]
 
 
 #: The record's state for a root agent on a sandbox provider (Daytona, Modal,
@@ -127,6 +253,9 @@ class CloudMetadataPlan:
     require_block: bool = False
     root_agent: bool = False
     uncovered: tuple[str, ...] = ()
+    # Who lifted the block: ``{"run": "--allow-cloud-metadata"}``, with
+    # ``"task"`` (how it asked) when the task's own opt-out was granted.
+    lifted_by: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -450,10 +579,14 @@ def cloud_metadata_plan(
     or the agent's network is not open (``no-network``, ``denylist`` and
     ``allowlist`` already confine the agent user to loopback and the lists'
     own addresses). Under an open network the block is armed, for an agent
-    that runs as root too (``root_agent``), unless the run opts out: the
-    task's ``allow_cloud_metadata = true`` (or its older
-    ``metadata.x-allow-cloud-metadata = true``), or ``allow_cloud_metadata``
-    from the run (``--allow-cloud-metadata``). It is not installed when the
+    that runs as root too (``root_agent``), unless the run opts out with
+    ``allow_cloud_metadata`` (``--allow-cloud-metadata``), with or without
+    the task's own ``allow_cloud_metadata = true`` (or its older
+    ``metadata.x-allow-cloud-metadata = true``). The task's key alone never
+    disarms it: such a trial is refused before it starts
+    (:func:`refuse_ungranted_opt_in`), and the plan keeps the block if one
+    gets here. ``lifted_by`` names the flag, and the task's key when it was
+    granted. It is not installed when the
     task's compose file (in *environment_dir*) puts ``main`` on the host's
     network or another container's, and the trial then stops.
     The task's other compose services are named in ``uncovered``: the rules
@@ -465,19 +598,22 @@ def cloud_metadata_plan(
         return None
     if not network_is_open(agent_network_sandbox_config(task_config)):
         return None
-    opt_out = (
-        CLOUD_METADATA_RUN_OPT_OUT
-        if allow_cloud_metadata
-        else getattr(task_config, "cloud_metadata_opt_out", "")
-        or (
-            "the task's opt-out"
-            if getattr(task_config, "allows_cloud_metadata", False)
-            else ""
+    if strict_grant(allow_cloud_metadata):
+        how = task_opt_in(task_config)
+        lifted_by = {
+            "run": CLOUD_METADATA_RUN_OPT_OUT,
+            **({"task": how} if how else {}),
+        }
+        opt_out = (
+            f"{how}, granted by {CLOUD_METADATA_RUN_OPT_OUT}"
+            if how
+            else CLOUD_METADATA_RUN_OPT_OUT
         )
-    )
-    if opt_out:
         return CloudMetadataPlan(
-            armed=False, why=f"the run opts out ({opt_out})", opt_out=opt_out
+            armed=False,
+            why=f"the run opts out ({opt_out})",
+            opt_out=opt_out,
+            lifted_by=lifted_by,
         )
     root_agent = not sandbox_user or sandbox_user in {"root", "0"}
     topology = task_compose_topology(environment_dir)
@@ -527,3 +663,88 @@ def cloud_metadata_record(state: str, why: str, **extra: Any) -> dict[str, Any]:
         "addresses": list(CLOUD_METADATA_V4 + CLOUD_METADATA_V6),
         **extra,
     }
+
+
+def task_dirs_opt_ins(
+    task_dirs: list[Path], config_override: dict[str, Any] | None = None
+) -> list[tuple[str, str]]:
+    """(task name, how it asks) for each task in *task_dirs* that asks to
+    lift the block, with the run's config overlay applied as each trial
+    applies it. A task that does not load is left to the run, which reports
+    it."""
+    from benchflow.task.runtime_view import TaskRuntimeView
+
+    asked = []
+    for task_dir in task_dirs:
+        try:
+            config = TaskRuntimeView.from_task_dir(task_dir).config
+            if config_override:
+                from benchflow._utils.config_override import apply_config_override
+
+                config = apply_config_override(config, config_override)
+        except Exception:  # the run names a task that does not load
+            continue
+        hows = [how for _, how in task_opt_ins(config)]
+        if hows:
+            asked.append((Path(task_dir).name, "; ".join(hows)))
+    return asked
+
+
+def run_card_block(
+    task_dirs: list[Path],
+    *,
+    allow_cloud_metadata: bool,
+    config_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The run card's ``cloud_metadata``: the run's flag (None without it)
+    and, under it, each task whose own opt-out it grants, with its key."""
+    allow_cloud_metadata = strict_grant(allow_cloud_metadata)
+    asked = (
+        task_dirs_opt_ins(task_dirs, config_override) if allow_cloud_metadata else []
+    )
+    return {
+        "run_flag": CLOUD_METADATA_RUN_OPT_OUT if allow_cloud_metadata else None,
+        "lifted_for": [{"task": name, "key": how} for name, how in asked],
+    }
+
+
+def run_start_lines(block: dict[str, Any] | None) -> list[str]:
+    """The warnings a run gives at start for its card's ``cloud_metadata``."""
+    if not isinstance(block, dict) or not block.get("run_flag"):
+        return []
+    lifted = [row for row in block.get("lifted_for") or () if isinstance(row, dict)]
+    if lifted:
+        named = "; ".join(f"{row['task']} ({row['key']})" for row in lifted[:8])
+        if len(lifted) > 8:
+            named += f"; and {len(lifted) - 8} more"
+        return [
+            f"The cloud metadata block is lifted for {len(lifted)} "
+            f"task{'s' if len(lifted) > 1 else ''}: {named}. Each asks for it "
+            f"and this run grants it with {CLOUD_METADATA_RUN_OPT_OUT}, so its "
+            "agent, its test.sh and its other services can reach the cloud "
+            "metadata endpoints (a cloud VM's instance credentials); each "
+            "trial's result.json names it (isolation_opt_ins)."
+        ]
+    return [
+        f"{CLOUD_METADATA_RUN_OPT_OUT} is set: under an open network the "
+        "agent's own cloud metadata rule and the task's other compose "
+        "services' are not installed (on Docker main's rule for every user "
+        "still holds); no task asks to lift the rest."
+    ]
+
+
+def strict_grant(value: Any, *, where: str = "allow_cloud_metadata") -> bool:
+    """The run's grant read from a config file or record: true only for a
+    boolean true or the words ``true``/``yes``/``on``/``1``, so a quoted
+    ``"false"`` never becomes the permission (``bool("false")`` is true).
+    Anything else is refused, naming *where*."""
+    if value is None or isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on", "1"}:
+        return True
+    if text in {"false", "no", "off", "0", ""}:
+        return False
+    raise ValueError(f"{where} must be true or false, not {value!r}")

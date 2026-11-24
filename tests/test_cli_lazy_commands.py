@@ -37,6 +37,8 @@ ROOT_ORDER = [
     "explain",
     "cache",
     "eval",
+    # bench eval resume at the top (the short forms).
+    "resume",
     "tasks",
     "agent",
     "review",

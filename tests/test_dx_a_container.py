@@ -227,7 +227,7 @@ def test_a_crashed_verifier_says_what_test_sh_did_and_quotes_it(tmp_path):
         "verifier wrote no usable reward: test.sh exited 1 and wrote an empty "
         "verifier/reward.txt"
     ) in out
-    assert "0 scored (0 passed, 0 failed), 1 unscored" in out
+    assert "0/1 passed, 1 unscored" in out  # the final screen
     assert "the verifier wrote no usable reward (a failure in every score)" in out
     stdout = next(job.glob("*/verifier/test-stdout.txt")).read_text()
     assert "NameError: name 'score' is not defined" in stdout

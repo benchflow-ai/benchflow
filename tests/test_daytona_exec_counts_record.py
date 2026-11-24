@@ -212,3 +212,72 @@ async def test_a_failed_write_does_not_stop_the_stop(tmp_path) -> None:
     await sandbox.stop(delete=True)
 
     assert sandbox._strategy.stopped == 1
+
+
+class _ShellProbeProcess(_Process):
+    """Answers each session's shell probe with that session's shell."""
+
+    def __init__(self, answer: str = "BF-SESSION-SHELL 2526 900\n") -> None:
+        super().__init__()
+        self.answer = answer
+        self.commands: dict[str, str] = {}
+
+    async def execute_session_command(self, session_id, request, timeout=None):
+        cmd_id = f"{session_id}-{len(self.commands)}"
+        self.commands[cmd_id] = request.command
+        return SimpleNamespace(cmd_id=cmd_id)
+
+    async def get_session_command_logs(self, session_id, command_id):
+        from benchflow.sandbox.daytona import _SESSION_SHELL_PROBE
+
+        probe = self.commands[command_id] == _SESSION_SHELL_PROBE
+        return SimpleNamespace(stdout=self.answer if probe else "ok", stderr="")
+
+
+async def test_each_kept_sessions_shell_is_recorded_by_pid_and_start(
+    tmp_path, fast_poll
+) -> None:
+    """D1: the host records the shell of each session it keeps (pid and
+    start), from a probe that is that session's first command, for the
+    integrity check's process diff. A transient exec's session, deleted after
+    its command, is not probed. The probe is counted apart from the execs."""
+    from benchflow.sandbox import _image_trees
+
+    sandbox = _sandbox(tmp_path)
+    process = _ShellProbeProcess()
+    sandbox._sandbox = SimpleNamespace(process=process)
+    sandbox._benchflow_record_session_shells = True
+    assert (await sandbox.exec("true", timeout_sec=5)).return_code == 0
+    assert (await sandbox.exec_transient("stat log", timeout_sec=5)).return_code == 0
+    assert _image_trees.session_shells(sandbox) == {(2526, 900)}
+    await sandbox.stop(delete=True)
+    record = json.loads((tmp_path / RECORD).read_text())
+    assert (record["exec_calls"], record["status_requests"]) == (1, 2)
+    assert record["transient_exec_calls"] == 1
+    assert (record["session_probes"], record["session_probe_status_requests"]) == (1, 2)
+
+
+async def test_a_session_probe_with_no_answer_records_nothing(tmp_path, fast_poll):
+    """Fail closed: no answer, no record, so that shell counts as the turn's."""
+    from benchflow.sandbox import _image_trees
+
+    sandbox = _sandbox(tmp_path)
+    sandbox._sandbox = SimpleNamespace(process=_ShellProbeProcess(answer="nothing\n"))
+    sandbox._benchflow_record_session_shells = True
+    assert (await sandbox.exec("true", timeout_sec=5)).return_code == 0
+    assert _image_trees.session_shells(sandbox) == frozenset()
+
+
+async def test_no_session_is_probed_unless_the_rollout_asks(tmp_path, fast_poll):
+    """Only a rollout whose integrity check diffs the processes (audit, off)
+    sets the sandbox to record its sessions' shells."""
+    from benchflow.sandbox import _image_trees
+
+    sandbox = _sandbox(tmp_path)
+    process = _ShellProbeProcess()
+    sandbox._sandbox = SimpleNamespace(process=process)
+    assert (await sandbox.exec("true", timeout_sec=5)).return_code == 0
+    assert _image_trees.session_shells(sandbox) == frozenset()
+    assert list(process.commands.values()) == ["true"] or all(
+        "BF-SESSION-SHELL" not in c for c in process.commands.values()
+    )

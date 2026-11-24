@@ -36,7 +36,7 @@ run_01...: status running, trials 1/2
 status succeeded, trials 2/2, mean reward 1
 ```
 
-Without `-a` the oracle runs, the task's reference solution. `-m` names the model, `-i` keeps only the named tasks, `--trials` runs each task more than once, and `-j` runs trials side by side; the service may lower `-j` to fit its sandbox limit, and says so in a warning. `--max-sandbox-seconds` stops the run past that much sandbox time, `--secret NAME` passes a secret you stored on the service to the agent, and `--name` labels the run. `bench hosted estimate` takes the same options and says what the run would likely take, without starting it. `bench hosted submit --version PKG-...` is the same as `run`.
+Without `-a` the oracle runs, the task's reference solution. `-m` names the model, `-i` keeps only the named tasks, `--trials` runs each task more than once, and `-j` runs trials side by side; the service may lower `-j` to fit its sandbox limit, and says so in a warning. `--max-sandbox-seconds` stops the run past that much sandbox time, `--secret NAME` passes a secret you stored on the service to the agent, and `--name` labels the run. `bench hosted estimate` takes the same selection and budget options (never a key: an estimate sends none) and says what the run would likely take, without starting it. `bench hosted submit --version PKG-...` is the same as `run`.
 
 Without `--wait`, `run` prints the run's id and returns. Follow it later:
 
@@ -78,6 +78,9 @@ bench hosted secret rm DEEPSEEK
 How these behave:
 - Each key comes from `file:PATH`, `env:VAR` or `-` (stdin), never from the command line.
 - A stored endpoint is sent only the key stored with it.
+- An endpoint is https only, reachable from the internet: the service's workers call it, so a CLIProxy on your own
+  machine (localhost or a private address) can't be reached. Its key goes in `--endpoint-key`, never in the URL.
+- A key file must be readable by you alone (`chmod 600`), as the hub key file must.
 - `--max-cost-usd` is the run's budget: the proxy refuses model calls once its own count reaches it.
 - The run's record has the proxy's tokens and cost per trial (`keyproxy_usage`).
 - Today the proxy serves Claude Code (`-a claude-agent-acp`). Another agent would need its key inside the sandbox, and

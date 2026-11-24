@@ -1392,11 +1392,26 @@ def _create_connection(address: tuple[str, int], timeout: float) -> socket.socke
     raise error or OSError(f"cannot connect to {host}:{port}")
 
 
+#: How long the proxy waits before it asks again for a name the resolver could
+#: not answer for now (EAI_AGAIN). In allow mode the proxy's own queries go
+#: through its DNS filter like every other process's; a late or lost answer on
+# a busy host refused an allowed host with a 502 (GitHub's runner).
+#: A name that does not exist is not asked again.
+_RESOLVE_RETRY_WAITS = (0.5, 1.5)
+
+
 def _resolve(host: str, port: int) -> list[str]:
+    waits = list(_RESOLVE_RETRY_WAITS)
+    while True:
+        try:
+            found = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            break
+        except socket.gaierror as exc:
+            if exc.errno != socket.EAI_AGAIN or not waits:
+                raise
+            time.sleep(waits.pop(0))
     addresses: dict[str, None] = {}
-    for _family, _type, _proto, _name, sockaddr in socket.getaddrinfo(
-        host, port, type=socket.SOCK_STREAM
-    ):
+    for _family, _type, _proto, _name, sockaddr in found:
         addresses.setdefault(str(sockaddr[0]))
     return list(addresses)
 
@@ -2075,6 +2090,10 @@ class Handler(socketserver.BaseRequestHandler):
 
 DNS_TIMEOUT = 5
 _DNS_MAX = 65535
+#: When the filter sends a query again that its upstream has not answered,
+#: in seconds from the first send, within DNS_TIMEOUT: as a stub resolver
+#: retransmits, so one lost datagram is not a SERVFAIL.
+_DNS_RESEND_AT = (1.0, 2.5)
 
 
 def _dns_question(query: bytes) -> str | None:
@@ -2152,11 +2171,24 @@ def _forward_udp(query: bytes, upstreams: list[str]) -> bytes:
         host, port = _split_upstream(upstream)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         with _marked(socket.socket(family, socket.SOCK_DGRAM)) as sock:
-            sock.settimeout(DNS_TIMEOUT)
             try:
                 sock.sendto(query, (host, port))
+                started = time.monotonic()
+                resends = list(_DNS_RESEND_AT)
                 while True:
-                    reply, _addr = sock.recvfrom(_DNS_MAX)
+                    waited = time.monotonic() - started
+                    until = min(resends[0] if resends else DNS_TIMEOUT, DNS_TIMEOUT)
+                    if waited >= DNS_TIMEOUT:
+                        raise TimeoutError("no DNS answer")
+                    sock.settimeout(max(until - waited, 0.01))
+                    try:
+                        reply, _addr = sock.recvfrom(_DNS_MAX)
+                    except TimeoutError:
+                        if not resends:
+                            raise
+                        resends.pop(0)
+                        sock.sendto(query, (host, port))
+                        continue
                     if reply[:2] == query[:2]:
                         return reply
             except OSError:

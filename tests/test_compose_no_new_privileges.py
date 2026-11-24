@@ -97,8 +97,24 @@ def test_every_spelling_is_replaced_by_one(spelling):
     assert with_no_new_privileges(None) == [NO_NEW_PRIVILEGES]
 
 
+#: 0.10.1: a security_opt that turns no-new-privileges off needs host access
+#: (the gate's security_opt rule); the spellings that keep it on pass.
+KEPT_ON = [s for s in SPELLINGS if not s.endswith("false")]
+
+
 @needs_compose
-@pytest.mark.parametrize("spelling", SPELLINGS)
+@pytest.mark.parametrize("spelling", [s for s in SPELLINGS if s.endswith("false")])
+def test_a_task_that_turns_the_option_off_needs_host_access(tmp_path, spelling):
+    task = _compose_task(
+        tmp_path / "task",
+        f'services:\n  main:\n    image: alpine:3.20\n    security_opt: ["{spelling}"]\n',
+    )
+    with pytest.raises(ValueError, match="security_opt"):
+        _gate(task)
+
+
+@needs_compose
+@pytest.mark.parametrize("spelling", KEPT_ON)
 def test_a_task_that_sets_the_option_passes_the_gate_and_launches_with_it_once(
     tmp_path, spelling
 ):

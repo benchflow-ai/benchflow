@@ -66,7 +66,7 @@ To run what the budget skipped, start a new job with a cap that fits (`--fresh`)
 
 ### Per-trial budgets (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 A per-trial budget caps each trial, not the job, and it is enforced while the trial runs:
 
@@ -128,7 +128,7 @@ Each trial prints a progress line about every 45 seconds, with its tool calls so
 
 ### How busy the run is (0.10)
 
-> Needs BenchFlow `0.10.0rc3`, a release candidate on PyPI that you install by its version ([Install](../start/install.md#install-the-010-prerelease)).
+> Needs BenchFlow 0.10.0 or later ([Install](../start/install.md)).
 
 The run says how busy it is two minutes after it starts and every five minutes after, and warns when slots sit idle while tasks wait or when the agents are rarely waiting on the model:
 

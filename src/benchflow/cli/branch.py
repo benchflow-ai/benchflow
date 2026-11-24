@@ -17,7 +17,13 @@ from rich.markup import escape
 from rich.table import Table
 
 from benchflow.cli._errors import expected_error_parts
-from benchflow.cli._options import HarnessOption, ModelOption
+from benchflow.cli._options import (
+    AllowCloudCredentialFileOption,
+    AllowTaskProcessesWithCredentialsOption,
+    HarnessOption,
+    ModelOption,
+    ScopedCredentialOption,
+)
 from benchflow.cli._shared import (
     JOBS_FOLDER_NEXT,
     _apply_dotenv_to_process_env,
@@ -407,6 +413,9 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
             list[str] | None,
             typer.Option("--agent-env", help="Agent env var (KEY=VALUE); repeatable"),
         ] = None,
+        allow_cloud_credential_file: AllowCloudCredentialFileOption = False,
+        allow_task_processes_with_credentials: AllowTaskProcessesWithCredentialsOption = False,
+        scoped_credential: ScopedCredentialOption = None,
         include: Annotated[
             list[str] | None,
             typer.Option("--include", help="Only these task names; repeatable"),
@@ -501,6 +510,9 @@ def register_eval_branch(eval_app: typer.Typer) -> None:
                 retain_snapshots=retain_snapshots,
                 prompts=prompt,
                 agent_env=_parse_agent_env(agent_env),
+                allow_cloud_credential_file=allow_cloud_credential_file,
+                allow_task_processes_with_credentials=allow_task_processes_with_credentials,
+                scoped_credentials=tuple(scoped_credential or ()),
                 jobs_dir=jobs_dir,
                 job_name=job_name
                 or f"branch-{datetime.now().strftime('%Y%m%d-%H%M%S')}",

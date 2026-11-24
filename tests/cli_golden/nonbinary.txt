@@ -1,0 +1,7 @@
+Task           Outcome  Reward  Cost      Tokens  Time
+binary-fuse    passed        1  ~$0.0300  30,000   58s
+unit-distance  partial     0.5  ~$0.0300  40,000   58s
+
+Score                         Model cost  Tokens  Wall time
+1/2 passed, mean reward 0.75  ~$0.0600    70,000  2m 00s
+Results: jobs/2026-11-18__03-30-13/

@@ -42,9 +42,10 @@ Now the verifier runs under the task's own verifier network setting:
   ``/logs/verifier``) before test.sh starts, and refuses to start it with
   NET_ADMIN, NET_RAW or SYS_PTRACE; the verifier refuses a run whose record
   is missing (a path that skipped the launch) and copies the record's line
-  into ``verifier/verifier-network.json``. After test.sh the refused packets are counted: a failed test.sh
-  with refusals ends "verifier network refused", unscored; a passing one keeps
-  its reward with the count in ``verifier/verifier-network.json``.
+  into ``verifier/verifier-network.json``. After test.sh the refused packets are counted, into
+  ``verifier/verifier-network.json``. The reward stands as test.sh gave it,
+  pass or not, and a trial with any refusal is flagged for a read
+  (result.json's ``verifier_network_refused`` and its ``warnings``).
 """
 
 from __future__ import annotations
@@ -63,9 +64,6 @@ logger = logging.getLogger(__name__)
 VERIFIER_LAUNCH_REFUSED = 97
 #: The trial folder's record of the verifier's network (``verifier/``).
 VERIFIER_NETWORK_RECORD = "verifier-network.json"
-#: The opening words of the ending a failed test.sh gets when the verifier's
-#: network refused it something (benchflow._utils.scoring).
-VERIFIER_NETWORK_REFUSED = "verifier network refused: "
 #: The opening words of a run whose test.sh did not start through the launch.
 VERIFIER_LAUNCH_REFUSED_ERROR = "verifier launch refused: "
 #: The opening words of a run whose verifier's network could not be held
@@ -113,10 +111,10 @@ def separate_verifier_network(task_config: Any) -> str:
 
 
 def network_refusal_ends(refused: int, exit_code: int | None, reward: Any) -> bool:
-    """Whether test.sh's run ends "verifier network refused" (the
-    lead's rule, 2026-11-14): the verifier's network refused it packets and
-    the result is no pass, a non-zero exit or a reward below a full pass. A
-    pass despite refusals keeps its reward (the count is recorded)."""
+    """Whether test.sh fell short of a pass after the verifier's network
+    refused it packets: a non-zero exit or a reward below a full pass. Either
+    way the reward stands and the refusal is flagged; this tells the read
+    flag's two cases apart."""
     full = (
         isinstance(reward, (int, float))
         and not isinstance(reward, bool)
@@ -1320,7 +1318,8 @@ async def arm_verifier_service(
     ``denylist``: loopback, replies, the project's networks and an allowlist's
     IPs); proven by a refused, counted connect from uid 0. test.sh there starts
     through the same bounded launch. Raises RuntimeError ("Verifier hardening
-    failed") when it cannot."""
+    failed") when it cannot, and :class:`VerifierServiceHeldError` for a
+    service that exited after the start or waits in the hold again."""
     from benchflow.sandbox import service_cover as sc
 
     def fail(why: str) -> RuntimeError:
@@ -1332,6 +1331,15 @@ async def arm_verifier_service(
             "the agent's code and does not run outside the task's network"
         )
 
+    from benchflow.sandbox import _inert_bootstrap
+
+    down = await _inert_bootstrap.service_down(
+        env, service, _inert_bootstrap.EXITED_IN_TURN
+    )
+    if down is not None:
+        from benchflow.task.verifier_errors import VerifierServiceHeldError
+
+        raise VerifierServiceHeldError(f"test.sh did not run: {down}")
     targets = [
         t for t in await env.metadata_service_targets() if t["service"] == service
     ]

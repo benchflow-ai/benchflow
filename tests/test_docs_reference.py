@@ -3,7 +3,7 @@
 ``docs/reference/commands.md``, ``python.md``, ``cli-python.md``,
 ``files.md`` and ``docs/versions/changelog.md`` are written by
 ``tools/docs_reference.py`` from the live CLI app (and the 0.9.2 command
-inventory in ``tools/cli_baseline_0.9.2.json``), ``benchflow.__all__``,
+inventory in ``tools/cli_baseline_<release>.json``), ``benchflow.__all__``,
 ``benchflow.cli_parity``, the task and run config loaders, the schema files
 and ``CHANGELOG.md``. A branch that changes a flag, a docstring, a field or a
 schema regenerates them with the command the tool documents, and the diff
@@ -27,6 +27,7 @@ from tools.docs_reference import (
     PAGES,
     PRE_BASELINE,
     REGENERATE,
+    RELEASING,
     _Labels,
     _move_after_rc1,
     _undash,
@@ -121,7 +122,11 @@ def test_command_reference_labels_what_no_release_has(
         m = re.match(r"^## (bench(?: [\w-]+)*) \((.+)\)$", line)
         if m:
             assert m.group(2) in (NEW_LABEL, NEXT_LABEL), line
-            assert (m.group(1) in prerelease) == (m.group(2) == NEW_LABEL), line
+            if RELEASING:
+                # At a release's cut everything in the tree ships.
+                assert m.group(2) == NEW_LABEL, line
+            else:
+                assert (m.group(1) in prerelease) == (m.group(2) == NEW_LABEL), line
 
 
 def test_a_command_the_prerelease_lacks_is_labelled_unreleased() -> None:

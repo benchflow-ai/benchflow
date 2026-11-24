@@ -289,9 +289,10 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
     # has exited (GATE1N's wal-recovery-ordering).
     back = _host_takes_the_outputs_back()
     assert [e.caller for e in execs].count("_open_output_dir_to_host") == back
-    # +3 where bfx is not delivered: the shell's walks for the links, before
-    # the turn, before test.sh and after grading, in off and audit
-    # ((c)3); bfx's own route is no exec of the sandbox's.
+    # Where bfx is not delivered (a checkout without the pinned binaries) no
+    # link walk runs: the shell's walks went with Step 5b (Q4), and the
+    # checks record that they could not run. 44 measured so on e820f4ee and
+    # on rule S's head, where this said +3.
     # +3 with, in every mode: just before the oracle's turn, the test.sh
     # preflight reads the image's PATH and probes test.sh's commands as the
     # verifier user (two execs), and the uploaded tests are made root's
@@ -299,7 +300,28 @@ async def test_an_oracle_trial_on_docker_makes_fewer_execs(monkeypatch, tmp_path
     # +1 with the root exec after the copy at test.sh's exit that
     # checks the sandbox stayed still and lets it go on (verifier_freeze).
     assert [e.caller for e in execs].count("thaw_after_test") == 1
-    want = 43 + back + (0 if locate.available(platform.machine()) else 3)
+    # +4 where bfx is delivered, with the walk pause (C2-1, sandbox/
+    # _walk_pause.py): each link walk after the turn (before test.sh, with
+    # its removals; after grading) runs while the sandbox user's processes are
+    # stopped. One root exec stops them, pass after pass until none runs,
+    # and one looks again and continues them. Both are needed: a process
+    # renaming names in a big folder moves a link past the walk's directory
+    # reads with nothing vanished, so a walk is only whole with them held,
+    # and the stop has to end before bfx's walk starts, the continue after
+    # it. Rule S (C3, sandbox/_agent_alive.py) asks in one more root exec,
+    # before test.sh, whether a process of the agent's is still alive; the
+    # oracle is not asked (it is not marked; its solve.sh runs as root), so
+    # this trial makes none: 48. Without bfx no walk runs, and no pause.
+    # +2 in audit, with or without bfx: the kill after grading lists the
+    # agent's processes before and after it, for kill-after-grading.json
+    # (sandbox/_quiesce_listing.py, a root exec each).
+    # +1: /logs/verifier closed again by root right before the oracle's turn,
+    # after the task's own start-up code (close_verifier_dir_before_turn's
+    # close_again).
+    assert [e.caller for e in execs].count("close_again") == 1
+    bfx = locate.available(platform.machine())
+    assert [e.caller for e in execs].count("_root") == (4 if bfx else 0) + 2
+    want = 44 + back + (4 if bfx else 0) + 2
     assert len(execs) == want, [(e.caller, e.command[:60]) for e in execs]
     # The preparation is strict's: none runs in audit.
     prep = [e for e in execs if "BENCHFLOW-PREP" in e.command]
@@ -569,8 +591,9 @@ async def test_the_hardened_verify_keeps_its_exec_count(monkeypatch, tmp_path):
     # +1 without bfx: this trial's config is audit (only its verify is
     # strict's), so the record of the links before the turn is taken, by the
     # shell's walk where bfx is not delivered ((c)3).
+    # +1: /logs/verifier closed again right before the oracle's turn.
     bfx = locate.available(platform.machine())
     hook, walk = (1, 0) if bfx else (0, 1)
-    assert len(execs) == 58 + back + hook + walk, [
+    assert len(execs) == 59 + back + hook + walk, [
         (e.caller, e.command[:60]) for e in execs
     ]

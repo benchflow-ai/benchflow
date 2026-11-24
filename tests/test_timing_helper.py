@@ -304,7 +304,40 @@ ELSEWHERE = {
     "tests.test_job_lock_forked_child": 2,
     "tests.test_job_matrix": 1,
     "tests.test_layer_lock": 1,
+    # (f3082556, 2026-11-18): one timeout bound. A runtime stopped and
+    # continued after 8 s answers its status only then: the helper asked again
+    # past the client's 5 s wait (test_status_survives_a_stalled_runtime, >= 7 s).
+    "tests.test_local_daemon_docker": 1,
+    # A git that never answers: the build stamp's read gives up within its
+    # bound (load-aware waits, asked again a bounded number of times); the
+    # assert is that the call returns in time, a deadline, not a speed.
+    "tests.test_build_info_git_stall": 1,
+    # (2026-11-20): one deadline bound. A rollout that checkpoints for 1.2 s and
+    # then wedges is stopped by its hard deadline extended by the checkpoint's
+    # time (0.3 s + 1.2 s), not before 1.4 s and not long after; a deadline,
+    # not a speed (test_a_wedge_after_a_checkpoint_still_trips_the_deadline).
+    "tests.test_checkpoint_deadline": 1,
+    # (2026-11-20): one timeout bound. A Daytona env-file removal that hangs is
+    # given up at its bound (0.5 s in the row) and the stop still deletes the
+    # sandbox; the assert is that stop returns well inside 10 s, a bound, not a
+    # speed (the hanging-removal stop row).
+    "tests.test_daytona_exec_env_file": 1,
+    # (2026-11-21): one timeout bound. Links to a FIFO, a device and a 100 GB
+    # sparse file are kept by type, never read: the record returns inside its
+    # own 60 s cap instead of blocking or hashing; a deadline, not a speed
+    # (test_a_link_to_a_fifo_a_device_or_a_huge_file_is_typed_not_read).
+    "tests.test_detector_links": 1,
     "tests.test_metadata_helper": 1,
+    # PR #410 (2026-11-22): deadline bounds. A stalled
+    # digest read ends at its own timeout and a stop at its bound, not at
+    # the test's outer one.
+    "tests.test_held_start_bounds": 2,
+    # The same branch: each of fifty held starts ends within its bound.
+    "tests.test_held_starts_docker": 1,
+    # (2026-11-20): one timeout bound. A registry that never answers:
+    # the helper image's pull is given up at its cap (5 s in the row), not
+    # before and not at Docker's own ~90 s; a deadline, not a speed.
+    "tests.test_metadata_helper_pull_docker": 1,
     "tests.test_python_sdk_load_job": 2,
     "tests.test_sighup_container": 9,
     "tests.test_source_cache_lock": 2,
@@ -425,3 +458,51 @@ def test_the_helper_is_where_the_timer_is():
     assert "time.process_time()" in text
     assert offenses({"tests._timing": text}) != []
     assert _timing.RATIO == 5 and _timing.ROUNDS == 7 and _timing.CEILING == 10.0
+
+
+async def _fake_clocked(spans):
+    """Calls whose timings on a fake clock are *spans* (seconds)."""
+    now = [0.0]
+
+    def clock():
+        return now[0]
+
+    def call_taking(span):
+        async def call():
+            now[0] += span
+
+        return call
+
+    return [call_taking(span) for span in spans], clock
+
+
+async def test_side_by_side_times_every_call_every_round_in_turned_order():
+    from tests._timing import side_by_side
+
+    order = []
+
+    def call(name):
+        async def run():
+            order.append(name)
+
+        return run
+
+    samples = await side_by_side([call("a"), call("b")], rounds=4)
+    assert order == ["a", "b", "b", "a", "a", "b", "b", "a"]
+    assert len(samples) == 4 and all(len(row) == 2 for row in samples)
+
+
+async def test_assert_faster_holds_the_median_ratio_and_catches_the_slower():
+    import pytest
+
+    from tests._timing import assert_faster, side_by_side
+
+    calls, clock = await _fake_clocked([0.01, 0.1])
+    assert_faster(await side_by_side(calls, rounds=5, clock=clock), factor=0.5)
+    # The positive control: the same check with the ways swapped fails.
+    slower, clock = await _fake_clocked([0.1, 0.01])
+    with pytest.raises(AssertionError):
+        assert_faster(await side_by_side(slower, rounds=5, clock=clock), factor=0.5)
+    # A few stalled rounds do not decide: the median does.
+    stalled = [[0.01, 0.1]] * 7 + [[0.5, 0.1]] * 3
+    assert_faster(stalled, factor=0.5)
