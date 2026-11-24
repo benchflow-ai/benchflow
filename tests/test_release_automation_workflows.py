@@ -193,6 +193,16 @@ def test_the_published_bytes_are_checked_from_pypi():
     assert "secrets." not in (WF / "post-publish-verify.yml").read_text()
 
 
+@pytest.mark.parametrize("name", ["post-publish-verify.yml", "nightly.yml"])
+def test_the_readme_oracle_check_reads_the_end_of_run_table(name):
+    """The oracle step checks `1/1 passed` under the table's `Score` column, as README step 2
+    says; v0.10.1's post-publish run went red on the old `Score: 1/1` line, which 0.10.0rc6 on
+    never prints."""
+    text = (WF / name).read_text()
+    assert "Score: 1/1" not in text
+    assert "^1/1 passed( |$)" in text
+
+
 # -- rules for every workflow ---------------------------------------------------------------------------
 
 
