@@ -28,6 +28,7 @@ import pytest
 from benchflow.sandbox import egress_gateway, modal_impl
 from benchflow.sandbox import egress_gateway_server as server
 from benchflow.sandbox._base import ExecResult
+from benchflow.sandbox._verifier_dir import OPEN as VERIFIER_DIR_OPEN
 from benchflow.sandbox.egress_denylist import (
     egress_denylist_for,
     start_egress_denylist,
@@ -747,6 +748,59 @@ async def test_a_sandbox_refused_for_its_rlimits_never_reaches_the_gateway(
         await sandbox.start(force_build=False)
     provider.Sandbox.create.aio.return_value.terminate.aio.assert_awaited()
     assert sandbox.exec.ran(egress_gateway.RELAY_DIR) == []
+    assert egress_gateway.held(sandbox) is None
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_both_launchers_close_the_verifier_dir_before_the_gateway(
+    gateway, make_sandbox, factory
+):
+    """Both launchers close ``/logs/verifier`` (main's #1247 step) before the
+    gateway's attach, so the attach stays the last step of a start.
+
+    Guards PR #1253's merge of main (0.10.1): git's merge put the factory
+    launcher's ``start_hold`` before that close."""
+    sandbox = make_sandbox(factory=factory)
+    script = sandbox.exec
+    await sandbox.start(force_build=False)
+    flat = [c for c, _ in script.commands]
+    close = flat.index(script.ran(VERIFIER_DIR_OPEN)[0])
+    attach = flat.index(script.ran("chmod 700 /opt/runtime-egress")[0])
+    assert close < attach
+    assert _phase(gateway) == "open"
+    await sandbox.stop(True)
+    assert _status(gateway)["rollouts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", [False, True], ids=["direct", "factory"])
+async def test_an_open_verifier_dir_never_reaches_the_gateway(
+    gateway, make_sandbox, factory
+):
+    """A ``/logs/verifier`` the setup step cannot close refuses the trial
+    before the attach: no relay, and no rollout at the gateway.
+
+    Guards PR #1253's merge of main (0.10.1): git's merge put the factory
+    launcher's ``start_hold`` before that close."""
+    from benchflow.rollout._grading_outcome import IntegrityUnavailableError
+
+    sandbox = make_sandbox(factory=factory)
+    script = sandbox.exec
+    answer = script.answer
+
+    def open_dir(command: str) -> ExecResult:
+        if VERIFIER_DIR_OPEN in command:
+            return ExecResult(
+                stdout=f"{VERIFIER_DIR_OPEN} 1000 777\n", stderr="", return_code=0
+            )
+        return answer(command)
+
+    script.answer = open_dir
+    with pytest.raises(IntegrityUnavailableError):
+        await sandbox.start(force_build=False)
+    assert script.ran(egress_gateway.RELAY_DIR) == []
     assert egress_gateway.held(sandbox) is None
     assert _status(gateway)["rollouts"] == []
 
