@@ -842,6 +842,83 @@ async def test_a_sandbox_modal_ends_during_the_proofs_is_deregistered(
     assert record["events"][-1]["event"] == "deregistered"
 
 
+def _killed_process() -> SimpleNamespace:
+    """A Modal exec that Modal killed: no output, return code 137."""
+
+    async def read() -> str:
+        return ""
+
+    async def wait() -> int:
+        return modal_impl.KILLED_RETURNCODE
+
+    return SimpleNamespace(
+        stdout=SimpleNamespace(read=SimpleNamespace(aio=read)),
+        stderr=SimpleNamespace(read=SimpleNamespace(aio=read)),
+        stdin=SimpleNamespace(
+            write=lambda data: None,
+            write_eof=lambda: None,
+            drain=SimpleNamespace(aio=AsyncMock()),
+        ),
+        wait=SimpleNamespace(aio=wait),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", ["terminated", "lifetime"])
+async def test_a_proof_exec_modal_kills_with_137_fails_the_start_with_its_end(
+    gateway, make_sandbox, provider, monkeypatch, end
+):
+    """Modal ends the sandbox while the start proof runs, and the proof's exec
+    returns 137 instead of raising: 0.10.1's end check in ``ModalSandbox.exec``
+    asks ``poll``, so the start fails with Modal's end (a terminate is an
+    infrastructure error, a lifetime is not), never ``EgressGatewayError``,
+    and the stop deregisters the rollout without a terminate.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``) with 0.10.1's end
+    check on 137, merged at 23c42c95."""
+    from modal_proto import api_pb2
+
+    from benchflow._utils.scoring import INFRA_ERROR, classify_error
+
+    monkeypatch.setattr(modal_impl, "PLATFORM_END_KILLED_SETTLE_SEC", 0.05)
+    monkeypatch.setattr(modal_impl, "PLATFORM_END_SETTLE_STEP_SEC", 0.0)
+    remote = provider.Sandbox.create.aio.return_value
+    if end == "terminated":
+        remote.poll.aio.return_value = 137
+        remote._result = None
+    else:
+        remote.poll.aio.return_value = 124
+        remote._result = api_pb2.GenericResult(
+            status=api_pb2.GenericResult.GENERIC_STATUS_TIMEOUT,
+            exitcode=0,
+            exception="Sandbox terminated because it reached its timeout",
+        )
+    remote.exec = SimpleNamespace(
+        aio=AsyncMock(side_effect=lambda *args, **kwargs: _killed_process())
+    )
+    sandbox = make_sandbox()
+
+    async def real_exec(command, **kwargs):
+        return await ModalSandbox.exec(sandbox, command, **kwargs)
+
+    sandbox.exec.real = ("BF egress-gateway-probe", real_exec)
+    with pytest.raises(modal_impl.ModalSandboxEndedError) as raised:
+        await sandbox.start(force_build=False)
+    message = str(raised.value)
+    infra = classify_error(f"ModalSandboxEndedError: {message}") == INFRA_ERROR
+    if end == "terminated":
+        assert message.startswith(modal_impl.MODAL_ENDED) and infra, message
+    else:
+        assert message.startswith(modal_impl.MODAL_LIFETIME_END), message
+        assert not infra, message
+    remote.terminate.aio.assert_not_awaited()
+    assert _status(gateway)["rollouts"] == []
+    record = json.loads(
+        (sandbox.rollout_paths.rollout_dir / egress_gateway.RECORD_NAME).read_text()
+    )
+    assert record["events"][-1]["event"] == "deregistered"
+
+
 @pytest.mark.asyncio
 async def test_an_end_modal_made_at_the_agents_launch_proof_is_infrastructure(
     gateway, started, provider
