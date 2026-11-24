@@ -338,7 +338,9 @@ jobs:
         run: |
           bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
             --agent oracle --sandbox docker --jobs-dir jobs/oracle | tee oracle.log
-          grep -q "Score: 1/1" oracle.log
+          # The end-of-run table (0.10.0rc6 on): `Score` over `1/1 passed`, as
+          # README step 2 says; 0.9.3's `Score: 1/1` line is gone.
+          grep -qE '^1/1 passed( |$)' oracle.log
 
       - name: README step 3 on DeepSeek's own API, capped at $0.10
         working-directory: ${{ runner.temp }}
