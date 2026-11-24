@@ -2019,7 +2019,7 @@ def _changelog_page() -> str:
         "# Changelog\n\n"
         "What changed in each BenchFlow release: "
         + (
-            f"{CURRENT} is the current release, and {BASELINE_RELEASE} the one before it."
+            f"{CURRENT} is the current release."
             if RELEASING
             else f"{BASELINE_RELEASE} is the current release, and {PRE_RELEASE} the current release candidate."
         )

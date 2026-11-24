@@ -1,6 +1,25 @@
 # Changelog
 
-## [0.10.1] - unreleased
+## [0.10.2]
+
+0.10.2 is a patch release of 0.10.1 with three fixes: an agent's trial with a separate verifier on Docker under `audit` or `off` keeps the verifier's reward at the end of the trial, a fresh host builds the Docker metadata helper again after Alpine replaces one of its packages with a newer build, and the check that runs after a publish reads the end-of-run table 0.10 prints.
+
+### Fixed
+
+- **An agent's trial with a separate verifier keeps the verifier's reward under `--integrity audit` (the default) and `off`.** BenchFlow stops the agent's sandbox before a separate verifier runs (Docker and remote Docker; Daytona and Modal take the same path). At the trial's end it then tried to stop the agent's processes in that stopped sandbox, and the cleanup failed: on Docker `trial cleanup failed` with `service "main" is not running`. The trial ended as an infrastructure failure with no reward, although the verifier had scored it, and the default retry ran the agent again at your cost. Now a sandbox that has already stopped has nothing left to stop, and the trial keeps the verifier's reward. `--integrity strict`, the oracle and `BENCHFLOW_VERIFIER_PREPARE=serial` were not affected.
+- **A new Docker host builds BenchFlow's metadata helper even after Alpine replaces one of its packages.** On Docker, BenchFlow builds its metadata firewall helper on each host from Alpine packages pinned to exact builds, and Alpine's repository serves only each package's newest build. Each time Alpine replaced one (`openssl` on 18 November 2026, `python3` on 23 November), a host that hadn't built the helper yet could no longer build it, and refused every Docker start that keeps the cloud metadata block ("sandbox startup refused: BenchFlow's helper image could not be built"). The helper now installs the pinned builds while Alpine serves them, and otherwise the newest build of each package's minor series (`python3` 3.14, `openssl` 3.5), which Alpine keeps for the life of its stable branch. So two hosts can now build one helper recipe with different builds of a package; `apk info -v` in the helper image lists them. 0.10.2's recipe is new, so each host builds the helper once after the upgrade.
+- **If you're on 0.9.3 or 0.10.0rc5**, a Docker host that hasn't built the helper yet refuses every start that keeps the cloud metadata block today; 0.10.1 will do the same once Alpine replaces one of its pinned builds. Until you upgrade to 0.10.2:
+  - run on a Docker host where your version already built the helper while Alpine still served its pinned builds (for 0.9.3 and 0.10.0rc5, before 18 November 2026), as the same user: BenchFlow reuses the image it recorded there;
+  - or run tasks on an open network on Daytona, which builds no helper.
+
+  `BENCHFLOW_METADATA_HELPER=0` doesn't help: these versions still build the helper before a trial starts.
+
+### For maintainers
+
+- **The check after a publish reads the end-of-run table.** `post-publish-verify` and the nightly run looked for `Score: 1/1` after the README's oracle step, the end-of-run line from before 0.10.0rc6, so on 0.10.1 the check failed on a run that scored 1/1. Both now look for the table's `1/1 passed`, which is what the README says the run prints, and the install from PyPI tries again for a few minutes while PyPI's index catches up with the upload.
+- **A daily job builds the Docker metadata helper fresh** (`helper-fresh-build.yml`; also by hand, and on a pull request that changes the recipe). It builds the recipe from the module with no cache, runs the image's tools and reads the builds it installed. It fails at its build step when the recipe no longer builds, and at its pins step when Alpine no longer serves the pinned builds, naming the builds to pin instead.
+
+## [0.10.1]
 
 In 0.10.1 a task can no longer weaken its own isolation, and BenchFlow checks and records your credentials before they go into a sandbox. A test.sh that had something refused by the verifier's network, or a compose service that exits during the trial, now gives a scored trial flagged for a read, not an unscored one. BenchFlow also masks the credentials it staged in what it records, and fixes what Daytona keeps on a sandbox's disk, how the integrity check reads links, and what an oracle can leave behind.
 

@@ -2294,7 +2294,7 @@ Aggregated result from a Rubric or node evaluation.
 
 ### `__version__`
 
-`bf.__version__`: `'0.10.1'`
+`bf.__version__`: `'0.10.2'`
 
 ### `AGENTS`
 
