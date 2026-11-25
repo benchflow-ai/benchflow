@@ -189,12 +189,21 @@ def _bound(stderr: Path, offset: int, port: int) -> bool:
         return False
 
 
-def _read_line(sock: socket.socket, limit: int) -> tuple[str | None, bytes]:
+def _read_line(
+    sock: socket.socket, limit: int, deadline: float | None = None
+) -> tuple[str | None, bytes]:
     r"""One ``\n``-terminated line shorter than *limit* (without it) and the
     bytes read after it; (None, b'') if none. The bound is the line's alone:
-    the relay sends its first request bytes in the answer's write."""
+    the relay sends its first request bytes in the answer's write. A
+    *deadline* (``time.monotonic()``) bounds the whole read, not each
+    ``recv``: a client that sends a byte at a time gets no longer."""
     data = b""
     while b"\n" not in data:
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None, b""
+            sock.settimeout(left)
         chunk = sock.recv(min(65536, limit + 1 - len(data)))
         if not chunk:
             return None, b""
@@ -264,9 +273,14 @@ def _pump(src: socket.socket, dst: socket.socket) -> None:
 def splice(client: socket.socket, upstream: socket.socket) -> None:
     """Copy bytes both ways until both directions end; then close both sockets."""
     back = threading.Thread(target=_pump, args=(upstream, client), daemon=True)
-    back.start()
-    _pump(client, upstream)
-    back.join()
+    try:
+        back.start()
+    except RuntimeError:
+        # No thread left on the host: this connection ends, the gateway runs on.
+        pass
+    else:
+        _pump(client, upstream)
+        back.join()
     for sock in (client, upstream):
         with contextlib.suppress(OSError):
             sock.close()
@@ -596,9 +610,17 @@ class Gateway:
                 with contextlib.suppress(OSError):
                     sock.close()
                 continue
-            threading.Thread(
-                target=self._serve_front, args=(sock,), daemon=True
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._serve_front, args=(sock,), daemon=True
+                ).start()
+            except RuntimeError:
+                # No thread left on the host: refuse this connection and keep
+                # accepting, so the other rollouts' next connections are served.
+                self._pending.release()
+                self._count("refused_no_thread")
+                with contextlib.suppress(OSError):
+                    sock.close()
 
     def _serve_front(self, sock: socket.socket) -> None:
         released = False
@@ -627,10 +649,12 @@ class Gateway:
     def _handshake(self, sock: socket.socket) -> tuple[Rollout, _Conn, bytes] | None:
         """The challenge, then the connection to the rollout's phase proxy; None to refuse."""
         try:
+            # The whole challenge, not each read, within HANDSHAKE_TIMEOUT.
+            deadline = time.monotonic() + HANDSHAKE_TIMEOUT
             sock.settimeout(HANDSHAKE_TIMEOUT)
             nonce = secrets.token_hex(16)
             sock.sendall(f"{PROTOCOL} {nonce}\n".encode())
-            line, rest = _read_line(sock, MAX_LINE)
+            line, rest = _read_line(sock, MAX_LINE, deadline)
         except OSError:
             self._count("handshake_dropped")
             return None
@@ -682,9 +706,16 @@ class Gateway:
                 if self._stop.is_set():
                     return
                 continue
-            threading.Thread(
-                target=self._serve_control, args=(sock,), daemon=True
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._serve_control, args=(sock,), daemon=True
+                ).start()
+            except RuntimeError:
+                # No thread left: this request gets no answer (the
+                # controller's call fails), the next ones are still read.
+                self._count("control_refused_no_thread")
+                with contextlib.suppress(OSError):
+                    sock.close()
 
     def _serve_control(self, sock: socket.socket) -> None:
         with sock:

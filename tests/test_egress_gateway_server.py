@@ -172,6 +172,67 @@ def test_a_wrong_or_missing_answer_reaches_no_proxy(gateway, monkeypatch):
     assert row["counters"] == {}
 
 
+def test_a_challenge_answered_a_byte_at_a_time_ends_at_the_handshake_timeout(
+    gateway, monkeypatch
+):
+    """The whole challenge ends at ``HANDSHAKE_TIMEOUT``: a client that sends
+    one byte at a time is closed then, its slot freed.
+
+    Guards the review of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): the
+    timeout bounded each read, so such a client held one of the
+    ``MAX_PENDING`` slots, shared by every rollout, for up to ``MAX_LINE``
+    timeouts."""
+    monkeypatch.setattr(server, "HANDSHAKE_TIMEOUT", 1.0)
+    sock, _ = _challenge(gateway)
+    sock.settimeout(0.25)
+    begun = time.monotonic()
+    ended = None
+    while ended is None and time.monotonic() - begun < 15:
+        try:
+            sock.sendall(b"a")
+            if sock.recv(1) == b"":
+                ended = time.monotonic() - begun
+        except TimeoutError:
+            continue
+        except OSError:
+            ended = time.monotonic() - begun
+    sock.close()
+    assert ended is not None and ended < 6, ended
+    counters = _control(gateway, command="status")["counters"]
+    assert (
+        counters.get("handshake_refused", 0) + counters.get("handshake_dropped", 0) == 1
+    ), counters
+
+
+def test_a_thread_that_cannot_start_refuses_that_connection_alone(gateway, monkeypatch):
+    """When the host can start no thread for a connection, that connection
+    is closed and the gateway keeps accepting: the next one is served.
+
+    Guards the review of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): the
+    error ended the public listener's accept loop, and held its challenge
+    slot, so every rollout's later connections hung while ``hello`` still
+    answered."""
+    _register(gateway)
+    real_start = threading.Thread.start
+    failed = []
+
+    def start(self):
+        if getattr(self, "_target", None) == gateway._serve_front and not failed:
+            failed.append(self)
+            raise RuntimeError("can't start new thread")
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    first = socket.create_connection(gateway.address, timeout=10)
+    with contextlib.suppress(ConnectionResetError):
+        assert first.recv(64) == b""
+    first.close()
+    assert _ask(_connect(gateway), HEALTH).startswith(b"HTTP/1.1 200")
+    assert failed
+    assert _control(gateway, command="status")["counters"]["refused_no_thread"] == 1
+    assert all(thread.is_alive() for thread in gateway._threads)
+
+
 def test_an_answer_is_good_for_its_own_connection_only(gateway):
     """An answer is bound to the nonce its connection was sent: replayed on
     the next connection (by a host that captured it on the way), it is

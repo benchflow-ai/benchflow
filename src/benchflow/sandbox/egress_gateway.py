@@ -637,9 +637,12 @@ async def deny(env: Any, denylist: Any, *, at: str) -> None:
     opened in ``open`` are cut."""
     hold = held(env)
     assert hold is not None
+    # A new policy restarts the deny proxy at the gateway, which can take
+    # as long as a register's start (and the old proxy's stop before it).
     reply = await acall(
         hold.control,
         {"command": "deny", "rollout": hold.rollout, "policy": _policy(denylist)},
+        timeout=REGISTER_TIMEOUT_SEC,
     )
     hold.phase = "deny"
     hold.note(
