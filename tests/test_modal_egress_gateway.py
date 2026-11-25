@@ -554,21 +554,52 @@ async def test_the_oracle_runs_under_deny_and_its_refusals_are_kept(
 
 
 @pytest.mark.asyncio
-async def test_a_public_verifier_runs_open(gateway, started):
-    """Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
-    from benchflow.sandbox.lockdown import _arm_verifier_network
-    from benchflow.sandbox.verifier_network import refused_since_arm
+async def test_a_public_verifier_in_the_agents_sandbox_is_refused_and_stays_deny(
+    gateway, started
+):
+    """The plan refuses a public verifier in a held sandbox before any
+    sandbox; its arm refuses it too, and the phase stays deny: a request the
+    task blocks is still refused.
 
+    Guards the review of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): the
+    arm moved the rollout to open, every process's phase, so the agent's own
+    processes, which off and audit keep running through grading, reached the
+    open proxy."""
+    from benchflow.sandbox.lockdown import _arm_verifier_network
+    from benchflow.task.verifier_errors import VerifierNetworkUnheldError
+
+    hold = egress_gateway.held(started)
     await start_egress_denylist(
         started, "agent", egress_denylist_for(started.task_env_config)
     )
     task = SimpleNamespace(
         config=_config(DENYLIST + '[verifier]\nnetwork_mode = "public"\n')
     )
-    await _arm_verifier_network(started, task, {})
+    with pytest.raises(VerifierNetworkUnheldError, match="agent's own processes"):
+        await _arm_verifier_network(started, task, {})
+    assert _phase(gateway) == "deny"
+    assert b"X-BenchFlow-Blocked" in _blocked_request(gateway, hold)
+
+
+@pytest.mark.asyncio
+async def test_a_separate_verifier_sandboxs_public_network_runs_open(gateway, started):
+    """A separate verifier sandbox holds no process of the agent's: its
+    public network is the open phase.
+
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
+    from benchflow.sandbox.lockdown import _arm_verifier_network
+    from benchflow.sandbox.verifier_network import refused_since_arm
+
+    task = SimpleNamespace(
+        config=_config(
+            DENYLIST
+            + '[verifier]\nsandbox_mode = "separate"\nnetwork_mode = "public"\n'
+        )
+    )
+    await _arm_verifier_network(started, task, {}, separate=True)
     assert _phase(gateway) == "open"
     armed, refused = await refused_since_arm(started)
-    assert armed.mode == "public" and armed.state == "open" and refused == 0
+    assert armed is not None and armed.mode == "public" and refused == 0
 
 
 @pytest.mark.asyncio

@@ -368,6 +368,14 @@ NETWORK_POLICY_REFUSALS: Mapping[str, frozenset[str]] = {
 _RESTRICTED_REMEDY = (
     "run restricted policies on Docker, or choose `open` explicitly (recorded as open)"
 )
+#: Why the egress gateway refuses a public verifier in the agent's sandbox.
+_GATEWAY_PUBLIC_VERIFIER_REMEDY = (
+    "at the egress gateway the network is the same for every process in the "
+    "sandbox, so a public verifier there would open it to the agent's own "
+    "processes too, which `off` and `audit` keep running through grading; let "
+    "the verifier keep the task's denylist, give it a separate sandbox "
+    '([verifier] sandbox_mode = "separate"), or run on Docker'
+)
 
 
 def egress_gateway_holds(sandbox: str) -> bool:
@@ -378,6 +386,20 @@ def egress_gateway_holds(sandbox: str) -> bool:
 
     provider = PROVIDERS_BY_NAME.get(sandbox)
     return provider is not None and provider.egress_gateway and configured()
+
+
+def public_verifier_in_main(config: TaskConfig) -> bool:
+    """Whether test.sh runs in the agent's sandbox (no separate verifier
+    sandbox) with a public network. The egress gateway refuses it on a
+    sandbox it holds: its open phase would admit the agent's own processes
+    too, where Docker's uid rules keep holding them."""
+    from benchflow.sandbox.verifier_network import verifier_network_mode
+    from benchflow.task.verifier_sandbox import separate_verifier_requested
+
+    return (
+        not separate_verifier_requested(config)
+        and verifier_network_mode(config) == "public"
+    )
 
 
 def agent_network_policy(config: TaskConfig, *, agent_launches: bool) -> str:
@@ -447,6 +469,16 @@ def network_policy_issue(
     if gateway:
         refused = refused - {DENYLIST_POLICY}
     policy = agent_network_policy(config, agent_launches=agent_launches)
+    if gateway and policy == DENYLIST_POLICY and public_verifier_in_main(config):
+        backend = _backend_label(sandbox, task_dir)
+        return UnsupportedTaskFeature(
+            path="sandbox.network_mode",
+            reason=(
+                f"the task's network policy ({_shared_verifier_label('public')}) "
+                f"is not held on {backend}: {_GATEWAY_PUBLIC_VERIFIER_REMEDY}"
+            ),
+            sandbox=sandbox,
+        )
     if policy not in refused:
         # A main with no network at all (an offline sandbox, the oracle or a
         # script) gives its shared verifier none either: nothing to hold. An
@@ -735,6 +767,20 @@ def _append_config_issues(
             mode=config.verifier.network_mode,
             sandbox=sandbox,
             gateway=gateway,
+        )
+    if (
+        gateway
+        and config.sandbox.network_mode == NetworkMode.DENYLIST
+        and public_verifier_in_main(config)
+    ):
+        _issue(
+            unsupported,
+            path="verifier.network_mode",
+            reason=(
+                f"a public verifier in the agent's sandbox is not held on {sandbox}: "
+                f"{_GATEWAY_PUBLIC_VERIFIER_REMEDY}"
+            ),
+            sandbox=sandbox,
         )
 
     if separate_verifier_requested(config):

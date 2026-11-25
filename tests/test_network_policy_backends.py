@@ -218,7 +218,11 @@ def test_each_backend_and_policy_with_the_egress_gateway(
 #: (task.toml lines under a denylist sandbox, the verifier label refused or None).
 GATEWAY_VERIFIER_CELLS = {
     "inherited": ("", None),
-    "public": ('[verifier]\nnetwork_mode = "public"\n', None),
+    "public": ('[verifier]\nnetwork_mode = "public"\n', "public"),
+    "separate-public": (
+        '[verifier]\nsandbox_mode = "separate"\nnetwork_mode = "public"\n',
+        None,
+    ),
     "no-network": ('[verifier]\nnetwork_mode = "no-network"\n', "no-network"),
     "allowlist": (
         '[verifier]\nnetwork_mode = "allowlist"\nallowed_hosts = ["pypi.org"]\n',
@@ -235,9 +239,14 @@ def test_a_denylist_tasks_shared_verifier_at_the_egress_gateway(
     """The verifier of a denylist task inherits its denylist (0.10; a task
     cannot declare a verifier denylist of its own): at the gateway it is the
     phase's, held. A shared verifier's no-network or allowlist is still
-    refused, as on main, and Daytona refuses them all.
+    refused, as on main, and Daytona refuses them all. A public verifier in
+    the agent's sandbox is refused at the gateway, a separate verifier
+    sandbox's public network runs.
 
-    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``)."""
+    Guards PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``), and its review: the
+    gateway's open phase is every process's, so a public verifier there let
+    the agent's own processes, which off and audit keep running through
+    grading, reach the open proxy."""
     monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
     toml, refused = GATEWAY_VERIFIER_CELLS[cell]
     config = _config(
@@ -259,6 +268,38 @@ def test_a_denylist_tasks_shared_verifier_at_the_egress_gateway(
         config, sandbox="daytona", agent_launches=launches, task_dir=task_dir
     )
     assert daytona is not None
+
+
+def test_modals_table_refuses_a_public_verifier_in_a_sandbox_the_gateway_holds(
+    monkeypatch,
+):
+    """Modal's capability table refuses a public verifier in the agent's
+    sandbox at the gateway, as the plan gate does, and admits a separate
+    verifier sandbox's public network. Without the gateway both are refused
+    for their denylist, as on main.
+
+    Guards the review of PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): the
+    gateway's open phase let the agent's own processes, which off and audit
+    keep running through grading, reach the open proxy."""
+    from benchflow.task.runtime_capabilities import validate_task_runtime_support
+
+    denylist = (
+        '[environment]\nnetwork_mode = "denylist"\nblocked_hosts = ["example.org"]\n'
+    )
+    shared = _config(denylist + '[verifier]\nnetwork_mode = "public"\n')
+    separate = _config(
+        denylist + '[verifier]\nsandbox_mode = "separate"\nnetwork_mode = "public"\n'
+    )
+    for config in (shared, separate):
+        table = validate_task_runtime_support(config, sandbox="modal")
+        assert [issue.path for issue in table] == ["sandbox.network_mode"], table
+    monkeypatch.setenv(GATEWAY_ENV, "/run/egress-gateway/control.sock")
+    table = validate_task_runtime_support(shared, sandbox="modal")
+    assert [issue.path for issue in table] == ["verifier.network_mode"], table
+    assert table[0].reason.startswith(
+        "a public verifier in the agent's sandbox is not held on modal: "
+    )
+    assert not validate_task_runtime_support(separate, sandbox="modal")
 
 
 @pytest.fixture

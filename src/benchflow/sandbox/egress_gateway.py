@@ -768,7 +768,10 @@ async def arm_oracle(env: Any, denylist: Any) -> Any:
 
 async def arm_verifier(env: Any, task: Any, mode: str, *, where: str) -> Any:
     """Hold test.sh to the verifier's ``denylist`` at the gateway and prove it
-    as root. ``VerifierNetworkUnheldError`` when it cannot."""
+    as root. ``VerifierNetworkUnheldError`` when it cannot, and for a
+    ``public`` verifier in the agent's sandbox: the open phase would admit
+    the agent's own processes too, which off and audit keep running through
+    grading (the plan refuses it before any sandbox)."""
     from benchflow.sandbox.egress_denylist import egress_denylist_for
     from benchflow.sandbox.verifier_network import (
         VerifierNetwork,
@@ -779,9 +782,15 @@ async def arm_verifier(env: Any, task: Any, mode: str, *, where: str) -> Any:
     hold = held(env)
     assert hold is not None
     try:
+        if mode == "public":
+            raise RuntimeError(
+                "a public verifier in the agent's sandbox would open the network "
+                "to the agent's own processes too"
+            )
         if mode != "denylist":
             raise RuntimeError(
-                f"the egress gateway holds denylist and public, not {mode}"
+                "the egress gateway holds a verifier's denylist, and a separate "
+                f"verifier sandbox's public network, not {mode}"
             )
         denylist = egress_denylist_for(_verifier_policy_config(task.config, mode))
         await deny(env, denylist, at="verifier")

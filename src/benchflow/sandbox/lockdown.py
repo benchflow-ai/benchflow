@@ -3436,15 +3436,18 @@ async def _arm_verifier_network(
     if egress_gateway.held(env) is not None:
         # Modal, held at the egress gateway (its own sandbox, or a separate
         # verifier's that takes the task's denylist): the phase is test.sh's
-        # network, every process with it. public is open; denylist is the
-        # verifier's policy, proven as root.
+        # network, every process with it. A separate sandbox's public is
+        # open; denylist is the verifier's policy, proven as root. A public
+        # verifier in the agent's sandbox is refused (arm_verifier), as the
+        # plan refuses it: open would admit the agent's own processes too,
+        # which off and audit keep running through grading.
         mode = (
             vn.separate_verifier_network(config)
             if separate
             else vn.verifier_network_mode(config)
         )
         where = "separate sandbox" if separate else "in-container"
-        if mode == "public":
+        if mode == "public" and separate:
             await egress_gateway.open_phase(env, "the verifier's network is public")
         else:
             with _prep_timing(seconds, "verifier_network"):
