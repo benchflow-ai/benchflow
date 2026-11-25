@@ -825,8 +825,8 @@ def _create_sandbox_environment(
                 report_trial_warning(warning)
         unread = unread_compose_file(environment_dir)
         if unread is not None:
-            # 0.10.1 names it; reading the other names is 0.10.2's (the
-            # services would then start under the hold).
+            # 0.10.1 names it; reading the other names is a later release's
+            # (the services would then start under the hold).
             warning = unread_compose_warning(unread)
             logger.warning(warning)
             report_trial_warning(warning)

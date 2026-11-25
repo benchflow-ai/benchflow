@@ -14,7 +14,9 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import stat
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -343,16 +345,62 @@ async def test_the_image_is_this_processs_own_build_never_a_tag_on_the_daemon():
     assert f"{helper_mod.HELPER_RECIPE_LABEL}={helper_mod.HELPER_RECIPE}" in builds[0]
 
 
-def test_the_helpers_packages_are_pinned():
-    """Each package the recipe adds is pinned to a version (iptables-legacy
-    too, the fallback root has in a Debian main)."""
-    (install,) = [
-        line for line in helper_mod.HELPER_DOCKERFILE.splitlines() if "apk add" in line
+def _run_line() -> str:
+    """The recipe's RUN command, its lines joined as Docker joins them."""
+    joined = helper_mod.HELPER_DOCKERFILE.replace("\\\n", "")
+    (run,) = [line for line in joined.splitlines() if line.startswith("RUN ")]
+    return " ".join(run.removeprefix("RUN ").split())
+
+
+def test_the_helper_installs_its_pins_else_their_minor_series():
+    """The RUN tries each tier of HELPER_TIERS in order, each naming the same
+    packages: the exact builds (iptables-legacy too, the fallback root has in
+    a Debian main), then the newest build of each one's minor series. The
+    readlink link follows whichever tier installed."""
+    match = re.fullmatch(
+        r"\{ (.+); \} && ln -s /bin/busybox /bin/readlink", _run_line()
+    )
+    assert match, _run_line()
+    tiers = [t.split() for t in match.group(1).split(" || ")]
+    assert [t[:3] for t in tiers] == [["apk", "add", "--no-cache"]] * 2
+    assert [tuple(t[3:]) for t in tiers] == list(helper_mod.HELPER_TIERS)
+    exact, series = helper_mod.HELPER_TIERS
+    assert exact == helper_mod.HELPER_PACKAGES
+    assert {"iptables", "iptables-legacy", "nftables"} <= {
+        pin.split("=", 1)[0] for pin in exact
+    }
+    for pin, fallback in zip(exact, series, strict=True):
+        name, version = pin.split("=", 1)
+        assert re.fullmatch(r"\d+\.\d+\.\d+-r\d+", version), pin
+        major, minor = version.split(".")[:2]
+        assert fallback == f"{name}~{major}.{minor}", (pin, fallback)
+
+
+@pytest.mark.parametrize(
+    ("served", "tried", "linked"), [(1, 1, True), (2, 2, True), (None, 2, False)]
+)
+def test_a_tier_runs_only_after_the_one_before_failed(tmp_path, served, tried, linked):
+    """The RUN's own shell, with an apk that installs only tier ``served``:
+    each later tier is tried in order after a failed one and none after one
+    that installed; with no tier installed the build fails, unlinked."""
+    log = tmp_path / "apk.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    want = " ".join(helper_mod.HELPER_TIERS[served - 1]) if served else "-"
+    (bin_dir / "apk").write_text(
+        f'#!/bin/sh\necho "$*" >> {log}\n[ "$*" = "add --no-cache {want}" ]\n'
+    )
+    (bin_dir / "apk").chmod(0o755)
+    marker = tmp_path / "linked"
+    script = _run_line().replace("ln -s /bin/busybox /bin/readlink", f"touch {marker}")
+    done = subprocess.run(
+        ["/bin/sh", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin"}
+    )
+    assert log.read_text().splitlines() == [
+        f"add --no-cache {' '.join(t)}" for t in helper_mod.HELPER_TIERS[:tried]
     ]
-    words = install.split(" && ")[0].split()
-    packages = dict(w.split("=", 1) if "=" in w else (w, "") for w in words[4:])
-    assert {"iptables", "iptables-legacy", "nftables"} <= set(packages)
-    assert all(packages.values()), packages
+    assert marker.exists() is linked
+    assert (done.returncode == 0) is linked
 
 
 @pytest.mark.asyncio

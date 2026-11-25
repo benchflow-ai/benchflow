@@ -10,8 +10,10 @@ in a container of BenchFlow's own that joins main's network namespace
 (``docker run --network container:<main>``) and brings its own iptables: the
 same rules land in the same namespace, and nothing is installed in main.
 
-- The image (:data:`HELPER_DOCKERFILE`: a pinned Alpine with pinned iptables,
-  iptables-legacy and nftables) is the release's prebuilt one when it pins one
+- The image (:data:`HELPER_DOCKERFILE`: Alpine pinned by digest, with
+  iptables, iptables-legacy and nftables at pinned builds, or at the newest
+  builds of their minor series once Alpine replaces those:
+  :data:`HELPER_TIERS`) is the release's prebuilt one when it pins one
   (:data:`HELPER_IMAGE`): pulled by its digest, once per Docker daemon, beside
   the first sandbox start, checked (that digest among its RepoDigests, this
   recipe's labels, the daemon's platform) and run by the image ID the check
@@ -20,6 +22,15 @@ same rules land in the same namespace, and nothing is installed in main.
   process builds it with no build cache and runs the image ID that build gave.
   Never an image found under a tag or a label, which a task's Compose file can
   give an image of its own, nor a cached step a task's build may have imported.
+- The recipe (:data:`HELPER_RECIPE`, a hash of the Dockerfile's text) names
+  the tiers, not the builds a host installed: one recipe can give two hosts
+  different builds of a package (the exact pin on one, the build Alpine
+  replaced it with on the other), and which tier a build took is in no label
+  and no record. The image ID recorded per daemon names what was built: in
+  that image, /etc/apk/world names the tier that installed and ``apk info
+  -v`` lists its builds. The packages these ten
+  pull in (python3's libraries among them) were never pinned: each build
+  takes their newest.
 - The helper holds NET_ADMIN and NET_RAW and nothing else (no new
   privileges, a read-only root, tmpfs without exec) and shares only the
   network namespace with main: the agent can neither see nor signal its
@@ -71,14 +82,17 @@ HELPER_BASE = (
     "alpine:3.24@sha256:"
     "294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
 )
-#: The firewall tools and the netfilter libraries they load, at the versions
+#: The firewall tools and the netfilter libraries they load, at the builds
 #: the pinned base's repository had when this recipe was checked. The
-#: repository keeps only each package's latest build, so one that has moved
-#: on fails the build, and Docker then refuses every start that needs a rule
-#: in main's namespace: every task that keeps the cloud metadata block
-#: (``DockerSandbox._decide_rules_by_helper``). A pin the repository drops is
-#: moved here (openssl 3.5.9-r0 to 3.5.9-r1 on 18 November 2026, python3
-#: 3.14.10-r1 to 3.14.10-r2 on 23 November 2026).
+#: repository serves one build of each package, its newest: when it replaces
+#: one of these (openssl 3.5.9-r0 by 3.5.9-r1 on 18 November 2026, python3
+#: 3.14.10-r1 by 3.14.10-r2 on 23 November 2026), these pins no longer
+#: resolve and the build installs the next tier of :data:`HELPER_TIERS`.
+#: Only a minor series gone from the branch fails the build, and Docker then
+#: refuses every start that needs a rule in main's namespace: every task that
+#: keeps the cloud metadata block (``DockerSandbox._decide_rules_by_helper``).
+#: The daily fresh build (.github/workflows/helper-fresh-build.yml) fails as
+#: soon as these pins stop resolving; they are moved here then.
 #: iptables-legacy gives the script's tool choice the same fallback root has
 #: in a Debian main, for hosts where nf_tables does not work.
 HELPER_PACKAGES = (
@@ -96,13 +110,36 @@ HELPER_PACKAGES = (
     "libnftnl=1.3.1-r0",
     "libmnl=1.0.5-r2",
 )
+
+
+def _minor_series(package: str) -> str:
+    """``name~x.y`` for an exact pin ``name=x.y.z-rN``: the newest build of
+    that minor series. apk-tools 3 matches ``~`` a whole number at a time:
+    ``python3~3.14`` takes 3.14.11 but never 3.15.0 or 3.140.0."""
+    name, pinned = package.split("=", 1)
+    return f"{name}~{'.'.join(pinned.rsplit('-r', 1)[0].split('.')[:2])}"
+
+
+#: What the build installs: the first tier that resolves, each naming the
+#: same packages (``apk add`` installs all of a tier or nothing). (1) The
+#: exact builds of :data:`HELPER_PACKAGES`. (2) The newest build of each
+#: one's minor series: Alpine's stable branches rebuild these packages and
+#: take their patch releases (3.16 to 3.24: python3 18 rebuilds and 59 patch
+#: releases, openssl 52 and 57), but none has changed its minor series on a
+#: stable branch. With one build of each package served, (2) installs (1)'s
+#: builds whenever they are served.
+HELPER_TIERS = (
+    HELPER_PACKAGES,
+    tuple(_minor_series(p) for p in HELPER_PACKAGES),
+)
 #: The root scripts' tool custody walk calls /bin/readlink by path
 #: (``lockdown._cloud_metadata_root_prelude``); BusyBox keeps readlink in
 #: /usr/bin, so the image links it where the walk looks.
 HELPER_DOCKERFILE = (
     f"FROM {HELPER_BASE}\n"
-    f"RUN apk add --no-cache {' '.join(HELPER_PACKAGES)}"
-    " && ln -s /bin/busybox /bin/readlink\n"
+    "RUN { "
+    + " \\\n || ".join(f"apk add --no-cache {' '.join(t)}" for t in HELPER_TIERS)
+    + "; } \\\n && ln -s /bin/busybox /bin/readlink\n"
 )
 HELPER_RECIPE = hashlib.sha256(HELPER_DOCKERFILE.encode()).hexdigest()[:16]
 HELPER_TAG = f"benchflow-helper:metadata-{HELPER_RECIPE}"

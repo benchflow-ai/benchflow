@@ -5266,6 +5266,13 @@ class Rollout:
             # S2's kill after grading stopped this connection's processes.
             self._connection_needs_quiescence = False
             self._agent_quiesced = True
+        if self._connection_needs_quiescence and getattr(
+            self, "_agent_sandbox_stopped", False
+        ):
+            # The sandbox stopped before the verifier: no process of this
+            # connection is left, and an exec into it fails the cleanup.
+            self._connection_needs_quiescence = False
+            self._agent_quiesced = True
         if (
             self._connection_needs_quiescence
             and sandbox_user
@@ -5311,6 +5318,9 @@ class Rollout:
             and bool(sandbox_user)
             and keep_services.trial_keep(self._task, sandbox_user) is None
         )
+        if stopped and not self._muse_credentials_staged:
+            # The sandbox that held these logins has stopped; no exec reaches it.
+            self._credential_ledger = []
         if self._env is not None:
             try:
                 await self._remove_ledger(keep_entries=unquiesced)
