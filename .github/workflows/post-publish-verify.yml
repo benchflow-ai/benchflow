@@ -86,8 +86,17 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          uv tool install --python 3.12 "benchflow==$VERSION" \
-            --constraints "https://raw.githubusercontent.com/${{ github.repository }}/v$VERSION/constraints.txt"
+          # PyPI's simple index can trail the upload by a minute or two, and
+          # uv would reuse its cached copy of the page (PyPI sends a 10-minute
+          # max-age) on every retry without --refresh-package.
+          for attempt in 1 2 3 4 5 6; do
+            if uv tool install --python 3.12 --refresh-package benchflow "benchflow==$VERSION" \
+              --constraints "https://raw.githubusercontent.com/${{ github.repository }}/v$VERSION/constraints.txt"; then
+              break
+            fi
+            test "$attempt" -lt 6
+            sleep 30
+          done
           bench --version | tee version.txt
           grep -q "benchflow $VERSION" version.txt
           python3 -I - "$(uv tool dir)/benchflow" "$(jq -r .source_commit ".github/release-acceptance/$VERSION.json")" <<'PY'
@@ -107,7 +116,9 @@ jobs:
         run: |
           bench run benchflow-ai/skillsbench/tasks/econ-detrending-correlation \
             --agent oracle --sandbox docker --jobs-dir jobs/oracle | tee oracle.log
-          grep -q "Score: 1/1" oracle.log
+          # The end-of-run table (0.10.0rc6 on) shows `1/1 passed` under its
+          # Score column, as README step 2 says.
+          grep -qE '^1/1 passed( |$)' oracle.log
 
       - name: The GitHub release is marked as the version says
         env:

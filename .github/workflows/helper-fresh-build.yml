@@ -1,0 +1,70 @@
+name: helper-fresh-build
+
+# On Docker, BenchFlow builds its metadata firewall helper on each new host
+# from the recipe in src/benchflow/sandbox/_metadata_helper.py: Alpine pinned
+# by digest plus packages from Alpine's repository, which serves only each
+# package's newest build. A change there needs no change here, so this job
+# builds the recipe as a new host does, on GitHub's fresh daemon with no
+# cache, once a day: a dropped build is found the day it happens.
+#
+# Red at "Build the helper fresh": the recipe no longer builds at any tier,
+# and a new Docker host refuses every start that keeps the metadata block.
+# Red at "The exact pins still resolve": new hosts still build the helper
+# from a later tier; move HELPER_PACKAGES to the builds the summary lists.
+on:
+  pull_request:
+    paths:
+      - src/benchflow/sandbox/_metadata_helper.py
+      - tools/ci/helper_fresh_build.py
+      - .github/workflows/helper-fresh-build.yml
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  fresh-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HARBOR_TELEMETRY: "off"
+      DO_NOT_TRACK: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          # uv 0.13.4 and its sha256 for this x86_64 Linux runner:
+          # src/benchflow/_uv_pin.py (tests/test_workflow_uv_pin.py checks).
+          version: "0.13.4"
+          checksum: "2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f"
+          enable-cache: false
+
+      # The script reads the recipe from the module itself, so the job builds
+      # exactly what a host running this commit builds.
+      - name: Install BenchFlow (locked)
+        run: uv sync --locked --python 3.12
+
+      - name: Build the helper fresh
+        run: uv run --no-sync python tools/ci/helper_fresh_build.py build "$RUNNER_TEMP/helper-fresh-build"
+
+      - name: The exact pins still resolve
+        run: uv run --no-sync python tools/ci/helper_fresh_build.py pins "$RUNNER_TEMP/helper-fresh-build"
+
+      - name: Upload the build's record
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6.0.0
+        with:
+          name: helper-fresh-build
+          path: ${{ runner.temp }}/helper-fresh-build
+          if-no-files-found: ignore
+          retention-days: 14

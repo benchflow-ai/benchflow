@@ -117,7 +117,8 @@ OWN_IMAGE_EXECS = {
     # approved it (2026-11-15 01:5xZ). The image is the one this process
     # builds from _metadata_helper.HELPER_DOCKERFILE, FROM alpine:3.24@sha256:
     # 294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 with
-    # pinned packages (HELPER_RECIPE), run by the image ID its build gave:
+    # pinned packages, or the newest builds of their minor series
+    # (HELPER_TIERS, in HELPER_RECIPE), run by the image ID its build gave:
     # test_the_egress_container_runs_only_the_pinned_helper_image.
     "sandbox/_egress_container.py": {
         "EgressContainer.start": "tar of the pinned helper image, into its tmpfs",
