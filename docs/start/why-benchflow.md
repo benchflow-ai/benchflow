@@ -4,7 +4,7 @@ Han-chung Lee, a co-author of SkillsBench, splits evaluation infrastructure into
 
 Running an agent on a task in a sandbox, with a harness you can swap, is common ground: his [harness post](https://leehanchung.github.io/blogs/2026/05/08/hidden-technical-debt-agent-harness/#the-bitter-lesson-for-agent-harness) names BenchFlow among the evaluation frameworks that let you swap harnesses, and charts one model [17.5 points apart in two harnesses](https://leehanchung.github.io/blogs/2026/05/08/hidden-technical-debt-agent-harness/#from-research-to-production). In BenchFlow the agent (`-a`), its model (`-m`) and the sandbox (`--sandbox`) are separate settings, and each release pins the agents' versions ([Agents and models](../evaluate/agents.md)). Where BenchFlow goes further is the record each run leaves and the decisions it reads from that record. It is the evaluation infrastructure behind SkillsBench, Robo Use, a physics research benchmark and a design benchmark judged by people, and much of what follows came from their failures.
 
-These pages cover 0.10.2. "(0.10)" marks what is new in 0.10 ([What's in 0.10.2](../versions/0.10.md)).
+These pages cover 0.10.3. "(0.10)" marks what is new in 0.10 ([What's in 0.10.3](../versions/0.10.md)).
 
 ## What each rollout records
 

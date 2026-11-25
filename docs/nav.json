@@ -1,5 +1,5 @@
 {
-  "stable": "0.10.2",
+  "stable": "0.10.3",
   "sections": [
     {
       "id": "start",
@@ -351,7 +351,7 @@
         },
         {
           "path": "versions/0.10",
-          "title": "What's in 0.10.2",
+          "title": "What's in 0.10.3",
           "job": "What 0.10 adds, how to install it, and the changes that can move a score.",
           "since": "0.10",
           "kind": "guide"
