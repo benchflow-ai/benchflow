@@ -4,6 +4,12 @@ What changed in each BenchFlow release: 0.10.3 is the current release. Under `[0
 
 <!-- This page is generated from the repository's CHANGELOG.md by tools/docs_reference.py; to change it, change that file, then run `uv run python tools/docs_reference.py --write`. -->
 
+## [Unreleased]
+
+### Fixed
+
+- **Claude Code on a subscription login works under `network_mode: denylist` again.** The denylist proxy checks every model request body against the Messages schema, which lacked `diagnostics`, the field Claude Code adds to each main-thread request it sends to api.anthropic.com (`{"previous_message_id": ...}`). Every such request got a 403, so the agent stopped on its first turn with "Sign in to continue using Claude." and the trial ended unscored. `diagnostics` is now admitted when it carries only `previous_message_id`. A body both schemas refuse is now logged with both reasons; the chat reason alone named `system`, `context_management` and `output_config` as well.
+
 ## [0.10.3]
 
 0.10.3 is 0.10.2 with one test file formatted and one test's docstring corrected. 0.10.2 was tagged but never published to PyPI: its release's format check failed on that file, so the publish job didn't run. Its three fixes ship in 0.10.3, as listed under [0.10.2].
