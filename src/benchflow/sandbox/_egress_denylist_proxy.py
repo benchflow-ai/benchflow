@@ -1094,6 +1094,7 @@ def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
             return "oversized-body"
         if isinstance(item, dict):
             if _model_document(item, path):
+                as_messages = None
                 if "contents" in item:
                     schema = "/v1beta/models/guard:generateContent"
                 elif "input" in item:
@@ -1101,10 +1102,10 @@ def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
                 elif "max_tokens" in item and "messages" in item and "model" in item:
                     # Both chat and Messages accept max_tokens. Try both schemas.
                     encoded = json.dumps(item).encode()
-                    why = _request_guard().outbound_refusal(
+                    as_messages = _request_guard().outbound_refusal(
                         "POST", "/v1/messages", encoded
                     )
-                    if why is None:
+                    if as_messages is None:
                         continue
                     schema = "/v1/chat/completions"
                 else:
@@ -1112,6 +1113,9 @@ def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
                 why = _request_guard().outbound_refusal(
                     "POST", schema, json.dumps(item).encode()
                 )
+                if why and as_messages:
+                    # Name both: the chat reason alone lists every Messages field.
+                    why = f"as Messages: {as_messages}; as chat completions: {why}"
                 if why:
                     return "deny-model-body: " + why[:300]
                 continue

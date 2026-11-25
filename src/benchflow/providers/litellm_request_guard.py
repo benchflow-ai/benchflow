@@ -1302,6 +1302,9 @@ _OUT_MESSAGES = frozenset(
         "service_tier",
         "anthropic_version",
         "anthropic_beta",
+        # Claude Code's cache-diagnosis id on first-party requests: only
+        # {"previous_message_id": str | null} (_messages_refusal).
+        "diagnostics",
     }
 )
 _OUT_GEMINI = frozenset(
@@ -2027,6 +2030,13 @@ def _anthropic_tools_refusal(tools):
 
 def _messages_refusal(body, path=""):
     refusal = _unknown(body, _OUT_MESSAGES, "request")
+    diagnostics = body.get("diagnostics") if refusal is None else None
+    if diagnostics is not None:
+        refusal = _unknown(diagnostics, {"previous_message_id"}, "diagnostics")
+        if refusal is None and not isinstance(
+            diagnostics.get("previous_message_id"), (str, type(None))
+        ):
+            refusal = "diagnostics previous_message_id is not a string"
     if refusal is None and "tools" in body:
         refusal = _anthropic_tools_refusal(body["tools"])
     choice = body.get("tool_choice")
