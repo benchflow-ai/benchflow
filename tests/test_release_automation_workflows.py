@@ -207,7 +207,10 @@ def test_the_post_publish_install_retry_asks_pypi_again():
     """Each retry of the install from PyPI refreshes benchflow's index page: uv otherwise
     reuses the cached page (PyPI sends a 10-minute max-age) and never sees the new version."""
     text = (WF / "post-publish-verify.yml").read_text()
-    assert 'uv tool install --python 3.12 --refresh-package benchflow "benchflow==$VERSION"' in text
+    assert (
+        'uv tool install --python 3.12 --refresh-package benchflow "benchflow==$VERSION"'
+        in text
+    )
 
 
 # -- rules for every workflow ---------------------------------------------------------------------------

@@ -7,13 +7,13 @@ BenchFlow is the `benchflow` package on PyPI. It installs one command under two 
 Install a fixed version, with the dependency versions its release was tested with:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.10.2' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.2/constraints.txt
+uv tool install --python 3.12 'benchflow==0.10.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.3/constraints.txt
 bench --version
 ```
 
 ```text
-benchflow 0.10.2
+benchflow 0.10.3
 ```
 
 uv fetches Python 3.12 if you don't have it. Keep `--python 3.12`: with an older Python, uv picks an old release that has no `bench` command and stops with `No executables are provided by package benchflow`. If your shell then says `bench: command not found`, run `uv tool update-shell` and open a new terminal.
@@ -31,7 +31,7 @@ sudo usermod -aG docker "$USER"   # then log out and back in: the group applies 
 docker version && docker compose version && docker buildx version
 ```
 
-Docker CE from [Docker's install guide](https://docs.docker.com/engine/install/) works too. BenchFlow 0.10.2 fully supports Docker Engine 29 and Docker Compose 2.40 or newer: on older versions a trial under a network policy (allowlist, denylist or no-network) is refused before its turn, naming the versions, and trials with an open network run. `bench doctor` checks Docker, Compose, buildx and the docker group, and prints the fix for each one missing.
+Docker CE from [Docker's install guide](https://docs.docker.com/engine/install/) works too. BenchFlow 0.10.3 fully supports Docker Engine 29 and Docker Compose 2.40 or newer: on older versions a trial under a network policy (allowlist, denylist or no-network) is refused before its turn, naming the versions, and trials with an open network run. `bench doctor` checks Docker, Compose, buildx and the docker group, and prints the fix for each one missing.
 
 ## Check your machine
 
@@ -42,10 +42,10 @@ bench doctor
 ```
 
 ```text
-BenchFlow doctor - benchflow 0.10.2, Linux x86_64, sandbox docker
+BenchFlow doctor - benchflow 0.10.3, Linux x86_64, sandbox docker
 
 Runtime
-  PASS  python                Python 3.12.15, benchflow 0.10.2 (...)
+  PASS  python                Python 3.12.15, benchflow 0.10.3 (...)
   PASS  uv                    uv 0.13.1 (x86_64-unknown-linux-gnu)
   PASS  bench on PATH         .../bin/bench, this install
   PASS  bfx                   bfx x86_64, aarch64 (pinned)
@@ -70,8 +70,8 @@ Agent credentials
 Docker needs nothing extra. Daytona, Modal and Amazon Bedrock AgentCore each need an extra, named in the install line:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.2' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.2/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.3' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.3/constraints.txt
 ```
 
 The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `benchflow[sandbox-daytona,sandbox-modal]`. Each sandbox also needs its own login: see [Sandboxes](../scale/sandboxes.md).
@@ -81,14 +81,14 @@ The other extras are `sandbox-modal` and `sandbox-agentcore`; list several as `b
 To call BenchFlow from your own code, add it to that project's environment:
 
 ```bash
-uv add 'benchflow==0.10.2'
+uv add 'benchflow==0.10.3'
 ```
 
-`pip install 'benchflow==0.10.2'` works too, on Python 3.12 or newer.
+`pip install 'benchflow==0.10.3'` works too, on Python 3.12 or newer.
 
 ## Go back to 0.9.3
 
-0.9.3 is the last release before 0.10, and 0.10.1 the one before 0.10.2. A page or section new in 0.10 says so in its first line or its heading, and the nav marks it (0.10). A score from 0.10.2 and one from 0.9.3 aren't comparable on the tasks [the changes that can move a score](../versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task) touch. To go back to 0.9.3, run the install line with 0.9.3 in both places (0.10.1 the same way):
+0.9.3 is the last release before 0.10, and 0.10.1 the one before 0.10.3 (0.10.2 was tagged but never published). A page or section new in 0.10 says so in its first line or its heading, and the nav marks it (0.10). A score from 0.10.3 and one from 0.9.3 aren't comparable on the tasks [the changes that can move a score](../versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task) touch. To go back to 0.9.3, run the install line with 0.9.3 in both places (0.10.1 the same way):
 
 ```bash
 uv tool install --python 3.12 'benchflow==0.9.3' \
@@ -115,7 +115,7 @@ BenchFlow's engine rewritten in Rust is a separate prerelease, [bench 0.8.1](htt
 
 | You type | Runs |
 |---|---|
-| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.10.2` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
+| `bench` | the first one on `PATH`: `bench --version` prints `benchflow 0.10.3` for this package, `bench 0.8.1 (ba5af6289 2026-10-13)` for the Rust engine |
 | `benchflow` | this package |
 | `~/.bench/bin/bench` | the Rust engine, installed as below |
 
