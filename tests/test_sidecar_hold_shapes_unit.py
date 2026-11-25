@@ -436,7 +436,7 @@ def test_the_trial_s_warnings_carry_the_read_flag_once():
 def test_a_compose_file_under_another_name_is_named_as_not_read(tmp_path, name):
     """Docker stacks only environment/docker-compose.yaml; another name was
     ignored without a word (the task ran as main alone). 0.10.1 says so at
-    start and in the trial's warnings; reading it is 0.10.2's."""
+    start and in the trial's warnings; reading it is a later release's."""
     from benchflow._utils.trial_warnings import recording_trial_warnings
     from benchflow.sandbox._compose import unread_compose_file, unread_compose_warning
 

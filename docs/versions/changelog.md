@@ -1,10 +1,14 @@
 # Changelog
 
-What changed in each BenchFlow release: 0.10.2 is the current release. Under `[0.10.0rc1]` are the changes its wheel has; the ones CHANGELOG.md also lists there but that came after the wheel are at the end of `[0.10.0rc2]`. [What's in 0.10.2](./0.10.md) walks through what 0.10 adds.
+What changed in each BenchFlow release: 0.10.3 is the current release. Under `[0.10.0rc1]` are the changes its wheel has; the ones CHANGELOG.md also lists there but that came after the wheel are at the end of `[0.10.0rc2]`. [What's in 0.10.3](./0.10.md) walks through what 0.10 adds.
 
 <!-- This page is generated from the repository's CHANGELOG.md by tools/docs_reference.py; to change it, change that file, then run `uv run python tools/docs_reference.py --write`. -->
 
-## [0.10.2]
+## [0.10.3]
+
+0.10.3 is 0.10.2 with one test file formatted and one test's docstring corrected. 0.10.2 was tagged but never published to PyPI: its release's format check failed on that file, so the publish job didn't run. Its three fixes ship in 0.10.3, as listed under [0.10.2].
+
+## [0.10.2] - tagged, not on PyPI
 
 0.10.2 is a patch release of 0.10.1 with three fixes: an agent's trial with a separate verifier on Docker under `audit` or `off` keeps the verifier's reward at the end of the trial, a fresh host builds the Docker metadata helper again after Alpine replaces one of its packages with a newer build, and the check that runs after a publish reads the end-of-run table 0.10 prints.
 
@@ -12,7 +16,7 @@ What changed in each BenchFlow release: 0.10.2 is the current release. Under `[0
 
 - **An agent's trial with a separate verifier keeps the verifier's reward under `--integrity audit` (the default) and `off`.** BenchFlow stops the agent's sandbox before a separate verifier runs (Docker and remote Docker; Daytona and Modal take the same path). At the trial's end it then tried to stop the agent's processes in that stopped sandbox, and the cleanup failed: on Docker `trial cleanup failed` with `service "main" is not running`. The trial ended as an infrastructure failure with no reward, although the verifier had scored it, and the default retry ran the agent again at your cost. Now a sandbox that has already stopped has nothing left to stop, and the trial keeps the verifier's reward. `--integrity strict`, the oracle and `BENCHFLOW_VERIFIER_PREPARE=serial` were not affected.
 - **A new Docker host builds BenchFlow's metadata helper even after Alpine replaces one of its packages.** On Docker, BenchFlow builds its metadata firewall helper on each host from Alpine packages pinned to exact builds, and Alpine's repository serves only each package's newest build. Each time Alpine replaced one (`openssl` on 18 November 2026, `python3` on 23 November), a host that hadn't built the helper yet could no longer build it, and refused every Docker start that keeps the cloud metadata block ("sandbox startup refused: BenchFlow's helper image could not be built"). The helper now installs the pinned builds while Alpine serves them, and otherwise the newest build of each package's minor series (`python3` 3.14, `openssl` 3.5), which Alpine keeps for the life of its stable branch. So two hosts can now build one helper recipe with different builds of a package; `apk info -v` in the helper image lists them. 0.10.2's recipe is new, so each host builds the helper once after the upgrade.
-- **If you're on 0.9.3 or 0.10.0rc5**, a Docker host that hasn't built the helper yet refuses every start that keeps the cloud metadata block today; 0.10.1 will do the same once Alpine replaces one of its pinned builds. Until you upgrade to 0.10.2:
+- **If you're on 0.9.3 or 0.10.0rc5**, a Docker host that hasn't built the helper yet refuses every start that keeps the cloud metadata block today; 0.10.1 will do the same once Alpine replaces one of its pinned builds. Until you upgrade to 0.10.3:
   - run on a Docker host where your version already built the helper while Alpine still served its pinned builds (for 0.9.3 and 0.10.0rc5, before 18 November 2026), as the same user: BenchFlow reuses the image it recorded there;
   - or run tasks on an open network on Daytona, which builds no helper.
 
