@@ -78,6 +78,7 @@ A `docker-compose.yaml` differs in one way: Compose runs with only the variables
 | `BENCHFLOW_DAYTONA_SNAPSHOT_TIMEOUT_SEC` | seconds a Daytona checkpoint or branch snapshot may take ([Daytona](../scale/daytona.md#limits)) | `600` |
 | `BENCHFLOW_REMOTE_DOCKER_HOST` | the host for `--sandbox remote-docker` ([Sandboxes](../scale/sandboxes.md)) | `DOCKER_HOST` |
 | `BENCHFLOW_DOCKER_SUBNETS` | address ranges for trial networks, or `daemon` to leave them to Docker | chosen by BenchFlow |
+| `BENCHFLOW_EGRESS_GATEWAY` | the control socket of a running egress gateway: Modal then runs `denylist` tasks behind it ([Modal](../scale/modal.md#a-tasks-denylist-the-egress-gateway)) | none: Modal refuses them |
 | `BENCHFLOW_LITELLM_EXTRA_REQUIREMENTS` | extra Python packages for the model proxy | none |
 | `BENCHFLOW_AGENT_LAYER_MAX_GB`, `BENCHFLOW_PROXY_LAYER_MAX_GB` | how many GB of cached agent and proxy install layers to keep; older ones are removed after a build; `0` turns the bound off | `20` each |
 | `BENCHFLOW_AGENT_LAYER_MIN_FREE_GB` | while the Docker disk has less free space than this, remove more cached layers, oldest first | `10` |

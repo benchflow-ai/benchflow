@@ -23,6 +23,7 @@ from benchflow.sandbox.providers import (
     ALLOWLIST_UNSUPPORTED_PROVIDERS,
     DENYLIST_UNSUPPORTED_PROVIDERS,
     NO_NETWORK_UNSUPPORTED_PROVIDERS,
+    PROVIDERS_BY_NAME,
     SANDBOX_PROVIDER_SET,
     SANDBOX_PROVIDERS,
     SINGLE_CONTAINER_PROVIDERS,
@@ -367,6 +368,38 @@ NETWORK_POLICY_REFUSALS: Mapping[str, frozenset[str]] = {
 _RESTRICTED_REMEDY = (
     "run restricted policies on Docker, or choose `open` explicitly (recorded as open)"
 )
+#: Why the egress gateway refuses a public verifier in the agent's sandbox.
+_GATEWAY_PUBLIC_VERIFIER_REMEDY = (
+    "at the egress gateway the network is the same for every process in the "
+    "sandbox, so a public verifier there would open it to the agent's own "
+    "processes too, which `off` and `audit` keep running through grading; let "
+    "the verifier keep the task's denylist, give it a separate sandbox "
+    '([verifier] sandbox_mode = "separate"), or run on Docker'
+)
+
+
+def egress_gateway_holds(sandbox: str) -> bool:
+    """Whether *sandbox* holds the denylist at the egress gateway this run
+    names (``BENCHFLOW_EGRESS_GATEWAY``; benchflow.sandbox.egress_gateway):
+    the agent phase's denylist, and a shared verifier's denylist under it."""
+    from benchflow.sandbox.egress_gateway import configured
+
+    provider = PROVIDERS_BY_NAME.get(sandbox)
+    return provider is not None and provider.egress_gateway and configured()
+
+
+def public_verifier_in_main(config: TaskConfig) -> bool:
+    """Whether test.sh runs in the agent's sandbox (no separate verifier
+    sandbox) with a public network. The egress gateway refuses it on a
+    sandbox it holds: its open phase would admit the agent's own processes
+    too, where Docker's uid rules keep holding them."""
+    from benchflow.sandbox.verifier_network import verifier_network_mode
+    from benchflow.task.verifier_sandbox import separate_verifier_requested
+
+    return (
+        not separate_verifier_requested(config)
+        and verifier_network_mode(config) == "public"
+    )
 
 
 def agent_network_policy(config: TaskConfig, *, agent_launches: bool) -> str:
@@ -432,17 +465,32 @@ def network_policy_issue(
     """The refusal :data:`NETWORK_POLICY_REFUSALS` gives this task's agent
     phase on *sandbox*, or None."""
     refused = NETWORK_POLICY_REFUSALS.get(sandbox, frozenset())
+    gateway = egress_gateway_holds(sandbox)
+    if gateway:
+        refused = refused - {DENYLIST_POLICY}
     policy = agent_network_policy(config, agent_launches=agent_launches)
+    if gateway and policy == DENYLIST_POLICY and public_verifier_in_main(config):
+        backend = _backend_label(sandbox, task_dir)
+        return UnsupportedTaskFeature(
+            path="sandbox.network_mode",
+            reason=(
+                f"the task's network policy ({_shared_verifier_label('public')}) "
+                f"is not held on {backend}: {_GATEWAY_PUBLIC_VERIFIER_REMEDY}"
+            ),
+            sandbox=sandbox,
+        )
     if policy not in refused:
         # A main with no network at all (an offline sandbox, the oracle or a
         # script) gives its shared verifier none either: nothing to hold. An
         # online sandbox whose [agent] network is no-network still has one
-        # , whatever the agent phase's label.
+        # , whatever the agent phase's label. At the egress gateway, a
+        # denylist sandbox's verifier under its denylist is the phase's.
         verifier = shared_verifier_network(config)
         if (
             config.sandbox.allow_internet is False
             or verifier is None
             or SHARED_VERIFIER_POLICY not in refused
+            or (gateway and policy == DENYLIST_POLICY and verifier == "denylist")
         ):
             return None
         policy = _shared_verifier_label(verifier)
@@ -670,11 +718,15 @@ def _append_config_issues(
         if problem is not None:
             _issue(unsupported, path=f"artifacts[{i}]", reason=problem, sandbox=sandbox)
 
+    # The gateway holds a sandbox whose own network is the denylist, and the
+    # agent's phase on it only when no [agent] network_mode moves it off.
+    gateway = egress_gateway_holds(sandbox) and config.agent.network_mode is None
     _append_network_issue(
         unsupported,
         path="agent.network_mode",
         mode=config.agent.network_mode,
         sandbox=sandbox,
+        gateway=gateway,
     )
     if config.agent.network_mode == NetworkMode.ALLOWLIST and (
         config.sandbox.network_mode in (NetworkMode.NO_NETWORK, NetworkMode.DENYLIST)
@@ -693,6 +745,7 @@ def _append_config_issues(
         path="sandbox.network_mode",
         mode=config.sandbox.network_mode,
         sandbox=sandbox,
+        gateway=gateway,
     )
     if config.verifier.network_mode == NetworkMode.ALLOWLIST:
         if sandbox not in VERIFIER_ALLOWLIST_PROVIDERS:
@@ -712,6 +765,21 @@ def _append_config_issues(
             unsupported,
             path="verifier.network_mode",
             mode=config.verifier.network_mode,
+            sandbox=sandbox,
+            gateway=gateway,
+        )
+    if (
+        gateway
+        and config.sandbox.network_mode == NetworkMode.DENYLIST
+        and public_verifier_in_main(config)
+    ):
+        _issue(
+            unsupported,
+            path="verifier.network_mode",
+            reason=(
+                f"a public verifier in the agent's sandbox is not held on {sandbox}: "
+                f"{_GATEWAY_PUBLIC_VERIFIER_REMEDY}"
+            ),
             sandbox=sandbox,
         )
 
@@ -857,6 +925,7 @@ def _append_network_issue(
     path: str,
     mode: NetworkMode | None,
     sandbox: str,
+    gateway: bool,
 ) -> None:
     if mode == NetworkMode.NO_NETWORK and sandbox in NO_NETWORK_UNSUPPORTED_PROVIDERS:
         _issue(
@@ -872,7 +941,11 @@ def _append_network_issue(
             reason=f"network_mode='allowlist' is not enforced by {sandbox}",
             sandbox=sandbox,
         )
-    if mode == NetworkMode.DENYLIST and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS:
+    if (
+        mode == NetworkMode.DENYLIST
+        and sandbox in DENYLIST_UNSUPPORTED_PROVIDERS
+        and not gateway
+    ):
         _issue(
             unsupported,
             path=path,

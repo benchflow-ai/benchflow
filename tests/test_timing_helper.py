@@ -289,6 +289,12 @@ ELSEWHERE = {
     "tests.test_daytona_start_r4": 2,
     "tests.test_dfx_scale_r3": 12,
     "tests.test_dx_a_container": 34,
+    # PR #1253 (2026-11-26): one deadline bound. A client that answers the
+    # egress gateway's challenge a byte at a time is closed at
+    # HANDSHAKE_TIMEOUT (1 s in the row), not after MAX_LINE reads; a
+    # deadline, not a speed
+    # (test_a_challenge_answered_a_byte_at_a_time_ends_at_the_handshake_timeout).
+    "tests.test_egress_gateway_server": 1,
     "tests.test_egress_relay_idle": 4,
     # PR #308 (2026-11-16): two deadline bounds: a readiness command
     # past its timeout ends with its group, one in time returns at once.

@@ -13,9 +13,9 @@ These messages come from BenchFlow's source on the 0.10 line. A message 0.9.3 do
 | [Errors that say what to do](#errors-that-say-what-to-do) | 528 |
 | [Command errors](#command-errors) | 258 |
 | [Problems in a task or config file](#problems-in-a-task-or-config-file) | 82 |
-| [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 48 |
+| [Tasks a sandbox can't run](#tasks-a-sandbox-cant-run) | 50 |
 | [What the verifier step reports](#what-the-verifier-step-reports) | 128 |
-| [Warnings a run logs](#warnings-a-run-logs) | 501 |
+| [Warnings a run logs](#warnings-a-run-logs) | 504 |
 
 ## Causes a run names
 
@@ -1081,6 +1081,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `sandbox.tpu` | `TPU scheduling is parsed but not implemented` | Remove `sandbox.tpu` from the task: no BenchFlow sandbox backend schedules TPUs yet. |
 | `sandbox.os` | `Windows task environments are parsed but not executable` | Set `sandbox.os` to `linux` or remove it: no BenchFlow sandbox backend runs Windows task environments. |
 | `steps` | `a multi-step task's steps are verified in the agent's sandbox, so it cannot use a separate verifier sandbox` (0.10) | Drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict` for this task, and set its `verifier.sandbox_mode` to `shared` without a `[verifier.sandbox]` table. |
+| `verifier.network_mode` | ``a public verifier in the agent's sandbox is not held on …: at the egress gateway the network is the same for every process in the sandbox, so a public verifier there would open it to the agent's own processes too, which `off` and `audit` keep running through grading; let the verifier keep the task's denylist, give it a separate sandbox ([verifier] sandbox_mode = "separate"), or run on Docker`` (0.10) | Drop the verifier's `network_mode = "public"` so it keeps the task's denylist, give the verifier a separate sandbox with `[verifier] sandbox_mode = "separate"`, or run the task with `--sandbox docker`, where the agent's uid rules keep its processes off the network while a public verifier runs. |
 | `steps[…].verifier.collect` | `a step's collect hooks are parsed but not executed (only the task's [[verifier.collect]] hooks run)` (0.10) | Move the hooks to the task's `[[verifier.collect]]`; a step's own collect hooks don't run. |
 | `verifier.service` | `a verifier in a compose service other than main needs a backend that runs it in that service: …` (0.10) | Run the task with `--sandbox docker` or `--sandbox remote-docker`, or set `verifier.service` to `main`. |
 | `agent.network_mode` | `agent.network_mode='allowlist' cannot combine with sandbox.network_mode=…` | With `agent.network_mode = 'allowlist'`, set `sandbox.network_mode` to `public` or `allowlist`, or choose another agent network mode. |
@@ -1115,6 +1116,7 @@ A value in a `task.md` header or a run config that BenchFlow refuses gets one li
 | `steps[…].healthcheck` | `step healthchecks are parsed but not implemented` | Remove `healthcheck` from each entry in `steps`: no sandbox runs step healthchecks yet. |
 | `steps` | `step names must be unique (each is a folder under steps/)` (0.10) | Give each entry in `steps` a unique `name`, since each step is a folder under `steps/`. |
 | `environment.services` | `the task declares the service… … in environment.toml at the task's root ([[environment.services]]), which BenchFlow starts in main as root, outside the agent's network rules, and the agent's network policy is …: the agent would reach … on localhost, and through … what the policy refuses. A declared service cannot run beside a model agent under a restricted network policy: run it as a compose service on an internal network that main shares, or run the task with an open network` | Run the service as a Compose service on an internal network that `main` shares (`internal: true`), or run the task with an open network (no `allowlist`, `denylist` or agent `no-network`). |
+| `sandbox.network_mode` | ``the task's network policy (…) is not held on …: at the egress gateway the network is the same for every process in the sandbox, so a public verifier there would open it to the agent's own processes too, which `off` and `audit` keep running through grading; let the verifier keep the task's denylist, give it a separate sandbox ([verifier] sandbox_mode = "separate"), or run on Docker`` (0.10) | Drop the verifier's `network_mode = "public"` so it keeps the task's denylist, give the verifier a separate sandbox with `[verifier] sandbox_mode = "separate"`, or run the task with `--sandbox docker`, where the agent's uid rules keep its processes off the network while a public verifier runs. |
 | `sandbox.network_mode` | ``the task's network policy (…) is not held on …: run restricted policies on Docker, or choose `open` explicitly (recorded as open)`` | Run the task with `--sandbox docker`, where BenchFlow's helper holds every restricted policy from outside the sandbox, or set the task's network to `open`. Daytona and Modal hold only an open network (with a public or separate verifier) and no-network with the oracle or a script; a shared verifier with a restricted network of its own is refused there too. |
 | `metadata.x-keep-services` | `the tests talk to the services the agent leaves running on port … (from …), and a separate verifier sandbox has none of them, so every trial would score 0; run the verifier in the agent's sandbox (no --verifier-sandbox separate, --separate-verifier or --integrity strict, and no separate verifier sandbox_mode in the task), or remove …` | Run the verifier in the agent's sandbox: drop `--verifier-sandbox separate`, `--separate-verifier` and `--integrity strict`, and set the task's `verifier.sandbox_mode` to `shared`; or remove `metadata.x-keep-services`. |
 | `verifier.strategies.….command` | `the verifier package has no …` | Add the file the taskmd strategy's `command` names to the verifier folder, or correct `command` in `verifier.md`. |
@@ -1649,6 +1651,9 @@ A run prints these as it works, prefixed with the trial's task. A warning doesn'
 | `benchflow.sandbox.docker` | `Snapshot image … removal failed: …` |
 | `benchflow.sandbox.docker` | `service … waits in the hold again: BenchFlow's command there did not run` (0.10) |
 | `benchflow.sandbox.egress_denylist` | `Egress log … not collected: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `Egress log … not collected: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: rollout … not deregistered: …` (0.10) |
+| `benchflow.sandbox.egress_gateway` | `egress gateway: … not written: …` (0.10) |
 | `benchflow.sandbox.env_layers` | `Not reusing …: no BenchFlow build on this machine made it; building the … layer again` |
 | `benchflow.sandbox.env_layers` | `Pruning build records of layer … failed: …` |
 | `benchflow.sandbox.env_layers` | `Pruning old … layers failed: …` |

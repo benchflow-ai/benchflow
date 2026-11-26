@@ -296,6 +296,10 @@ def _create_benchflow_modal_environment_class():
                 f"chmod 777 {SandboxPaths.agent_dir}; {close_verifier_dir_cmd()}",
             )
             check_verifier_dir(getattr(closed, "stdout", "") or "")
+            from benchflow.sandbox import egress_gateway
+
+            # Last, as ModalSandbox.start: a denylist held at the gateway.
+            await egress_gateway.start_hold(self)
 
     return BenchFlowModalSandbox
 

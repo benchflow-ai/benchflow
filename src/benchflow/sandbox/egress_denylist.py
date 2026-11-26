@@ -716,6 +716,13 @@ async def start_egress_denylist(
                 "denylist model gateway must be a controller-owned loopback HTTP endpoint"
             )
         gateway_port = gateway.port
+    from benchflow.sandbox import egress_gateway
+
+    if egress_gateway.held(env) is not None:
+        # Modal: the proxy runs at the egress gateway; this sandbox's new
+        # connections reach the policy's copy from now on.
+        await egress_gateway.deny(env, denylist, at="egress start")
+        return
     files = _runtime_files(denylist, gateway_port)
     await _run(
         env,
@@ -740,13 +747,11 @@ async def start_egress_denylist(
     await note_own_process(env, pid_file=RUNTIME_DIR + "/proxy.pid")
 
 
-def _runtime_files(
+def _policy_record(
     denylist: EgressDenylist, gateway_port: int | None
-) -> dict[str, bytes]:
-    """The proxy's files: its policy, script, request guard, CA and the
-    inspected hosts' certificates (a fresh CA each time)."""
-    material = certificate_material(denylist.inspect_hosts, include_ca_key=True)
-    policy = {
+) -> dict[str, Any]:
+    """The proxy's ``policy.json`` for *denylist*."""
+    policy: dict[str, Any] = {
         "blocked_urls": list(denylist.blocked_urls),
         "blocked_hosts": list(denylist.blocked_hosts),
         "model_gateway_port": gateway_port,
@@ -759,6 +764,16 @@ def _runtime_files(
         policy["allowed_hosts"] = list(denylist.allowed_hosts or ())
         policy["native_claude_model_origin"] = denylist.native_claude_model_origin
         policy["task_services"] = list(denylist.task_services)
+    return policy
+
+
+def _runtime_files(
+    denylist: EgressDenylist, gateway_port: int | None
+) -> dict[str, bytes]:
+    """The proxy's files: its policy, script, request guard, CA and the
+    inspected hosts' certificates (a fresh CA each time)."""
+    material = certificate_material(denylist.inspect_hosts, include_ca_key=True)
+    policy = _policy_record(denylist, gateway_port)
     files = {
         "policy.json": json.dumps(policy, indent=2).encode("utf-8"),
         "proxy.py": _PROXY_SCRIPT.read_bytes(),
@@ -919,6 +934,12 @@ async def _collect_log(
 
 async def stop_egress_denylist(env: Any, rollout_dir: Path | ReachablePath) -> None:
     """Pull the block log and the allowed log into the rollout trajectory dir, then stop the proxy; never raises."""
+    from benchflow.sandbox import egress_gateway
+
+    if egress_gateway.held(env) is not None:
+        # The gateway's lines since the last read; its phase is unchanged.
+        await egress_gateway.collect_logs(env, rollout_dir)
+        return
     await _collect_log(env, _LOG_PATH, rollout_dir, TRAJECTORY_LOG_NAME)
     await _collect_log(env, _ALLOWED_LOG_PATH, rollout_dir, ALLOWED_LOG_NAME)
     with contextlib.suppress(Exception):

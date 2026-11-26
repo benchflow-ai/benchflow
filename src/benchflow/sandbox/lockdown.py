@@ -943,7 +943,13 @@ async def arm_agent_uid_before_its_proxy(
     start (:func:`refuse_task_processes`), not here: only what still runs
     then is refused. Whether it armed; a combination the launch refuses
     (denylist without a sandbox user, no-web with an allowlist) is left to
-    it."""
+    it. A sandbox the egress gateway holds arms nothing: no rule there holds
+    one uid apart from root's, so the agent's uid is held from its egress
+    start on, every process with it."""
+    from benchflow.sandbox import egress_gateway
+
+    if egress_gateway.held(env) is not None:
+        return False
     denylist = egress_denylist is not None
     allow_mode = bool(getattr(egress_denylist, "allow_mode", False))
     if not (no_web or denylist) or (no_web and allow_mode):
@@ -1088,7 +1094,15 @@ async def enforce_agent_egress_firewall(
         # than silently weaken the agent's no-web policy. Native model-only
         # transport carries no allowlist marker and remains valid here.
         raise RuntimeError("No-web agent cannot use an allowlist egress policy")
+    from benchflow.sandbox import egress_gateway
+
+    gateway_held = egress_gateway.held(env) is not None
     if not (no_web or denylist):
+        if gateway_held:
+            # A held sandbox holds the denylist alone: enforce_agent refuses
+            # a launch without its marker (an offline operator script on a
+            # sandbox Runtime built before its agent was known, say).
+            await egress_gateway.enforce_agent(env, sandbox_user, agent_env)
         return
     if not sandbox_user and denylist:
         raise RuntimeError("network_mode='denylist' requires a sandbox_user")
@@ -1109,6 +1123,11 @@ async def enforce_agent_egress_firewall(
         raise RuntimeError(
             "No-web agent requires an HTTP loopback provider base URL with a port"
         )
+    if gateway_held:
+        # Modal: no uid rule can go in; the gateway holds every process, so
+        # prove the agent's user confined in the deny phase instead.
+        await egress_gateway.enforce_agent(env, sandbox_user, agent_env)
+        return
 
     if not sandbox_user:
         # A uid-0 agent under no-web: its launch put it in
@@ -3412,6 +3431,31 @@ async def _arm_verifier_network(
             env._benchflow_verifier_network = armed
         await vn.release_handover(env)
         return
+    from benchflow.sandbox import egress_gateway
+
+    if egress_gateway.held(env) is not None:
+        # Modal, held at the egress gateway (its own sandbox, or a separate
+        # verifier's that takes the task's denylist): the phase is test.sh's
+        # network, every process with it. A separate sandbox's public is
+        # open; denylist is the verifier's policy, proven as root. A public
+        # verifier in the agent's sandbox is refused (arm_verifier), as the
+        # plan refuses it: open would admit the agent's own processes too,
+        # which off and audit keep running through grading.
+        mode = (
+            vn.separate_verifier_network(config)
+            if separate
+            else vn.verifier_network_mode(config)
+        )
+        where = "separate sandbox" if separate else "in-container"
+        if mode == "public" and separate:
+            await egress_gateway.open_phase(env, "the verifier's network is public")
+        else:
+            with _prep_timing(seconds, "verifier_network"):
+                armed = await egress_gateway.arm_verifier(env, task, mode, where=where)
+            env._benchflow_verifier_network = armed
+            verifier.env = {**(verifier.env or {}), **armed.env}
+            await vn.release_handover(env)
+            return
     docker = _metadata_rules(env) is not None
     if separate:
         mode, where = vn.separate_verifier_network(config), "separate sandbox"

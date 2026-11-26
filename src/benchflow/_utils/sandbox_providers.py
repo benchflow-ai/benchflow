@@ -56,6 +56,11 @@ class SandboxProvider:
     #: Whether the backend can enforce ``network_mode = "denylist"`` (a
     #: root-owned loopback proxy behind the uid firewall).
     enforces_denylist: bool = False
+    #: Whether, with ``BENCHFLOW_EGRESS_GATEWAY`` set, the backend holds
+    #: ``network_mode = "denylist"`` at the egress gateway: the sandbox may
+    #: reach the gateway's address alone, and BenchFlow's proxy runs there
+    #: (benchflow.sandbox.egress_gateway).
+    egress_gateway: bool = False
     #: Whether the backend can enforce ``network_mode = "allowlist"`` (the same
     #: proxy in allow mode, plus the DNS filter and CIDR rules on the uid
     #: firewall). Set only for backends validated by a live check.
@@ -157,6 +162,8 @@ _PROVIDERS: tuple[SandboxProvider, ...] = (
         # holds both sandboxes' GPUs.
         runs_separate_verifier=True,
         separate_verifier_start="after_stop",
+        # create-time outbound_cidr_allowlist, enforced outside the sandbox.
+        egress_gateway=True,
     ),
     SandboxProvider(
         "apple-container",

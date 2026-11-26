@@ -750,6 +750,8 @@ class ModalSandbox(BaseSandbox):
         refusal that follows does not bear on it)."""
         from modal import Sandbox
 
+        from benchflow.sandbox import egress_gateway
+
         self._image_env = self._read_image_env()
         volumes = dict(volumes_config)
         bfx_volume = await self._bfx_volume(volumes)
@@ -768,6 +770,9 @@ class ModalSandbox(BaseSandbox):
             secrets=secrets_config,
             volumes=volumes,
             env=self._image_env.create or None,
+            # A denylist sandbox held at the egress gateway reaches its
+            # address alone (benchflow.sandbox.egress_gateway).
+            **await egress_gateway.create_kwargs(self),
         )
         self.platform_end = None
         self._stopping = False
@@ -1002,6 +1007,10 @@ class ModalSandbox(BaseSandbox):
             f"chmod 777 {SandboxPaths.agent_dir}; {close_verifier_dir_cmd()}",
         )
         check_verifier_dir(getattr(closed, "stdout", "") or "")
+        from benchflow.sandbox import egress_gateway
+
+        # Last: the relay, its proofs and the task's denylist at the gateway.
+        await egress_gateway.start_hold(self)
 
     async def _make_log_dirs(self) -> None:
         """The agent's and verifier's log folders, with their parents.
@@ -1206,6 +1215,11 @@ class ModalSandbox(BaseSandbox):
             self._sandbox = None
             self._app = None
             self._image = None
+            from benchflow.sandbox import egress_gateway
+
+            # After the terminate: the rollout leaves the gateway, and the
+            # trial folder gets its record.
+            await egress_gateway.detach(self)
 
     @retry(
         stop=stop_after_attempt(2),
