@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.4]
+
+0.10.4 is 0.10.3 with `denylist` tasks on Modal and two fixes to the denylist for Claude Code. With `BENCHFLOW_EGRESS_GATEWAY` naming an egress gateway you run, Modal runs `denylist` tasks, which it refused before any sandbox. Claude Code on a subscription login works under `network_mode: denylist` again, and the denylist judges each model request by the API its path names: Claude Code's token counts go out, and an image or document the provider would fetch by URL does not.
 
 ### What's new
 
@@ -9,7 +11,7 @@
 ### Fixed
 
 - **Claude Code on a subscription login works under `network_mode: denylist` again.** The denylist proxy checks every model request body against the Messages schema, which lacked `diagnostics`, the field Claude Code adds to each main-thread request it sends to api.anthropic.com (`{"previous_message_id": ...}`). Every such request got a 403, so the agent stopped on its first turn with "Sign in to continue using Claude." and the trial ended unscored. `diagnostics` is now admitted when it carries only `previous_message_id`. A body both schemas refuse is now logged with both reasons; the chat reason alone named `system`, `context_management` and `output_config` as well.
-- **Under `network_mode: denylist`, a model request is judged by the API its path names.** The denylist proxy chose the schema for a model request from the body's keys: a body with `max_tokens`, `messages` and `model` was tried as Messages and then as chat completions, and any other, a Messages body without `max_tokens` included, as chat completions only. Claude Code's requests to `/v1/messages/count_tokens` have no `max_tokens`, so one that carried `system` got a 403, and a refusal there named chat-completions fields. Neither schema reads content blocks, so a Messages request with a `document` or `image` whose source is a URL went out on either path, and the provider fetched that URL. Now a body sent to a path under `/v1/messages` is judged as Messages, one sent to chat completions, Responses or Gemini by that API's schema, and only a body sent to no such path by its keys. No model request may name a content source the provider fetches rather than reads from the request, and the block log names the rule that refused it.
+- **Under `network_mode: denylist`, a model request is judged by the API its path names.** The denylist proxy chose the schema for a model request from the body's keys: a body with `max_tokens`, `messages` and `model` was tried as Messages and then as chat completions, and any other, a Messages body without `max_tokens` included, as chat completions only. Claude Code's requests to `/v1/messages/count_tokens` have no `max_tokens`, so one that carried `system` got a 403, and a refusal there named chat-completions fields. Neither schema reads content blocks, so a Messages request with a `document` or `image` whose source is a URL went out on either path, and the provider fetched that URL. Now a body sent to a path under `/v1/messages` is judged as Messages, one sent to chat completions, Responses or Gemini by that API's schema, and only a body sent to no such path by its keys. A model request whose `system` or `messages` holds an image or document by URL (a source the provider fetches rather than reads from the request) is refused on every path, and the block log names the rule that refused it. Chat completions, Responses and Gemini requests that name an image or a file by URL are not refused yet.
 
 ## [0.10.3]
 
