@@ -755,7 +755,8 @@ def test_the_open_file_limit_goes_as_high_as_the_system_accepts(
     the starting soft limit of 256."""
     resource = pytest.importorskip("resource")
     hard = resource.RLIM_INFINITY if hard is None else hard
-    limits = {"soft": min(256, hard)}
+    # RLIM_INFINITY is -1 on Linux and 2**63 - 1 on macOS: never min() it.
+    limits = {"soft": 256 if hard == resource.RLIM_INFINITY else min(256, hard)}
     calls = []
 
     def setrlimit(which, value):
