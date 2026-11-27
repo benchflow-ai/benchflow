@@ -97,10 +97,14 @@ def test_diagnostics_carries_only_the_previous_message_id():
 
 def test_a_refused_messages_body_is_logged_with_the_messages_reason():
     """Guards PR #1255: a body both schemas refuse is logged with the Messages
-    reason, not only the chat-completions one."""
-    why = proxy.deny_body_rule(
-        POLICY, _body(diagnostics={"previous_message_id": 1}), "/v1/messages"
+    reason, not only the chat-completions one. Since PR #1259 a body sent to
+    /v1/messages is judged as Messages alone; without a path both reasons are
+    still named."""
+    body = _body(diagnostics={"previous_message_id": 1})
+    assert proxy.deny_body_rule(POLICY, body, "/v1/messages") == (
+        "deny-model-body: diagnostics previous_message_id is not a string"
     )
+    why = proxy.deny_body_rule(POLICY, body, "")
     assert why is not None and why.startswith("deny-model-body: as Messages: "), why
     assert "diagnostics" in why.split(";", 1)[0], why
 

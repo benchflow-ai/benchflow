@@ -1046,6 +1046,73 @@ def _model_document(item: dict, path: str) -> bool:
     )
 
 
+_MESSAGES_SCHEMA = "/v1/messages"
+_CHAT_SCHEMA = "/v1/chat/completions"
+_RESPONSES_SCHEMA = "/v1/responses"
+_GEMINI_SCHEMA = "/v1beta/models/guard:generateContent"
+# The guard path whose schema judges a model request, by the protocol its
+# request path names (in _path_key form, without a trailing slash). A path
+# with /v1/messages in it takes a Messages body (Anthropic-compatible
+# endpoints add a prefix), count_tokens included, which Claude Code sends
+# without max_tokens.
+_PATH_SCHEMAS = (
+    (re.compile(r".*/v1/messages.*", re.S), _MESSAGES_SCHEMA),
+    (re.compile(r".*/chat/completions", re.S), _CHAT_SCHEMA),
+    (re.compile(r".*/responses", re.S), _RESPONSES_SCHEMA),
+    (
+        re.compile(
+            r".*/models/[^/:]+:(?:generatecontent|streamgeneratecontent|counttokens)",
+            re.S,
+        ),
+        _GEMINI_SCHEMA,
+    ),
+)
+
+
+def _path_schema(path: str) -> str | None:
+    """The guard path whose schema judges a model request sent to ``path``.
+
+    None when there is no path, or when it names none of these protocols.
+    """
+    if not path:
+        return None
+    key = _path_key(path).rstrip("/")
+    return next((schema for rx, schema in _PATH_SCHEMAS if rx.fullmatch(key)), None)
+
+
+def _model_request_rule(item: dict, path: str) -> str | None:
+    """Why one model request may not leave, or None.
+
+    No request may name a content source the provider fetches rather than
+    reads from the request. Then the request is judged by the schema of the
+    protocol its path names. Only without such a path is the schema guessed
+    from the body's keys: one with ``max_tokens``, ``messages`` and ``model``
+    may be Messages or chat completions, and leaves when either admits it.
+    """
+    if _fetches_source(item.get("system")) or _fetches_source(item.get("messages")):
+        return "a content source is fetched by the provider"
+    guard = _request_guard()
+    encoded = json.dumps(item).encode()
+    schema = _path_schema(path)
+    if schema is None:
+        if "contents" in item:
+            schema = _GEMINI_SCHEMA
+        elif "input" in item:
+            schema = _RESPONSES_SCHEMA
+        elif "max_tokens" in item and "messages" in item and "model" in item:
+            as_messages = guard.outbound_refusal("POST", _MESSAGES_SCHEMA, encoded)
+            if as_messages is None:
+                return None
+            as_chat = guard.outbound_refusal("POST", _CHAT_SCHEMA, encoded)
+            if as_chat is None:
+                return None
+            # Name both: the chat reason alone lists every Messages field.
+            return f"as Messages: {as_messages}; as chat completions: {as_chat}"
+        else:
+            schema = _CHAT_SCHEMA
+    return guard.outbound_refusal("POST", schema, encoded)
+
+
 def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
     """Judge JSON documents without treating model conversation text as a fetch."""
     try:
@@ -1094,28 +1161,7 @@ def deny_body_rule(policy: Policy, data: bytes, path: str = "") -> str | None:
             return "oversized-body"
         if isinstance(item, dict):
             if _model_document(item, path):
-                as_messages = None
-                if "contents" in item:
-                    schema = "/v1beta/models/guard:generateContent"
-                elif "input" in item:
-                    schema = "/v1/responses"
-                elif "max_tokens" in item and "messages" in item and "model" in item:
-                    # Both chat and Messages accept max_tokens. Try both schemas.
-                    encoded = json.dumps(item).encode()
-                    as_messages = _request_guard().outbound_refusal(
-                        "POST", "/v1/messages", encoded
-                    )
-                    if as_messages is None:
-                        continue
-                    schema = "/v1/chat/completions"
-                else:
-                    schema = "/v1/chat/completions"
-                why = _request_guard().outbound_refusal(
-                    "POST", schema, json.dumps(item).encode()
-                )
-                if why and as_messages:
-                    # Name both: the chat reason alone lists every Messages field.
-                    why = f"as Messages: {as_messages}; as chat completions: {why}"
+                why = _model_request_rule(item, path)
                 if why:
                     return "deny-model-body: " + why[:300]
                 continue
