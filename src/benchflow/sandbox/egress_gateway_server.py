@@ -1026,16 +1026,19 @@ def raise_open_file_limit() -> int | None:
     if soft == resource.RLIM_INFINITY:
         return None
     ceiling = 1 << 20 if hard == resource.RLIM_INFINITY else hard
-    # macOS refuses a soft limit past its per-process cap, under an infinite
-    # hard limit too: try lower targets before keeping the one it has.
-    for target in (ceiling, 1 << 16, 1 << 14):
-        if soft < target <= ceiling:
-            try:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
-            except (ValueError, OSError):
-                continue
-            return target
-    return soft
+    # The hard limit first (one call on Linux). macOS refuses a soft limit
+    # past its per-process cap, under an infinite hard limit too: then the
+    # highest it accepts, by bisection (a refused call changes nothing).
+    good, bad, target = soft, ceiling + 1, ceiling
+    while good < target < bad:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (ValueError, OSError):
+            bad = target
+        else:
+            good = target
+        target = (good + bad) // 2
+    return good
 
 
 def _kill_stale(pid: int, directory: Path) -> None:

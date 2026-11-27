@@ -733,6 +733,45 @@ def test_serve_raises_its_open_file_limit(state_dir):
         process.wait(timeout=20)
 
 
+@pytest.mark.parametrize(
+    ("hard", "cap", "raised"),
+    [
+        (None, 10240, 10240),  # macOS: an infinite hard limit, a lower cap
+        (None, None, 1 << 20),
+        (524288, None, 524288),  # Linux under systemd: one call
+        (4096, 3000, 3000),
+        (200, None, 200),  # nothing above the soft limit to raise to
+    ],
+)
+def test_the_open_file_limit_goes_as_high_as_the_system_accepts(
+    monkeypatch, hard, cap, raised
+):
+    """Under a hard limit, or below the cap a system holds under it (macOS's
+    per-process cap, under an infinite hard limit too), the soft limit ends
+    at the highest value accepted.
+
+    Guards PR #1260's ``raise_open_file_limit``: in review, its fixed
+    fallbacks (1,048,576, then 65,536, then 16,384) left a cap of 10,240 at
+    the starting soft limit of 256."""
+    resource = pytest.importorskip("resource")
+    hard = resource.RLIM_INFINITY if hard is None else hard
+    limits = {"soft": min(256, hard)}
+    calls = []
+
+    def setrlimit(which, value):
+        assert which == resource.RLIMIT_NOFILE and value[1] == hard
+        calls.append(value[0])
+        if cap is not None and value[0] > cap:
+            raise ValueError("current limit exceeds maximum limit")
+        limits["soft"] = value[0]
+
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (limits["soft"], hard))
+    monkeypatch.setattr(resource, "setrlimit", setrlimit)
+    assert server.raise_open_file_limit() == raised == limits["soft"]
+    if hard == 524288:
+        assert calls == [524288]
+
+
 @pytest.mark.parametrize("command", ["deny", "open"])
 def test_a_phase_change_after_deregistration_is_refused(
     state_dir, monkeypatch, command
