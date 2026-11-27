@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "version": "0.10.4",
+  "status": "accepted",
+  "source_commit": "0b8c9cf99c49fb37069459d260593708ebe7ae79",
+  "acceptance_receipt_sha256": "c08625178ae8df68c8bea142aaa7924e23036eea5851f56c90c0ed5b1b305093",
+  "artifacts": {
+    "benchflow-0.10.4-py3-none-any.whl": "444c6896a6870fd3e1def0eca00e6ea58729ea34eadb720f9ac4e5e2dbebd718",
+    "benchflow-0.10.4.tar.gz": "efab9004cc353ba7532b23dd9e0822e6eac1445ca18117c15e1b1247096d1084"
+  },
+  "gates": {
+    "release-dryrun": {
+      "repo": "benchflow-ai/benchflow",
+      "run_id": 46082743699,
+      "head_sha": "0b8c9cf99c49fb37069459d260593708ebe7ae79"
+    },
+    "secret-sweep": {
+      "repo": "benchflow-ai/benchflow",
+      "run_id": 46082737455,
+      "head_sha": "0b8c9cf99c49fb37069459d260593708ebe7ae79"
+    }
+  }
+}
