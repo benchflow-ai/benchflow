@@ -24,7 +24,9 @@ challenge: the gateway sends ``BFEG/1 <nonce>`` and the sandbox's relay
 answers ``<rollout> <hmac>``, the HMAC-SHA256 of ``BFEG/1|<nonce>|<rollout>``
 under the rollout's token. A wrong or missing answer is closed before any
 byte reaches a proxy. Switching to ``deny`` cuts every connection opened in
-``open``; switching to ``open`` cuts nothing.
+``open``; switching to ``open`` cuts nothing. A rollout holds at most
+``MAX_CONNECTIONS`` live connections, so one sandbox cannot use up the
+descriptors every rollout's connections need.
 
 Control: one JSON request per connection on the unix socket
 ``D/control.sock`` (mode 600, ``D`` 700): ``hello``, ``register``, ``deny``,
@@ -61,6 +63,10 @@ PROTOCOL = "BFEG/1"
 HANDSHAKE_TIMEOUT = 10.0
 #: Connections allowed to wait in the challenge at once (a scan cannot exhaust threads).
 MAX_PENDING = 256
+#: Live connections one rollout may hold. Each holds two descriptors and two
+#: threads here, and the proxy keeps an idle one open 15 minutes: without a
+#: cap, one sandbox could use up the gateway's and lock every rollout out.
+MAX_CONNECTIONS = 512
 #: Longest challenge answer line accepted (rollout id, space, 64 hex digits).
 MAX_LINE = 512
 #: Longest control request accepted (the proxy files travel in ``register``).
@@ -356,14 +362,20 @@ class Backend:
                     stderr=err,
                     start_new_session=True,
                 )
-            deadline = time.monotonic() + BACKEND_START_TIMEOUT
-            while time.monotonic() < deadline and process.poll() is None:
-                # Every BenchFlow proxy answers /healthz alike: the port is
-                # this child's only once it says it bound it.
-                if _bound(stderr, offset, port) and backend_healthy(port):
-                    self.port, self.process = port, process
-                    return
-                time.sleep(HEALTH_POLL_SEC)
+            try:
+                deadline = time.monotonic() + BACKEND_START_TIMEOUT
+                while time.monotonic() < deadline and process.poll() is None:
+                    # Every BenchFlow proxy answers /healthz alike: the port is
+                    # this child's only once it says it bound it.
+                    if _bound(stderr, offset, port) and backend_healthy(port):
+                        self.port, self.process = port, process
+                        return
+                    time.sleep(HEALTH_POLL_SEC)
+            except BaseException:
+                # An error while it starts (no descriptor left to read its
+                # stderr) must not leave a proxy running that nothing tracks.
+                _stop_process(process)
+                raise
             last = f"exit {process.poll()}"
             _stop_process(process)
         raise RuntimeError(f"the {self.name} proxy did not become healthy ({last})")
@@ -458,6 +470,8 @@ class Gateway:
         self._front: socket.socket | None = None
         self._control: socket.socket | None = None
         self.counters: dict[str, int] = {}
+        #: The soft open-file limit ``serve_forever`` raised (None: not raised).
+        self.open_files: int | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -504,7 +518,12 @@ class Gateway:
             thread.start()
             self._threads.append(thread)
         host, port = self.address
-        self._event("started", listen=f"{host}:{port}", public=self.public)
+        self._event(
+            "started",
+            listen=f"{host}:{port}",
+            public=self.public,
+            open_files=self.open_files,
+        )
 
     def close(self) -> None:
         """Close both sockets and stop every proxy (persisted state stays)."""
@@ -529,6 +548,7 @@ class Gateway:
 
     def serve_forever(self) -> None:
         """Run until SIGTERM or SIGINT."""
+        self.open_files = raise_open_file_limit()
         self.open()
         signal.signal(signal.SIGTERM, lambda *_: self._stop.set())
         signal.signal(signal.SIGINT, lambda *_: self._stop.set())
@@ -585,8 +605,8 @@ class Gateway:
                 rollout.backends[name] = backend
                 try:
                     backend.launch(policy)
-                except RuntimeError as exc:
-                    self._event("proxy_failed", rollout=rollout.rid, error=str(exc))
+                except (RuntimeError, OSError) as exc:
+                    self._event("proxy_failed", rollout=rollout.rid, error=_why(exc))
             rollout.save()
             with self._lock:
                 self._rollouts[rollout.rid] = rollout
@@ -677,6 +697,9 @@ class Gateway:
                 or not backend.alive()
             ):
                 rollout.count("refused_no_proxy")
+                return None
+            if len(rollout.conns) >= MAX_CONNECTIONS:
+                rollout.count("refused_max_connections")
                 return None
             try:
                 upstream = socket.create_connection(
@@ -802,18 +825,21 @@ class Gateway:
         directory = self.rollouts_dir / rid
         shutil.rmtree(directory, ignore_errors=True)
         directory.mkdir(mode=0o700)
-        for name, data in decoded.items():
-            target = directory / name.replace("certs/", "certs-deny/", 1)
-            _write_private(target, data)
         rollout = Rollout(rid, token, directory, self.clock() + ttl)
         backend = Backend("open", directory, self.python, self.openssl)
         rollout.backends["open"] = backend
         try:
+            for name, data in decoded.items():
+                target = directory / name.replace("certs/", "certs-deny/", 1)
+                _write_private(target, data)
             backend.launch(OPEN_POLICY)
-        except RuntimeError as exc:
+            rollout.save()
+        except (RuntimeError, OSError) as exc:
+            # A rollout that did not register leaves no proxy running and
+            # no folder: the folder holds its CA key.
+            backend.stop()
             shutil.rmtree(directory, ignore_errors=True)
-            raise ControlError(str(exc)) from exc
-        rollout.save()
+            raise ControlError(_why(exc)) from exc
         with self._lock:
             self._rollouts[rid] = rollout
         self._event("registered", rollout=rid, ttl_sec=ttl)
@@ -836,9 +862,10 @@ class Gateway:
                 rollout.phase, rollout.deny_policy = "deny", policy
                 try:
                     backend.launch(policy)
-                except RuntimeError as exc:
-                    rollout.save()
-                    raise ControlError(str(exc)) from exc
+                except (RuntimeError, OSError) as exc:
+                    with contextlib.suppress(OSError):
+                        rollout.save()
+                    raise ControlError(_why(exc)) from exc
             rollout.phase = "deny"
             cut = [conn for conn in rollout.conns if conn.phase != "deny"]
             for conn in cut:
@@ -930,7 +957,13 @@ class Gateway:
 
     def _reap(self) -> None:
         while not self._stop.wait(REAP_INTERVAL):
-            self.reap_once()
+            try:
+                self.reap_once()
+            except Exception as exc:
+                # The next pass may succeed (a descriptor freed, a disk
+                # cleaned); without this thread no rollout ever expires.
+                self._count("reap_failed")
+                self._event("reap_failed", error=_why(exc))
 
     def reap_once(self) -> None:
         """Drop expired rollouts and restart any proxy that died."""
@@ -954,14 +987,58 @@ class Gateway:
                     try:
                         backend.launch(policy)
                         self._event("proxy_restarted", rollout=rollout.rid, proxy=name)
-                    except RuntimeError as exc:
+                    except (RuntimeError, OSError) as exc:
                         self._event(
                             "proxy_failed",
                             rollout=rollout.rid,
                             proxy=name,
-                            error=str(exc),
+                            error=_why(exc),
                         )
-                rollout.save()
+                try:
+                    rollout.save()
+                except OSError as exc:
+                    # The rollouts after this one still expire on this pass.
+                    self._count("save_failed")
+                    self._event("save_failed", rollout=rollout.rid, error=_why(exc))
+
+
+def _why(exc: BaseException) -> str:
+    """A failure's reason for a reply or the event log: a RuntimeError's own
+    message (the proxy launch's), otherwise its type and message."""
+    if type(exc) is RuntimeError:
+        return str(exc)[:500]
+    return f"{type(exc).__name__}: {exc}"[:500]
+
+
+def raise_open_file_limit() -> int | None:
+    """Raise this process's soft open-file limit as far as its hard limit
+    allows, and return the soft limit it ends with (None where there is none).
+
+    Each live connection holds two descriptors here, so a host's default soft
+    limit (1024 on Linux) refuses every rollout's new connections at about 500
+    live ones across all rollouts. The proxies it starts inherit the limit.
+    """
+    try:
+        import resource
+    except ImportError:
+        return None
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY:
+        return None
+    ceiling = 1 << 20 if hard == resource.RLIM_INFINITY else hard
+    # The hard limit first (one call on Linux). macOS refuses a soft limit
+    # past its per-process cap, under an infinite hard limit too: then the
+    # highest it accepts, by bisection (a refused call changes nothing).
+    good, bad, target = soft, ceiling + 1, ceiling
+    while good < target < bad:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (ValueError, OSError):
+            bad = target
+        else:
+            good = target
+        target = (good + bad) // 2
+    return good
 
 
 def _kill_stale(pid: int, directory: Path) -> None:
