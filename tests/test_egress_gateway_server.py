@@ -12,9 +12,11 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import errno
 import json
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -121,13 +123,19 @@ def _connect(gateway: server.Gateway, rid: str = "trial-1", mac: str | None = No
     return sock
 
 
-def _wait_connections(gateway: server.Gateway, count: int) -> None:
-    """Until the one registered rollout holds *count* connections: the
-    gateway's thread answers the challenge after the relay's write returns."""
+def _wait_connections(
+    gateway: server.Gateway, count: int, rid: str | None = None
+) -> None:
+    """Until the one registered rollout (or *rid*) holds *count* connections:
+    the gateway's thread answers the challenge after the relay's write returns."""
     deadline = time.monotonic() + 10
     while True:
-        (row,) = _control(gateway, command="status")["rollouts"]
-        if row["connections"] >= count or time.monotonic() > deadline:
+        rows = _control(gateway, command="status")["rollouts"]
+        if rid is None:
+            (row,) = rows
+        else:
+            (row,) = [row for row in rows if row["rollout"] == rid]
+        if row["connections"] == count or time.monotonic() > deadline:
             assert row["connections"] == count, row
             return
         time.sleep(0.02)
@@ -515,6 +523,214 @@ def test_a_rollout_deregistered_during_a_reap_stays_stopped(state_dir, monkeypat
         if backend is not None:
             backend.stop()
         gateway.close()
+
+
+EMFILE = OSError(errno.EMFILE, "Too many open files")
+
+
+def _events(state_dir: Path, kind: str) -> list[dict]:
+    lines = (state_dir / "gateway.jsonl").read_text().splitlines()
+    return [e for e in map(json.loads, lines) if e["event"] == kind]
+
+
+def test_the_reaper_outlives_a_pass_that_fails(state_dir, monkeypatch):
+    """A reaper pass that raises (no descriptor left, a full disk) is counted
+    and logged, and a later pass still ends a rollout at its time to live.
+
+    Guards PR #1260 against the reaper of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): its first OSError ended the reaper's
+    thread, and from then on no rollout expired and no proxy that died was
+    started again, until the gateway restarted."""
+    monkeypatch.setattr(server, "REAP_INTERVAL", 0.05)
+    clock = Clock()
+    gateway = _gateway(state_dir, clock)
+    try:
+        _register(gateway, ttl_sec=60)
+        real = server.Gateway.reap_once
+        failed = threading.Event()
+
+        def reap_once(self):
+            if not failed.is_set():
+                failed.set()
+                raise EMFILE
+            return real(self)
+
+        monkeypatch.setattr(server.Gateway, "reap_once", reap_once)
+        assert failed.wait(10)
+        clock.now += 61
+        folder = gateway.rollouts_dir / "trial-1"
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            status = _control(gateway, command="status")
+            # The registry entry goes first, the folder once its proxy stopped.
+            if not status["rollouts"] and not folder.exists():
+                break
+            time.sleep(0.05)
+        assert status["rollouts"] == [], status
+        assert not folder.exists()
+        assert status["counters"]["reap_failed"] == 1
+        (event,) = _events(state_dir, "reap_failed")
+        assert event["error"] == "OSError: [Errno 24] Too many open files"
+    finally:
+        gateway.close()
+
+
+def test_a_rollout_that_cannot_be_saved_does_not_end_the_pass(state_dir, monkeypatch):
+    """A rollout whose state cannot be written is counted and logged, and the
+    rollouts after it in the same pass still expire.
+
+    Guards PR #1260 against the reaper of PR #1253 (adds
+    ``BENCHFLOW_EGRESS_GATEWAY``): it saves every live rollout on each pass,
+    and the first save that failed ended the pass, and the reaper with it."""
+    monkeypatch.setattr(server, "REAP_INTERVAL", 3600.0)
+    clock = Clock()
+    gateway = _gateway(state_dir, clock)
+    try:
+        _register(gateway, "trial-1")
+        _register(gateway, "trial-2", ttl_sec=60)
+        real_save = server.Rollout.save
+
+        def save(self):
+            if self.rid == "trial-1":
+                raise EMFILE
+            return real_save(self)
+
+        monkeypatch.setattr(server.Rollout, "save", save)
+        clock.now += 61
+        gateway.reap_once()
+        status = _control(gateway, command="status")
+        assert [row["rollout"] for row in status["rollouts"]] == ["trial-1"]
+        assert status["counters"]["save_failed"] == 1
+        assert not (gateway.rollouts_dir / "trial-2").exists()
+        (event,) = _events(state_dir, "save_failed")
+        assert event["rollout"] == "trial-1"
+    finally:
+        gateway.close()
+
+
+@pytest.mark.parametrize("where", ["process", "stderr"])
+def test_a_registration_that_fails_with_an_os_error_leaves_nothing(
+    gateway, monkeypatch, where
+):
+    """A registration whose proxy cannot start for want of a descriptor (for
+    its process, or to read its stderr) is refused, and leaves neither a
+    proxy running nor the rollout's folder, which holds its CA key.
+
+    Guards PR #1260 against PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``):
+    ``register`` caught only the RuntimeError of a proxy that never became
+    healthy, and a launch left a started proxy that nothing tracked."""
+    started: list[subprocess.Popen] = []
+    real_popen = server.subprocess.Popen
+
+    def popen(*args, **kwargs):
+        if where == "process":
+            raise EMFILE
+        process = real_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    def bound(*args, **kwargs):
+        raise EMFILE
+
+    monkeypatch.setattr(server.subprocess, "Popen", popen)
+    monkeypatch.setattr(server, "_bound", bound)
+    try:
+        reply = _control(
+            gateway, command="register", rollout="trial-1", token=TOKEN, files=_files()
+        )
+        assert reply == {
+            "ok": False,
+            "error": "OSError: [Errno 24] Too many open files",
+        }
+        assert not (gateway.rollouts_dir / "trial-1").exists()
+        assert _control(gateway, command="status")["rollouts"] == []
+        assert len(started) == (where == "stderr")
+        for process in started:
+            assert process.poll() is not None, "the proxy is still running"
+    finally:
+        for process in started:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_one_rollout_holds_at_most_max_connections(state_dir, monkeypatch):
+    """At its cap a rollout's next connection is refused before it reaches a
+    proxy, another rollout's is served, and one that closes frees a place.
+
+    Guards PR #1260 against PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): one
+    sandbox could hold idle connections (the proxy keeps one 15 minutes)
+    until the gateway had no descriptor left, and then every rollout's new
+    connections were refused."""
+    monkeypatch.setattr(server, "MAX_CONNECTIONS", 2)
+    gateway = _gateway(state_dir)
+    held: list[socket.socket] = []
+    try:
+        _register(gateway, "trial-1")
+        _register(gateway, "trial-2")
+        held = [_connect(gateway, "trial-1") for _ in range(2)]
+        _wait_connections(gateway, 2, "trial-1")
+        assert _ask(_connect(gateway, "trial-1"), HEALTH) == b""
+        assert _ask(_connect(gateway, "trial-2"), HEALTH).startswith(b"HTTP/1.1 200")
+        held.pop().close()
+        _wait_connections(gateway, 1, "trial-1")
+        assert _ask(_connect(gateway, "trial-1"), HEALTH).startswith(b"HTTP/1.1 200")
+        rows = {
+            r["rollout"]: r for r in _control(gateway, command="status")["rollouts"]
+        }
+        assert rows["trial-1"]["counters"]["refused_max_connections"] == 1
+        assert "refused_max_connections" not in rows["trial-2"]["counters"]
+    finally:
+        for sock in held:
+            sock.close()
+        gateway.close()
+
+
+def test_serve_raises_its_open_file_limit(state_dir):
+    """``serve`` raises its soft open-file limit (here from 256) as far as the
+    hard limit allows, and its ``started`` event records the new one.
+
+    Guards PR #1260 against PR #1253 (adds ``BENCHFLOW_EGRESS_GATEWAY``): the
+    gateway kept the host's default soft limit (1024 on Linux), at which
+    about 500 live connections across all rollouts refuse every rollout's
+    next one."""
+    resource = pytest.importorskip("resource")
+    hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if hard != resource.RLIM_INFINITY and hard <= 256:
+        pytest.skip(f"the hard open-file limit is {hard}")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    argv = [
+        "serve",
+        "--state-dir",
+        str(state_dir),
+        "--listen",
+        f"127.0.0.1:{port}",
+        "--public",
+        "203.0.113.7:30100",
+        "--openssl",
+        shutil.which("openssl") or "/usr/bin/false",
+    ]
+    code = (
+        "import resource, runpy, sys\n"
+        "hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]\n"
+        "resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))\n"
+        f"sys.argv = ['egress_gateway_server', *{argv!r}]\n"
+        "runpy.run_module('benchflow.sandbox.egress_gateway_server', run_name='__main__')\n"
+    )
+    process = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        deadline = time.monotonic() + 30
+        started: list[dict] = []
+        while not started and time.monotonic() < deadline:
+            with contextlib.suppress(OSError, ValueError):
+                started = _events(state_dir, "started")
+            time.sleep(0.05)
+        assert started, "the gateway did not start"
+        assert started[0]["open_files"] > 256, started
+    finally:
+        process.terminate()
+        process.wait(timeout=20)
 
 
 @pytest.mark.parametrize("command", ["deny", "open"])
