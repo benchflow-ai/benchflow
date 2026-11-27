@@ -1,6 +1,6 @@
 # BenchFlow
 
-BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (these pages cover 0.10.3), for evaluating AI agents. It runs an agent on each task in a fresh sandbox, scores what the agent left with the task's own checks, and keeps a record of each attempt that can explain its score: what the agent did, each model call through BenchFlow's proxy with the settings it carried, and the workspace it left. SkillsBench and Robo Use run on it.
+BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (these pages cover 0.10.4), for evaluating AI agents. It runs an agent on each task in a fresh sandbox, scores what the agent left with the task's own checks, and keeps a record of each attempt that can explain its score: what the agent did, each model call through BenchFlow's proxy with the settings it carried, and the workspace it left. SkillsBench and Robo Use run on it.
 
 ## What do you want to do?
 
@@ -23,8 +23,8 @@ BenchFlow is a command-line tool, `bench`, and a Python package, `benchflow` (th
 You need [uv](https://docs.astral.sh/uv/getting-started/installation/) and Docker running. Install BenchFlow:
 
 ```bash
-uv tool install --python 3.12 'benchflow==0.10.3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.3/constraints.txt
+uv tool install --python 3.12 'benchflow==0.10.4' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.4/constraints.txt
 ```
 
 The constraints file pins every dependency to the version the release was tested with ([Install](./start/install.md)).
@@ -43,7 +43,7 @@ Hosted environments have only their reference here ([`bench hub`](./reference/co
 
 ## Versions
 
-These pages document BenchFlow 0.10.3, the current release; 0.10.1 is the one before it (0.10.2 was tagged but never published), and 0.9.3 the last 0.9 release ([Changelog](./versions/changelog.md)). Outputs from runs on an earlier version say which, and [What's in 0.10.3](./versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task) lists the changes that can move a score. Commands that download BenchFlow's example files name the repository's `main` branch in this Markdown. On the published site they fetch from `v0.10.3` instead, the 0.10.3 release tag, which holds these pages and their example files, so a page always runs against the files it was written with. The repository's Markdown and preview builds keep `main`. A page new in 0.10 says so in its first line, and the sidebar tags it `0.10`; a section new in 0.10 ends its heading with "(0.10)". [What's in 0.10.3](./versions/0.10.md) lists them all.
+These pages document BenchFlow 0.10.4, the current release; 0.10.3 is the one before it, and 0.9.3 the last 0.9 release ([Changelog](./versions/changelog.md)). Outputs from runs on an earlier version say which, and [What's in 0.10.4](./versions/0.10.md#changes-that-can-move-a-score-or-stop-a-task) lists the changes that can move a score. Commands that download BenchFlow's example files name the repository's `main` branch in this Markdown. On the published site they fetch from `v0.10.4` instead, the 0.10.4 release tag, which holds these pages and their example files, so a page always runs against the files it was written with. The repository's Markdown and preview builds keep `main`. A page new in 0.10 says so in its first line, and the sidebar tags it `0.10`; a section new in 0.10 ends its heading with "(0.10)". [What's in 0.10.4](./versions/0.10.md) lists them all.
 
 ## For coding agents
 

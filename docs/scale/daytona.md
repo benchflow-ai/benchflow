@@ -7,13 +7,13 @@ Daytona runs each trial in a cloud sandbox, so the number of trials at once isn'
 Install BenchFlow with the extra, export your API key, and check that BenchFlow can reach Daytona:
 
 ```bash
-uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.3' \
-  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.3/constraints.txt
+uv tool install --python 3.12 'benchflow[sandbox-daytona]==0.10.4' \
+  --constraints https://raw.githubusercontent.com/benchflow-ai/benchflow/v0.10.4/constraints.txt
 export DAYTONA_API_KEY=...
 bench doctor --sandbox daytona
 ```
 
-This output is from 0.10.1, shortened; 0.10.3 prints the same lines with its own version:
+This output is from 0.10.1, shortened; 0.10.4 prints the same lines with its own version:
 
 ```text
 BenchFlow doctor - benchflow 0.10.1, Linux x86_64, sandbox daytona
