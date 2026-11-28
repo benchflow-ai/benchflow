@@ -2,8 +2,6 @@ BF.detail = (() => {
   const {
     EXECUTION_LABELS,
     el,
-    fmtDuration,
-    fmtTokens,
     plural,
     requirePayload,
     textWithRedaction,
@@ -12,6 +10,10 @@ BF.detail = (() => {
   const COLLAPSE_CHARS = 700;
   const COLLAPSE_LINES = 12;
   const TRACE_CHUNK = 300;
+  // The run card already says what went wrong: error banners and the task
+  // prompt open as short previews so the first screen stays on the card.
+  const ERROR_PREVIEW = { chars: 240, lines: 2, previewLines: 2 };
+  const PROMPT_PREVIEW = { chars: 360, lines: 3, previewLines: 3 };
   const PANES = new Map([
     ["trace", "view-trace"],
     ["verifier", "view-verifier"],
@@ -110,80 +112,11 @@ BF.detail = (() => {
 
   function renderHeader(payload) {
     const meta = payload.meta || {};
-    const steps = payload.steps || [];
     const header = document.getElementById("hdr");
+    const side = document.getElementById("side");
     header.textContent = "";
-
-    const titleRow = el("div", "titlerow");
-    const heading = el("h1", null, meta.task_name || payload.rollout_name || "trajectory");
-    heading.tabIndex = -1;
-    titleRow.appendChild(heading);
-    const reward = meta.reward;
-    const scoreStatus = BF.core.scoreStatus((meta.status || {}).score_outcome, reward);
-    if (scoreStatus === "unscored") {
-      titleRow.appendChild(el("span", "badge unscored", "unscored"));
-    } else if (scoreStatus === "pass") {
-      titleRow.appendChild(el("span", "badge pass", "pass " + reward));
-    } else {
-      titleRow.appendChild(el("span", "badge fail", "fail " + reward));
-    }
-    if (meta.partial_trajectory) titleRow.appendChild(el("span", "badge warn", "partial trajectory"));
-    header.appendChild(titleRow);
-
-    const subtitle = [];
-    if (payload.rollout_name) subtitle.push(payload.rollout_name);
-    if (meta.trajectory_source) subtitle.push("source: " + meta.trajectory_source);
-    const branch = asRecord(meta.branch);
-    if (branch.node_id) {
-      subtitle.push(
-        "branch child " + branch.node_id + " of fork " + String(branch.fork_id || "").slice(0, 8)
-          + (branch.parent_node ? " at node " + branch.parent_node : ""),
-      );
-    }
-    header.appendChild(el("div", "sub", subtitle.join("  \u00b7  ")));
-
-    const stats = el("div");
-    stats.id = "stats";
-    const identity = el("div", "statrow identity");
-    const numbers = el("div", "statrow");
-    function tile(row, label, value, mono, modifier) {
-      if (value === null || value === undefined || value === "") return;
-      const item = el("div", "stat");
-      item.appendChild(el("span", "lbl", label));
-      item.appendChild(el("span", "val" + (mono ? " mono" : "") + (modifier ? " " + modifier : ""), value));
-      row.appendChild(item);
-    }
-
-    const usage = meta.usage || {};
-    tile(identity, "harness", meta.agent_name);
-    tile(identity, "model", meta.model, true);
-    tile(
-      identity,
-      "skills",
-      meta.skill_mode,
-      false,
-      meta.skill_mode ? (String(meta.skill_mode).startsWith("no") ? "skill-off" : "skill-on") : null,
-    );
-    const status = asRecord(meta.status);
-    if (status.execution) {
-      tile(identity, "execution", withDetail(EXECUTION_LABELS.get(status.execution) || status.execution, status.execution_detail));
-      tile(identity, "assessment", withDetail(status.assessment, status.assessment_detail));
-    }
-    tile(numbers, "duration", fmtDuration(meta.duration_sec));
-    tile(numbers, "tokens in", fmtTokens(usage.n_input_tokens));
-    tile(numbers, "tokens out", fmtTokens(usage.n_output_tokens));
-    tile(numbers, "cached", fmtTokens(usage.n_cache_read_tokens));
-    tile(numbers, "total", fmtTokens(usage.total_tokens));
-    if (typeof usage.cost_usd === "number" && Number.isFinite(usage.cost_usd)) {
-      tile(numbers, "cost", "$" + usage.cost_usd.toFixed(4));
-    }
-    tile(numbers, "events", countEvents(steps) || null);
-    tile(numbers, "tool calls", (meta.counts || {}).tools);
-    tile(numbers, "prompts", (meta.counts || {}).prompts);
-    tile(numbers, "usage", usage.usage_source);
-    if (identity.children.length) stats.appendChild(identity);
-    if (numbers.children.length) stats.appendChild(numbers);
-    header.appendChild(stats);
+    side.textContent = "";
+    const heading = BF.runcard.render(payload, header, side, { showStep, showTest });
 
     const errors = Array.isArray(meta.errors) ? meta.errors : [];
     if (errors.length) {
@@ -193,12 +126,62 @@ BF.detail = (() => {
         const record = error && typeof error === "object" ? error : {};
         const item = el("div", "errbox" + (record.level === "info" ? " info" : ""));
         item.appendChild(el("span", "elabel", record.label || "error"));
-        collapsibleText(item, record.text || "", "etext");
+        collapsibleText(item, record.text || "", "etext", null, ERROR_PREVIEW);
         box.appendChild(item);
       });
-      header.appendChild(box);
+      side.appendChild(box);
     }
     return heading;
+  }
+
+  // The rail lists the job's runs in browse mode, or this trial alone.
+  function renderRail(payload, options) {
+    const outline = { payload, onStep: showStep };
+    if (options.rail) {
+      BF.runcard.renderRail(options.rail.items, options.rail.current, options.rail.open, outline);
+      return;
+    }
+    const meta = payload.meta || {};
+    const runState = BF.runcard.stateOf(payload);
+    BF.runcard.renderRail([{
+      id: payload.rollout_name || "",
+      name: meta.task_name || payload.rollout_name || "trajectory",
+      tone: runState.tone,
+      meta: BF.runcard.fmtReward(meta.reward) || "",
+    }], payload.rollout_name || "", null, outline);
+  }
+
+  function flash(target) {
+    target.classList.remove("flash");
+    void target.offsetWidth;
+    target.classList.add("flash");
+  }
+
+  // The run card's evidence links: an event in the trace, a test in the
+  // Verifier tab. Each selects its tab and brings the target into view.
+  function showStep(index) {
+    const target = document.getElementById("e" + index);
+    if (!target) return;
+    selectPane("trace", false);
+    revealCard(target);
+    if (target.classList.contains("hidden")) {
+      state.activeMatch = target.id;
+      applyCardVisibility();
+    }
+    target.scrollIntoView({ block: "center" });
+    flash(target);
+  }
+
+  function showTest(name) {
+    const rows = [...document.querySelectorAll("#view-verifier tr[data-test]")];
+    const target = rows.find((row) => row.dataset.test === name);
+    if (!document.getElementById("tab-verifier")) return;
+    selectPane("verifier", false);
+    const failure = target ? document.getElementById(target.dataset.failure || "") : null;
+    const focus = failure || target;
+    if (!focus) return;
+    focus.scrollIntoView({ block: "center" });
+    flash(focus);
   }
 
   function selectPane(id, focusTab) {
@@ -281,6 +264,7 @@ BF.detail = (() => {
 
   function setFocus(enabled, focusButton, fullButton) {
     state.focus = enabled;
+    document.getElementById("view-trace").classList.toggle("focus", enabled);
     focusButton.setAttribute("aria-pressed", enabled ? "true" : "false");
     fullButton.setAttribute("aria-pressed", enabled ? "false" : "true");
     if (enabled) {
@@ -310,9 +294,11 @@ BF.detail = (() => {
     toolbar.appendChild(modeGroup);
 
     const disclosureGroup = el("div", "group");
-    const expand = el("button", null, "Expand all");
-    const collapse = el("button", null, "Collapse all");
+    const expand = el("button", null, "Expand");
+    const collapse = el("button", null, "Collapse");
     expand.type = collapse.type = "button";
+    expand.setAttribute("aria-label", "Expand all events");
+    collapse.setAttribute("aria-label", "Collapse all events");
     expand.addEventListener("click", () => {
       document.querySelectorAll("#view-trace .expander[aria-expanded='false']").forEach((button) => button.click());
     });
@@ -416,18 +402,20 @@ BF.detail = (() => {
     }
   }
 
-  function collapsibleText(container, text, className, language = null) {
+  // limits: { chars, lines, previewLines } overrides the trace-wide defaults.
+  function collapsibleText(container, text, className, language = null, limits = {}) {
+    const maxChars = limits.chars ?? COLLAPSE_CHARS;
     const value = String(text);
     const lines = value.split("\n");
     const body = el("div", className);
-    if (value.length <= COLLAPSE_CHARS && lines.length <= COLLAPSE_LINES) {
+    if (value.length <= maxChars && lines.length <= (limits.lines ?? COLLAPSE_LINES)) {
       textWithRedaction(body, value);
       BF.highlight.paint(body, value, language);
       container.appendChild(body);
       return;
     }
 
-    const preview = lines.slice(0, 6).join("\n").slice(0, COLLAPSE_CHARS);
+    const preview = lines.slice(0, limits.previewLines ?? 6).join("\n").slice(0, maxChars);
     const bodyId = "disclosure-body-" + (++disclosureSequence);
     body.id = bodyId;
     textWithRedaction(body, preview + " ...");
@@ -534,7 +522,7 @@ BF.detail = (() => {
     if (typeof record.t === "number" && Number.isFinite(record.t) && timelineBase !== null) {
       head.appendChild(el("span", "tstamp", fmtOffset(record.t - timelineBase)));
     }
-    if (kind === "prompt") head.appendChild(el("span", "klabel", record.label || "prompt"));
+    if (kind === "prompt") head.appendChild(el("span", "klabel", String(record.label || "prompt").replace(/^PROMPT\b/, "Prompt")));
     else if (kind === "message") head.appendChild(el("span", "klabel", "agent"));
     else if (kind === "thought") head.appendChild(el("span", "klabel", "thought"));
     else if (kind === "timeout") head.appendChild(el("span", "klabel", "agent timeout"));
@@ -559,6 +547,12 @@ BF.detail = (() => {
       const duration = fmtShortDuration(record.dur);
       if (duration) head.appendChild(el("span", "tstamp", duration));
       if (statusClass === "failed" || statusClass === "cancelled") card.classList.add("failed");
+      // Focus mode folds a tool call to its head line; the head opens it.
+      head.classList.add("fold");
+      head.addEventListener("click", (event) => {
+        if (event.target.closest("a")) return;
+        card.classList.toggle("open");
+      });
     }
     card.appendChild(head);
 
@@ -583,7 +577,7 @@ BF.detail = (() => {
           + (pending.length ? "Interrupted tool calls: " + pending.join(", ") : "No tool calls were pending."),
       ));
     } else if (record.text) {
-      collapsibleText(card, record.text, "body");
+      collapsibleText(card, record.text, "body", null, kind === "prompt" ? PROMPT_PREVIEW : {});
     }
     return card;
   }
@@ -600,6 +594,7 @@ BF.detail = (() => {
 
     const main = document.getElementById("view-trace");
     main.textContent = "";
+    main.classList.toggle("focus", state.focus);
     if (!steps.length) {
       const empty = el("div", null, "No events in this trajectory.");
       empty.id = "empty";
@@ -820,22 +815,34 @@ BF.detail = (() => {
     }
     if (Array.isArray(verifier.ctrf) && verifier.ctrf.length) {
       const block = el("div", "panelblock");
-      block.appendChild(el("h2", null, "Tests (CTRF)"));
-      const table = el("table", "plain");
+      block.appendChild(el("h2", null, "Tests (CTRF)" + (verifier.ctrf_tool ? " \u00b7 " + verifier.ctrf_tool : "")));
+      const table = el("table", "plain tests");
       const heading = el("tr");
       ["Test", "Status", "Duration"].forEach((label) => heading.appendChild(el("th", null, label)));
       table.appendChild(heading);
-      verifier.ctrf.forEach((test) => {
+      verifier.ctrf.forEach((test, index) => {
         const record = test && typeof test === "object" ? test : {};
         const row = el("tr");
-        row.appendChild(el("td", null, record.name));
-        const status = el("td", null, record.status);
-        status.style.color = record.status === "passed"
-          ? "var(--ok-ink)"
-          : (record.status === "failed" ? "var(--bad-ink)" : "var(--muted)");
+        row.dataset.test = String(record.name ?? "");
+        row.appendChild(el("td", "mono", record.name));
+        const status = el("td", "st-" + (record.status === "passed" ? "ok" : record.status === "failed" ? "bad" : "none"), record.status);
         row.appendChild(status);
-        row.appendChild(el("td", null, record.duration !== undefined && record.duration !== null ? record.duration + " ms" : ""));
+        const seconds = BF.runcard.fmtSpan(record.seconds);
+        row.appendChild(el("td", "num", seconds || (record.duration !== undefined && record.duration !== null ? record.duration + " ms" : "")));
         table.appendChild(row);
+        if (record.status === "failed" && (record.trace || record.message || record.location)) {
+          const detail = el("tr", "failure");
+          detail.id = "failure-" + index;
+          row.dataset.failure = detail.id;
+          const cell = el("td");
+          cell.colSpan = 3;
+          if (record.location || record.assertion) {
+            cell.appendChild(el("div", "failure-why", [record.assertion, record.location].filter(Boolean).join(" \u00b7 ")));
+          }
+          if (record.trace || record.message) collapsibleText(cell, record.trace || record.message, "tout");
+          detail.appendChild(cell);
+          table.appendChild(detail);
+        }
       });
       block.appendChild(table);
       main.appendChild(block);
@@ -1090,7 +1097,8 @@ BF.detail = (() => {
   }
 
   function clearDetail() {
-    ["hdr", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric", "view-lineage"].forEach((id) => {
+    BF.runcard.clearTips();
+    ["hdr", "side", "tabs", "view-trace", "view-verifier", "view-metrics", "view-rubric", "view-lineage"].forEach((id) => {
       document.getElementById(id).textContent = "";
     });
     document.getElementById("toolbar").textContent = "";
@@ -1127,6 +1135,7 @@ BF.detail = (() => {
     currentPayload = payload;
     currentOptions = options;
     const heading = renderHeader(payload);
+    renderRail(payload, options);
     renderTabs(payload);
     renderToolbar();
     renderTrace(payload);

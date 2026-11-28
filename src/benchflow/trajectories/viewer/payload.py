@@ -63,6 +63,7 @@ from .models import (
     tool_kind,
 )
 from .subagents import count_subagents, nest_subagent_steps
+from .verdict import build_verdict, failure_assertion, failure_location
 
 _MAX_JSON_DEPTH = 64
 _MAX_JSON_OUTPUT_DEPTH = _MAX_JSON_DEPTH + 32
@@ -757,25 +758,80 @@ def _load_verifier(rollout_dir: Path) -> VerifierArtifacts:
     verifier_dir = ReachablePath.rollout(rollout_dir, "verifier")
     reward = _read_text(verifier_dir / _VERIFIER_REWARD)
     ctrf_tests: list[VerifierTest] | None = None
+    ctrf_tool: str | None = None
+    ctrf_seconds: float | None = None
     ctrf = _load_json(verifier_dir / _VERIFIER_CTRF)
-    if isinstance(ctrf, dict):
-        results = ctrf.get("results")
-        raw_tests = results.get("tests") if isinstance(results, dict) else None
+    results = ctrf.get("results") if isinstance(ctrf, dict) else None
+    if isinstance(results, dict):
+        raw_tests = results.get("tests")
         if isinstance(raw_tests, list):
             ctrf_tests = [
-                VerifierTest(
-                    name=_display_text(test.get("name")),
-                    status=normalize_verifier_status(test.get("status")),
-                    duration=_finite_float(test.get("duration")),
-                )
-                for test in raw_tests
-                if isinstance(test, dict)
+                _verifier_test(test) for test in raw_tests if isinstance(test, dict)
             ]
+        tool = results.get("tool")
+        if isinstance(tool, dict):
+            ctrf_tool = (
+                " ".join(
+                    text
+                    for text in (
+                        _optional_text(tool.get("name")),
+                        _optional_text(tool.get("version")),
+                    )
+                    if text
+                )
+                or None
+            )
+        summary = results.get("summary")
+        if isinstance(summary, dict):
+            ctrf_seconds = _ctrf_seconds(summary)
     return VerifierArtifacts(
         reward=reward.strip() if reward else None,
         stdout=_read_text(verifier_dir / _VERIFIER_STDOUT),
         stderr=_read_text(verifier_dir / _VERIFIER_STDERR),
         ctrf=ctrf_tests,
+        ctrf_tool=ctrf_tool,
+        ctrf_seconds=ctrf_seconds,
+    )
+
+
+# The end of a failure trace carries the assertion and the failing frame.
+_MAX_TRACE_CHARS = 4000
+# CTRF timestamps are epoch milliseconds by the spec, but pytest-json-ctrf
+# writes epoch seconds; no epoch in seconds reaches 1e11 before the year 5138.
+_EPOCH_MS_THRESHOLD = 1e11
+
+
+def _ctrf_seconds(record: dict[str, Any]) -> float | None:
+    """Seconds between a CTRF record's ``start`` and ``stop`` timestamps.
+
+    The ``duration`` field's unit varies by producer, so the card reads the
+    timestamps, whose unit shows in their size.
+    """
+    start = _finite_float(record.get("start"))
+    stop = _finite_float(record.get("stop"))
+    if start is None or stop is None or stop < start:
+        return None
+    span = stop - start
+    return span / 1000 if start >= _EPOCH_MS_THRESHOLD else span
+
+
+def _verifier_test(test: dict[str, Any]) -> VerifierTest:
+    status = normalize_verifier_status(test.get("status"))
+    message = trace = None
+    if status == "failed":
+        message = _optional_text(test.get("message"))
+        trace = _optional_text(test.get("trace"))
+        if trace is not None and len(trace) > _MAX_TRACE_CHARS:
+            trace = "\u2026" + trace[-_MAX_TRACE_CHARS:]
+    return VerifierTest(
+        name=_display_text(test.get("name")),
+        status=status,
+        duration=_finite_float(test.get("duration")),
+        seconds=_ctrf_seconds(test),
+        message=message,
+        trace=trace,
+        location=failure_location(trace),
+        assertion=failure_assertion(trace, message),
     )
 
 
@@ -1075,17 +1131,18 @@ def _build_branch_child_payload(rollout_dir: Path, ref: str) -> ViewerPayload | 
                 status=child.status,
                 intervention=child.intervention.get("label"),
             )
+            meta = _build_meta(metadata, steps, branch=origin)
+            # In-place children hand off the mounted sidecars; isolated
+            # children are full trial folders with their own verifier/.
+            verifier = _load_verifier(
+                child_dir / "mounted" if (child_dir / "mounted").is_dir() else child_dir
+            )
             return ViewerPayload(
                 rollout_name=f"{rollout_dir.name} / branch {child.node_id}",
-                meta=_build_meta(metadata, steps, branch=origin),
+                meta=meta,
                 steps=steps,
-                # In-place children hand off the mounted sidecars; isolated
-                # children are full trial folders with their own verifier/.
-                verifier=_load_verifier(
-                    child_dir / "mounted"
-                    if (child_dir / "mounted").is_dir()
-                    else child_dir
-                ),
+                verifier=verifier,
+                verdict=build_verdict(meta, steps, verifier),
             )
     return None
 
@@ -1270,17 +1327,20 @@ def _build_acp_payload(rollout_dir: Path, prompts: list[str] | None) -> ViewerPa
 
     steps = _normalize_steps(events, prompts)
     recovery = _load_recovery(rollout_dir)
+    meta = _build_meta(
+        _load_rollout_metadata(rollout_dir),
+        steps,
+        extra_errors=_recovery_banners(recovery),
+    )
+    verifier = replace(_load_verifier(rollout_dir), recovery=recovery)
     return ViewerPayload(
         rollout_name=rollout_dir.name,
-        meta=_build_meta(
-            _load_rollout_metadata(rollout_dir),
-            steps,
-            extra_errors=_recovery_banners(recovery),
-        ),
+        meta=meta,
         steps=steps,
-        verifier=replace(_load_verifier(rollout_dir), recovery=recovery),
+        verifier=verifier,
         rubric=_load_rubric(rollout_dir),
         lineage=_load_lineage(rollout_dir),
+        verdict=build_verdict(meta, steps, verifier),
     )
 
 

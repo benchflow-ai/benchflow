@@ -1147,9 +1147,13 @@ def test_catalog_and_run_page_split_execution_from_assessment(page, structure_se
 
     row.click()
     page.wait_for_selector("#hdr h1")
-    identity = page.locator("#stats .statrow.identity").inner_text().lower()
-    assert "execution\ncompleted" in identity
-    assert "assessment\nunscored (verifier timeout)" in identity
+    # The run card says it in one sentence; the Reward check holds the facts.
+    why = page.locator("#why").inner_text()
+    assert why == "The agent finished, but the run was not scored: verifier timeout."
+    page.locator("#side .score-v").hover()
+    facts = page.locator(".pop.open").inner_text().lower()
+    assert "execution\tcompleted" in facts or "execution\ncompleted" in facts
+    assert "unscored, verifier timeout" in facts
     assert "verifier publication error" in page.locator("#errors").inner_text().lower()
     page.locator("#tabs button", has_text="Verifier").click()
     facts = page.locator("#view-verifier").inner_text()
@@ -1180,7 +1184,7 @@ def test_lineage_tab_links_to_child_trajectories_and_back(
     page.wait_for_selector("#hdr .sub")
     assert "branch child n2" in page.locator("#hdr .sub").inner_text()
     assert "continuation of n2" in page.locator("#view-trace").inner_text()
-    assert page.locator("#hdr .badge").inner_text() == "FAIL 0"
+    assert page.locator("#hdr .badge.fail").inner_text().lower() == "failed"
 
     page.go_back()
     page.wait_for_function("() => !location.search.includes('branch=')")
